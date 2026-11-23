@@ -1,6 +1,7 @@
 capability unsafe
 
 import .api as vk
+import .layout as vkl
 import .sdl as sdl
 
 // Per-frame GPU sync objects. Kept as parallel arrays because a @c_layout struct
@@ -69,14 +70,33 @@ pub struct Renderer {
     fragmentShader: ptr,
     skyPipelineLayout: ptr,
     skyPipeline: ptr,
+    transparentPipeline: ptr,
     skyVertexShader: ptr,
     skyFragmentShader: ptr,
     framebuffers: [ptr; 8],
+    shadowImage: ptr,
+    shadowMemory: ptr,
+    shadowView: ptr,
+    shadowSampler: ptr,
+    shadowPass: ptr,
+    shadowFramebuffer: ptr,
+    shadowPipeline: ptr,
+    shadowPipelineLayout: ptr,
+    shadowSetLayout: ptr,
+    shadowPool: ptr,
+    shadowSet: ptr,
+    lightBuffer: ptr,
+    lightMemory: ptr,
+    lightMapped: ptr,
+    shadowVertShader: ptr,
+    shadowFragShader: ptr,
     vertex: Buffer,
     window: sdl.Window,
     frameIndex: i64,
     trace: u32,
     recording: u32,
+    pendingPass: vkl.RenderPassBeginInfo,
+    pendingClear: [u64; 4],
     stage: u32,
     lastResult: i32,
     imageIndex: i32,

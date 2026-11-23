@@ -33,6 +33,26 @@ Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mi
 
 **22. Structretur med pekarfält.** Ett separat program returnerade två structar med två pekare vardera och olika storlekar. Båda behöll sina ursprungliga fält efter det andra anropet på ARM64/macOS och x86-64/Linux. Storm använder utparametrar vid bildallokering. Bildartefakten från det tidigare försöket har ingen fastställd koppling till Dunders returkonvention.
 
+## Uppföljning: skuggor, transparens och dynamisk graf
+
+**Djupbilder, igen.** Storm frågar fortfarande efter en djupbild och får `−2`
+för `D16_UNORM`, `X8_D24_UNORM_PACK32`, `D32_SFLOAT`, `D24_UNORM_S8_UINT` och
+`D32_SFLOAT_S8_UINT`, med optimal tiling och varje usage-kombination, även
+16 × 16. Samma anrop med linear tiling lyckas, men
+`vkGetPhysicalDeviceFormatProperties` ger noll features för linear tiling.
+Skillnaden mot C-provet i punkt 19 är fortfarande oförklarad; tills den är utredd
+ritas scenen med painter's algorithm och skuggor via en avståndskarta i en
+färgbild (MAX-blending), se `packages/storm-vulkan/src/shadow.ddr`.
+
+**24. `store_u32` med framräknad pekare.** Att skriva till mappat minne med
+`store_u32(ptr(usize(mapped) + offset), value)` avslutade processen med
+SIGSEGV. Samma skrivning via `memcpy` fungerar. `store_u32(addr(&mut array[0]),
+…)` fungerar också, så skillnaden ligger i den framräknade pekaren.
+
+**25. Push constant-range över 240 byte.** En `VkPushConstantRange` med
+`size = 320` tog ner processen när pipelinen skapades. 240 byte fungerar.
+Ljusmatrisen flyttades till en uniform buffer.
+
 ## Verifiering
 
 På x86-64/Linux byggdes Storm med den ändrade kompilatorn. Rotpaketets

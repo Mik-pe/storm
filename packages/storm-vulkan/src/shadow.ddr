@@ -1,0 +1,423 @@
+capability unsafe, stdio
+
+import std.sys as sys
+import .device as device
+import .layout as vk
+import .shader as shader
+import .state as state
+
+// Shadow map without a depth attachment.
+//
+// This driver refuses to create any depth image with optimal tiling
+// (VK_ERROR_OUT_OF_DEVICE_MEMORY) and gives linear depth no features at all, so
+// the shadow target is an R32_SFLOAT colour image instead: the fragment stage
+// writes the distance along the light direction and MIN blending keeps the
+// smallest one per texel, which is a depth map by another name.
+
+// libc memcpy, declared here because each module keeps its own bindings.
+@extern("c", "memcpy")
+unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
+
+const SHADOW_SIZE: u32 = 1024
+const FORMAT_R32_SFLOAT: u32 = 100
+const LAYOUT_SHADER_READ: u32 = 5
+const CLEAR_FAR: f32 = 1000.0
+
+@c_layout
+struct StagePair { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
+
+@c_layout
+struct AttrPair { position: vk.VertexInputAttributeDescription, normal: vk.VertexInputAttributeDescription }
+
+pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    // --- image ---
+    mut words: [u32; 22] = [0; 22]
+    words[0] = 14
+    words[5] = 1
+    words[6] = FORMAT_R32_SFLOAT
+    words[7] = SHADOW_SIZE
+    words[8] = SHADOW_SIZE
+    words[9] = 1
+    words[10] = 1
+    words[11] = 1
+    words[12] = 1
+    words[13] = 1          // OPTIMAL: colour formats accept it
+    words[14] = 20         // COLOR_ATTACHMENT | SAMPLED
+    mut image := ptr(0)
+    if r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image)) != 0 {
+        _ := sys.eprint("shadow: could not create the shadow map")
+        return false
+    }
+    mut req: [u64; 3] = [0; 3]
+    r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
+    mut requirements: vk.MemoryRequirements = zeroed()
+    requirements.size = req[0]
+    requirements.alignment = req[1]
+    requirements.memoryTypeBits = u32(req[2])
+    mut memory := ptr(0)
+    if !device.allocate(&r, &requirements, 1, addr(&mut memory)) { return false }
+    if r.api.BindImageMemory(r.device, image, memory, 0) != 0 { return false }
+
+    mut view_info: vk.ImageViewCreateInfo = zeroed()
+    view_info.sType = 15
+    view_info.image = image
+    view_info.viewType = 1
+    view_info.format = FORMAT_R32_SFLOAT
+    view_info.subresourceRange.aspectMask = 1
+    view_info.subresourceRange.levelCount = 1
+    view_info.subresourceRange.layerCount = 1
+    mut view := ptr(0)
+    if r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view)) != 0 { return false }
+
+    // --- sampler ---
+    mut sampler_info: vk.SamplerCreateInfo = zeroed()
+    sampler_info.sType = 31
+    sampler_info.magFilter = 0
+    sampler_info.minFilter = 0
+    sampler_info.mipmapMode = 0
+    sampler_info.addressModeU = 2
+    sampler_info.addressModeV = 2
+    sampler_info.addressModeW = 2
+    sampler_info.maxLod = 0.0
+    mut sampler := ptr(0)
+    if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
+
+    // --- light uniform buffer: mat4 light_vp + vec4 light_dir_c = 80 bytes ---
+    mut buffer_info: vk.BufferCreateInfo = zeroed()
+    buffer_info.sType = 12
+    buffer_info.size = 80
+    buffer_info.usage = 64      // UNIFORM_BUFFER
+    buffer_info.sharingMode = 0
+    mut light_buffer := ptr(0)
+    if r.api.CreateBuffer(r.device, addr(&buffer_info), ptr(0), addr(&mut light_buffer)) != 0 { return false }
+    mut breq: vk.MemoryRequirements = zeroed()
+    r.api.GetBufferMemoryRequirements(r.device, light_buffer, addr(&mut breq))
+    mut light_memory := ptr(0)
+    if !device.allocate(&r, &breq, 6, addr(&mut light_memory)) { return false }
+    if r.api.BindBufferMemory(r.device, light_buffer, light_memory, 0) != 0 { return false }
+    mut light_mapped := ptr(0)
+    if r.api.MapMemory(r.device, light_memory, 0, 80, 0, addr(&mut light_mapped)) != 0 { return false }
+
+    // --- descriptor set: binding 0 sampler (fragment), binding 1 UBO (vertex+fragment) ---
+    // Two vkDescriptorSetLayoutBinding records of 24 bytes each: six u64 words.
+    // word0/3 = binding | type, word1/4 = count | stages, word2/5 = immutable samplers.
+    mut bindings: [u64; 6] = [0; 6]
+    bindings[0] = u64(0) + (u64(1) .shl(32))    // binding 0, COMBINED_IMAGE_SAMPLER
+    bindings[1] = u64(1) + (u64(16) .shl(32))   // count 1, stage FRAGMENT
+    bindings[2] = 0
+    bindings[3] = u64(1) + (u64(6) .shl(32))    // binding 1, UNIFORM_BUFFER
+    bindings[4] = u64(1) + (u64(17) .shl(32))   // count 1, stages VERTEX | FRAGMENT
+    bindings[5] = 0
+    mut layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
+    layout_info.sType = 32
+    layout_info.bindingCount = 2
+    layout_info.pBindings = addr(&mut bindings[0])
+    mut set_layout := ptr(0)
+    if r.api.CreateDescriptorSetLayout(r.device, addr(&layout_info), ptr(0), addr(&mut set_layout)) != 0 { return false }
+
+    mut pool_sizes: [u32; 4] = [1, 1, 6, 1]
+    mut pool_info: vk.DescriptorPoolCreateInfo = zeroed()
+    pool_info.sType = 33
+    pool_info.maxSets = 1
+    pool_info.poolSizeCount = 2
+    pool_info.pPoolSizes = addr(&mut pool_sizes[0])
+    mut pool := ptr(0)
+    if r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool)) != 0 { return false }
+
+    mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
+    allocate_info.sType = 34
+    allocate_info.descriptorPool = pool
+    allocate_info.descriptorSetCount = 1
+    allocate_info.pSetLayouts = addr(&set_layout)
+    mut set := ptr(0)
+    if r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut set)) != 0 { return false }
+
+    mut image_info: vk.DescriptorImageInfo = zeroed()
+    image_info.sampler = sampler
+    image_info.imageView = view
+    image_info.imageLayout = LAYOUT_SHADER_READ
+    mut buffer_info2: vk.DescriptorBufferInfo = zeroed()
+    buffer_info2.buffer = light_buffer
+    buffer_info2.offset = 0
+    buffer_info2.range = 80
+    mut writes: [u64; 28] = [0; 28]
+    // Two vkWriteDescriptorSet records (14 words each) laid out contiguously.
+    mut write_image: vk.WriteDescriptorSet = zeroed()
+    write_image.sType = 35
+    write_image.dstSet = set
+    write_image.dstBinding = 0
+    write_image.descriptorCount = 1
+    write_image.descriptorType = 1
+    write_image.pImageInfo = addr(&image_info)
+    mut write_buffer: vk.WriteDescriptorSet = zeroed()
+    write_buffer.sType = 35
+    write_buffer.dstSet = set
+    write_buffer.dstBinding = 1
+    write_buffer.descriptorCount = 1
+    write_buffer.descriptorType = 6
+    write_buffer.pBufferInfo = addr(&buffer_info2)
+    _ := writes
+    // Two separate updates avoid relying on a packed record layout.
+    r.api.UpdateDescriptorSets(r.device, 1, addr(&write_image), 0, ptr(0))
+    r.api.UpdateDescriptorSets(r.device, 1, addr(&write_buffer), 0, ptr(0))
+
+    // --- render pass: one colour attachment, cleared far, ends readable ---
+    mut attachment: [u32; 9] = [0; 9]
+    attachment[0] = 0
+    attachment[1] = FORMAT_R32_SFLOAT
+    attachment[2] = 1
+    attachment[3] = 1     // CLEAR
+    attachment[4] = 0     // STORE
+    attachment[5] = 2
+    attachment[6] = 1
+    attachment[7] = 0     // UNDEFINED
+    attachment[8] = LAYOUT_SHADER_READ
+    mut color_ref: vk.AttachmentReference = zeroed()
+    color_ref.attachment = 0
+    color_ref.layout = 2
+    mut subpass: vk.SubpassDescription = zeroed()
+    subpass.pipelineBindPoint = 0
+    subpass.colorAttachmentCount = 1
+    subpass.pColorAttachments = addr(&color_ref)
+    mut before: vk.SubpassDependency = zeroed()
+    before.srcSubpass = 4294967295
+    before.dstSubpass = 0
+    before.srcStageMask = 1024
+    before.dstStageMask = 1024
+    before.dstAccessMask = 256
+    mut after: vk.SubpassDependency = zeroed()
+    after.srcSubpass = 0
+    after.dstSubpass = 4294967295
+    after.srcStageMask = 1024
+    after.dstStageMask = 128
+    after.srcAccessMask = 256
+    after.dstAccessMask = 32
+    mut deps: [u64; 16] = [0; 16]
+    // Two vkSubpassDependency records are 2 x 8 u32 words; store them raw so the
+    // driver reads a contiguous array.
+    deps[0] = u64(4294967295) + (u64(0) .shl(32))
+    deps[1] = u64(1024) + (u64(1024) .shl(32))
+    deps[2] = u64(0) + (u64(256) .shl(32))
+    deps[3] = u64(0) + (u64(0) .shl(32))
+    deps[4] = u64(0) + (u64(4294967295) .shl(32))
+    deps[5] = u64(1024) + (u64(128) .shl(32))
+    deps[6] = u64(256) + (u64(32) .shl(32))
+    deps[7] = u64(0) + (u64(0) .shl(32))
+    _ := before
+    _ := after
+    mut pass_info: vk.RenderPassCreateInfo = zeroed()
+    pass_info.sType = 38
+    pass_info.attachmentCount = 1
+    pass_info.pAttachments = addr(&mut attachment[0])
+    pass_info.subpassCount = 1
+    pass_info.pSubpasses = addr(&subpass)
+    pass_info.dependencyCount = 2
+    pass_info.pDependencies = addr(&mut deps[0])
+    mut pass := ptr(0)
+    if r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass)) != 0 { return false }
+
+    mut views: [ptr; 1] = [view]
+    mut fbi: vk.FramebufferCreateInfo = zeroed()
+    fbi.sType = 37
+    fbi.renderPass = pass
+    fbi.attachmentCount = 1
+    fbi.pAttachments = addr(&views[0])
+    fbi.width = SHADOW_SIZE
+    fbi.height = SHADOW_SIZE
+    fbi.layers = 1
+    mut framebuffer := ptr(0)
+    if r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer)) != 0 { return false }
+
+    // --- pipeline ---
+    vertex := shader.shadow_vertex()
+    mut vshader := ptr(0)
+    mut module_info: vk.ShaderModuleCreateInfo = zeroed()
+    module_info.sType = 16
+    module_info.codeSize = usize(vertex.len * 4)
+    module_info.pCode = addr(&vertex[0])
+    if r.api.CreateShaderModule(r.device, addr(&module_info), ptr(0), addr(&mut vshader)) != 0 { return false }
+    fragment := shader.shadow_fragment()
+    mut fshader := ptr(0)
+    mut module_info2: vk.ShaderModuleCreateInfo = zeroed()
+    module_info2.sType = 16
+    module_info2.codeSize = usize(fragment.len * 4)
+    module_info2.pCode = addr(&fragment[0])
+    if r.api.CreateShaderModule(r.device, addr(&module_info2), ptr(0), addr(&mut fshader)) != 0 { return false }
+
+    // light_vp(64) + model(64) + light_dir_c(16) = 144 bytes.
+    mut push_range: vk.PushConstantRange = zeroed()
+    push_range.stageFlags = 17
+    push_range.size = 144
+    mut layout_info2: vk.PipelineLayoutCreateInfo = zeroed()
+    layout_info2.sType = 30
+    layout_info2.pushConstantRangeCount = 1
+    layout_info2.pPushConstantRanges = addr(&push_range)
+    mut pipeline_layout := ptr(0)
+    if r.api.CreatePipelineLayout(r.device, addr(&layout_info2), ptr(0), addr(&mut pipeline_layout)) != 0 { return false }
+
+    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
+    stage.sType = 18
+    stage.stage = 1
+    stage.module = vshader
+    stage.pName = cstr("main")
+    mut stages: StagePair = zeroed()
+    stages.vertex = stage
+    stages.fragment = stage
+    stages.fragment.stage = 16
+    stages.fragment.module = fshader
+
+    mut binding_desc := vk.VertexInputBindingDescription { binding: 0, stride: 24, inputRate: 0 }
+    mut attributes: AttrPair = zeroed()
+    attributes.position = vk.VertexInputAttributeDescription { location: 0, binding: 0, format: 106, offset: 0 }
+    attributes.normal = vk.VertexInputAttributeDescription { location: 1, binding: 0, format: 106, offset: 12 }
+    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
+    input.sType = 19
+    input.vertexBindingDescriptionCount = 1
+    input.pVertexBindingDescriptions = addr(&binding_desc)
+    input.vertexAttributeDescriptionCount = 2
+    input.pVertexAttributeDescriptions = addr(&attributes)
+
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
+    assembly.sType = 20
+    assembly.topology = 3
+
+    mut viewport: vk.Viewport = zeroed()
+    viewport.width = f32(SHADOW_SIZE)
+    viewport.height = f32(SHADOW_SIZE)
+    viewport.maxDepth = 1.0
+    mut scissor: vk.Rect2D = zeroed()
+    scissor.extent.width = SHADOW_SIZE
+    scissor.extent.height = SHADOW_SIZE
+    mut viewport_state: vk.PipelineViewportStateCreateInfo = zeroed()
+    viewport_state.sType = 22
+    viewport_state.viewportCount = 1
+    viewport_state.pViewports = addr(&viewport)
+    viewport_state.scissorCount = 1
+    viewport_state.pScissors = addr(&scissor)
+
+    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
+    raster.sType = 23
+    raster.polygonMode = 0
+    raster.cullMode = 2
+    raster.frontFace = 0
+    raster.lineWidth = 1.0
+
+    mut multisample: vk.PipelineMultisampleStateCreateInfo = zeroed()
+    multisample.sType = 24
+    multisample.rasterizationSamples = 1
+
+    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
+    depth_state.sType = 25
+
+    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+    blend_attachment.blendEnable = 1
+    blend_attachment.srcColorBlendFactor = 1   // ONE
+    blend_attachment.dstColorBlendFactor = 1   // ONE
+    blend_attachment.colorBlendOp = 4          // MAX: keep the surface closest to the sun
+    blend_attachment.srcAlphaBlendFactor = 1
+    blend_attachment.dstAlphaBlendFactor = 1
+    blend_attachment.alphaBlendOp = 4
+    blend_attachment.colorWriteMask = 15
+    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
+    blend.sType = 26
+    blend.attachmentCount = 1
+    blend.pAttachments = addr(&blend_attachment)
+
+    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
+    info.sType = 28
+    info.stageCount = 2
+    info.pStages = addr(&stages)
+    info.pVertexInputState = addr(&input)
+    info.pInputAssemblyState = addr(&assembly)
+    info.pViewportState = addr(&viewport_state)
+    info.pRasterizationState = addr(&raster)
+    info.pMultisampleState = addr(&multisample)
+    info.pDepthStencilState = addr(&depth_state)
+    info.pColorBlendState = addr(&blend)
+    info.layout = pipeline_layout
+    info.renderPass = pass
+    info.basePipelineIndex = -1
+    mut pipeline := ptr(0)
+    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut pipeline)) != 0 { return false }
+
+    r.shadowImage = image
+    r.shadowMemory = memory
+    r.shadowView = view
+    r.shadowSampler = sampler
+    r.shadowPass = pass
+    r.shadowFramebuffer = framebuffer
+    r.shadowPipeline = pipeline
+    r.shadowPipelineLayout = pipeline_layout
+    r.shadowSetLayout = set_layout
+    r.shadowPool = pool
+    r.shadowSet = set
+    r.lightBuffer = light_buffer
+    r.lightMemory = light_memory
+    r.lightMapped = light_mapped
+    r.shadowVertShader = vshader
+    r.shadowFragShader = fshader
+    true
+}
+
+// Writes the light matrix into the mapped uniform buffer.
+pub unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
+    if r.lightMapped == ptr(0) { return false }
+    _ := copy_bytes(r.lightMapped, addr(&light_vp[0]), 64)
+    _ := copy_bytes(ptr(usize(r.lightMapped) + 64), addr(&light_dir_c[0]), 16)
+    true
+}
+
+// --- recording ---
+
+pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
+    if r.recording == 0 || r.shadowPass == ptr(0) { return false }
+    // Clear to -1000 so MAX blending lets any real surface win, and so the
+    // shading pass can tell "no geometry" apart from a real distance.
+    mut clear: [u64; 4] = [0xC47A0000C47A0000, 0xC47A00003F800000, 0, 0]
+    mut pass: vk.RenderPassBeginInfo = zeroed()
+    pass.sType = 43
+    pass.renderPass = r.shadowPass
+    pass.framebuffer = r.shadowFramebuffer
+    pass.renderArea.extent.width = SHADOW_SIZE
+    pass.renderArea.extent.height = SHADOW_SIZE
+    pass.clearValueCount = 1
+    pass.pClearValues = addr(&mut clear[0])
+    r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
+    r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadowPipeline)
+    // light_vp(64) + model(64, filled per draw) + light_dir_c(16) = 144 bytes.
+    mut push: [f32; 36] = [0.0; 36]
+    for i in 0..16 { push[i] = light_vp[i] }
+    for i in 0..4 { push[32 + i] = light_dir_c[i] }
+    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, 1, 0, 144, addr(&push[0]))
+    true
+}
+
+pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) -> bool {
+    if r.recording == 0 { return false }
+    if vertices.len % 6 != 0 { return false }
+    bytes := u64(vertices.len * 4)
+    offset := r.vertexCursor
+    if offset + bytes > r.vertex.capacity { return false }
+    if vertices.len > 0 {
+        _ := copy_bytes(ptr(usize(r.vertex.mapped) + usize(offset)), addr(&vertices[0]), usize(bytes))
+    }
+    r.vertexCursor = offset + bytes
+    mut push: [f32; 36] = [0.0; 36]
+    for i in 0..16 { push[i] = model[i] }
+    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, 1, 64, 64, addr(&push[0]))
+    r.api.CmdBindVertexBuffers(r.commands[r.current], 0, 1, addr(&r.vertex.handle), addr(&offset))
+    r.api.CmdDraw(r.commands[r.current], u32(vertices.len / 6), 1, 0, 0)
+    true
+}
+
+pub unsafe fn end(r: &mut state.Renderer) -> bool {
+    if r.recording == 0 { return false }
+    r.api.CmdEndRenderPass(r.commands[r.current])
+    true
+}
+
+pub unsafe fn bind(r: &state.Renderer) -> bool {
+    if r.shadowSet == ptr(0) { return false }
+    r.api.CmdBindDescriptorSets(r.commands[r.current], 0, r.pipelineLayout, 0, 1, addr(&r.shadowSet), 0, ptr(0))
+    true
+}

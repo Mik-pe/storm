@@ -7,6 +7,7 @@ import .device as device
 import .headless as headless
 import .layout as vk
 import .pipeline as pipeline
+import .shadow as shadow
 import .sdl as sdl
 import .state as state
 
@@ -82,6 +83,8 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     if !sdl.open(&mut r.window, title, width, height) { return false }
     r.stage = 2
     if !device.setup(&mut r) { return false }
+    r.stage = 6
+    if !shadow.setup(&mut r) { return false }
     r.stage = 3
     if !pipeline.setup(&mut r) { return false }
     r.stage = 4
@@ -344,9 +347,21 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     store_u32(ptr(usize(addr(&mut clears[0])) + 8), u32(clear_color[2].to_bits()))
     store_u32(ptr(usize(addr(&mut clears[0])) + 12), u32(clear_color[3].to_bits()))
     pass.pClearValues = addr(&mut clears[0])
-    r.api.CmdBeginRenderPass(r.commands[slot], addr(&pass), 0)
     r.imageIndex = i32(image_index)
+    r.pendingPass = pass
+    r.pendingClear = clears
+    r.pendingPass.pClearValues = addr(&mut r.pendingClear[0])
     r.recording = 1
+    BeginResult { ok: true, error: "", width: i32(r.width), height: i32(r.height) }
+}
+
+// Open the main render pass. Called after prepare_frame and after the optional
+// shadow pass has been recorded into the same command buffer.
+unsafe fn open_main_pass(r: &mut state.Renderer) -> BeginResult {
+    if r.recording == 0 { return BeginResult { ok: false, error: "no frame in flight", width: 0, height: 0 } }
+    pass := r.pendingPass.clone()
+    r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
+    r.api.CmdBindDescriptorSets(r.commands[r.current], 0, r.pipelineLayout, 0, 1, addr(&r.shadowSet), 0, ptr(0))
     trace_step(&r, "render pass begun")
     BeginResult { ok: true, error: "", width: i32(r.width), height: i32(r.height) }
 }
@@ -368,7 +383,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 }
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3]) -> DrawResult {
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky, blended: bool) -> DrawResult {
     if r.recording == 0 { return draw_error(r.frameIndex, "mesh drawn outside begin/end") }
     if vertices.len % 6 != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz] triples") }
     for i in 0..vertices.len {
@@ -384,15 +399,25 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     }
     r.vertexCursor = offset + bytes
     slot := r.current
-    mut push: [f32; 44] = [0.0; 44]
+    // mvp(64) model(64) base_color(16) params(16) camera(16)
+    // sun(16) sun_color(16) zenith(16) horizon(16) = 240 bytes.
+    mut push: [f32; 60] = [0.0; 60]
     for i in 0..16 { push[i] = mvp[i] }
     for i in 0..16 { push[16 + i] = model[i] }
     for i in 0..4 { push[32 + i] = base_color[i] }
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
-    r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
+    for i in 0..4 { push[44 + i] = sky.sun[i] }
+    for i in 0..4 { push[48 + i] = sky.sun_color[i] }
+    for i in 0..4 { push[52 + i] = sky.zenith[i] }
+    for i in 0..4 { push[56 + i] = sky.horizon[i] }
+    if blended {
+        r.api.CmdBindPipeline(r.commands[slot], 0, r.transparentPipeline)
+    } else {
+        r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
+    }
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
-    r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 17, 0, 176, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 17, 0, 240, addr(&push[0]))
     r.api.CmdDraw(r.commands[slot], u32(vertices.len / 6), 1, 0, 0)
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }
@@ -477,11 +502,64 @@ pub fn sky(window: Window, inv_view_proj: &[f32; 16], sun: &[f32; 4], zenith: &[
 }
 
 pub fn mesh(window: Window, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3]) -> DrawResult {
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky) -> DrawResult {
     unsafe {
         address := active(ref_at(registry_address()), window)
         if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        return mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera)
+        return mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, false)
+    }
+}
+
+// Open the main render pass. Call after begin() and after any shadow pass.
+pub fn begin_pass(window: Window) -> BeginResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return BeginResult { ok: false, error: "invalid or expired window handle", width: 0, height: 0 } }
+        return open_main_pass(ref_at(address))
+    }
+}
+
+// --- shadow pass (recorded before the main pass, same command buffer) ---
+
+pub fn shadow_begin(window: Window, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        _ := shadow.set_light(ref_at(address), &light_vp, &light_dir_c)
+        if !shadow.begin(ref_at(address), &light_vp, &light_dir_c) {
+            return draw_error(0, "shadow pass could not start")
+        }
+        DrawResult { ok: true, error: "", frames: 0 }
+    }
+}
+
+pub fn shadow_mesh(window: Window, vertices: &[]f32, model: &[f32; 16]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        if !shadow.mesh(ref_at(address), &vertices, &model) {
+            return draw_error(0, "shadow mesh rejected")
+        }
+        DrawResult { ok: true, error: "", frames: 0 }
+    }
+}
+
+pub fn shadow_end(window: Window) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        _ := shadow.end(ref_at(address))
+        DrawResult { ok: true, error: "", frames: 0 }
+    }
+}
+
+// Same geometry path with alpha blending, for the transparent pass.
+pub fn mesh_blended(window: Window, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        return mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, true)
     }
 }
 
@@ -491,6 +569,24 @@ pub fn end(window: Window) -> DrawResult {
         if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
         return end_frame(ref_at(address))
     }
+}
+
+// Lighting parameters shared by the sky pass and the mesh pass. Keeping one
+// struct means the dome you see and the light the surfaces receive cannot drift
+// apart.
+pub struct Sky {
+    sun: [f32; 4],        // xyz towards the sun, w = intensity
+    sun_color: [f32; 4],
+    zenith: [f32; 4],
+    horizon: [f32; 4],
+    light_vp: [f32; 16],  // sun view-projection for the shadow lookup
+    light_dir_c: [f32; 4],// xyz towards the sun, w = dot(light_origin, dir)
+}
+
+pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon: [f32; 4],
+    light_vp: [f32; 16], light_dir_c: [f32; 4]) -> Sky {
+    Sky { sun: sun.clone(), sun_color: sun_color.clone(), zenith: zenith.clone(), horizon: horizon.clone(),
+          light_vp: light_vp.clone(), light_dir_c: light_dir_c.clone() }
 }
 
 // ---- Teardown ----

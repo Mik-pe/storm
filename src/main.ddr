@@ -1,12 +1,13 @@
 // Storm — a game engine in Dunder.
 //
-// Demo scene: a sunlit sky, a PBR ground plane and three metallic cubes
-// orbiting a parent node. The frame is produced by a render graph whose passes
-// are ordered by resource dependencies, and the camera is driven by WASD +
-// right-mouse look.
+// Demo scene: a sunlit sky, a ground plane, three metallic cubes orbiting a
+// parent node and two glass panes. Every frame the render graph is rebuilt from
+// what the scene actually contains, draws are sorted back to front and the
+// transparent pass only exists when something transparent is visible.
 //
-//   dunder run              interactive
-//   dunder run -- --frames 60   render 60 frames and exit
+//   dunder run                     interactive
+//   dunder run -- --frames 60      render 60 frames and exit
+//   dunder run -- --capture a.ppm  one headless frame to disk
 capability stdio
 
 import core
@@ -24,10 +25,15 @@ struct Material {
     emissive: f32,
 }
 
-struct MeshRenderer {
-    // Number of vertices in the shared cube stream.
-    vertex_count: i32,
+// One drawable: transform, material and which geometry to use. Sorted back to
+// front every frame, which stands in for the depth buffer this driver refuses
+// to create.
+struct Item {
+    model: core.Mat4,
     material: Material,
+    transparent: bool,
+    plane: bool,
+    depth: f32,
 }
 
 fn frame_limit() -> i64 {
@@ -42,7 +48,7 @@ fn frame_limit() -> i64 {
     0
 }
 
-// --capture <path> asks the renderer for an offscreen frame.
+// --capture <path> renders one headless frame to a PPM.
 fn capture_path() -> string {
     mut i := 1
     while i + 1 < sys.arg_count() {
@@ -61,15 +67,55 @@ fn trace_enabled() -> bool {
     false
 }
 
-// The render graph: sky fills the color buffer first, the ground and the
-// PBR meshes then cover it and write depth. Declaration order plus the
-// "latest earlier writer" rule gives sky -> ground -> meshes.
-fn build_graph() -> render.Graph {
-    mut graph := render.Graph::new()
-    _ := graph.add_pass("sky", ["color"], [])
-    _ := graph.add_pass("ground", ["color", "depth"], ["color"])
-    _ := graph.add_pass("meshes", ["color", "depth"], ["color", "depth"])
-    graph
+fn flag(name: string) -> bool {
+    mut i := 1
+    while i < sys.arg_count() {
+        if sys.arg(i) == name { return true }
+        i = i + 1
+    }
+    false
+}
+
+// Squared distance from the eye to the model origin. Monotonic in distance, so
+// it is enough to sort by and avoids a square root per item.
+fn depth_of(model: &core.Mat4, eye: core.Vec3) -> f32 {
+    dx := model.m[12] - eye.x
+    dy := model.m[13] - eye.y
+    dz := model.m[14] - eye.z
+    dx * dx + dy * dy + dz * dz
+}
+
+// Painter's algorithm: farthest first. Insertion sort is allocation-free and the
+// item list is tiny.
+fn sort_back_to_front(items: &mut []Item) {
+    mut i := 1
+    while i < items.len {
+        mut j := i
+        while j > 0 && items[j - 1].depth < items[j].depth {
+            held := items[j - 1].clone()
+            items[j - 1] = items[j].clone()
+            items[j] = held
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+fn draw_item(window: vulkan.Window, vertices: &[]f32, item: &Item, view_projection: core.Mat4,
+    camera_position: core.Vec3, sky: &vulkan.Sky, shadows_on: bool) {
+    mvp := core.multiply(view_projection, item.model)
+    mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
+    mut shadow_flag: f32 = 0.0
+    if shadows_on { shadow_flag = 1.0 }
+    mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
+    mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
+    if item.transparent {
+        drawn := vulkan.mesh_blended(window, vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky)
+        if !drawn.ok { _ := sys.eprint("storm: " + drawn.error) }
+    } else {
+        drawn := vulkan.mesh(window, vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky)
+        if !drawn.ok { _ := sys.eprint("storm: " + drawn.error) }
+    }
 }
 
 fn main() -> i32 {
@@ -81,6 +127,7 @@ fn main() -> i32 {
     }
     if trace_enabled() { vulkan.set_trace(opened.window, true) }
     print("device=" + vulkan.device_name(opened.window))
+
     shot := capture_path()
     mut capturing := false
     if shot.len > 0 {
@@ -100,9 +147,8 @@ fn main() -> i32 {
 
     // --- scene tree: a hub with three orbiting cubes ---
     mut graph := scenegraph.Graph::new()
-    hub := graph.create_root(core.vec3(0.0, 0.2, 0.0))
+    hub := graph.create_root(core.vec3(0.0, 0.65, 0.0))
 
-    // Orbiting children, one per material.
     gold := graph.create_child(hub, core.vec3(2.4, 0.0, 0.0))
     copper := graph.create_child(hub, core.vec3(-1.2, 0.0, 2.1))
     steel := graph.create_child(hub, core.vec3(-1.2, 0.0, -2.1))
@@ -111,32 +157,40 @@ fn main() -> i32 {
     graph.set_rotation(steel, 4.1888)
     graph.propagate()
 
-    gold_material := Material { base: core.rgba(0.98, 0.76, 0.30, 1.0), metallic: 1.0, roughness: 0.22, emissive: 0.0 }
-    copper_material := Material { base: core.rgba(0.96, 0.50, 0.33, 1.0), metallic: 1.0, roughness: 0.34, emissive: 0.0 }
-    steel_material := Material { base: core.rgba(0.72, 0.76, 0.82, 1.0), metallic: 0.95, roughness: 0.52, emissive: 0.0 }
-    floor_material := Material { base: core.rgba(0.16, 0.17, 0.19, 1.0), metallic: 0.0, roughness: 0.92, emissive: 0.0 }
+    gold_material := Material { base: core.rgba(1.00, 0.76, 0.30, 1.0), metallic: 1.0, roughness: 0.10, emissive: 0.0 }
+    copper_material := Material { base: core.rgba(0.99, 0.46, 0.28, 1.0), metallic: 1.0, roughness: 0.20, emissive: 0.0 }
+    steel_material := Material { base: core.rgba(0.80, 0.85, 0.92, 1.0), metallic: 1.0, roughness: 0.28, emissive: 0.0 }
+    floor_material := Material { base: core.rgba(0.20, 0.21, 0.24, 1.0), metallic: 0.05, roughness: 0.85, emissive: 0.0 }
+    glass_material := Material { base: core.rgba(0.35, 0.80, 0.88, 0.26), metallic: 0.0, roughness: 0.05, emissive: 0.0 }
+
+    // Two glass panes standing in front of the orbit, drawn last and blended.
+    pane_left := core.multiply(core.translation(-2.7, 1.5, 2.6), core.scaling(core.vec3(1.5, 1.9, 0.05)))
+    pane_right := core.multiply(core.translation(1.6, 1.3, 4.2), core.scaling(core.vec3(2.0, 1.3, 0.05)))
 
     // --- camera ---
-    mut camera := input.Camera::new(core.vec3(0.0, 1.6, 8.5))
+    mut camera := input.Camera::new(core.vec3(0.0, 2.2, 9.5))
     camera.yaw = 0.0
-    camera.pitch = -0.08
+    camera.pitch = -0.16
     camera.fov = 0.85
 
-    // --- frame loop ---
-    mut graph_schedule := build_graph()
-    order := graph_schedule.build()
-    if !order.ok {
-        _ := sys.eprint("storm: " + order.error)
-        vulkan.close(opened.window)
-        return 1
-    }
+    // --- lighting: one sun, shared by the sky dome and every surface ---
+    sun := core.normalize(core.vec3(0.45, 0.62, 0.38))
+    mut sun_push: [f32; 4] = [sun.x, sun.y, sun.z, 3.1]
+    mut sun_color_push: [f32; 4] = [1.0, 0.94, 0.84, 1.0]
+    mut zenith_push: [f32; 4] = [0.09, 0.26, 0.56, 1.0]
+    mut horizon_push: [f32; 4] = [0.63, 0.73, 0.86, 1.0]
+    // Sun view-projection: the light sits back along the sun direction and looks
+    // at the middle of the scene through a box wide enough for the whole demo.
+    light_target := core.vec3(0.0, 0.9, 0.0)
+    light_eye := core.add(light_target, core.scale(sun, 16.0))
+    light_view := core.look_at(light_eye, light_target, core.vec3(0.0, 1.0, 0.0))
+    light_projection := core.orthographic(-10.0, 10.0, -10.0, 10.0, 1.0, 40.0)
+    light_vp := core.multiply(light_projection, light_view)
+    mut light_dir_c: [f32; 4] = [sun.x, sun.y, sun.z, core.dot(light_eye, sun)]
+    sky := vulkan.sky_params(sun_push, sun_color_push, zenith_push, horizon_push, light_vp.m, light_dir_c)
 
-    sun := core.normalize(core.vec3(0.45, 0.78, 0.42))
-    zenith := core.rgba(0.11, 0.28, 0.55, 1.0)
-    horizon := core.rgba(0.72, 0.80, 0.90, 1.0)
-    mut sun_push: [f32; 4] = [sun.x, sun.y, sun.z, 1.0]
-    mut zenith_push: [f32; 4] = [zenith.r, zenith.g, zenith.b, 1.0]
-    mut horizon_push: [f32; 4] = [horizon.r, horizon.g, horizon.b, 1.0]
+    mut show_glass := !flag("--no-glass")
+    mut show_shadows := !flag("--no-shadows")
 
     mut frames: i64 = 0
     mut previous := 0.0
@@ -148,14 +202,15 @@ fn main() -> i32 {
         if dt > 0.1 { dt = 0.1 }
         previous = frame.time
 
-        // Right mouse button captures look; the camera never spins on its own.
         captured := (vulkan.mouse(opened.window).buttons.bit_and(input.MOUSE_RIGHT)) != 0
         camera.update(opened.window, f32(dt), captured)
         if vulkan.key_pressed(opened.window, input.KEY_R) {
-            camera = input.Camera::new(core.vec3(0.0, 1.6, 8.5))
-            camera.pitch = -0.08
+            camera = input.Camera::new(core.vec3(0.0, 2.2, 9.5))
+            camera.pitch = -0.16
             camera.fov = 0.85
         }
+        if vulkan.key_pressed(opened.window, input.KEY_T) { show_glass = !show_glass }
+        if vulkan.key_pressed(opened.window, input.KEY_G) { show_shadows = !show_shadows }
 
         // Animate the orbit: the hub rotates, children follow through the tree.
         graph.set_rotation(hub, graph.local(hub).rotation_y + f32(dt) * 0.35)
@@ -165,6 +220,45 @@ fn main() -> i32 {
         view_projection := camera.view_projection(aspect)
         inv_view_projection := input.inverse_view_projection(&camera, aspect)
 
+        // --- scene contents for this frame ---
+        mut items: []Item = []
+        // The floor is a huge plane centred on the origin, so its origin distance is
+        // meaningless; it must always be painted first.
+        items.push(Item { model: core.identity(), material: floor_material, transparent: false, plane: true, depth: 1.0e9 })
+        gold_model := graph.world(gold).matrix.clone()
+        copper_model := graph.world(copper).matrix.clone()
+        steel_model := graph.world(steel).matrix.clone()
+        items.push(Item { model: gold_model.clone(), material: gold_material, transparent: false, plane: false, depth: depth_of(&gold_model, camera.position) })
+        items.push(Item { model: copper_model.clone(), material: copper_material, transparent: false, plane: false, depth: depth_of(&copper_model, camera.position) })
+        items.push(Item { model: steel_model.clone(), material: steel_material, transparent: false, plane: false, depth: depth_of(&steel_model, camera.position) })
+        if show_glass {
+            items.push(Item { model: pane_left.clone(), material: glass_material, transparent: true, plane: false, depth: depth_of(&pane_left, camera.position) })
+            items.push(Item { model: pane_right.clone(), material: glass_material, transparent: true, plane: false, depth: depth_of(&pane_right, camera.position) })
+        }
+        sort_back_to_front(&mut items)
+
+        // --- the render graph is rebuilt from what this frame contains ---
+        mut has_opaque := false
+        for item in items { if !item.transparent { has_opaque = true } }
+        mut use_shadows := show_shadows && has_opaque
+        mut schedule := render.Graph::new()
+        if use_shadows { _ := schedule.add_pass("shadow", ["shadow_map"], []) }
+        _ := schedule.add_pass("sky", ["color"], [])
+        if use_shadows {
+            _ := schedule.add_pass("opaque", ["color"], ["color", "shadow_map"])
+        } else {
+            _ := schedule.add_pass("opaque", ["color"], ["color"])
+        }
+        mut has_transparent := false
+        for item in items { if item.transparent { has_transparent = true } }
+        if has_transparent { _ := schedule.add_pass("transparent", ["color"], ["color"]) }
+        order := schedule.build()
+        if !order.ok {
+            _ := sys.eprint("storm: " + order.error)
+            running = false
+            continue
+        }
+
         begun := vulkan.begin(opened.window)
         if !begun.ok {
             if frame.resized { continue }
@@ -173,17 +267,50 @@ fn main() -> i32 {
             continue
         }
 
-        // Execute the graph in its computed order.
+        // The shadow pass has to be recorded before the main render pass opens.
+        if use_shadows {
+            _ := vulkan.shadow_begin(opened.window, &sky.light_vp, &sky.light_dir_c)
+            for index in 0..items.len {
+                if !items[index].transparent {
+                    if items[index].plane {
+                        _ := vulkan.shadow_mesh(opened.window, &plane_vertices, &items[index].model.m)
+                    } else {
+                        _ := vulkan.shadow_mesh(opened.window, &cube_vertices, &items[index].model.m)
+                    }
+                }
+            }
+            _ := vulkan.shadow_end(opened.window)
+        }
+
+        opened_pass := vulkan.begin_pass(opened.window)
+        if !opened_pass.ok {
+            _ := sys.eprint("storm: " + opened_pass.error)
+            running = false
+            continue
+        }
+
         for pass_index in 0..order.names.len {
             name := order.names[pass_index].clone()
-            if name == "sky" {
+            if name == "shadow" {
+                // recorded before the main pass opened
+            } else if name == "sky" {
                 _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun_push, &zenith_push, &horizon_push)
-            } else if name == "ground" {
-                draw_mesh(opened.window, &plane_vertices, view_projection, core.identity(), floor_material, camera.position)
-            } else if name == "meshes" {
-                draw_mesh(opened.window, &cube_vertices, view_projection, graph.world(gold).matrix, gold_material, camera.position)
-                draw_mesh(opened.window, &cube_vertices, view_projection, graph.world(copper).matrix, copper_material, camera.position)
-                draw_mesh(opened.window, &cube_vertices, view_projection, graph.world(steel).matrix, steel_material, camera.position)
+            } else if name == "opaque" {
+                for index in 0..items.len {
+                    if !items[index].transparent {
+                        if items[index].plane {
+                            draw_item(opened.window, &plane_vertices, items[index], view_projection, camera.position, &sky, use_shadows)
+                        } else {
+                            draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, use_shadows)
+                        }
+                    }
+                }
+            } else if name == "transparent" {
+                for index in 0..items.len {
+                    if items[index].transparent {
+                        draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, false)
+                    }
+                }
             }
         }
 
@@ -208,14 +335,4 @@ fn main() -> i32 {
     vulkan.close(opened.window)
     print("storm frames=" + frames.str())
     0
-}
-
-fn draw_mesh(window: vulkan.Window, vertices: &[]f32, view_projection: core.Mat4,
-    model: core.Mat4, material: Material, camera_position: core.Vec3) {
-    mvp := core.multiply(view_projection, model)
-    mut color: [f32; 4] = [material.base.r, material.base.g, material.base.b, material.base.a]
-    mut params: [f32; 4] = [material.metallic, material.roughness, material.emissive, 0.0]
-    mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
-    drawn := vulkan.mesh(window, vertices, &mvp.m, &model.m, &color, &params, &eye)
-    if !drawn.ok { _ := sys.eprint("storm: " + drawn.error) }
 }

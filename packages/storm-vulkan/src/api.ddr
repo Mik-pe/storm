@@ -72,6 +72,16 @@ pub struct Api {
     CmdPipelineBarrier: extern fn(ptr, u32, u32, u32, u32, ptr, u32, ptr, u32, ptr),
     GetImageSubresourceLayout: extern fn(ptr, ptr, ptr, ptr),
     QueueSubmit: extern fn(ptr, u32, ptr, ptr) -> i32,
+    CreateSampler: extern fn(ptr, ptr, ptr, ptr) -> i32,
+    DestroySampler: extern fn(ptr, ptr, ptr),
+    CreateDescriptorSetLayout: extern fn(ptr, ptr, ptr, ptr) -> i32,
+    DestroyDescriptorSetLayout: extern fn(ptr, ptr, ptr),
+    CreateDescriptorPool: extern fn(ptr, ptr, ptr, ptr) -> i32,
+    DestroyDescriptorPool: extern fn(ptr, ptr, ptr),
+    AllocateDescriptorSets: extern fn(ptr, ptr, ptr) -> i32,
+    UpdateDescriptorSets: extern fn(ptr, u32, ptr, u32, ptr),
+    CmdBindDescriptorSets: extern fn(ptr, u32, ptr, u32, u32, ptr, u32, ptr),
+
 }
 
 // Resolve every entry point up front; a missing symbol fails the whole load.
@@ -275,5 +285,33 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkQueueSubmit"))
     if symbol == ptr(0) { return false }
     api.QueueSubmit = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCreateSampler"))
+    if symbol == ptr(0) { return false }
+    api.CreateSampler = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkDestroySampler"))
+    if symbol == ptr(0) { return false }
+    api.DestroySampler = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCreateDescriptorSetLayout"))
+    if symbol == ptr(0) { return false }
+    api.CreateDescriptorSetLayout = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkDestroyDescriptorSetLayout"))
+    if symbol == ptr(0) { return false }
+    api.DestroyDescriptorSetLayout = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCreateDescriptorPool"))
+    if symbol == ptr(0) { return false }
+    api.CreateDescriptorPool = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkDestroyDescriptorPool"))
+    if symbol == ptr(0) { return false }
+    api.DestroyDescriptorPool = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkAllocateDescriptorSets"))
+    if symbol == ptr(0) { return false }
+    api.AllocateDescriptorSets = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkUpdateDescriptorSets"))
+    if symbol == ptr(0) { return false }
+    api.UpdateDescriptorSets = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCmdBindDescriptorSets"))
+    if symbol == ptr(0) { return false }
+    api.CmdBindDescriptorSets = ffi_fn(symbol)
+
     true
 }

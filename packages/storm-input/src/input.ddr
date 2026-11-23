@@ -16,6 +16,7 @@ pub const KEY_Q: i32 = 20
 pub const KEY_S: i32 = 22
 pub const KEY_W: i32 = 26
 pub const KEY_C: i32 = 6
+pub const KEY_T: i32 = 23
 pub const KEY_R: i32 = 21
 pub const KEY_F: i32 = 9
 pub const KEY_G: i32 = 10

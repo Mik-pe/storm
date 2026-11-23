@@ -103,15 +103,20 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     if !module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader)) { return false }
     r.fragmentShader = fragment_shader
 
-    // mvp(64) + model(64) + base_color(16) + params(16) + camera_pos(16) = 176 bytes.
+    // mvp(64) model(64) base_color(16) params(16) camera(16) sun(16)
+    // sun_color(16) zenith(16) horizon(16) = 240 bytes. The light matrix lives
+    // in a uniform buffer because 320 exceeds what this pipeline layout accepts.
     mut push_range: vk.PushConstantRange = zeroed()
     push_range.stageFlags = 17
     push_range.offset = 0
-    push_range.size = 176
+    push_range.size = 240
     mut layout: vk.PipelineLayoutCreateInfo = zeroed()
     layout.sType = 30
     layout.pushConstantRangeCount = 1
     layout.pPushConstantRanges = addr(&push_range)
+    // Set 0: shadow map sampler + light uniform buffer.
+    layout.setLayoutCount = 1
+    layout.pSetLayouts = addr(&r.shadowSetLayout)
     if r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout)) != 0 { return false }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
@@ -195,7 +200,17 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     info.layout = r.pipelineLayout
     info.renderPass = r.renderPass
     info.basePipelineIndex = -1
-    r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline)) == 0
+    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline)) != 0 { return false }
+    // Same pipeline with alpha blending for the transparent pass.
+    blend_attachment.blendEnable = 1
+    blend_attachment.srcColorBlendFactor = 6    // SRC_ALPHA
+    blend_attachment.dstColorBlendFactor = 7    // ONE_MINUS_SRC_ALPHA
+    blend_attachment.colorBlendOp = 0
+    blend_attachment.srcAlphaBlendFactor = 1    // ONE
+    blend_attachment.dstAlphaBlendFactor = 7
+    blend_attachment.alphaBlendOp = 0
+    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.transparentPipeline)) != 0 { return false }
+    true
 }
 
 // Sky: fullscreen triangle, no vertex buffer, depth test but no depth write.
@@ -218,6 +233,9 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> bool {
     layout.sType = 30
     layout.pushConstantRangeCount = 1
     layout.pPushConstantRanges = addr(&push_range)
+    // Set 0: shadow map sampler + light uniform buffer.
+    layout.setLayoutCount = 1
+    layout.pSetLayouts = addr(&r.shadowSetLayout)
     if r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout)) != 0 { return false }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()

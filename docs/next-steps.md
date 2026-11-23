@@ -3,6 +3,11 @@
 Milstolpe 2 är klar: scenträd, rendergraph, himmel och PBR-material, med
 interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Det här är nästa ordning.
 
+## 0. Klart: skuggor, transparens och dynamisk graf
+
+Skuggpass med MAX-blending i en R32-bild, transparent pass med egen blend-pipeline
+och en rendergraph som byggs om varje frame utifrån scenens innehåll. Kvar nedan.
+
 ## 1. Djupbuffert
 
 Ett C-prov på samma Intel-GPU skapade både en D16- och en D32-bild.
