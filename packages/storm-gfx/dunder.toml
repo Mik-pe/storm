@@ -1,0 +1,4 @@
+name = "storm-gfx"
+version = "0.0.1"
+root = "src/gfx.ddr"
+test_root = "tests/suite.ddr"

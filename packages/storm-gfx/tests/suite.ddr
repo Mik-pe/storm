@@ -1,0 +1,106 @@
+import ..src.gfx as gfx
+
+@test fn cube_emits_twelve_triangles_with_face_normals() {
+    mut v: []f32 = []
+    gfx.cube(&mut v, 0.5)
+    assert(v.len == 36 * 6)
+    // First triangle is the +Z face: normal (0,0,1) and z = +0.5.
+    assert(v[3] == 0.0 && v[4] == 0.0 && v[5] == 1.0)
+    assert(v[2] == 0.5)
+    // Count normals pointing along each axis.
+    mut plus_z := 0
+    mut minus_y := 0
+    mut i := 0
+    while i < v.len {
+        if v[i + 5] == 1.0 { plus_z = plus_z + 1 }
+        if v[i + 4] == -1.0 { minus_y = minus_y + 1 }
+        i = i + 6
+    }
+    assert(plus_z == 6 && minus_y == 6)
+}
+
+@test fn plane_is_two_upward_triangles() {
+    mut v: []f32 = []
+    gfx.plane(&mut v, 4.0)
+    assert(v.len == 6 * 6)
+    assert(v[4] == 1.0 && v[10] == 1.0 && v[16] == 1.0)
+}
+
+@test fn triangle_and_vertex_helpers_agree() {
+    mut v: []f32 = []
+    gfx.vertex(&mut v, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0)
+    assert(v.len == 6 && v[0] == 1.0 && v[5] == 0.0)
+    v.clear()
+    gfx.triangle(&mut v, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    assert(v.len == 18)
+}
+
+// Every triangle's winding agrees with its normal: (B - A) x (C - A) points
+// along the normal the triangle carries. That is what makes back-face culling
+// correct on any backend: a face is front-facing exactly when its normal
+// faces the viewer, so both backends cull with the same front-face rule
+// (counter-clockwise on screen, where y points down).
+@test fn every_triangle_is_wound_consistently_with_its_normal() {
+    mut v: []f32 = []
+    gfx.cube(&mut v, 1.0)
+    gfx.plane(&mut v, 2.0)
+    mut i := 0
+    while i < v.len {
+        ax := v[i]
+        ay := v[i + 1]
+        az := v[i + 2]
+        ux := v[i + 6] - ax
+        uy := v[i + 7] - ay
+        uz := v[i + 8] - az
+        wx := v[i + 12] - ax
+        wy := v[i + 13] - ay
+        wz := v[i + 14] - az
+        cx := uy * wz - uz * wy
+        cy := uz * wx - ux * wz
+        cz := ux * wy - uy * wx
+        agreement := cx * v[i + 3] + cy * v[i + 4] + cz * v[i + 5]
+        assert(agreement > 0.0)
+        i = i + 18
+    }
+}
+
+@test fn input_reports_held_and_newly_pressed_keys_separately() {
+    mut input := gfx.Input::empty()
+    assert(!input.down(.W) && !input.hit(.W))
+    input.held = u32(1).shl(i32(gfx.Key.W)).bit_or(u32(1).shl(i32(gfx.Key.Shift)))
+    input.pressed = u32(1).shl(i32(gfx.Key.W))
+    assert(input.down(.W) && input.down(.Shift) && !input.down(.S))
+    // Shift is held but was not pressed this frame.
+    assert(input.hit(.W) && !input.hit(.Shift))
+    assert(!input.button_down(gfx.MOUSE_RIGHT))
+    input.mouse.buttons = gfx.MOUSE_RIGHT
+    input.mouse.pressed = gfx.MOUSE_RIGHT
+    assert(input.button_down(gfx.MOUSE_RIGHT) && !input.button_down(gfx.MOUSE_LEFT))
+    assert(input.button_hit(gfx.MOUSE_RIGHT))
+}
+
+// Each key is its own bit: two keys sharing one would make one press look
+// like two, and a release like both.
+@test fn every_key_has_its_own_bit_inside_a_u32() {
+    mut seen: u32 = 0
+    mut keys := 0
+    for bit in 0..32 {
+        for key in [gfx.Key.A, gfx.Key.C, gfx.Key.D, gfx.Key.Down, gfx.Key.E, gfx.Key.Escape, gfx.Key.F,
+            gfx.Key.G, gfx.Key.Left, gfx.Key.Q, gfx.Key.R, gfx.Key.Right, gfx.Key.S, gfx.Key.Space,
+            gfx.Key.T, gfx.Key.Up, gfx.Key.W, gfx.Key.Ctrl, gfx.Key.Shift] {
+            if i32(key) == bit {
+                assert(seen.bit_and(u32(1).shl(bit)) == 0)
+                seen = seen.bit_or(u32(1).shl(bit))
+                keys = keys + 1
+            }
+        }
+    }
+    assert(keys == 19)
+}
+
+@test fn sky_carries_the_light_every_pass_shares() {
+    sky := gfx.sky_params([1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0],
+        [13.0, 14.0, 15.0, 16.0], [17.0; 16], [18.0, 19.0, 20.0, 21.0])
+    assert(sky.sun[3] == 4.0 && sky.sun_color[0] == 5.0 && sky.zenith[2] == 11.0 && sky.horizon[3] == 16.0)
+    assert(sky.light_vp[15] == 17.0 && sky.light_dir_c[1] == 19.0)
+}

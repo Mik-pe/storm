@@ -1,0 +1,211 @@
+// storm-gfx: the contract between Storm and a graphics backend.
+//
+// A backend is anything that implements `Backend`. On Linux that is the
+// Vulkan package, on macOS the Metal package. The application is written
+// against this module alone, so it names no backend, and a new backend is
+// added by implementing the trait rather than by changing the app.
+//
+// Nothing here needs an API's name to be described: no image views, no
+// render-pass objects, no pipelines. Those are how a backend keeps the
+// promises made here, and they stay inside it.
+//
+// Coordinates are the same everywhere: Storm's clip space has x to the
+// right, y DOWN and z in [0, 1]; screen and UI coordinates are points from
+// the top-left corner. A backend whose platform differs absorbs the
+// difference (docs/design.md, principle 7).
+
+pub enum Key {
+    A = 0, C = 1, D = 2, Down = 3, E = 4, Escape = 5, F = 6, G = 7, Left = 8,
+    Q = 9, R = 10, Right = 11, S = 12, Space = 13, T = 14, Up = 15, W = 16,
+    Ctrl = 17, Shift = 18,
+}
+
+// Mouse buttons, as bits of `Mouse.buttons`.
+pub const MOUSE_LEFT: u32 = 1
+pub const MOUSE_RIGHT: u32 = 2
+pub const MOUSE_MIDDLE: u32 = 4
+
+// The pointer this frame, in points from the window's top-left corner.
+// `dx`/`dy` are the motion since the last frame, positive right and down.
+pub struct Mouse {
+    x: f32,
+    y: f32,
+    dx: f32,
+    dy: f32,
+    buttons: u32,
+    pressed: u32,
+    scroll: f32,
+}
+
+// One frame of input: keys held, keys that went down this frame, the pointer.
+pub struct Input {
+    held: u32,
+    pressed: u32,
+    mouse: Mouse,
+}
+
+fn key_bit(key: Key) -> u32 { u32(1).shl(i32(key)) }
+
+impl Input {
+    pub fn empty() -> Input {
+        Input { held: 0, pressed: 0, mouse: Mouse { x: 0.0, y: 0.0, dx: 0.0, dy: 0.0, buttons: 0, pressed: 0, scroll: 0.0 } }
+    }
+
+    // The key is held down.
+    pub fn down(&self, key: Key) -> bool { self.held.bit_and(key_bit(key)) != 0 }
+
+    // The key went down during this frame.
+    pub fn hit(&self, key: Key) -> bool { self.pressed.bit_and(key_bit(key)) != 0 }
+
+    pub fn button_down(&self, button: u32) -> bool { self.mouse.buttons.bit_and(button) != 0 }
+
+    pub fn button_hit(&self, button: u32) -> bool { self.mouse.pressed.bit_and(button) != 0 }
+}
+
+// What the window looks like at the start of a frame. `width` and `height`
+// are in points; `scale` is device pixels per point (2 on a Retina display).
+pub struct Frame {
+    closed: bool,
+    width: i32,
+    height: i32,
+    scale: f32,
+    time: f64,
+    resized: bool,
+    input: Input,
+}
+
+// Lighting parameters shared by the sky pass and the mesh pass. Keeping one
+// struct means the dome you see and the light the surfaces receive cannot
+// drift apart.
+pub struct Sky {
+    sun: [f32; 4], // xyz towards the sun, w = intensity
+    sun_color: [f32; 4],
+    zenith: [f32; 4],
+    horizon: [f32; 4],
+    light_vp: [f32; 16], // sun view-projection for the shadow lookup
+    light_dir_c: [f32; 4], // xyz towards the sun, w = dot(light_origin, dir)
+}
+
+pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon: [f32; 4],
+    light_vp: [f32; 16], light_dir_c: [f32; 4]) -> Sky {
+    Sky {
+        sun: sun.clone(), sun_color: sun_color.clone(), zenith: zenith.clone(), horizon: horizon.clone(),
+        light_vp: light_vp.clone(), light_dir_c: light_dir_c.clone()
+    }
+}
+
+// How a surface is written: opaque surfaces rely on the depth buffer, a
+// blended one is drawn after them, far to near, and tests depth without
+// writing it.
+pub enum Surface { Opaque = 0, Blended = 1 }
+
+// The backend contract. A frame is recorded like this:
+//
+//   poll()                          input, size, and whether to stop
+//   begin()                         take a frame to record into
+//   shadow_begin / shadow_mesh / shadow_end
+//   begin_pass
+//   sky, mesh, overlay, ui_draw
+//   end()                           show it
+//
+// Every operation that can fail says why in its error.
+pub trait Backend {
+    // Drain the platform's events and describe the window as it is now.
+    fn poll(&mut self) -> Frame
+
+    fn device_name(&self) -> string
+
+    // Print each frame's steps to stdout; for when a frame hangs.
+    fn set_trace(&mut self, enabled: bool)
+
+    // Render the next frame offscreen and keep its pixels for save_capture.
+    fn capture_next(&mut self) -> Result<(), string>
+
+    // Write the captured frame as a binary PPM at native resolution.
+    fn save_capture(&mut self, path: string) -> Result<(), string>
+
+    // Render and convolve the environment maps from the sky. Call once after
+    // open, before the first frame; the maps are static, so the sky must be
+    // the same value every frame passes to sky().
+    fn build_environment(&mut self, sky: &Sky) -> Result<(), string>
+
+    // Take a frame. Cursors are per frame: everything is appended anew.
+    fn begin(&mut self) -> Result<(), string>
+
+    // The sun's shadow map, in its own pass, recorded before begin_pass.
+    fn shadow_begin(&mut self, sky: &Sky) -> Result<(), string>
+    fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string>
+    fn shadow_end(&mut self) -> Result<(), string>
+
+    // Open the main pass: colour and depth, cleared.
+    fn begin_pass(&mut self) -> Result<(), string>
+
+    fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string>
+
+    // Vertices are interleaved [x, y, z, nx, ny, nz] f32 (24 bytes); the
+    // helpers below are the only way Storm makes them.
+    fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
+        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, surface: Surface) -> Result<(), string>
+
+    // Paint the cinematic overlay over the finished scene.
+    fn overlay(&mut self, time: f32, amount: f32) -> Result<(), string>
+
+    // Upload the packed glyph coverage atlas: one byte per pixel.
+    fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string>
+
+    // Draw UI quads in points. Rectangles set uv.x to -1.
+    fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string>
+
+    // Show the frame; returns how many frames have been shown.
+    fn end(&mut self) -> Result<i64, string>
+
+    fn close(move self)
+}
+
+// ---- Geometry: interleaved [x, y, z, nx, ny, nz] ----
+
+pub fn vertex(vertices: &mut []f32, x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32) {
+    vertices.push(x)
+    vertices.push(y)
+    vertices.push(z)
+    vertices.push(nx)
+    vertices.push(ny)
+    vertices.push(nz)
+}
+
+pub fn triangle(vertices: &mut []f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32,
+    cx: f32, cy: f32, cz: f32, nx: f32, ny: f32, nz: f32) {
+    vertex(&mut vertices, ax, ay, az, nx, ny, nz)
+    vertex(&mut vertices, bx, by, bz, nx, ny, nz)
+    vertex(&mut vertices, cx, cy, cz, nx, ny, nz)
+}
+
+// Axis-aligned box centred at the origin. 36 vertices, flat normals per face.
+pub fn cube(vertices: &mut []f32, half: f32) {
+    // +Z
+    triangle(&mut vertices, -half, -half, half, half, -half, half, half, half, half, 0.0, 0.0, 1.0)
+    triangle(&mut vertices, -half, -half, half, half, half, half, -half, half, half, 0.0, 0.0, 1.0)
+    // -Z
+    triangle(&mut vertices, half, -half, -half, -half, -half, -half, -half, half, -half, 0.0, 0.0, -1.0)
+    triangle(&mut vertices, half, -half, -half, -half, half, -half, half, half, -half, 0.0, 0.0, -1.0)
+    // -X
+    triangle(&mut vertices, -half, -half, -half, -half, -half, half, -half, half, half, -1.0, 0.0, 0.0)
+    triangle(&mut vertices, -half, -half, -half, -half, half, half, -half, half, -half, -1.0, 0.0, 0.0)
+    // +X
+    triangle(&mut vertices, half, -half, half, half, -half, -half, half, half, -half, 1.0, 0.0, 0.0)
+    triangle(&mut vertices, half, -half, half, half, half, -half, half, half, half, 1.0, 0.0, 0.0)
+    // +Y
+    triangle(&mut vertices, -half, half, half, half, half, half, half, half, -half, 0.0, 1.0, 0.0)
+    triangle(&mut vertices, -half, half, half, half, half, -half, -half, half, -half, 0.0, 1.0, 0.0)
+    // -Y
+    triangle(&mut vertices, -half, -half, -half, half, -half, -half, half, -half, half, 0.0, -1.0, 0.0)
+    triangle(&mut vertices, -half, -half, -half, half, -half, half, -half, -half, half, 0.0, -1.0, 0.0)
+}
+
+// Ground plane in XZ at y = 0, normal +Y.
+pub fn plane(vertices: &mut []f32, extent: f32) {
+    // Wound so the upward face survives back-face culling under the mesh
+    // pipeline's counter-clockwise front face.
+    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, extent, extent, 0.0, -extent, 0.0, 1.0, 0.0)
+    triangle(&mut vertices, -extent, 0.0, -extent, -extent, 0.0, extent, extent, 0.0, extent, 0.0, 1.0, 0.0)
+}
