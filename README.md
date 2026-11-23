@@ -193,8 +193,10 @@ Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
 - **Bara `main`.** Inga pull requester, inga reviews, ingen CI. Arbete
   commit:as på `main` och pushas direkt när `check`, testerna och
   byggbudgeten är gröna.
-- **Från första principer.** Varje steg börjar med vad som är fakta och vad
-  som är val; det enklaste som uppfyller fakta vinner.
+- **Från första principer — tänk stort, inte bandaid.** Skilj fakta från
+  val och designa grunden så att problemet upphör att finnas, i stället
+  för att lappa ovanpå en grund som inte bär. Om en fix kräver att man
+  "kommer ihåg" något är grunden fel.
 - **Framtidssäker arkitektur.** Multiplatform är planerat (Metal på macOS,
   andra fönsterytor). App och paket talar bara med gränssnitt, aldrig med
   en backend: `storm-vulkan` är dagens enda backend, och inget utanför
