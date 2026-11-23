@@ -2,8 +2,10 @@
 // backend. It picks one for the platform and hands the application a way to
 // open it; from there everything goes through the gfx.Backend contract.
 import .app
+import metal
 import vulkan
 
 fn main() -> i32 {
-    app.run<vulkan.Window>(vulkan.open)
+    if target_is("macos") { return app.run<metal.Renderer>(metal.open) }
+    return app.run<vulkan.Window>(vulkan.open)
 }

@@ -282,10 +282,9 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     shot := capture_path()
     mut capturing := false
     if shot.len > 0 {
-        match window.capture_next() {
-            .Ok => { capturing = true },
-            .Err(message) => return stop(window, message),
-        }
+        captured := window.capture_next()
+        if captured.is_err() { return stop(move window, captured.unwrap_err()) }
+        capturing = true
     }
 
     // --- geometry ---
@@ -358,10 +357,8 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     sky := gfx.sky_params(sun_push, sun_color_push, zenith_push, horizon_push, light_vp.m, light_dir_c)
     // The environment maps are built once from the same sky the dome draws,
     // so reflections and irradiance agree with what is visible.
-    match window.build_environment(&sky) {
-        .Ok => {},
-        .Err(message) => return stop(window, message),
-    }
+    environment := window.build_environment(&sky)
+    if environment.is_err() { return stop(move window, environment.unwrap_err()) }
 
     mut show_glass := !flag("--no-glass")
     mut show_shadows := !flag("--no-shadows")
@@ -377,22 +374,20 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     // --- editor text: --font <path>, else the platform's own monospace font ---
     font := text.find_font(value_argument("--font"))
     if font.len == 0 {
-        return stop(window, "no monospace font found; pass --font <path>")
+        return stop(move window, "no monospace font found; pass --font <path>")
     }
     face := text.load_face(font, ui.RASTER_SIZE)
     if !face.ok {
-        return stop(window, "font missing: " + face.error)
+        return stop(move window, "font missing: " + face.error)
     }
     mut atlas := text.Atlas::new(1024, 1024)
     if !atlas.add_text(&face, GLYPHS) {
-        return stop(window, "no glyphs packed")
+        return stop(move window, "no glyphs packed")
     }
     pixels := atlas.copy_pixels()
     atlas_size := atlas.size()
-    match window.ui_atlas(pixels, atlas_size, atlas_size) {
-        .Ok => {},
-        .Err(message) => return stop(window, message),
-    }
+    uploaded := window.ui_atlas(pixels, atlas_size, atlas_size)
+    if uploaded.is_err() { return stop(move window, uploaded.unwrap_err()) }
     mut canvas := ui.Canvas::new()
     mut fps: f32 = 0.0
 
@@ -468,16 +463,14 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         _ := schedule.add_pass(.Ui, "ui", ["color"], ["color"])
         plan := schedule.compile()
         if !plan.ok {
-            return stop(window, plan.error)
+            return stop(move window, plan.error)
         }
 
-        match window.begin() {
-            .Ok => {},
-            .Err(message) => {
-                // A frame lost to a resize is skipped, not an error.
-                if frame.resized { continue }
-                return stop(window, message)
-            },
+        begun := window.begin()
+        if begun.is_err() {
+            // A frame lost to a resize is skipped, not an error.
+            if frame.resized { continue }
+            return stop(move window, begun.unwrap_err())
         }
 
         // --- execute: the schedule is the only thing that decides what runs ---
@@ -551,10 +544,13 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
                 }
             }
         }
-        match window.end() {
-            .Ok(count) => { frames = count },
-            .Err(message) => { _ := sys.eprint("storm: " + message); running = false; continue },
+        ended := window.end()
+        if ended.is_err() {
+            _ := sys.eprint("storm: " + ended.unwrap_err())
+            running = false
+            continue
         }
+        frames = ended.unwrap()
         if capturing {
             match window.save_capture(shot) {
                 .Ok => { _ := sys.eprint("storm: wrote " + shot) },
