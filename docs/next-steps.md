@@ -17,6 +17,16 @@ Textatlasen samplar: UI-vertexen matar `vec4(x, y, u, v)` på location 0 och
 Felen och deras orsaker står i [dogfood.md](dogfood.md#uppföljning-editor-ui-overlay-effekter-och-textatlasen)
 (fynd 34–36).
 
+Texten är också *läsbar*: UI- och overlay-pipelinerna blandar nu med riktig
+alpha-over (`SRC_ALPHA` / `ONE_MINUS_SRC_ALPHA`, fynd 40), och atlasen rastreras
+vid `ui.RASTER_SIZE = 22` px och samplas med `VK_FILTER_LINEAR` i stället för
+att rastreras vid 30 px och nedskalas till 17–20 px med närmaste granne (fynd
+41). `main.ddr` ritar med namngivna skalor (`TITLE_SCALE` 1.2, `STATUS_SCALE`
+0.9, `HEADER_SCALE`/`BODY_SCALE` 0.8), alla nära rastreringsstorleken; höger-
+justerad text (`text_width` med samma skala) och chipset (`text_width + 26`,
+etikett på `+13`) behöver ingen justering. Se
+[dogfood.md](dogfood.md#uppföljning-textåtergivningen).
+
 ## 0c. Klart: djupbufferten
 
 Renderpasset har två bilagor: färg och en `D32_SFLOAT`-djupbild (OPTIMAL,

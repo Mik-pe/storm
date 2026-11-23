@@ -12,10 +12,28 @@ import .state as state
 // use uv.x < 0 and are filled with the vertex colour; glyphs sample the
 // coverage atlas uploaded from the text package.
 
-const FORMAT_R8_UNORM: u32 = 100   // R32_SFLOAT: the format proven to sample here
+// The coverage bytes are widened to f32 before upload, so the atlas is a
+// single-channel float image (finding 30: linear-tiled R8 did not sample here).
+pub const FORMAT_R32_SFLOAT: u32 = 100
 const LAYOUT_SHADER_READ: u32 = 5
 const FLOATS_PER_VERTEX: u32 = 8
 const ATLAS_SIZE: u32 = 1024
+
+// The alpha-over blend shared with the overlay pipeline: colour and alpha are
+// weighted by the source alpha, so a quad with zero coverage leaves the target
+// untouched. The earlier 5/6 pair was ONE_MINUS_DST_COLOR / SRC_ALPHA, which
+// inverts whatever is underneath and painted a box around every glyph (dogfood
+// finding 40).
+pub unsafe fn blend_alpha_over(attachment: &mut vk2.PipelineColorBlendAttachmentState) {
+    attachment.blendEnable = 1
+    attachment.srcColorBlendFactor = vk2.BLEND_SRC_ALPHA
+    attachment.dstColorBlendFactor = vk2.BLEND_ONE_MINUS_SRC_ALPHA
+    attachment.colorBlendOp = vk2.BLEND_OP_ADD
+    attachment.srcAlphaBlendFactor = vk2.BLEND_ONE
+    attachment.dstAlphaBlendFactor = vk2.BLEND_ONE_MINUS_SRC_ALPHA
+    attachment.alphaBlendOp = vk2.BLEND_OP_ADD
+    attachment.colorWriteMask = 15
+}
 
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
@@ -27,7 +45,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     mut words: [u32; 22] = [0; 22]
     words[0] = 14
     words[5] = 1
-    words[6] = FORMAT_R8_UNORM
+    words[6] = FORMAT_R32_SFLOAT
     words[7] = ATLAS_SIZE
     words[8] = ATLAS_SIZE
     words[9] = 1
@@ -48,7 +66,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     view_info.sType = 15
     view_info.image = image
     view_info.viewType = 1
-    view_info.format = FORMAT_R8_UNORM
+    view_info.format = FORMAT_R32_SFLOAT
     view_info.subresourceRange.aspectMask = 1
     view_info.subresourceRange.levelCount = 1
     view_info.subresourceRange.layerCount = 1
@@ -57,12 +75,14 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
 
     mut sampler_info: vk2.SamplerCreateInfo = zeroed()
     sampler_info.sType = 31
-    sampler_info.magFilter = 0
-    sampler_info.minFilter = 0
-    sampler_info.mipmapMode = 1
-    sampler_info.addressModeU = 2
-    sampler_info.addressModeV = 2
-    sampler_info.addressModeW = 2
+    // Glyph quads are drawn at roughly 0.8 of the rasterized size, so the
+    // lookup lands between texels: LINEAR filtering keeps the strokes smooth.
+    sampler_info.magFilter = vk2.FILTER_LINEAR
+    sampler_info.minFilter = vk2.FILTER_LINEAR
+    sampler_info.mipmapMode = 0        // VK_SAMPLER_MIPMAP_MODE_NEAREST (single level)
+    sampler_info.addressModeU = 2      // CLAMP_TO_EDGE
+    sampler_info.addressModeV = 2      // CLAMP_TO_EDGE
+    sampler_info.addressModeW = 2      // CLAMP_TO_EDGE
     sampler_info.maxLod = 1.0
     mut sampler := ptr(0)
     if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
@@ -191,14 +211,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     depth.sType = 25
 
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.blendEnable = 1
-    blend_attachment.srcColorBlendFactor = 5
-    blend_attachment.dstColorBlendFactor = 6
-    blend_attachment.colorBlendOp = 0
-    blend_attachment.srcAlphaBlendFactor = 5
-    blend_attachment.dstAlphaBlendFactor = 6
-    blend_attachment.alphaBlendOp = 0
-    blend_attachment.colorWriteMask = 15
+    blend_alpha_over(&mut blend_attachment)
 
     mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26
@@ -358,8 +371,11 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
 pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32) -> bool {
     if width <= 0 || height <= 0 || width > i32(ATLAS_SIZE) || height > i32(ATLAS_SIZE) { return false }
     pixels_count := u64(width) * u64(height)
-    bytes := pixels_count * 4
     if pixels_count == 0 { return false }
+    // The copy below widens exactly one coverage byte per atlas pixel; a slice
+    // of another length would read past it or leave the tail of the image stale.
+    if u64(pixels.len) != pixels_count { return false }
+    bytes := pixels_count * 4
 
     mut stage_info: vk2.BufferCreateInfo = zeroed()
     stage_info.sType = 12
