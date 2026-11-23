@@ -1,6 +1,7 @@
 # Storm — design från första principer
 
-> Status: **utkast för diskussion**. Skrivet efter djupbufferten (nov 2026).
+> Status: **levande dokument** — steg 1–4 av §5 är delvis genomförda (se
+> statusraderna). Skrivet efter djupbufferten (nov 2026).
 > Anledning: blend-buggen. Två pipelines blenda med
 > `ONE_MINUS_DST_COLOR`/`SRC_ALPHA` (5/6) istället för
 > `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev heltalen för hand
@@ -34,25 +35,37 @@
    tangent/mus — det är de två platserna Metal skulle tvinga fram en
    omskrivning av, och där nästa arkitektursteg börjar.
 
-## 1. Nuläge (mätt i koden)
+## 1. Nuläge (mätt i koden, 2026-11-23 efter steg 2 och 4)
 
-- **133 råa enum-heltal** i pipeline-state: `ui.ddr` 45, `pipeline.ddr` 29,
-  `shadow.ddr` 26, `post.ddr` 12, `device.ddr` 10, övriga 11.
-- **2 namngivna konstanter** i hela storm-vulkan (`IMAGE_TILING_*`).
-- `state.ddr` `Renderer`: ~60 fält, 163 rader. Varje modul tar `&mut Renderer`.
-- 17 hardkodade stage-nummer; `stage_name()` översätter dem till text.
-- Beroenden: `storm-input -> storm-vulkan` (bara för typen `Window`),
-  `storm-text -> dunder-skrift` via `../../../dunder-skrift` (syskonkatalog
-  utan versionslås).
+- **3 råa enum-heltal** i pipeline-state (var 135 före steg 2): `shadow.ddr`
+  262–265, vertexlayouten `inputRate: 0` och `format: 106` ×2. De väntar på
+  next-steps 3a (ett gemensamt vertexformat som ägs på ett ställe). Fyra
+  `sType: 18` skrivs också för hand (`ui.ddr` ×2, `post.ddr` ×2) — de är
+  strukturtagningsnummer, inte enums, men samma sorts tal-utan-vittne.
+- **Enums är ett eget lager:** `enums.ddr` har 33 `pub enum` och 41
+  konverterare; 227 anrop i paketet går genom `enums.*(.Variant)`. Endast två
+  namngivna `u32`-konstanter lever kvar i `layout.ddr`
+  (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
+- `state.ddr` `Renderer`: **134 fält, 144 rader** (var ~60 när steget
+  skrevs; IBL, djup, skuggor, post, UI och headless har alla lagt till sina).
+  Varje modul tar `&mut Renderer`.
+- **17 stage-nummer** plus reset (`r.stage = 0`), 18 tilldelningar; sedan
+  steg 4 binder dessutom varje Vulkan-anrop sin `VkResult`-kod, så
+  `stage_name` säger *vad Vulkan svarade*, inte bara var.
+- Beroenden: `storm-input -> storm-vulkan` (för `Window` och
+  tangent/mus-råläge), `storm-text -> dunder-skrift` via `../../../dunder-skrift`
+  (syskonkatalog utan versionslås).
+- `main.ddr` gör 36 anrop direkt mot `vulkan.` (26 distinkta funktioner).
 
-Lagren i storm-vulkan (4 000 rader exkl. genererad SPIR-V):
+Lagren i storm-vulkan (5 075 rader exkl. genererad SPIR-V):
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 126 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr` | 1 000 |
-| App-nära kod | `ui.ddr`, `post.ddr` | 627 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 894 |
+| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 144 |
+| Enums vid gränsen | `enums.ddr` | 342 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 1 674 |
+| App-nära kod | `ui.ddr`, `post.ddr` | 640 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 945 |
 
 ## 2. Målstruktur
 
@@ -164,7 +177,7 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 1. **Skapa `storm-vk`** med enums + bindings, låt storm-gfx (fortfarande
    namngiven storm-vulkan) importera det. Ingen beteendeändring.
    *Status: enums-modulen finns (`packages/storm-vulkan/src/enums.ddr`,
-   29 enums, 137 anrop); paketdelningen är kvar.*
+   33 enums, 41 konverterare, 227 anrop); paketdelningen är kvar.*
 2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
    *Status: klart 2026-11-23. 135 → **3** råa enum-heltal i structfält —
@@ -178,11 +191,12 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
    (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
    `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
-   `Renderer`-structen (cirka 60 fält) är kvar.*
+   `Renderer`-structen (134 fält) är kvar.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: första halvan klar 2026-11-23 — `VkResult` är en Dunder-enum med
-   Khronos-värden, 81 Vulkan-anrop binder sin kod och `stage_name` säger vad
-   Vulkan svarade (fynd 57: OUT_OF_DATE hade ett värde som inte finns);
+   Khronos-värden, 92 Vulkan-anrop binder och testar sin kod (81 när fynd 57
+   skrevs; `ibl.ddr` tillkom) och `stage_name` säger vad Vulkan svarade
+   (fynd 57: OUT_OF_DATE hade ett värde som inte finns);
    `r.stage = N` som stegmarkör är kvar.*
 5. **Dra `ui.ddr`/`post.ddr` ur backend.** `storm-input` slipper Vulkan.
 6. **Lås skrift-dependency.** README/design: uppdatera.
@@ -198,8 +212,9 @@ renderaren konsumerar. Render-grafen (`storm-render`) äger passordningen och
 `TransformField`) eftersom en `Option` inte kan bära `&mut` (E3099). En
 laddad glTF-modell är en `Mesh`-komponent med egen vertexström — renderaren
 var redan generisk (`mesh(window, vertices, …)`), det var bara main som höll
-på Cube/Plane. Kvar här: texturer (tangent 3), 3D-markering av vald nod,
-ECS-queries (join över pooler) så system inte loopar entiteter för hand.
+på Cube/Plane. Kvar här: texturer (avsnitt 3) och 3D-markering av vald nod.
+ECS-frågorna (`join2`/`join3` med dense-index) är klara: `drawables` och
+orbsystemen använder dem.
 
 
 ## 6. Öppna frågor
@@ -216,5 +231,6 @@ ECS-queries (join över pooler) så system inte loopar entiteter för hand.
   mekanisk och kan delas per modul.
 - **Exempel.** `examples/` och README-kodsnuttar ska visa det nya API:et.
 - **Subagent-orthogonalitet.** Arbetspaketen ska kunna köras parallellt i
-  varsin worktree utan att krocka. IBL- och text-arbetet (pågår just nu)
-  bör vara inmergeat innan Steg 2 påbörjas.
+  varsin worktree utan att krocka. IBL- och text-arbetet är inmergeat och
+  steg 2 är klart; nästa parallella arbete (textur 3a/3b/3c) rör samma
+  vertexlayout och pipeline-beskrivning och bör därför köras seriellt.

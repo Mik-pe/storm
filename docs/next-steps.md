@@ -199,7 +199,7 @@ parsern läser riktiga filer (fynd 59); ECS:t har frågor (`join2`/`join3` med
 dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
 `AGENTS.md` (bygget under 20 s, mätt med `tools/build-time.ddr`; bara main,
 inga PR:s eller CI). Kvar: texturer (avsnitt 3), resten av glTF (nodes/
-materials/scenes nedan), typade Vulkan-handles (design.md steg 1), sub-5-s-
+materials/scenes nedan), `storm-vk` som eget paket (design.md steg 1), sub-5-s-
 bygge (fynd 56: det är Dunders kompilator).
 
 ## 4. glTF-scener

@@ -10,11 +10,13 @@ double-buffrade frames, inte readback och inte en SDL-blit. Ovanpå det sitter e
 scengraf i ECS, en deklarativ rendergraph, en fullskärmshimmel och
 metallic-roughness-PBR med en riktad sol och miljöbelysning: metaller speglar
 en miljökub byggd ur samma himmel, prefiltrad per roughness, med en
-CPU-genererad BRDF-LUT.
+CPU-genererad BRDF-LUT. Editorn och spelloopen rider på samma scen: åtta
+emissiva orber att plocka, en panel som listar ECS:et och skriver material och
+transform, och `--glb` som laddar en riktig modell in i scenen.
 
 ## Förutsättningar
 
-- `dunder` byggd från [9f9b341](https://github.com/Mik-pe/dunder/commit/9f9b341) eller senare på `main`.
+- `dunder` 0.10.0 eller senare på `main` (verifierat mot `f778ef5`).
 - `dunder-skrift` som **syskonkatalog**: `~/Work/dunder-skrift`. Samma
   konvention som `dunder-hundmat` använder. `packages/storm-text` har ett
   `path`-beroende till den.
@@ -22,7 +24,8 @@ CPU-genererad BRDF-LUT.
   för fönstret. `glslang` behövs bara när shaders ändras.
 
 ```sh
-dunder run                      # Vulkan-fönster med tre roterande kuber
+dunder run                      # Vulkan-fönstret: scen, editor, orber
+dunder run -- --capture a.ppm   # en bildruta utan tangentbord (fungerar låst)
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
 dunder test                     # rotpaketets tester
 ```
@@ -36,13 +39,14 @@ för sig.
 | Paket | Ansvar | Beroenden |
 | --- | --- | --- |
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
-| [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove. | — |
+| [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push-constant-MVP, frame-sync, skuggor, djupbuffert och IBL-kartor (miljökub, irradians, BRDF-LUT). | `core` |
-| [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. | — |
-| [`packages/storm-scene`](packages/storm-scene) | Scengraf: `LocalTransform`, förälderlänkar i ECS och djup-först-propagering till `WorldTransform`. | `core`, `ecs` |
-| [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
-| [`packages/storm-input`](packages/storm-input) | SDL-scancodes, tangentbords- och musläge samt en fly-kamera (WASD/QE, piltangenter, höger musknapp). | `core`, `vulkan` |
+| [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Läser riktiga Khronos-filer. | — |
+| [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och djup-först-propagering till `WorldTransform`. `drawables()` är vad renderaren konsumerar. | `core`, `ecs` |
+| [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
+| [`packages/storm-input`](packages/storm-input) | SDL-scancodes, tangentbords- och musläge samt en fly-kamera (WASD, Space/Ctrl, höger musknapp). | `core`, `vulkan` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads. | `dunder-skrift` |
+| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i skärmpixlar, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
 
 `packages/storm-vulkan` är medvetet fritt från ECS- och speltillstånd: det tar
 en `[]f32`-vertexström och en `[f32; 16]`-matris. Motorn kopplar ihop dem.
@@ -57,15 +61,18 @@ begun := vulkan.begin(opened.window)
 if begun.ok {
     _ := vulkan.begin_pass(opened.window)
     _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun, &zenith, &horizon)
-    _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base_color, &params, &camera, &lighting)
+    _ := vulkan.mesh(opened.window, &vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky)
     _ := vulkan.end(opened.window)
 }
 ```
 
-`mesh` tar sex `f32` per vertex för position och normal. Meshpasset använder
-240 byte push constants för två matriser, material, kamera och himmelsljus.
-Ljusmatrisen ligger i en uniform buffer. Storm kontrollerar enhetens
-`maxPushConstantsSize` när den väljer GPU.
+`mesh` tar sex `f32` per vertex för position och normal, en `Sky` (solen,
+himlen och ljusmatrisen, samlade i `vulkan.sky_params`) och kamerans position.
+Meshpasset använder 240 byte push constants för två matriser, material, kamera
+och himmelsljus; ljusmatrisen ligger i en uniform buffer. Storm kontrollerar
+enhetens `maxPushConstantsSize` när den väljer GPU. Skuggor har ett eget
+renderpass: `shadow_begin` → `shadow_mesh` per objekt → `shadow_end`, före
+`begin_pass`.
 
 Miljöbelysningen byggs en gång efter `open()` med
 `vulkan.build_environment(window, &sun, &zenith, &horizon)`: en
@@ -82,19 +89,25 @@ världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en
 skärmgradient. Solen är en disk plus glöd kring `sun_direction.xyz`, skalad med
 `sun_direction.w`.
 
-Rendergrafen i `src/main.ddr` deklarerar passen och deras resurser:
+Rendergrafen i `src/main.ddr` deklarerar passen varje frame utifrån vad scenen
+faktiskt innehåller — en avstängd pass är inte i schemat alls, inte en no-op:
 
 ```dunder
-mut graph := render.Graph::new()
-_ := graph.add_pass("sky", ["color"], [])
-_ := graph.add_pass("ground", ["color", "depth"], ["color"])
-_ := graph.add_pass("meshes", ["color", "depth"], ["color", "depth"])
-order := graph.build()
+mut schedule := render.Graph::new()
+_ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], [])
+_ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
+_ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
+_ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"])
+plan := schedule.compile()
+for step in 0..plan.steps.len { kind := plan.steps[step].kind }
 ```
 
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
-är tie-breaker och cykler kan inte uppstå. `build()` returnerar namnordningen som
-frame-loopen exekverar.
+är tie-breaker och cykler kan inte uppstå. `compile()` validerar (okänt namn,
+dubblerad pass) och returnerar `Compiled.steps` i den ordning frame-loopen
+exekverar. Grafen äger ordning och existens; den vet inte vad Vulkan är. Det är
+`main.ddr` som mappar varje `PassKind` till GPU-arbete och öppnar huvudpasset
+lat vid första passet som inte har ett eget (skuggpasset har sitt eget).
 
 Huvudpasset har en djupbilaga (`D32_SFLOAT`), så opaque geometri behöver ingen
 sortering: mesh-pipelinen testar och skriver djup, glaspipelinen testar men
@@ -102,23 +115,32 @@ skriver inte. Bara glaset sorteras bakifrån-fram, för blendingens skull.
 
 ### Styrning
 
-- **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint
-- **T** – slå av/på glaspane­rna (transparenspasset försvinner ur grafen)
+- **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint,
+  **höger musknapp + mus** – titta
+- **Vänsterklick** i editorpanelen – välj en nod i trädet; slidrarna skriver
+  material och transform rakt in i ECS:et, `+ cube`/`delete` lägger till och tar bort
+- **Gå in i en orb** – plocka den (entiteten förstörs, HUD:en räknar)
+- **T** – slå av/på glaspanelerna (transparenspasset försvinner ur grafen)
 - **G** – slå av/på skuggor (skuggpasset försvinner ur grafen)
 - **E** – slå av/på filmeffekterna (överlägget)
-- **Höger musknapp + mus** – titta
-- **R** – återställ kameran, **Esc** – avsluta
+- **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
 - `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
-  Även denna väg öppnar SDL och behöver tillgång till en grafisk session.
-- `--trace` – skriv varje inlämningssteg
+  Fungerar på en låst session; det är så QA görs utan tangentbord.
+- `--eye x y z` – starta kameran på en given punkt (så `--capture` bevisar
+  orbplockningen: kameran startar inne i en orb)
+- `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på marken)
+- `--no-glass`, `--no-shadows`, `--effects` – startläget för de tre toggles
+- `--trace` – skriv varje inläsningssteg
 
 ### Fönsterprov och headless-körning
 
-Prova fönstret i en aktiv grafisk session. Under en tidigare körning på en
-låst Wayland-session presenterade Storm fem bildrutor och väntade sedan på
-nästa swapchain-bild. Över SSH kan du köra `dunder run --example scene`
-för ECS och textlayout eller använda `--capture fil.ppm` för bildåterläsning.
+Fönstret kräver en **olåst** Wayland-session (`hyprctl monitors` visar
+`solitaryBlockedBy`). Under en låst session kan Storm inte hämta nästa
+swapchain-bild efter de första frame-rutorna — det är kompositorn, inte
+renderaren (dogfood fynd 16 och 20). Då är `--capture fil.ppm --frames 1` vägen
+till en bild; över SSH fungerar den om SDL når Wayland-sessionen.
+`dunder run --example scene` kör ECS och textlayout helt utan fönster.
 
 Krav: `vulkan-icd-loader`, `vulkan-intel` (eller annan ICD), `sdl2`.
 Shaderkompilering kräver `glslang`; de färdiga SPIR-V-orden är incheckade.
@@ -140,7 +162,26 @@ gammalt handtag matchar aldrig en återvunnen plats. `Pool<T>` kräver
 `T: Storable`, vilket structar och enum utan resursfält uppfyller.
 
 System är vanliga funktioner som tar poolerna de behöver — ingen reflektion
-och ingen typradering. Se `docs/dogfood.md` om varför.
+och ingen typradering. En fråga över flera pooler är data, inte en closure
+(Dunder har inga capturing closures): `join2`/`join3` returnerar `[]Match` med
+varje pools dense-index, och systemloopen läser genom `at(index)`/`at_mut(index)`
+utan sparse-uppslag:
+
+```dunder
+// Read inside the query; write through the graph afterwards. `names()` returns
+// a &Pool<T>, so bind it to a local (dogfood fynd 60); `set_*` needs &mut Graph.
+mut doomed: []ecs.Entity = []
+names := graph.names()
+locals := graph.locals()
+for row in ecs.join2(names, locals) {
+    if is_orb(names.at(row.a).value) { doomed.push(row.entity) }
+}
+for entity in doomed { _ := graph.destroy(entity) }
+```
+
+En fråga är en ögonblicksbild: en komponent som tas bort flyttar sista raden
+(swap-remove), så system som tar bort samlar entiteter i loopen och tar bort
+efter den. Se `docs/dogfood.md` "Om ECS-frågorna".
 
 ## glTF
 
@@ -153,8 +194,11 @@ stream := gltf.interleave(&mesh)   // [x,y,z,nx,ny,nz] per vertex
 
 Laddaren läser `.glb` (JSON- och BIN-chunk) och `.gltf`. Accessorns
 `componentType` hanteras för `5126` (float) samt de normaliserade
-heltalstyperna. Saknade index genereras som `0..n`. Material, skins och
-animation är nästa steg.
+heltalstyperna. Saknade index genereras som `0..n`; finns index expanderar
+`interleave` genom dem (Khronos `Box.glb` är fixtur och läses: 24 verticer, 36
+index). `Mesh.uvs` läses från `TEXCOORD_0` men ännu inte interleavad — det är
+textursteget (next-steps 3a). Material, texturer, noder och animation är nästa
+steg. I appen laddar `--glb fil.glb` en modell in i scenen som en `Mesh`-komponent.
 
 ## Text
 

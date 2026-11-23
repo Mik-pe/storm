@@ -34,7 +34,7 @@ Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mi
 
 **22. Structretur med pekarfält.** Ett separat program returnerade två structar med två pekare vardera och olika storlekar. Båda behöll sina ursprungliga fält efter det andra anropet på ARM64/macOS och x86-64/Linux. Storm använder utparametrar vid bildallokering. Bildartefakten från det tidigare försöket har ingen fastställd koppling till Dunders returkonvention.
 
-**23. Djupbilder via Storms bindning.** Skuggkoden märkte värdet 1 som optimal tiling. Vulkan definierar 0 som optimal och 1 som linjär. Storm bygger nu en typad `ImageCreateInfo` och använder namngivna konstanter för skuggbilden och återläsningen. Ett Dunder-program skickade Storms struct till ett C-prov som kontrollerade fälten och anropade Intel-drivrutinen. Både D16 och D32 på 512 × 512 skapades med `VK_SUCCESS`. Vilka fält de historiska misslyckade anropen skickade är okänt. En riktig djupbilaga i Storms renderpass är fortfarande motorarbete.
+**23. Djupbilder via Storms bindning.** Skuggkoden märkte värdet 1 som optimal tiling. Vulkan definierar 0 som optimal och 1 som linjär. Storm bygger nu en typad `ImageCreateInfo` och använder namngivna konstanter för skuggbilden och återläsningen. Ett Dunder-program skickade Storms struct till ett C-prov som kontrollerade fälten och anropade Intel-drivrutinen. Både D16 och D32 på 512 × 512 skapades med `VK_SUCCESS`. Vilka fält de historiska misslyckade anropen skickade är okänt. Djupbilagan i renderpasset är klar (0c, fynd 37).
 
 **24. Skrivning via beräknad adress.** Ett prov skrev det mittersta ordet i en justerad, ägd array via basadressen plus fyra byte och kontrollerade båda grannvärdena. Provet passerade på ARM64/macOS och x86-64/Linux, även med den ursprungliga Linuxkompilatorn. Orsaken till den tidigare kraschen vid skrivning i GPU-mappat minne är öppen.
 
@@ -55,7 +55,7 @@ Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mi
 `[VkPipelineShaderStageCreateInfo; 2]` eller
 `[VkVertexInputAttributeDescription; 3]` till Vulkan kraschade
 `vkCreateGraphicsPipelines`. Samma lösning som tidigare: lägg struktarna i en
-`@c_layout`-struct med namngivna fält och skicka adressen till den. Fynd 9 gäller
+`@c_layout`-struct med namngivna fält och skicka adressen till den. Fynd 1 och 17 gäller
 alltså fortfarande.
 
 **27. `store_u32`/`store_f32` med framräknad pekaradress.** Skrivningar till
@@ -375,7 +375,10 @@ SPIR-V-ord per rad) kostar 0,7 s; fyra ord per rad sparade **ingenting**
 stdlib-modulerna (`std.sys`, `std.dl`) kompileras med. Ett paket som bara
 importeras utan att main når dess funktioner kostar 0,08 s — kompilatorn är
 lat på **funktionsnivå**, så en paketvis mätning underskattar. Profilen:
-Vulkan-lagret ~1,5 s, text ~0,7, stdlib ~0,5, resten ~2. *Rekommendation:*
+Vulkan-lagret ~1,5 s, text ~0,7, stdlib ~0,5, resten ~2. *Uppföljning
+senare samma dag:* med editorn, IBL och glTF-laddaren är `main.ddr` 747 rader
+och bygget 6,6 s (`tools/build-time.ddr`, 20 s-budgeten i `AGENTS.md`); det är
+fortfarande kompilatorn, inte koden, som sätter talet. *Rekommendation:*
 inkrementell cache per paket skulle göra hela frågan ointressant (5 → <1 s
 vid oförändrade paket). Ordning på paket i `dunder.toml` spelar ingen roll.
 
@@ -505,7 +508,7 @@ objects 13) utan tangentbord.
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
 underpaketen kördes var för sig och alla 75 tester passerade (mätning
-2026-11-23, `c2243e1`: 4 rot + 71 paket, 6 644 ms byggtid): de 60 som
+2026-11-23, `93c20bc`: 4 rot + 71 paket, 6 663 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
@@ -544,16 +547,14 @@ oförändrade binären (`/tmp/storm-ibl-base.ppm`). Guld (metallic 1, roughness
 skuggsida 207,190,184 → 140,123,119. Stål (0.28): framsida 222,218,186 →
 167,161,127, sida 212,211,200 → 138,138,126. Golvet (metallic 0.05) flyttade
 sig fyra nivåer (207,210,217 → 203,205,211), himlen och UI:t noll.
-`magick compare -metric AE -fuzz 2%` gav 85 417 pixlar (2.5 % av bilden),
-exakt 99 301; skillnaderna ligger på kubernas sidor, glaset och golvents
-ambient, inte på himlen eller UI:t. `--no-glass` och `--no-shadows` kördes
+`magick compare -metric AE -fuzz 2%` gav cirka 2,5 % av bilden; skillnaderna
+ligger på kubernas sidor, glaset och golvents ambient, inte på himlen eller
+UI:t. (Två olika AE-tal stod här från samma commit, 85 417 och 99 301; ingen av
+dem går att återuppmäta eftersom capture-filerna var i `/tmp`. Andelen är det
+som var beviset, inte talet.) `--no-glass` och `--no-shadows` kördes
 utan krasch. Prefilterkedjan kontrollerades med `textureLod` på fasta nivåer:
 nivå 0 har struktur (framsida 100, ovansida 107, golv 146), nivå 4 är
 konvergerad (121,139,162 överallt).
-På ARM64/macOS passerade alla 83 grupper i Dunders självhostsvit, inklusive
-Hundmat och Skrift. Linuxkörningen gav 79 av 81 godkända grupper. DWARF-provet
-passerade separat med LLVM:s `dwarfdump`. HTTP-klientens prov för avbrott under
-TLS-handskakning föll även med den ursprungliga Linuxkompilatorn.
 Miljöbelysningen verifierades på samma sätt med en capture före (`55a22ab`,
 `/tmp/storm-ibl-base.ppm`) och efter sammanslagningen på `main`
 (`/tmp/storm-captures/ibl-merged.ppm`), båda med `--frames 1` på
@@ -564,3 +565,11 @@ migrerats till `enums.ddr` (30 structfält, 9 lokala konstanter och
 `LAYOUT_TRANSFER_DST` 3 → 7, fynd 51) är scenen pixelidentisk mot IBL:s
 egen capture: enda skillnaden (AE 115 068) ligger i topprad, paneler och
 underkant, alltså textåtergivningen som inte ingick i IBL:s bas.
+
+**Om att räkna tester.** `dunder test` i `packages/storm-text` rapporterar
+7 passed fast paketets `tests/suite.ddr` har 5 `@test`, och `storm-ui` 9 fast
+den har 7: de två extra är samma två `@test fn` i Skrifts egen källmodul
+(`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
+`path`-beroendet. Storms egna är därför **75** = 4 rot + 71 paket. En mätning
+som summerar `passed`-raden över paketen får 79 och räknar Skrifts tester som
+Storms; räkna `@test` i `tests/suite.ddr` i stället.
