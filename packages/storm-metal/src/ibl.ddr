@@ -23,12 +23,16 @@ import .device as device
 import .enums as enums
 import .objc as objc
 import .pass as pass
+import .records as records
 
 pub const CUBE_SIZE: u64 = 64
 pub const CUBE_MIPS: u64 = 6
 pub const IRRADIANCE_SIZE: u64 = 16
 pub const LUT_SIZE: u64 = 64
 const LUT_SAMPLES: i32 = 512
+
+// The convolve passes clear to black; every pixel is written anyway.
+fn black() -> records.ClearColor { records.ClearColor { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 } }
 
 // The environment's three maps, the pipelines that made them and their
 // sampler: owned, and released together.
@@ -117,7 +121,7 @@ unsafe fn render(rt: &objc.Runtime, gpu: ptr, queue: ptr, library: ptr, sky: &gf
 // when there is one.
 unsafe fn draw_face(rt: &objc.Runtime, commands: ptr, pipeline: &device.Pipeline, depth_state: ptr, target: ptr, level: u64, slice: u64,
     size: u64, push: &[f32; 24], source: ptr, sampler: ptr) {
-    descriptor := pass.descriptor(rt, target, level, slice, ptr(0), false)
+    descriptor := pass.descriptor(rt, target, level, slice, ptr(0), false, black())
     encoder := pass.begin(rt, commands, descriptor, size, size, depth_state)
     if encoder == ptr(0) { return }
     pass.bind(rt, encoder, pipeline)

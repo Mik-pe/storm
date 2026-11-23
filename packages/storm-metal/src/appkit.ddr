@@ -318,9 +318,14 @@ unsafe fn create(rt: &objc.Runtime, title: string, width: i32, height: i32, devi
     objc.tell(rt, application, cstr("finishLaunching"))
 
     // --- the view: a class born here, whose event methods are Dunder functions ---
-    view_class := objc.subclass(rt, objc.class(rt, cstr("NSView")), cstr("StormView"))?
-    add_view_methods(rt, view_class)?
-    objc.register_class(rt, view_class)
+    // It is born once a process: a window opened after another was closed
+    // uses the same class, since Objective-C refuses a second of one name.
+    mut view_class := objc.class(rt, cstr("StormView"))
+    if view_class == ptr(0) {
+        view_class = objc.subclass(rt, objc.class(rt, cstr("NSView")), cstr("StormView"))?
+        add_view_methods(rt, view_class)?
+        objc.register_class(rt, view_class)
+    }
 
     // --- what can fail is behind us; from here on every object is made, none is refused ---
     view := objc.make(rt, view_class)
@@ -448,3 +453,45 @@ pub unsafe fn readable_drawables(rt: &objc.Runtime, window: &Window, readable: b
     value := u64(if readable { 0 } else { 1 })
     objc.tell_number(rt, window.layer, cstr("setFramebufferOnly:"), value)
 }
+
+// ---- the self-test's hands (tools/selftest.ddr) ----
+//
+// Events made to order and handed to the window, the way the system's would
+// be, and sizing and closing without a mouse on the title bar. They exist so
+// that the input path can be exercised unattended; the application never
+// sends one. They go to the window (sendEvent:), not the application, which
+// drops key events for a window that is not key.
+
+// A key event for the view: `kind` is an NSEventType (KeyDown, KeyUp or
+// FlagsChanged), `code` a macOS virtual key code, `flags` the modifier flags.
+pub unsafe fn synthesize_key(rt: &objc.Runtime, window: &Window, kind: u64, code: u16, flags: u64) {
+    // keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:
+    // The last two words spill to the stack, where Apple's ABI packs a BOOL
+    // and an unsigned short at +0 and +2: exact widths, or the code is read
+    // from the wrong bytes (it was, before this was written down).
+    make: extern fn(ptr, ptr, u64, records.Point, u64, f64, i64, ptr, ptr, ptr, u8, u16) -> ptr = ffi_fn(rt.msgSend)
+    event := make(objc.class(rt, cstr("NSEvent")), objc.selector(rt, cstr("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:")),
+        kind, records.Point { x: 0.0, y: 0.0 }, flags, 0.0, i64(objc.number(rt, window.window, cstr("windowNumber"))),
+        ptr(0), objc.nsstring(rt, "x"), objc.nsstring(rt, "x"), 0, code)
+    objc.tell_to(rt, window.window, cstr("sendEvent:"), event)
+}
+
+// A left or right mouse event (`kind`: a mouseDown or mouseUp type) at
+// `x`, `y` from the view's top-left corner, in points.
+pub unsafe fn synthesize_click(rt: &objc.Runtime, window: &Window, kind: u64, x: f64, y: f64) {
+    // mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:
+    make: extern fn(ptr, ptr, u64, records.Point, u64, f64, i64, ptr, i64, i64, f32) -> ptr = ffi_fn(rt.msgSend)
+    area := objc.bounds(rt, window.view, cstr("bounds"))
+    event := make(objc.class(rt, cstr("NSEvent")), objc.selector(rt, cstr("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:")),
+        kind, records.Point { x: x, y: area.size.height - y }, 0, 0.0, i64(objc.number(rt, window.window, cstr("windowNumber"))), ptr(0), 1, 1, 1.0)
+    objc.tell_to(rt, window.window, cstr("sendEvent:"), event)
+}
+
+// Size the window's content, in points, as a drag of its corner would.
+pub unsafe fn resize(rt: &objc.Runtime, window: &Window, width: i32, height: i32) {
+    // setContentSize:
+    objc.tell_size(rt, window.window, cstr("setContentSize:"), records.size(f64(width), f64(height)))
+}
+
+// Close the window as its close button would.
+pub unsafe fn request_close(rt: &objc.Runtime, window: &Window) { objc.tell(rt, window.window, cstr("close")) }

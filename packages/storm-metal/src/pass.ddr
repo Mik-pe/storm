@@ -12,11 +12,11 @@ import .records as records
 
 // A descriptor for a render pass with one colour attachment, or none when
 // `colour` is null: a mip `level` and a `slice` (for a cube face) of
-// `colour`, cleared. And a depth attachment, or none when `depth` is null,
-// cleared to the far plane and kept after the pass only when `keep_depth`
-// says so (the shadow map is read by the next pass; the main depth buffer
-// is read by no one).
-pub unsafe fn descriptor(rt: &objc.Runtime, colour: ptr, level: u64, slice: u64, depth: ptr, keep_depth: bool) -> ptr {
+// `colour`, cleared to `clear`. And a depth attachment, or none when `depth`
+// is null, cleared to the far plane and kept after the pass only when
+// `keep_depth` says so (the shadow map is read by the next pass; the main
+// depth buffer is read by no one).
+pub unsafe fn descriptor(rt: &objc.Runtime, colour: ptr, level: u64, slice: u64, depth: ptr, keep_depth: bool, clear: records.ClearColor) -> ptr {
     pass := objc.send(rt, objc.class(rt, cstr("MTLRenderPassDescriptor")), cstr("renderPassDescriptor"))
     if colour != ptr(0) {
         target := device.attachment(rt, objc.send(rt, pass, cstr("colorAttachments")), 0)
@@ -25,6 +25,9 @@ pub unsafe fn descriptor(rt: &objc.Runtime, colour: ptr, level: u64, slice: u64,
         objc.tell_number(rt, target, cstr("setSlice:"), slice)
         objc.tell_number(rt, target, cstr("setLoadAction:"), enums.load_action(.Clear))
         objc.tell_number(rt, target, cstr("setStoreAction:"), enums.store_action(.Store))
+        // setClearColor: takes MTLClearColor, four doubles, by value.
+        set_clear: extern fn(ptr, ptr, records.ClearColor) = ffi_fn(rt.msgSend)
+        set_clear(target, objc.selector(rt, cstr("setClearColor:")), clear)
     }
     if depth != ptr(0) {
         target := objc.send(rt, pass, cstr("depthAttachment"))

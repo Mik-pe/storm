@@ -45,6 +45,11 @@ const SHADOW_FLOATS: i32 = 32 // light_vp(16) model(16)
 
 const NOT_A_MESH: string = "a mesh is not [x,y,z,nx,ny,nz] triples, or the frame's vertex space ran out"
 
+// What a frame is cleared to before anything is drawn: red, as on the Vulkan
+// backend, so a frame that draws nothing is unmistakable. (A const cannot
+// hold a struct, dogfood finding 43.)
+fn clear() -> records.ClearColor { records.ClearColor { red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0 } }
+
 // Which pass is open, if any. A draw meant for one pass is refused in the
 // other instead of landing in it.
 pub enum Pass { None = 0, Shadow = 1, Main = 2 }
@@ -269,7 +274,7 @@ unsafe fn append_vertices(r: &mut Renderer, vertices: &[]f32) -> bool {
 }
 
 unsafe fn record_shadow(r: &mut Renderer, sky: &gfx.Sky) -> Result<(), string> {
-    descriptor := pass.descriptor(&r.objc, ptr(0), 0, 0, r.shadow_map, true)
+    descriptor := pass.descriptor(&r.objc, ptr(0), 0, 0, r.shadow_map, true, clear())
     open_pass(&mut r, descriptor, SHADOW_SIZE, SHADOW_SIZE, r.depth_write, .Shadow)?
     pass.bind(&r.objc, r.encoder, &r.shadow_pipeline)
     r.light_vp = sky.light_vp.clone()
@@ -298,7 +303,7 @@ unsafe fn record_end_pass(r: &mut Renderer) -> Result<(), string> {
 }
 
 unsafe fn record_main(r: &mut Renderer) -> Result<(), string> {
-    descriptor := pass.descriptor(&r.objc, r.target, 0, 0, r.depth_buffer, false)
+    descriptor := pass.descriptor(&r.objc, r.target, 0, 0, r.depth_buffer, false, clear())
     open_pass(&mut r, descriptor, r.width, r.height, r.depth_off, .Main)?
     trace(r, "main pass")
     .Ok
@@ -468,6 +473,14 @@ unsafe fn destroy(r: &mut Renderer) {
     if r.device != ptr(0) {
         r.objc.release(r.device)
         r.device = ptr(0)
+    }
+}
+
+impl Renderer {
+    // Size the window's content, in points; the next frame is drawn at the
+    // new size. For tools: an application has the user for this.
+    pub fn resize(&mut self, width: i32, height: i32) {
+        unsafe { appkit.resize(&self.objc, &self.window, width, height) }
     }
 }
 

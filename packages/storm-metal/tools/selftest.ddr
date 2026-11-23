@@ -1,0 +1,443 @@
+// Storm's Metal backend, exercised as a person would by hand, but unattended:
+// a window opens, frames are drawn and read back, keys and clicks are fed to
+// the view, the window is resized and closed, and every step is checked
+// against what was read from a frame or reported by the input.
+//
+// Run it on a Mac that is logged in (it needs the window server):
+//
+//   dunder run tools/selftest.ddr        (from packages/storm-metal)
+//
+// Exit status is 0 when every check passed and 1 otherwise. The captures it
+// reads go to build/, which is not kept. Each check is chosen so that one
+// specific mistake fails it: a frame the wrong way up, a depth test that is
+// not there, the wrong front face, a resize that is not followed, a key that
+// never arrives.
+
+capability unsafe, filesystem, stdio
+
+import gfx
+import std.dl as dl
+import std.sys as sys
+import ..src.appkit as appkit
+import ..src.metal as metal
+import ..src.objc as objc
+
+const CAPTURE: string = "build/selftest.ppm"
+const WIDTH: i32 = 640
+const HEIGHT: i32 = 400
+
+// ---- reporting ----
+
+fn expect(failures: &mut i32, what: string, ok: bool) {
+    if ok {
+        print("ok    " + what)
+    } else {
+        failures = failures + 1
+        print("FAIL  " + what)
+    }
+}
+
+// A call that must succeed, and must say why if it did not.
+fn worked(failures: &mut i32, what: string, move result: Result<(), string>) {
+    if result.is_ok() {
+        print("ok    " + what)
+    } else {
+        failures = failures + 1
+        print("FAIL  " + what + ": " + result.unwrap_err())
+    }
+}
+
+// A call the contract refuses, and the reason it gives.
+fn refused(failures: &mut i32, what: string, move result: Result<(), string>) {
+    if result.is_err() {
+        print("ok    " + what + " was refused: " + result.unwrap_err())
+    } else {
+        failures = failures + 1
+        print("FAIL  " + what + " was accepted")
+    }
+}
+
+// ---- a frame read back from its capture ----
+
+// "P6", a newline, "width height", a newline, "255", a newline, then RGB
+// rows from the top.
+struct Image {
+    ok: bool,
+    error: string,
+    width: i32,
+    height: i32,
+    pixels: []u8,
+}
+
+struct Reader { bytes: []u8, at: i32 }
+
+impl Reader {
+    fn skip_line(&mut self) {
+        while self.at < self.bytes.len && self.bytes[self.at] != 10 { self.at = self.at + 1 }
+        self.at = self.at + 1
+    }
+
+    fn number(&mut self) -> i32 {
+        while self.at < self.bytes.len && (self.bytes[self.at] == 32 || self.bytes[self.at] == 10) { self.at = self.at + 1 }
+        mut value := 0
+        while self.at < self.bytes.len && self.bytes[self.at] >= 48 && self.bytes[self.at] <= 57 {
+            value = value * 10 + i32(self.bytes[self.at]) - 48
+            self.at = self.at + 1
+        }
+        value
+    }
+}
+
+fn unreadable(move why: string) -> Image {
+    Image { ok: false, error: why, width: 0, height: 0, pixels: [] }
+}
+
+fn read_capture() -> Image {
+    data := sys.read_u8(CAPTURE)
+    if !data.ok { return unreadable("the capture could not be read back") }
+    mut reader := Reader { bytes: data.value, at: 0 }
+    if reader.bytes.len < 14 || reader.bytes[0] != 80 || reader.bytes[1] != 54 { return unreadable("not a binary PPM") }
+    reader.skip_line() // "P6"
+    width := reader.number() // the numbers skip whatever separates them
+    height := reader.number()
+    if width < 1 || height < 1 { return unreadable("no size in the header") }
+    reader.skip_line() // the rest of the size line
+    reader.skip_line() // "255", the greatest value a sample can have
+    mut pixels: []u8 = []
+    pixels.reserve(width * height * 3)
+    while reader.at < reader.bytes.len {
+        pixels.push(reader.bytes[reader.at])
+        reader.at = reader.at + 1
+    }
+    if pixels.len != width * height * 3 { return unreadable("the pixel data is " + pixels.len.str() + " bytes, not " + (width * height * 3).str()) }
+    Image { ok: true, error: "", width: width, height: height, pixels: pixels }
+}
+
+// The pixel under a point of the window: `x`, `y` in points from the top-left
+// corner, on a display of `scale` pixels a point.
+fn under(image: &Image, x: f32, y: f32, scale: f32) -> [i32; 3] {
+    px := i32(x * scale)
+    py := i32(y * scale)
+    if px < 0 || py < 0 || px >= image.width || py >= image.height { return [-1, -1, -1] }
+    at := (py * image.width + px) * 3
+    [i32(image.pixels[at]), i32(image.pixels[at + 1]), i32(image.pixels[at + 2])]
+}
+
+fn rgb(c: [i32; 3]) -> string { c[0].str() + "," + c[1].str() + "," + c[2].str() }
+
+fn is_red(c: [i32; 3]) -> bool { c[0] > 200 && c[1] < 80 && c[2] < 80 }
+fn is_green(c: [i32; 3]) -> bool { c[1] > 200 && c[0] < 80 && c[2] < 80 }
+fn is_blue(c: [i32; 3]) -> bool { c[2] > 200 && c[0] < 80 && c[1] < 80 }
+
+// ---- what the probes draw ----
+
+// A solid UI rectangle: six vertices of [x, y, u, v, r, g, b, a], with a
+// negative u to say it has no texture.
+fn rectangle(out: &mut []f32, x: f32, y: f32, w: f32, h: f32, r: f32, g: f32, b: f32) {
+    for corner in 0..6 {
+        right := corner == 1 || corner == 2 || corner == 4
+        low := corner == 2 || corner == 4 || corner == 5
+        out.push(if right { x + w } else { x })
+        out.push(if low { y + h } else { y })
+        out.push(-1.0)
+        out.push(-1.0)
+        out.push(r)
+        out.push(g)
+        out.push(b)
+        out.push(1.0)
+    }
+}
+
+// A blue square in the top-left corner and a green one in the bottom-right,
+// 80 points on a side.
+fn corners(width: f32, height: f32) -> []f32 {
+    mut out: []f32 = []
+    rectangle(&mut out, 0.0, 0.0, 80.0, 80.0, 0.0, 0.0, 1.0)
+    rectangle(&mut out, width - 80.0, height - 80.0, 80.0, 80.0, 0.0, 1.0, 0.0)
+    out
+}
+
+fn identity() -> [f32; 16] {
+    [1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0]
+}
+
+// The ground plane, turned to face the viewer (`towards`) or to face away,
+// and moved half a unit in front of the camera. With an identity matrix clip
+// space is the world: x right, y down, z into the screen, so the viewer is at
+// z = -infinity looking along +z. The plane lies in XZ with its normal +Y; a
+// quarter turn about X stands it up.
+fn plane_facing(towards: bool) -> [f32; 16] {
+    // A quarter turn about X is [[1, 0, 0], [0, 0, -s], [0, s, 0]] with s = +1
+    // or -1: column-major, that is column 1 = (0, 0, s) and column 2 = (0, -s, 0).
+    // It turns the plane's normal (0, 1, 0) into column 1, (0, 0, s): towards
+    // the viewer is -z, so s = -1 faces them and s = +1 turns away.
+    s: f32 = if towards { -1.0 } else { 1.0 }
+    [1.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, s, 0.0,
+        0.0, 0.0 - s, 0.0, 0.0,
+        0.0, 0.0, 0.5, 1.0]
+}
+
+// ---- the input path, on a window of its own ----
+
+fn input_checks(failures: &mut i32) {
+    unsafe {
+        runtime := objc.load()
+        if runtime.is_err() {
+            expect(&mut failures, "the Objective-C runtime loads", false)
+            return
+        }
+        rt := runtime.unwrap()
+        // MTLCreateSystemDefaultDevice: the layer wants a device.
+        create_device: extern fn() -> ptr = ffi_fn(dl.symbol(rt.metal, cstr("MTLCreateSystemDefaultDevice")))
+        opened := appkit.open(&rt, "Storm self-test: input", 800, 600, create_device())
+        if opened.is_err() {
+            expect(&mut failures, "a window opens", false)
+            return
+        }
+        mut window := opened.unwrap()
+
+        first := appkit.poll(&rt, &mut window)
+        expect(&mut failures, "a new window reports no input and is not closed",
+            !first.closed && !first.input.down(gfx.Key.W) && !first.input.button_down(gfx.MOUSE_LEFT) && !first.input.hit(gfx.Key.W))
+
+        // W and D go down, W comes up, the left shift changes, the left
+        // button goes down 100 points from the left and 500 from the top.
+        appkit.synthesize_key(&rt, &window, 10, 13, 0) // keyDown, kVK_ANSI_W
+        appkit.synthesize_key(&rt, &window, 10, 2, 0) // keyDown, kVK_ANSI_D
+        appkit.synthesize_key(&rt, &window, 11, 13, 0) // keyUp, kVK_ANSI_W
+        appkit.synthesize_key(&rt, &window, 12, 56, 131072) // flagsChanged, left shift, shift down
+        appkit.synthesize_click(&rt, &window, 1, 100.0, 500.0)
+        pressed := appkit.poll(&rt, &mut window)
+        expect(&mut failures, "a key that went down is held and was pressed",
+            pressed.input.down(gfx.Key.D) && pressed.input.hit(gfx.Key.D))
+        // W went down and up between two polls. It is not held, but the tap
+        // did happen in this frame and must not vanish: as on the Vulkan
+        // backend, it counts as pressed.
+        expect(&mut failures, "a key tapped and released within one frame is not held, and still counts as pressed",
+            !pressed.input.down(gfx.Key.W) && pressed.input.hit(gfx.Key.W))
+        expect(&mut failures, "a modifier is a key: shift is held and was pressed",
+            pressed.input.down(gfx.Key.Shift) && pressed.input.hit(gfx.Key.Shift) && !pressed.input.down(gfx.Key.Ctrl))
+        expect(&mut failures, "the pointer is reported from the top-left corner, in points",
+            (pressed.input.mouse.x - 100.0).abs() < 0.5 && (pressed.input.mouse.y - 500.0).abs() < 0.5)
+        expect(&mut failures, "the left button is down and was pressed",
+            pressed.input.button_down(gfx.MOUSE_LEFT) && pressed.input.button_hit(gfx.MOUSE_LEFT) && !pressed.input.button_down(gfx.MOUSE_RIGHT))
+
+        // The button comes up; nothing else happens.
+        appkit.synthesize_click(&rt, &window, 2, 100.0, 500.0)
+        later := appkit.poll(&rt, &mut window)
+        expect(&mut failures, "what was pressed belongs to the frame it happened in; what is held stays held",
+            later.input.down(gfx.Key.D) && !later.input.hit(gfx.Key.D) && later.input.down(gfx.Key.Shift) && !later.input.hit(gfx.Key.Shift) && !later.input.hit(gfx.Key.W))
+        expect(&mut failures, "a button that came up is not down and was not pressed",
+            !later.input.button_down(gfx.MOUSE_LEFT) && !later.input.button_hit(gfx.MOUSE_LEFT))
+
+        // The right button, then a click far from the first.
+        appkit.synthesize_click(&rt, &window, 3, 700.0, 20.0)
+        right := appkit.poll(&rt, &mut window)
+        expect(&mut failures, "the right button is told apart from the left, and the pointer followed it",
+            right.input.button_down(gfx.MOUSE_RIGHT) && right.input.button_hit(gfx.MOUSE_RIGHT) &&
+            (right.input.mouse.x - 700.0).abs() < 0.5 && (right.input.mouse.y - 20.0).abs() < 0.5)
+
+        // The window is closed, as its close button would: the next poll says so.
+        appkit.request_close(&rt, &window)
+        gone := appkit.poll(&rt, &mut window)
+        expect(&mut failures, "a closed window is reported closed", gone.closed)
+        appkit.close(&rt, &mut window)
+    }
+}
+
+// ---- frames: shown, captured, read back ----
+
+fn frame_checks(failures: &mut i32) {
+    opened := metal.open("Storm self-test: frames", WIDTH, HEIGHT)
+    if opened.is_err() {
+        expect(&mut failures, "the backend opens a window, after another was closed in the same process", false)
+        _ := sys.eprint("        " + opened.unwrap_err() + "\n")
+        return
+    }
+    mut window := opened.unwrap()
+    expect(&mut failures, "the device has a name", window.device_name().len > 0)
+
+    // Clip space is the world: an identity view-projection.
+    view := identity()
+    nothing: [f32; 4] = [0.0, 0.0, 0.0, 0.0]
+    sun: [f32; 4] = [0.0, 1.0, 0.0, 0.0] // no sun: its intensity is 0
+    white: [f32; 4] = [1.0, 1.0, 1.0, 1.0]
+    green: [f32; 4] = [0.0, 1.0, 0.0, 1.0]
+    red: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
+    blue: [f32; 4] = [0.0, 0.0, 1.0, 1.0]
+    // A green zenith over a red horizon, so which way is up is a colour.
+    sky := gfx.sky_params(sun, white, green, red, view.clone(), nothing.clone())
+    origin: [f32; 3] = [0.0, 0.0, 0.0]
+    // Not a metal, fully rough, glowing three times its colour, unshadowed:
+    // the colour is the albedo, whatever the light.
+    glowing: [f32; 4] = [0.0, 1.0, 3.0, 0.0]
+    worked(&mut failures, "the environment maps are built from the sky", window.build_environment(&sky))
+
+    // --- a frame cannot be recorded out of order ---
+    refused(&mut failures, "the main pass before a frame begins", window.begin_pass())
+    refused(&mut failures, "the sky before a frame begins", window.sky(&view, &sun, &green, &red))
+    expect(&mut failures, "ending a frame that never began is refused", window.end().is_err())
+    worked(&mut failures, "a frame begins", window.begin())
+    worked(&mut failures, "the main pass opens", window.begin_pass())
+    refused(&mut failures, "a second pass while one is open", window.begin_pass())
+    refused(&mut failures, "the shadow pass while the main pass is open", window.shadow_begin(&sky))
+    expect(&mut failures, "the frame ends", window.end().is_ok())
+    worked(&mut failures, "the shadow pass begins", window.begin())
+    worked(&mut failures, "the shadow pass opens", window.shadow_begin(&sky))
+    refused(&mut failures, "the main pass while the shadow pass is open", window.begin_pass())
+    refused(&mut failures, "the sky in the shadow pass", window.sky(&view, &sun, &green, &red))
+    expect(&mut failures, "the frame ends with the shadow pass still open", window.end().is_ok())
+
+    // --- frames are shown ---
+    mut shown := 0
+    for _ in 0..90 {
+        if window.begin().is_ok() && window.begin_pass().is_ok() && window.sky(&view, &sun, &green, &red).is_ok() && window.end().is_ok() {
+            shown = shown + 1
+        }
+    }
+    expect(&mut failures, "90 frames are drawn and shown", shown == 90)
+
+    // --- from here on frames are captured and read back ---
+    worked(&mut failures, "the next frame is captured", window.capture_next())
+    first := window.poll()
+    scale := first.scale
+    expect(&mut failures, "the window reports its size in points and the display's scale", first.width == WIDTH && first.height == HEIGHT && scale >= 1.0)
+
+    // Nothing drawn: the clear colour, red, everywhere.
+    mut drawn := window.begin().is_ok() && window.begin_pass().is_ok() && window.end().is_ok()
+    worked(&mut failures, "an empty frame is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    empty := read_capture()
+    wanted := i32(f32(WIDTH) * scale).str() + " x " + i32(f32(HEIGHT) * scale).str()
+    expect(&mut failures, "the capture can be read" + if empty.ok { "" } else { " (" + empty.error + ")" }, empty.ok)
+    expect(&mut failures, "and is the frame at the display's scale, " + wanted + ", not " + empty.width.str() + " x " + empty.height.str(),
+        empty.ok && empty.width == i32(f32(WIDTH) * scale) && empty.height == i32(f32(HEIGHT) * scale))
+    expect(&mut failures, "an empty frame is the clear colour in every corner and the middle",
+        is_red(under(&empty, 1.0, 1.0, scale)) && is_red(under(&empty, f32(WIDTH) - 2.0, 1.0, scale)) &&
+        is_red(under(&empty, 1.0, f32(HEIGHT) - 2.0, scale)) && is_red(under(&empty, f32(WIDTH) / 2.0, f32(HEIGHT) / 2.0, scale)))
+
+    // UI quads: where their points say, with y down the screen.
+    quads := corners(f32(WIDTH), f32(HEIGHT))
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_atlas([255], 1, 1).is_ok() &&
+    window.ui_draw(quads, [f32(WIDTH), f32(HEIGHT)]).is_ok() && window.end().is_ok()
+    worked(&mut failures, "a frame of UI quads is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    ui_frame := read_capture()
+    expect(&mut failures, "a UI quad is where its points say: blue in the top-left corner, green in the bottom-right",
+        ui_frame.ok && is_blue(under(&ui_frame, 40.0, 40.0, scale)) && is_green(under(&ui_frame, f32(WIDTH) - 40.0, f32(HEIGHT) - 40.0, scale)))
+    expect(&mut failures, "and nothing else was drawn: the middle is still the clear colour",
+        ui_frame.ok && is_red(under(&ui_frame, f32(WIDTH) / 2.0, f32(HEIGHT) / 2.0, scale)))
+
+    // The sky: with an identity view-projection, clip y = -1 is a ray that
+    // points down, into the horizon's red, and clip y = +1 points up, into
+    // the zenith's green. That clip y = -1 is the TOP of the frame is what
+    // the mirrored viewport is for.
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.sky(&view, &sun, &green, &red).is_ok() && window.end().is_ok()
+    worked(&mut failures, "a frame of sky is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    dome := read_capture()
+    top := under(&dome, f32(WIDTH) / 2.0, 12.0, scale)
+    bottom := under(&dome, f32(WIDTH) / 2.0, f32(HEIGHT) - 12.0, scale)
+    // The sky is written without a gamma curve, as on the Vulkan backend:
+    // a horizon halved for being below the eye is 0.5, which is 128.
+    expect(&mut failures, "the horizon is at the top of the frame and the zenith at the bottom: rgb " + rgb(top) + " over " + rgb(bottom),
+        dome.ok && top[0] > 100 && top[1] < 60 && bottom[1] > 150 && bottom[0] < 100)
+
+    // Depth: a red cube in front of a green one, on the same spot. The red
+    // one must win in either draw order; without a depth test the one drawn
+    // last would. Both lie whole between the near plane (z = 0) and the far
+    // one (z = 1): a cube centred on z = 0 would lose its front half to the
+    // near plane and show only back faces, which are culled.
+    mut cube: []f32 = []
+    gfx.cube(&mut cube, 0.3)
+    // Column-major: the translation is the fourth column; z is into the screen.
+    mut near_mvp := identity()
+    mut far_mvp := identity()
+    near_mvp[14] = 0.4
+    far_mvp[14] = 0.8
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, .Opaque).is_ok() &&
+    window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
+    worked(&mut failures, "the far cube, then the near one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    centre := f32(WIDTH) / 2.0
+    middle := f32(HEIGHT) / 2.0
+    far_first := read_capture()
+    expect(&mut failures, "drawn far first, the near cube is in front: rgb " + rgb(under(&far_first, centre, middle, scale)),
+        far_first.ok && is_red(under(&far_first, centre, middle, scale)))
+
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, .Opaque).is_ok() &&
+    window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
+    worked(&mut failures, "the near cube, then the far one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    near_first := read_capture()
+    expect(&mut failures, "drawn near first, the near cube is still in front, so depth decides, not order: rgb " + rgb(under(&near_first, centre, middle, scale)),
+        near_first.ok && is_red(under(&near_first, centre, middle, scale)))
+
+    // Culling: the ground plane stands half a unit in front of the camera.
+    // Turned to face the viewer it is drawn; turned away it is culled, and
+    // the clear colour shows.
+    mut ground: []f32 = []
+    gfx.plane(&mut ground, 0.5)
+    facing := plane_facing(true)
+    away := plane_facing(false)
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &facing, &facing, &blue, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
+    worked(&mut failures, "the plane facing the viewer is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    front := read_capture()
+    expect(&mut failures, "the plane's front face, the one whose normal points at the viewer, is drawn: rgb " + rgb(under(&front, centre, middle, scale)),
+        front.ok && is_blue(under(&front, centre, middle, scale)))
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &away, &away, &blue, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
+    worked(&mut failures, "the plane turned away is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    back := read_capture()
+    expect(&mut failures, "its back face is culled: the clear colour shows where it would be: rgb " + rgb(under(&back, centre, middle, scale)),
+        back.ok && is_red(under(&back, centre, middle, scale)))
+
+    // A resize is followed: the window reports the new size, and the frame
+    // after it is drawn at it, every corner in place.
+    window.resize(900, 520)
+    after := window.poll()
+    expect(&mut failures, "a resized window reports its new size, and that it changed",
+        after.width == 900 && after.height == 520 && after.resized && !after.closed)
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_draw(corners(900.0, 520.0), [900.0, 520.0]).is_ok() && window.end().is_ok()
+    worked(&mut failures, "a frame after the resize is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    resized := read_capture()
+    expect(&mut failures, "at the new size", resized.ok && resized.width == i32(900.0 * scale) && resized.height == i32(520.0 * scale))
+    expect(&mut failures, "with the quads in its corners, not the old frame's",
+        resized.ok && is_blue(under(&resized, 40.0, 40.0, scale)) && is_green(under(&resized, 860.0, 480.0, scale)))
+    // And back again.
+    window.resize(WIDTH, HEIGHT)
+    expect(&mut failures, "and back", window.poll().width == WIDTH && window.poll().height == HEIGHT)
+    again := window.poll()
+    expect(&mut failures, "with nothing left to report as changed", !again.resized)
+
+    // Two floats are not a vertex: the list must be [x, y, z, nx, ny, nz] triples.
+    junk: []f32 = [1.0, 2.0]
+    refused(&mut failures, "a mesh that is not a vertex list", window.mesh(&junk, &view, &view, &red, &glowing, &origin, &sky, .Opaque))
+
+    // Closing is the last thing a renderer does; it cannot be done twice.
+    window.close()
+}
+
+fn main() -> i32 {
+    if !sys.mkdir("build").ok && !sys.metadata("build").ok {
+        _ := sys.eprint("selftest: cannot make the build directory for captures\n")
+        return 1
+    }
+    started := sys.now_ms()
+    mut failures: i32 = 0
+    input_checks(&mut failures)
+    frame_checks(&mut failures)
+    _ := sys.remove_file(CAPTURE)
+    if failures > 0 {
+        _ := sys.eprint("selftest: " + failures.str() + " checks failed\n")
+        return 1
+    }
+    print("selftest: every check passed in " + (sys.now_ms() - started).str() + " ms")
+    0
+}
