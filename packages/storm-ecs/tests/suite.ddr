@@ -101,3 +101,54 @@ struct Tag { name: string }
     assert(pool.remove(entities[3]).unwrap().name == "d")
     assert(pool.get(entities[0]).name == "a" && pool.get(entities[2]).name == "c")
 }
+
+@test fn join_keeps_entities_in_both_pools_with_dense_indexes() {
+    mut pool_a := ecs.Pool<Position>::new()
+    mut pool_b := ecs.Pool<Velocity>::new()
+    mut pool_c := ecs.Pool<Tag>::new()
+    mut allocator := ecs.EntityAllocator::new()
+    a := allocator.create()
+    b := allocator.create()
+    c := allocator.create()
+    d := allocator.create()
+    _ := pool_a.insert(a, Position { x: 1.0, y: 0.0 })
+    _ := pool_a.insert(b, Position { x: 2.0, y: 0.0 })
+    _ := pool_a.insert(c, Position { x: 3.0, y: 0.0 })
+    _ := pool_a.insert(d, Position { x: 4.0, y: 0.0 })
+    _ := pool_b.insert(a, Velocity { dx: 10.0, dy: 0.0 })
+    _ := pool_b.insert(c, Velocity { dx: 30.0, dy: 0.0 })
+    _ := pool_b.insert(d, Velocity { dx: 40.0, dy: 0.0 })
+    _ := pool_c.insert(c, Tag { name: "both" })
+
+    rows := ecs.join2(&pool_a, &pool_b)
+    assert(rows.len == 3)
+    assert(rows[0].entity.index == a.index && rows[0].a == 0 && rows[0].b == 0 && rows[0].c == -1)
+    assert(rows[1].entity.index == c.index && rows[1].a == 2 && rows[1].b == 1)
+    assert(rows[2].entity.index == d.index && rows[2].a == 3 && rows[2].b == 2)
+    assert(pool_a.at(rows[1].a).x == 3.0)
+    assert(pool_b.at(rows[1].b).dx == 30.0)
+
+    rows3 := ecs.join3(&pool_a, &pool_b, &pool_c)
+    assert(rows3.len == 1)
+    assert(rows3[0].entity.index == c.index && rows3[0].c == 0)
+    assert(pool_c.at(rows3[0].c).name == "both")
+}
+
+@test fn dense_index_follows_swap_remove_and_rejects_stale_handles() {
+    mut pool := ecs.Pool<Position>::new()
+    mut allocator := ecs.EntityAllocator::new()
+    a := allocator.create()
+    b := allocator.create()
+    _ := pool.insert(a, Position { x: 1.0, y: 0.0 })
+    _ := pool.insert(b, Position { x: 2.0, y: 0.0 })
+    assert(pool.dense_index(a) == 0 && pool.dense_index(b) == 1)
+    _ := pool.remove(a)
+    assert(pool.dense_index(a) == -1)
+    assert(pool.dense_index(b) == 0)
+    pool.at_mut(0).x = 20.0
+    assert(pool.get(b).x == 20.0)
+    assert(allocator.destroy(b))
+    assert(pool.dense_index(b) == 0)
+    stale := ecs.Entity { index: b.index, generation: b.generation + 1 }
+    assert(pool.dense_index(stale) == -1)
+}

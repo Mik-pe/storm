@@ -6,11 +6,22 @@
 //
 // Entity = (index: i32, generation: i32). A stale handle never matches a live
 // entity; `is_alive` validates both halves.
+//
+// Queries: `join2`/`join3` walk the first pool and keep the entities that are
+// also in the others, returning each pool's dense index so a system's hot
+// loop reads through `at(index)` without a sparse lookup. Pass the pool with
+// the fewest rows first. A query is a snapshot; removing a component after it
+// invalidates that pool's indexes (swap-remove moves the last row), so
+// systems that remove collect entities in the loop and remove after it.
 
 import std.array as array
 
 pub struct Entity { index: i32, generation: i32 }
 pub struct Slot { entity: Entity, dense: i32 }
+
+// One row of a join: the entity and, for each pool in the join, its dense
+// index. Pools not part of the join read -1.
+pub struct Match { entity: Entity, a: i32, b: i32, c: i32 }
 
 pub opaque struct Pool<T: Storable> {
     dense: []T,
@@ -36,6 +47,16 @@ impl Pool<T: Storable> {
     pub fn get_mut(&mut self, entity: Entity) -> &mut T from self {
         &mut self.dense[self.sparse[entity.index].dense]
     }
+
+    // Dense index of a component, -1 when the entity has none. A query row
+    // carries this number so the system loop can skip the sparse lookup.
+    pub fn dense_index(&self, entity: Entity) -> i32 {
+        if !self.contains(entity) { return -1 }
+        self.sparse[entity.index].dense
+    }
+
+    pub fn at(&self, dense: i32) -> &T from self { &self.dense[dense] }
+    pub fn at_mut(&mut self, dense: i32) -> &mut T from self { &mut self.dense[dense] }
 
     // Insert or replace. Returns the dense index the component landed at.
     pub fn insert(&mut self, entity: Entity, move value: T) -> i32 {
@@ -109,7 +130,7 @@ impl EntityAllocator {
     // destroy compares unequal, including handles to a slot waiting in `free`.
     pub fn is_alive(&self, entity: Entity) -> bool {
         entity.index >= 0 && entity.index < self.generations.len &&
-            self.generations[entity.index] == entity.generation
+        self.generations[entity.index] == entity.generation
     }
 
     pub fn destroy(&mut self, entity: Entity) -> bool {
@@ -121,4 +142,30 @@ impl EntityAllocator {
     }
 
     pub fn len(&self) -> i32 { self.alive }
+}
+
+// Entities in `a` that are also in `b`, in `a`'s dense order. `c` reads -1.
+pub fn join2<A: Storable, B: Storable>(a: &Pool<A>, b: &Pool<B>) -> []Match {
+    mut out: []Match = []
+    for i in 0..a.len() {
+        entity := a.entities()[i]
+        j := b.dense_index(entity)
+        if j < 0 { continue }
+        out.push(Match { entity: entity, a: i, b: j, c: -1 })
+    }
+    out
+}
+
+// Entities in all three pools, in `a`'s dense order.
+pub fn join3<A: Storable, B: Storable, C: Storable>(a: &Pool<A>, b: &Pool<B>, c: &Pool<C>) -> []Match {
+    mut out: []Match = []
+    for i in 0..a.len() {
+        entity := a.entities()[i]
+        j := b.dense_index(entity)
+        if j < 0 { continue }
+        k := c.dense_index(entity)
+        if k < 0 { continue }
+        out.push(Match { entity: entity, a: i, b: j, c: k })
+    }
+    out
 }

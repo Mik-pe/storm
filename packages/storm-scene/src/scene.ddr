@@ -273,6 +273,15 @@ impl Graph {
         self.locals.entities().clone()
     }
 
+    // The pools, for queries from outside: a system joins what it needs
+    // (`ecs.join2(graph.names(), graph.locals())`) instead of filtering
+    // `nodes()` by hand. Borrowed for the call; clone rows out, as ever.
+    pub fn locals(&self) -> &ecs.Pool < LocalTransform > from self { &self.locals }
+    pub fn names(&self) -> &ecs.Pool < Name > from self { &self.names }
+    pub fn meshes(&self) -> &ecs.Pool < Mesh > from self { &self.meshes }
+    pub fn materials(&self) -> &ecs.Pool < Material > from self { &self.materials }
+    pub fn worlds(&self) -> &ecs.Pool < WorldTransform > from self { &self.worlds }
+
     pub fn is_alive(&self, entity: ecs.Entity) -> bool { self.allocator.is_alive(entity) }
 
     pub fn destroy(&mut self, entity: ecs.Entity) -> bool {
@@ -324,20 +333,20 @@ impl Graph {
     // neutral grey so the scene never silently drops a node.
     pub fn drawables(&self, eye: core.Vec3) -> []Drawable {
         mut out: []Drawable = []
-        for i in 0..self.meshes.len() {
-            entity := self.meshes.entities()[i]
-            if !self.worlds.contains(entity) { continue }
-            model := self.worlds.get(entity).matrix.clone()
+        // A shape and a world matrix make a drawable; a material is optional.
+        for row in ecs.join2(&self.meshes, &self.worlds) {
+            model := self.worlds.at(row.b).matrix.clone()
             dx := model.m[12] - eye.x
             dy := model.m[13] - eye.y
             dz := model.m[14] - eye.z
-            mat := if self.materials.contains(entity) { self.materials.get(entity).clone() } else { material(0.5, 0.5, 0.5, 1.0, 0.0, 0.8) }
+            mi := self.materials.dense_index(row.entity)
+            mat := if mi >= 0 { self.materials.at(mi).clone() } else { material(0.5, 0.5, 0.5, 1.0, 0.0, 0.8) }
             out.push(Drawable {
-                entity: entity,
+                entity: row.entity,
                 model: model,
                 material: mat,
-                shape: self.meshes.get(entity).shape,
-                vertices: self.meshes.get(entity).vertices.clone(),
+                shape: self.meshes.at(row.a).shape,
+                vertices: self.meshes.at(row.a).vertices.clone(),
                 depth: dx * dx + dy * dy + dz * dz,
             })
         }

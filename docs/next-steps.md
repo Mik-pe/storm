@@ -82,8 +82,7 @@ ett pass bland de andra och huvudpasset öppnas lat; editorn listar ECS:et,
 väljer, och skriver material/transform via sliders; åtta orber att plocka
 med poäng i HUD:en; `--glb` laddar en modell (autoskalad) in i scenen, och
 parsern läser riktiga filer (fynd 59). Kvar: texturer (avsnitt 3), resten av
-glTF (nodes/materials/scenes nedan), typade Vulkan-handles (design.md steg 1),
-ECS-queries över flera pooler, sub-5-s-bygge (fynd 56: det är Dunders
+glTF (nodes/materials/scenes nedan), typade Vulkan-handles (design.md steg 1), sub-5-s-bygge (fynd 56: det är Dunders
 kompilator).
 
 ## 4. glTF-scener

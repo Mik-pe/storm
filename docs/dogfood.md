@@ -414,6 +414,36 @@ laddar en modell in i scenen (autoskalad till 2,4 enheter, stående på
 marken) och den renderas med IBL och skugga. *Lärdom:* en fixtur som koden
 själv producerat är inget bevis; ett test mot **en fil utifrån** är det.
 
+**60. E3003 på ett giltigt anrop till en generisk funktion.** `join2<A, B>(a:
+&Pool<A>, b: &Pool<B>)` med två accessorer som returnerar `&Pool<X> from
+self` direkt som argument ger `cannot unify argument 1 for generic function
+'join2' (got '&__dunder_module_66<__dunder_module_126>')` när accessorn
+bor i en annan modul än anropet; i samma modul går det, och med mottagaren
+`&mut G` räcker det att **ett** argument är en accessor medan det andra är
+en lokal. Minimal repro i `/tmp/qtest2` (tre moduler: `ecsq` med `Pool` och
+`join2`, `sceneq` med `G { names, locals }` och accessorer, anropande
+modul). Ingen anteckning som föreslår workaronden. *Workaround:* bind varje
+accessor till en lokal först (`names := g.names()`), vilket alltid går.
+*Rekommendation:* unifieringen borde se att `&Pool<Name> from self` är
+`&Pool<Name>`; noten borde åtminstone säga "bind the call to a local".
+Diagnosen nämner interna modulnummer (`__dunder_module_66`) i stället för
+typerna `Pool<Name>` / `Pool<LocalTransform>`, vilket gör den oläslig.
+
+**Om ECS-frågorna.** Poolerna hade `entities()` och `values()` men inga
+queries; fyra system loopade entiteter för hand med `contains`-kontroller
+(`drawables`, orbräknaren, orbplockaren, editorns radlista). Nu: `Match
+{ entity, a, b, c }` med dense-index per pool, `join2`/`join3` går från
+första poolen (skicka den minsta först), `at(index)`/`at_mut(index)` läser
+utan sparse-uppslag i den heta loopen, `dense_index` ger −1 för saknade
+och för inaktiva handtag. En fråga är en ögonblicksbild: en komponent som
+tas bort efteråt flyttar sista raden (swap-remove), så system som tar bort
+samlar entiteter i loopen och tar bort efter den. `Graph` exponerar sina
+pooler (`names()`, `locals()`, `meshes()`, `materials()`, `worlds()`),
+`drawables` är `join2(meshes, worlds)` med material som valfri tredje,
+orbsystemen är `join2(names, locals)`. Sju ECS-tester, varav två för
+frågorna; capture utan `--glb` AE = 0 mot editorbaslinjen, `--eye`-spelet
+fortfarande orbs 7/8 / objects 13.
+
 **Om render-grafen.** Den var dekorativ: `main.ddr` byggde den, sorterade
 den och körde sedan skuggpasset före loopen och matchade namn inuti loopen.
 Nu är varje pass en `PassKind`-variant i schemaläggaren, loopen kör
@@ -445,7 +475,8 @@ Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
 pinning-testerna från textåtergivningen är inflyttade i det), och sju nya i
 `storm-core` för IBL:n, samt två till i `storm-vulkan`: C-postparet OCH arrayen är
 sammanhängande på C-offsets (fynd 54) och `float_bits` tar båda tecken
-(fynd 55) — kubytornas baser mot Vulkans (sc, tc)-axlar,
+(fynd 55), och två i `storm-ecs` (`join2`/`join3` med dense-index per pool;
+`dense_index` följer swap-remove och avvisar inaktiva handtag) — kubytornas baser mot Vulkans (sc, tc)-axlar,
 projektionens z-intervall, när-/färplane-djup och fyra värden på BRDF-LUT:en
 mot en Python-referens (skala 1, bias 0 vid N·V = 1 och roughness 0; skala
 0.69 och bias 0.025 vid 0.5/0.5; energiförlust med roughness).
