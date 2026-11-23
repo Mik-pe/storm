@@ -1,4 +1,6 @@
 import ..src.ui as ui
+import ..src.widgets as widgets
+import text
 
 @test fn solid_rect_emits_two_triangles() {
     mut canvas := ui.Canvas::new()
@@ -26,4 +28,84 @@ import ..src.ui as ui
     assert(!canvas.is_empty())
     canvas.clear()
     assert(canvas.is_empty())
+}
+
+// --- widgets: buttons, sliders and rows from a Pointer, no window ---
+
+fn widget_atlas() -> text.Atlas {
+    face := text.load_face("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf", 22.0)
+    mut atlas := text.Atlas::new(256, 256)
+    _ := atlas.add_text(&face, "+ cube metallic roughness xyz.0123456789-")
+    atlas
+}
+
+fn pointer(x: f32, y: f32, down: bool, pressed: bool) -> widgets.Pointer {
+    widgets.Pointer { x: x, y: y, down: down, pressed: pressed }
+}
+
+@test fn hit_is_half_open() {
+    p := pointer(10.0, 20.0, false, false)
+    assert(widgets.hit(&p, 10.0, 20.0, 50.0, 50.0))
+    p_edge := pointer(60.0, 70.0, false, false)
+    assert(!widgets.hit(&p_edge, 10.0, 20.0, 50.0, 50.0))
+}
+
+@test fn button_fires_once_on_press_not_on_hold() {
+    atlas := widget_atlas()
+    mut state := widgets.State::new()
+    mut canvas := ui.Canvas::new()
+    theme := widgets.theme()
+    state.begin()
+    assert(!state.button(&mut canvas, &atlas, 1, &pointer(50.0, 100.0, true, false), 10.0, 90.0, 120.0, 30.0, "+ cube", &theme))
+    state.begin()
+    assert(state.button(&mut canvas, &atlas, 1, &pointer(50.0, 100.0, true, true), 10.0, 90.0, 120.0, 30.0, "+ cube", &theme))
+    assert(state.active() == 1)
+    state.begin()
+    assert(!state.button(&mut canvas, &atlas, 1, &pointer(50.0, 100.0, true, false), 10.0, 90.0, 120.0, 30.0, "+ cube", &theme))
+    state.end(&pointer(50.0, 100.0, false, false))
+    assert(state.active() == 0)
+    // A press elsewhere does not fire the button.
+    state.begin()
+    assert(!state.button(&mut canvas, &atlas, 1, &pointer(500.0, 100.0, true, true), 10.0, 90.0, 120.0, 30.0, "+ cube", &theme))
+}
+
+@test fn slider_tracks_the_drag_and_clamps() {
+    atlas := widget_atlas()
+    mut state := widgets.State::new()
+    mut canvas := ui.Canvas::new()
+    theme := widgets.theme()
+    mut value: f32 = 0.5
+    // Track starts at x + 92 and is 240 - 92 - 52 = 96 wide.
+    state.begin()
+    state.end(&pointer(0.0, 0.0, false, false))
+    state.begin()
+    // Pressing on the track jumps the knob there: (140 - 132) / 96 = 0.083.
+    assert(state.slider(&mut canvas, &atlas, 7, &pointer(140.0, 150.0, true, true), 40.0, 140.0, 240.0, "metallic", &mut value, 0.0, 1.0, &theme))
+    assert(value > 0.07 && value < 0.10)
+    assert(state.active() == 7)
+    // Dragging past the left end clamps to the minimum, past the right to the max.
+    state.begin()
+    assert(state.slider(&mut canvas, &atlas, 7, &pointer(0.0, 150.0, true, false), 40.0, 140.0, 240.0, "metallic", &mut value, 0.0, 1.0, &theme))
+    assert(value == 0.0)
+    state.begin()
+    assert(state.slider(&mut canvas, &atlas, 7, &pointer(900.0, 150.0, true, false), 40.0, 140.0, 240.0, "metallic", &mut value, 0.0, 1.0, &theme))
+    assert(value == 1.0)
+    state.begin()
+    _ := state.slider(&mut canvas, &atlas, 7, &pointer(180.0, 150.0, true, false), 40.0, 140.0, 240.0, "metallic", &mut value, 0.0, 1.0, &theme)
+    assert(value > 0.45 && value < 0.55)
+    state.end(&pointer(180.0, 150.0, false, false))
+    assert(state.active() == 0)
+}
+
+@test fn row_selects_and_decimal2_keeps_signs() {
+    atlas := widget_atlas()
+    mut state := widgets.State::new()
+    mut canvas := ui.Canvas::new()
+    theme := widgets.theme()
+    state.begin()
+    assert(state.row(&mut canvas, &atlas, 3, &pointer(30.0, 210.0, true, true), 10.0, 200.0, 300.0, "Gold cube", 2, false, &theme))
+    assert(widgets.decimal2(0.5) == "0.50")
+    assert(widgets.decimal2(1.0) == "1.00")
+    assert(widgets.decimal2(-2.345) == "-2.35")
+    assert(widgets.decimal2(12.0) == "12.00")
 }

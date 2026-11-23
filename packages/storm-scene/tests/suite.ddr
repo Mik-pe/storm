@@ -1,4 +1,12 @@
 import ..src.scene as scene
+
+// Option<enum> has no Eq in Dunder; pattern-match instead.
+fn shape_is(v: Option<scene.Shape>, want: i32) -> bool {
+    match v {
+        .None => want == -1,
+        .Some(s) => i32(s) == want,
+    }
+}
 import core
 
 @test fn child_inherits_parent_translation() {
@@ -27,7 +35,7 @@ import core
 @test fn rotation_and_scale_apply_to_children() {
     mut graph := scene.Graph::new()
     root := graph.create_root(core.vec3(0.0, 0.0, 0.0))
-    graph.set_scale(root, 2.0)
+    graph.set_scale(root, core.vec3(2.0, 2.0, 2.0))
     child := graph.create_child(root, core.vec3(1.0, 0.0, 0.0))
     graph.propagate()
     // Scaling the parent doubles the child's offset.
@@ -42,4 +50,86 @@ import core
     assert(graph.parent_of(child).is_none())
     graph.propagate()
     assert(graph.world(child).matrix.m[12] == 5.0)
+}
+
+@test fn names_shapes_and_materials_are_components() {
+    mut g := scene.Graph::new()
+    cube := g.create_root(core.vec3(0.0, 1.0, 0.0))
+    assert(g.name(cube) == "")
+    assert(g.set_name(cube, "Gold cube"))
+    assert(g.name(cube) == "Gold cube")
+    assert(g.set_name(cube, "Renamed"))
+    assert(g.name(cube) == "Renamed")
+    assert(shape_is(g.shape(cube), -1))
+    assert(g.set_shape(cube, .Cube))
+    assert(shape_is(g.shape(cube), 0))
+    assert(g.set_shape(cube, .Plane))
+    assert(shape_is(g.shape(cube), 1))
+    assert(g.set_material(cube, scene.material(1.0, 0.76, 0.3, 1.0, 1.0, 0.1)))
+    assert(g.has_material(cube))
+    assert(g.material_value(cube, .Metallic) == 1.0)
+    assert(g.set_material_value(cube, .Metallic, 0.25))
+    assert(g.material_value(cube, .Metallic) == 0.25)
+    assert(g.material_value(cube, .Roughness) == 0.1)
+    assert(g.set_material_value(cube, .BaseG, 0.5))
+    assert(g.material_at(cube).base.g == 0.5)
+    bare := g.create_root(core.vec3(0.0, 0.0, 0.0))
+    assert(!g.set_material_value(bare, .Metallic, 1.0))
+}
+
+@test fn transform_values_round_trip() {
+    mut g := scene.Graph::new()
+    e := g.create_root(core.vec3(1.0, 2.0, 3.0))
+    assert(g.transform_value(e, .X) == 1.0)
+    assert(g.transform_value(e, .Y) == 2.0)
+    assert(g.transform_value(e, .ScaleX) == 1.0)
+    assert(g.set_transform_value(e, .Y, 7.0))
+    assert(g.set_transform_value(e, .Rotation, 0.5))
+    assert(g.set_transform_value(e, .ScaleZ, 0.05))
+    assert(g.local(e).position.y == 7.0)
+    assert(g.local(e).rotation_y == 0.5)
+    assert(g.local(e).scale.z == 0.05)
+}
+
+@test fn drawables_come_from_the_scene_in_creation_order() {
+    mut g := scene.Graph::new()
+    hub := g.create_root(core.vec3(0.0, 0.65, 0.0))
+    ground := g.create_root(core.vec3(0.0, 0.0, 0.0))
+    gold := g.create_child(hub, core.vec3(2.4, 0.0, 0.0))
+    ghost := g.create_root(core.vec3(5.0, 0.0, 0.0))
+    _ := g.set_shape(ground, .Plane)
+    _ := g.set_material(ground, scene.material(0.2, 0.21, 0.24, 1.0, 0.05, 0.85))
+    _ := g.set_shape(gold, .Cube)
+    _ := g.set_material(gold, scene.material(1.0, 0.76, 0.3, 1.0, 1.0, 0.1))
+    _ := g.set_shape(ghost, .Cube)
+    g.propagate()
+    list := g.drawables(core.vec3(0.0, 2.2, 9.5))
+    assert(list.len == 3)
+    assert(list[0].entity.index == ground.index)
+    assert(list[0].shape == scene.Shape.Plane)
+    assert(list[1].entity.index == gold.index)
+    // The child's world matrix carries the hub's translation.
+    assert(list[1].model.m[13] == 0.65)
+    assert(list[1].model.m[12] == 2.4)
+    assert(list[1].material.metallic == 1.0)
+    // No material -> neutral grey, never a silent drop.
+    assert(list[2].entity.index == ghost.index)
+    assert(list[2].material.metallic == 0.0)
+    assert(list[2].material.base.r == 0.5)
+    // Depth is squared distance to the eye: ground 95.09, gold 98.41 from (0, 2.2, 9.5).
+    assert(list[1].depth > list[0].depth)
+    assert(list[0].depth > 95.0 && list[0].depth < 95.2)
+}
+
+@test fn destroy_removes_every_component() {
+    mut g := scene.Graph::new()
+    e := g.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := g.set_name(e, "temp")
+    _ := g.set_shape(e, .Cube)
+    _ := g.set_material(e, scene.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5))
+    assert(g.destroy(e))
+    assert(!g.is_alive(e))
+    g.propagate()
+    assert(g.drawables(core.vec3(0.0, 0.0, 0.0)).len == 0)
+    assert(g.nodes().len == 0)
 }

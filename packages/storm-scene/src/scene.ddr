@@ -1,14 +1,19 @@
-// Storm scene graph on top of the ECS.
+// Storm scene: hierarchy, names, shapes and materials on top of the ECS.
 //
-// Hierarchy lives in the ECS as a LocalTransform plus an optional Parent link.
-// `propagate` walks roots in depth-first order and writes WorldTransform, so a
-// node inherits its ancestors' translation, rotation and scale.
+// A node is an entity with a LocalTransform, optionally a Parent, and whatever
+// else it is made of: a Shape (which primitive to draw), a Material, a Name
+// for the editor. `propagate` walks roots in depth-first order and writes
+// WorldTransform. `drawables` collects every entity that has a shape and a
+// world transform into the list the renderer consumes, so the frame is built
+// from what the scene contains rather than from a hand-written list.
 //
-//   mut graph := scene.Graph::new()
-//   root := graph.create_root(core.vec3(0.0, 0.0, 0.0))
-//   child := graph.create_child(root, core.vec3(1.0, 0.0, 0.0))
-//   graph.propagate()
-//   graph.world(child).m[12]   // 1.0
+//   mut world := scene.Graph::new()
+//   ground := world.create_root(core.vec3(0.0, 0.0, 0.0))
+//   _ := world.set_shape(ground, .Plane)
+//   _ := world.set_material(ground, scene.material(0.2, 0.21, 0.24, 1.0, 0.05, 0.85))
+//   _ := world.set_name(ground, "Ground")
+//   world.propagate()
+//   list := world.drawables(core.vec3(0.0, 2.2, 9.5))
 import core
 import ecs
 import std.math as _
@@ -17,35 +22,74 @@ pub struct LocalTransform {
     position: core.Vec3,
     // Rotation around Y in radians; enough for the first scene pass.
     rotation_y: f32,
-    scale: f32,
+    scale: core.Vec3,
 }
 
 pub struct Parent { entity: ecs.Entity }
 
 pub struct WorldTransform { matrix: core.Mat4 }
 
+pub struct Name { value: string }
+
+pub enum Shape { Cube = 0, Plane = 1 }
+
+pub struct Mesh { shape: Shape }
+
+pub enum MaterialField { BaseR = 0, BaseG = 1, BaseB = 2, BaseA = 3, Metallic = 4, Roughness = 5, Emissive = 6 }
+
+pub enum TransformField { X = 0, Y = 1, Z = 2, Rotation = 3, ScaleX = 4, ScaleY = 5, ScaleZ = 6 }
+
+// A PBR surface as the mesh shader takes it. Transparent surfaces are drawn
+// in the blended pass, back to front; everything else relies on depth.
+pub struct Material {
+    base: core.Color,
+    metallic: f32,
+    roughness: f32,
+    emissive: f32,
+}
+
+pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -> Material {
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0 }
+}
+
+pub struct Drawable {
+    entity: ecs.Entity,
+    model: core.Mat4,
+    material: Material,
+    shape: Shape,
+    // Squared distance from the eye to the model origin, for sorting glass.
+    depth: f32,
+}
+
 pub struct Graph {
     allocator: ecs.EntityAllocator,
     locals: ecs.Pool<LocalTransform>,
     parents: ecs.Pool<Parent>,
     worlds: ecs.Pool<WorldTransform>,
+    names: ecs.Pool<Name>,
+    meshes: ecs.Pool<Mesh>,
+    materials: ecs.Pool<Material>,
 }
 
 fn local_identity() -> LocalTransform {
-    LocalTransform { position: core.vec3(0.0, 0.0, 0.0), rotation_y: 0.0, scale: 1.0 }
+    LocalTransform { position: core.vec3(0.0, 0.0, 0.0), rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) }
 }
 
 fn matrix_for(local: &LocalTransform) -> core.Mat4 {
     c := local.rotation_y.cos()
     s := local.rotation_y.sin()
-    rotation := core.Mat4 { m: [c, 0.0, -s, 0.0,
-                                0.0, 1.0, 0.0, 0.0,
-                                s, 0.0, c, 0.0,
-                                0.0, 0.0, 0.0, 1.0] }
-    scaled := core.Mat4 { m: [local.scale, 0.0, 0.0, 0.0,
-                              0.0, local.scale, 0.0, 0.0,
-                              0.0, 0.0, local.scale, 0.0,
-                              0.0, 0.0, 0.0, 1.0] }
+    rotation := core.Mat4 {
+        m: [c, 0.0, -s, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            s, 0.0, c, 0.0,
+            0.0, 0.0, 0.0, 1.0]
+    }
+    scaled := core.Mat4 {
+        m: [local.scale.x, 0.0, 0.0, 0.0,
+            0.0, local.scale.y, 0.0, 0.0,
+            0.0, 0.0, local.scale.z, 0.0,
+            0.0, 0.0, 0.0, 1.0]
+    }
     core.multiply(core.multiply(core.translation(local.position.x, local.position.y, local.position.z), rotation), scaled)
 }
 
@@ -56,6 +100,9 @@ impl Graph {
             locals: ecs.Pool<LocalTransform>::new(),
             parents: ecs.Pool<Parent>::new(),
             worlds: ecs.Pool<WorldTransform>::new(),
+            names: ecs.Pool<Name>::new(),
+            meshes: ecs.Pool<Mesh>::new(),
+            materials: ecs.Pool<Material>::new(),
         }
     }
 
@@ -63,13 +110,13 @@ impl Graph {
 
     pub fn create_root(&mut self, position: core.Vec3) -> ecs.Entity {
         entity := self.allocator.create()
-        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: 1.0 })
+        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) })
         entity
     }
 
     pub fn create_child(&mut self, parent: ecs.Entity, position: core.Vec3) -> ecs.Entity {
         entity := self.allocator.create()
-        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: 1.0 })
+        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) })
         _ := self.parents.insert(entity, Parent { entity: parent })
         entity
     }
@@ -82,8 +129,115 @@ impl Graph {
         if self.locals.contains(entity) { self.locals.get_mut(entity).rotation_y = radians }
     }
 
-    pub fn set_scale(&mut self, entity: ecs.Entity, scale: f32) {
+    pub fn set_scale(&mut self, entity: ecs.Entity, scale: core.Vec3) {
         if self.locals.contains(entity) { self.locals.get_mut(entity).scale = scale }
+    }
+
+    pub fn set_name(&mut self, entity: ecs.Entity, move name: string) -> bool {
+        if !self.allocator.is_alive(entity) { return false }
+        if self.names.contains(entity) {
+            self.names.get_mut(entity).value = name
+            return true
+        }
+        self.names.insert(entity, Name { value: name }) >= 0
+    }
+
+    pub fn name(&self, entity: ecs.Entity) -> string {
+        if !self.names.contains(entity) { return "" }
+        self.names.get(entity).value.clone()
+    }
+
+    pub fn set_shape(&mut self, entity: ecs.Entity, shape: Shape) -> bool {
+        if !self.allocator.is_alive(entity) { return false }
+        if self.meshes.contains(entity) {
+            self.meshes.get_mut(entity).shape = shape
+            return true
+        }
+        self.meshes.insert(entity, Mesh { shape: shape }) >= 0
+    }
+
+    pub fn shape(&self, entity: ecs.Entity) -> Option<Shape> {
+        if !self.meshes.contains(entity) { return .None }
+        .Some(self.meshes.get(entity).shape)
+    }
+
+    // A node without a shape is not drawn; this is how the scene hides things.
+    pub fn remove_shape(&mut self, entity: ecs.Entity) -> bool {
+        match self.meshes.remove(entity) {
+            .None => false,
+            .Some(_) => true,
+        }
+    }
+
+    pub fn set_material(&mut self, entity: ecs.Entity, move value: Material) -> bool {
+        if !self.allocator.is_alive(entity) { return false }
+        if self.materials.contains(entity) {
+            self.materials.get_mut(entity).base = value.base.clone()
+            self.materials.get_mut(entity).metallic = value.metallic
+            self.materials.get_mut(entity).roughness = value.roughness
+            self.materials.get_mut(entity).emissive = value.emissive
+            return true
+        }
+        self.materials.insert(entity, value) >= 0
+    }
+
+    pub fn material_at(&self, entity: ecs.Entity) -> &Material from self { self.materials.get(entity) }
+    pub fn has_material(&self, entity: ecs.Entity) -> bool { self.materials.contains(entity) }
+
+    // The editor edits one number at a time through these: an Option cannot
+    // carry a &mut in Dunder (E3099), and a field id is what a slider has anyway.
+    pub fn material_value(&self, entity: ecs.Entity, field: MaterialField) -> f32 {
+        if !self.materials.contains(entity) { return 0.0 }
+        m := self.material_at(entity)
+        match field {
+            .BaseR => m.base.r,
+            .BaseG => m.base.g,
+            .BaseB => m.base.b,
+            .BaseA => m.base.a,
+            .Metallic => m.metallic,
+            .Roughness => m.roughness,
+            .Emissive => m.emissive,
+        }
+    }
+
+    pub fn set_material_value(&mut self, entity: ecs.Entity, field: MaterialField, value: f32) -> bool {
+        if !self.materials.contains(entity) { return false }
+        m := self.materials.get_mut(entity)
+        if field == MaterialField.BaseR { m.base.r = value }
+        if field == MaterialField.BaseG { m.base.g = value }
+        if field == MaterialField.BaseB { m.base.b = value }
+        if field == MaterialField.BaseA { m.base.a = value }
+        if field == MaterialField.Metallic { m.metallic = value }
+        if field == MaterialField.Roughness { m.roughness = value }
+        if field == MaterialField.Emissive { m.emissive = value }
+        true
+    }
+
+    pub fn transform_value(&self, entity: ecs.Entity, field: TransformField) -> f32 {
+        if !self.locals.contains(entity) { return 0.0 }
+        t := self.locals.get(entity)
+        match field {
+            .X => t.position.x,
+            .Y => t.position.y,
+            .Z => t.position.z,
+            .Rotation => t.rotation_y,
+            .ScaleX => t.scale.x,
+            .ScaleY => t.scale.y,
+            .ScaleZ => t.scale.z,
+        }
+    }
+
+    pub fn set_transform_value(&mut self, entity: ecs.Entity, field: TransformField, value: f32) -> bool {
+        if !self.locals.contains(entity) { return false }
+        t := self.locals.get_mut(entity)
+        if field == TransformField.X { t.position.x = value }
+        if field == TransformField.Y { t.position.y = value }
+        if field == TransformField.Z { t.position.z = value }
+        if field == TransformField.Rotation { t.rotation_y = value }
+        if field == TransformField.ScaleX { t.scale.x = value }
+        if field == TransformField.ScaleY { t.scale.y = value }
+        if field == TransformField.ScaleZ { t.scale.z = value }
+        true
     }
 
     pub fn local(&self, entity: ecs.Entity) -> &LocalTransform from self { self.locals.get(entity) }
@@ -92,6 +246,13 @@ impl Graph {
         if !self.parents.contains(entity) { return .None }
         .Some(self.parents.get(entity).entity)
     }
+
+    // Entities in creation order that have a local transform: the scene tree.
+    pub fn nodes(&self) -> []ecs.Entity {
+        self.locals.entities().clone()
+    }
+
+    pub fn is_alive(&self, entity: ecs.Entity) -> bool { self.allocator.is_alive(entity) }
 
     pub fn destroy(&mut self, entity: ecs.Entity) -> bool {
         // Detach children so they become roots rather than dangling links.
@@ -102,6 +263,9 @@ impl Graph {
             }
         }
         for child in detached { _ := self.parents.remove(child) }
+        _ := self.names.remove(entity)
+        _ := self.meshes.remove(entity)
+        _ := self.materials.remove(entity)
         _ := self.worlds.remove(entity)
         _ := self.locals.remove(entity)
         self.allocator.destroy(entity)
@@ -132,5 +296,29 @@ impl Graph {
                 self.visit(child, world.clone(), depth + 1)
             }
         }
+    }
+
+    // Everything drawable, in creation order, with its distance to the eye.
+    // Call after propagate(). Entities with a shape but no material get a
+    // neutral grey so the scene never silently drops a node.
+    pub fn drawables(&self, eye: core.Vec3) -> []Drawable {
+        mut out: []Drawable = []
+        for i in 0..self.meshes.len() {
+            entity := self.meshes.entities()[i]
+            if !self.worlds.contains(entity) { continue }
+            model := self.worlds.get(entity).matrix.clone()
+            dx := model.m[12] - eye.x
+            dy := model.m[13] - eye.y
+            dz := model.m[14] - eye.z
+            mat := if self.materials.contains(entity) { self.materials.get(entity).clone() } else { material(0.5, 0.5, 0.5, 1.0, 0.0, 0.8) }
+            out.push(Drawable {
+                entity: entity,
+                model: model,
+                material: mat,
+                shape: self.meshes.get(entity).shape,
+                depth: dx * dx + dy * dy + dz * dz,
+            })
+        }
+        out
     }
 }

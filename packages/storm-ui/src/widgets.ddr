@@ -1,0 +1,157 @@
+// Immediate-mode widgets for Storm's editor: buttons and sliders that work
+// from a Pointer (position + edge-triggered press + held), so they are
+// testable without a window and need no Vulkan.
+//
+//   mut ui_state := widgets.State::new()
+//   pointer := widgets.Pointer { x: mouse.x, y: mouse.y, down: buttons != 0, pressed: pressed != 0 }
+//   if widgets.button(&mut ui_state, &mut canvas, atlas, 1, &pointer, 40.0, 90.0, 120.0, 30.0, "+ cube", &theme) {
+//       // pressed this frame
+//   }
+//   widgets.slider(&mut ui_state, &mut canvas, atlas, 2, &pointer, 40.0, 140.0, 240.0, "metallic", &mut material.metallic, 0.0, 1.0, &theme)
+
+import text
+import .ui as ui
+
+pub const BUTTON_HEIGHT: f32 = 30.0
+pub const SLIDER_HEIGHT: f32 = 22.0
+pub const ROW_HEIGHT: f32 = 34.0
+
+// What the widgets need to know about the pointer this frame.
+pub struct Pointer {
+    x: f32,
+    y: f32,
+    down: bool,
+    pressed: bool,
+}
+
+impl Pointer {
+    pub fn at(x: f32, y: f32, pressed: bool, down: bool) -> Pointer {
+        Pointer { x: x, y: y, down: down, pressed: pressed }
+    }
+}
+
+pub struct Theme {
+    fill: ui.Color,
+    fill_hot: ui.Color,
+    fill_active: ui.Color,
+    border: ui.Color,
+    ink: ui.Color,
+    ink_dim: ui.Color,
+    track: ui.Color,
+    knob: ui.Color,
+}
+
+pub fn theme() -> Theme {
+    Theme {
+        fill: ui.rgba(0.10, 0.13, 0.18, 0.92),
+        fill_hot: ui.rgba(0.14, 0.22, 0.30, 0.95),
+        fill_active: ui.rgba(0.10, 0.35, 0.30, 0.95),
+        border: ui.rgba(0.36, 0.86, 0.96, 0.32),
+        ink: ui.rgb(0.82, 0.87, 0.93),
+        ink_dim: ui.rgb(0.52, 0.60, 0.72),
+        track: ui.rgba(1.0, 1.0, 1.0, 0.14),
+        knob: ui.rgb(0.36, 0.86, 0.96),
+    }
+}
+
+// Hot = the widget under the pointer; active = the one that received the
+// press and keeps receiving drags until release. Ids are caller-chosen ints.
+pub struct State {
+    hot: i32,
+    active: i32,
+}
+
+pub fn hit(p: &Pointer, x: f32, y: f32, w: f32, h: f32) -> bool {
+    p.x >= x && p.y >= y && p.x < x + w && p.y < y + h
+}
+
+impl State {
+    pub fn new() -> Self { Self { hot: 0, active: 0 } }
+
+    pub fn hot(&self) -> i32 { self.hot }
+    pub fn active(&self) -> i32 { self.active }
+
+    // Call once per frame before drawing widgets: a widget only becomes hot
+    // while nothing else is being dragged, and an active widget stops being
+    // active on release.
+    pub fn begin(&mut self) {
+        self.hot = 0
+    }
+
+    pub fn end(&mut self, p: &Pointer) {
+        if !p.down { self.active = 0 }
+    }
+
+    // Returns true on the frame the widget is pressed (press began on it).
+    pub fn button(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &Pointer,
+        x: f32, y: f32, w: f32, h: f32, label: string, theme: &Theme) -> bool {
+        mut clicked := false
+        hover := self.active == 0 && hit(p, x, y, w, h)
+        if hover { self.hot = id }
+        if hover && p.pressed { self.active = id; clicked = true }
+        held := self.active == id
+        fill := if held { theme.fill_active } else if hover { theme.fill_hot } else { theme.fill }
+        canvas.panel(x, y, w, h, &fill, &theme.border)
+        tw := ui.Canvas::text_width(atlas, label, 0.8)
+        canvas.text(atlas, label, x + (w - tw) * 0.5, y + (h - 17.6) * 0.5, 0.8, &theme.ink)
+        clicked
+    }
+
+    // A labelled horizontal slider. Returns true when the value changed this
+    // frame. The label sits left of the track; the value right of it.
+    pub fn slider(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &Pointer,
+        x: f32, y: f32, w: f32, label: string, value: &mut f32, min: f32, max: f32, theme: &Theme) -> bool {
+        label_width: f32 = 92.0
+        value_width: f32 = 52.0
+        track_x := x + label_width
+        track_w := w - label_width - value_width
+        track_y := y + 7.0
+        mut changed := false
+        hover := self.active == 0 && hit(p, x, y, w, SLIDER_HEIGHT)
+        if hover { self.hot = id }
+        if hover && p.pressed { self.active = id }
+        if self.active == id && p.down {
+            t := clamp01((p.x - track_x) / track_w)
+            value = min + (max - min) * t
+            changed = true
+        }
+        canvas.text(atlas, label, x, y + 1.0, 0.8, &theme.ink_dim)
+        canvas.rect(track_x, track_y + 3.0, track_w, 6.0, &theme.track)
+        span := max - min
+        t := if span == 0.0 { f32(0.0) } else { clamp01((value - min) / span) }
+        knob_x := track_x + t * (track_w - 12.0)
+        canvas.rect(knob_x, track_y, 12.0, 12.0, &theme.knob)
+        canvas.text(atlas, decimal2(value), x + w - value_width, y + 1.0, 0.8, &theme.ink)
+        changed
+    }
+
+    // A row in a list: highlighted when it is the current selection, true on
+    // the frame it is pressed.
+    pub fn row(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &Pointer,
+        x: f32, y: f32, w: f32, label: string, indent: i32, selected: bool, theme: &Theme) -> bool {
+        mut clicked := false
+        hover := self.active == 0 && hit(p, x, y, w, ROW_HEIGHT)
+        if hover { self.hot = id }
+        if hover && p.pressed { self.active = id; clicked = true }
+        if selected || hover {
+            canvas.rect(x, y, w, ROW_HEIGHT, &if selected { theme.fill_active } else { theme.fill_hot })
+        }
+        canvas.text(atlas, label, x + 10.0 + f32(indent) * 18.0, y + 7.0, 0.8, &if selected { theme.ink } else { theme.ink_dim })
+        clicked
+    }
+}
+
+fn clamp01(v: f32) -> f32 {
+    if v < 0.0 { f32(0.0) } else if v > 1.0 { f32(1.0) } else { v }
+}
+
+// Two decimals without float formatting; negative values keep their sign.
+pub fn decimal2(v: f32) -> string {
+    negative := v < 0.0
+    magnitude := if negative { f32(0.0) - v } else { v }
+    scaled := i32(magnitude * 100.0 + 0.5)
+    whole := scaled / 100
+    frac := scaled - whole * 100
+    digits := if frac < 10 { whole.str() + ".0" + frac.str() } else { whole.str() + "." + frac.str() }
+    if negative { "-" + digits } else { digits }
+}
