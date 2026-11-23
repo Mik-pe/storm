@@ -35,7 +35,7 @@ fn local_identity() -> LocalTransform {
     LocalTransform { position: core.vec3(0.0, 0.0, 0.0), rotation_y: 0.0, scale: 1.0 }
 }
 
-fn matrix_for(local: LocalTransform) -> core.Mat4 {
+fn matrix_for(local: &LocalTransform) -> core.Mat4 {
     c := f32(math.cos(f64(local.rotation_y)))
     s := f32(math.sin(f64(local.rotation_y)))
     rotation := core.Mat4 { m: [c, 0.0, -s, 0.0,
@@ -120,23 +120,17 @@ impl Graph {
 
     fn visit(&mut self, entity: ecs.Entity, parent_world: core.Mat4, depth: i32) {
         if depth > 64 { return }
-        local := self.locals.get(entity).clone()
-        world := core.multiply(parent_world, matrix_for(local))
+        world := core.multiply(parent_world, matrix_for(self.locals.get(entity)))
         if self.worlds.contains(entity) {
             self.worlds.get_mut(entity).matrix = world.clone()
         } else {
             _ := self.worlds.insert(entity, WorldTransform { matrix: world.clone() })
         }
-        // Collect children before recursing: mutate-visiting them while the
-        // parent pool is borrowed is rejected by the borrow checker.
-        mut children: []ecs.Entity = []
         for i in 0..self.parents.len() {
             if self.parents.values()[i].entity.index == entity.index {
-                children.push(self.parents.entities()[i])
+                child := self.parents.entities()[i]
+                self.visit(child, world.clone(), depth + 1)
             }
-        }
-        for child in children {
-            self.visit(child, world.clone(), depth + 1)
         }
     }
 }

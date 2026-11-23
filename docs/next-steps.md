@@ -5,10 +5,9 @@ interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Det här är nästa ordn
 
 ## 1. Djupbuffert
 
-Blockerad av `VK_ERROR_OUT_OF_DEVICE_MEMORY` för alla djupformat på
-`vulkan-intel` (se [dogfood.md](dogfood.md#19-vkcreateimage-för-djupformat-returnerar-vk_error_out_of_device_memory)).
-Utred med valideringslager innan något annat görs — utan djup ritas scenen i
-deklarationsordning och överlappande objekt blir fel.
+Ett C-prov på samma Intel-GPU skapade både en D16- och en D32-bild.
+Storms tidigare fel vid bildskapandet behöver följas upp i motorns anrop.
+Se [grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy).
 
 När det fungerar: två bilagor i render passet, `VkPipelineDepthStencilStateCreateInfo`
 med `depthTestEnable`/`depthWriteEnable`, djup-clear och en `D32_SFLOAT`-bild
@@ -68,8 +67,7 @@ ackumulator för fasta fysiksteg (t.ex. 120 Hz) hör till kärnan.
 
 `--capture fil.ppm` renderar en frame utan fönster och skriver den till disk.
 Det är så skärmdumpar tas när sessionen är låst eller maskinen körs över SSH.
-Se [dogfood.md](dogfood.md#21-vkcmdcopyimagetobuffer-kraschar-i-intel-drivrutinen)
-för varför vägen ser ut som den gör.
+Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy)
 
 ## Kända begränsningar i dag
 

@@ -84,3 +84,20 @@ struct Tag { name: string }
     }
     assert(pool.len() == 0)
 }
+
+@test fn removing_a_middle_component_preserves_owners_and_values() {
+    mut pool := ecs.Pool<Tag>::new()
+    mut allocator := ecs.EntityAllocator::new()
+    mut entities: []ecs.Entity = []
+    for name in ["a", "b", "c", "d"] {
+        e := allocator.create()
+        entities.push(e)
+        _ := pool.insert(e, Tag { name: name.clone() })
+    }
+    assert(pool.remove(entities[1]).unwrap().name == "b")
+    assert(!pool.contains(entities[1]) && pool.len() == 3)
+    assert(pool.entities()[1].index == entities[3].index)
+    assert(pool.get(entities[3]).name == "d" && pool.get(entities[2]).name == "c")
+    assert(pool.remove(entities[3]).unwrap().name == "d")
+    assert(pool.get(entities[0]).name == "a" && pool.get(entities[2]).name == "c")
+}

@@ -8,9 +8,9 @@ fn build_triangle_glb() -> []u8 {
     for ch in json_text.bytes() { json_bytes.push(u8(ch)) }
     while json_bytes.len % 4 != 0 { json_bytes.push(u8(32)) }
 
-    // Triangle: (0,0,0) (1,0,0) (0,1,0) as little-endian f32.
+    // Triangle: (0,0,0) (-1,0,0) (0,1,0) as little-endian f32.
     mut bin_bytes: []u8 = []
-    values: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    values: [f32; 9] = [0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
     for v in values {
         bits := v.to_bits()
         bin_bytes.push(u8(bits.bit_and(255)))
@@ -53,7 +53,7 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(mesh.vertex_count == 3)
     assert(mesh.index_count == 3)
     assert(mesh.positions.len == 9)
-    assert(mesh.positions[0] == 0.0 && mesh.positions[3] == 1.0 && mesh.positions[7] == 1.0)
+    assert(mesh.positions[0] == 0.0 && mesh.positions[3] == -1.0 && mesh.positions[7] == 1.0)
     // No indices in the file: the loader synthesizes 0,1,2.
     assert(mesh.indices[0] == 0 && mesh.indices[1] == 1 && mesh.indices[2] == 2)
 }

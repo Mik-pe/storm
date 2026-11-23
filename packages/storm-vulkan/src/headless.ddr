@@ -8,17 +8,11 @@ import .state as state
 
 // Headless frame capture.
 //
-// The frame is rendered into an offscreen colour image and then blitted into a
-// LINEAR image whose memory we map. vkCmdCopyImageToBuffer crashes the Intel
-// driver on this machine for every image we create, while vkCmdBlitImage into
-// the same kind of image works, so the blit is the readback path.
+// The frame is rendered into a linear colour image with host-visible memory.
 
 @c_layout
 struct DependencyPair { before: vk.SubpassDependency, after: vk.SubpassDependency }
 
-// Out-parameters instead of a struct return: returning a struct with ptr fields
-// by value hands back stale handles, so every allocation is written through
-// explicit addresses like the Vulkan entry points do.
 unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> bool {
     mut words: [u32; 22] = [0; 22]
     words[0] = 14          // VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
@@ -77,7 +71,6 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     view := make_view(&r, off_image, r.format)
     if view == ptr(0) { return false }
 
-    // Render pass ending in COLOR_ATTACHMENT_OPTIMAL so the blit can start there.
     mut color: vk.AttachmentDescription = zeroed()
     color.format = r.format
     color.samples = 1

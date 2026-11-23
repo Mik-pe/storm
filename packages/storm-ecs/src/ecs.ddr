@@ -2,10 +2,7 @@
 //
 // Design (Flecs/EnTT-style sparse sets, one per component type):
 //   Pool<T>  = dense []T values + dense []Entity owners + sparse index per entity.
-//   World    = entity allocator + registry of pools, addressed by component type.
-// Dunder has no runtime reflection, so each component type registers its pool
-// with the World explicitly (world.register<T>()), and systems receive the pools
-// they need. This keeps every access static, with no downcasts or type erasure.
+// Systems receive the typed pools they use.
 //
 // Entity = (index: u32, generation: u32). A stale handle never matches a live
 // entity; `is_alive` validates both halves.
@@ -56,20 +53,19 @@ impl Pool<T: Storable> {
         self.dense.len - 1
     }
 
-    // Remove via swap (the array's own .remove keeps dense storage packed).
-    // Returns the removed component, or .None when the entity has no component here.
     pub fn remove(&mut self, entity: Entity) -> Option<T> {
         if !self.contains(entity) { return .None }
         dense := self.sparse[entity.index].dense
         last := self.dense.len - 1
         if dense != last {
             moved_owner := self.owners[last]
-            self.owners[dense] = moved_owner
+            self.owners.swap(dense, last)
+            self.dense.swap(dense, last)
             self.sparse[moved_owner.index].dense = dense
         }
-        _ := self.owners.remove(dense)
+        _ := self.owners.pop()
         self.sparse[entity.index].dense = -1
-        .Some(self.dense.remove(dense))
+        .Some(self.dense.pop())
     }
 
     pub fn clear(&mut self) {

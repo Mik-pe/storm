@@ -93,14 +93,12 @@ frame-loopen exekverar.
   och utan skärm (fungerar över SSH och med låst session)
 - `--trace` – skriv varje inlämningssteg
 
-### Körning kräver en aktiv grafisk session
+### Fönsterprov och headless-körning
 
-Vulkan-fönstret kräver att compositorn faktiskt presenterar. Ett **låst**
-Wayland-session (`session lock`) slutar lämna tillbaka swapchain-bilder, och då
-blockerar `vkAcquireNextImageKHR` när bildpoolen är slut — efter
-`minImageCount + 1` bildrutor. Det är förväntat, inte en motorbugg. Verifiera
-därför fönstret i en olåst session, eller använd `--example scene` för den
-huvudsakliga logiken.
+Prova fönstret i en aktiv grafisk session. Under en tidigare körning på en
+låst Wayland-session presenterade Storm fem bildrutor och väntade sedan på
+nästa swapchain-bild. Över SSH kan du köra `dunder run --example scene`
+för ECS och textlayout eller använda `--capture fil.ppm` för bildåterläsning.
 
 Krav: `vulkan-icd-loader`, `vulkan-intel` (eller annan ICD), `sdl2`.
 Shaderkompilering kräver `glslang`; de färdiga SPIR-V-orden är incheckade.

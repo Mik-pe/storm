@@ -27,9 +27,7 @@ fn read_words(path: string) -> []u32 {
     mut words: []u32 = []
     words.reserve(data.value.len / 4)
     for i in 0..data.value.len / 4 {
-        b := &data.value
-        w := u32(b[i * 4]).bit_or(u32(b[i * 4 + 1]).shl(8)).bit_or(u32(b[i * 4 + 2]).shl(16)).bit_or(u32(b[i * 4 + 3]).shl(24))
-        words.push(w)
+        words.push(u32(bytes.u32_le(&data.value, i * 4)))
     }
     words
 }

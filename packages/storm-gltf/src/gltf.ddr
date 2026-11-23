@@ -12,6 +12,7 @@ capability filesystem
 
 import std.bytes as bytes
 import std.json as json
+import std.wire as wire
 import sys
 
 pub struct Mesh {
@@ -155,7 +156,11 @@ fn component_count(kind: string) -> i32 {
 
 // Read one component as f32, normalizing integer types like glTF specifies.
 fn read_component(data: &[]u8, offset: i32, component_type: i32, normalized: bool) -> f32 {
-    if component_type == 5126 { return f32.from_bits(i32(bytes.u32_le(data, offset))) }
+    if component_type == 5126 {
+        mut reader := wire.Reader::new()
+        reader.pos = offset
+        return reader.read_f32(data)
+    }
     if component_type == 5120 {
         mut raw := i32(bytes.u16_le(data, offset).bit_and(255))
         if raw > 127 { raw = raw - 256 }
@@ -191,11 +196,6 @@ fn read_index(data: &[]u8, offset: i32, component_type: i32) -> i32 {
     if component_type == 5123 { return i32(bytes.u16_le(data, offset)) }
     if component_type == 5125 { return i32(bytes.u32_le(data, offset)) }
     0
-}
-
-// Floats are stored little-endian; reinterpret the word, do not convert it.
-fn read_f32(data: &[]u8, offset: i32) -> f32 {
-    f32.from_bits(i32(bytes.u32_le(data, offset)))
 }
 
 fn buffer_bytes(doc: &Document, buffer_index: i32) -> &[]u8 from doc {
@@ -234,11 +234,7 @@ fn read_accessor_f32(doc: &Document, doc_json: &json.Doc, index: i32) -> []f32 {
         for c in 0..components {
             offset := element + c * size
             if offset + size > data.len { return [] }
-            if size == 4 && component_type == 5126 {
-                out.push(read_f32(data, offset))
-            } else {
-                out.push(read_component(data, offset, component_type, normalized))
-            }
+            out.push(read_component(data, offset, component_type, normalized))
         }
     }
     out
