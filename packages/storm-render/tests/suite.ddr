@@ -1,61 +1,108 @@
 import ..src.graph as graph
 
+fn names(c: &graph.Compiled) -> []string {
+    mut out: []string = []
+    for i in 0..c.steps.len { out.push(c.steps[i].name.clone()) }
+    out
+}
+
 @test fn produces_order_respecting_reads() {
     mut g := graph.Graph::new()
-    assert(g.add_pass("sky", ["color"], []))
-    assert(g.add_pass("opaque", ["color", "depth"], ["color"]))
-    assert(g.add_pass("transparent", ["color"], ["color", "depth"]))
-    order := g.build()
-    assert(order.ok)
-    assert(order.names.len == 3)
-    assert(order.names[0] == "sky")
-    assert(order.names[1] == "opaque")
-    assert(order.names[2] == "transparent")
+    assert(g.add_pass(.Sky, "sky", ["color"], []))
+    assert(g.add_pass(.Opaque, "opaque", ["color", "depth"], ["color"]))
+    assert(g.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]))
+    compiled := g.compile()
+    assert(compiled.ok)
+    assert(compiled.steps.len == 3)
+    n := names(&compiled)
+    assert(n[0] == "sky")
+    assert(n[1] == "opaque")
+    assert(n[2] == "transparent")
 }
 
 @test fn independent_passes_keep_insertion_order() {
     mut g := graph.Graph::new()
-    assert(g.add_pass("a", ["x"], []))
-    assert(g.add_pass("b", ["y"], []))
-    order := g.build()
-    assert(order.ok && order.names.len == 2)
-    assert(order.names[0] == "a" && order.names[1] == "b")
+    assert(g.add_pass(.Opaque, "a", ["x"], []))
+    assert(g.add_pass(.Opaque, "b", ["y"], []))
+    compiled := g.compile()
+    assert(compiled.ok && compiled.steps.len == 2)
+    assert(compiled.steps[0].name == "a" && compiled.steps[1].name == "b")
 }
 
 @test fn reads_resolve_to_the_latest_earlier_writer() {
     mut g := graph.Graph::new()
-    assert(g.add_pass("sky", ["color"], []))
-    assert(g.add_pass("opaque", ["color", "depth"], ["color"]))
-    assert(g.add_pass("fog", ["color"], ["color", "depth"]))
-    order := g.build()
-    assert(order.ok && order.names.len == 3)
+    assert(g.add_pass(.Sky, "sky", ["color"], []))
+    assert(g.add_pass(.Opaque, "opaque", ["color", "depth"], ["color"]))
+    assert(g.add_pass(.Overlay, "fog", ["color"], ["color", "depth"]))
+    compiled := g.compile()
+    assert(compiled.ok && compiled.steps.len == 3)
     // Declaration order already encodes the chain; no pass moves ahead.
-    assert(order.names[0] == "sky" && order.names[1] == "opaque" && order.names[2] == "fog")
+    n := names(&compiled)
+    assert(n[0] == "sky" && n[1] == "opaque" && n[2] == "fog")
 }
 
 @test fn rejects_duplicate_and_empty_names() {
     mut g := graph.Graph::new()
-    assert(g.add_pass("a", ["x"], []))
-    assert(!g.add_pass("a", ["y"], []))
-    assert(!g.add_pass("", ["y"], []))
+    assert(g.add_pass(.Opaque, "a", ["x"], []))
+    assert(!g.add_pass(.Opaque, "a", ["y"], []))
+    assert(!g.add_pass(.Opaque, "", ["y"], []))
 }
 
-@test fn disabled_passes_are_skipped() {
+@test fn disabled_passes_are_skipped_and_can_come_back() {
     mut g := graph.Graph::new()
-    assert(g.add_pass("sky", ["color"], []))
-    assert(g.add_pass("debug", ["color"], ["color"]))
+    assert(g.add_pass(.Sky, "sky", ["color"], []))
+    assert(g.add_pass(.Overlay, "debug", ["color"], ["color"]))
     assert(g.disable("debug"))
-    order := g.build()
-    assert(order.ok && order.names.len == 1)
-    assert(order.names[0] == "sky")
+    assert(!g.is_enabled("debug"))
+    first := g.compile()
+    assert(first.ok && first.steps.len == 1)
+    assert(first.steps[0].name == "sky")
+    assert(g.enable("debug"))
+    second := g.compile()
+    assert(second.ok && second.steps.len == 2)
+    assert(second.steps[1].kind == graph.PassKind.Overlay)
+}
+
+// The frame's real shape: the shadow pass is declared before the opaque pass
+// and feeds it, so it runs first; a shadow toggle drops it without taking the
+// opaque pass with it (the read becomes an external input). Declaration order
+// is the ground truth — a writer declared AFTER its reader is not a producer.
+@test fn the_storm_frame_compiles_in_vulkan_order() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass(.Shadow, "shadow", ["shadow_map"], []))
+    assert(g.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"]))
+    assert(g.add_pass(.Sky, "sky", ["color", "depth"], []))
+    compiled := g.compile()
+    assert(compiled.ok)
+    assert(compiled.steps.len == 3)
+    assert(compiled.steps[0].kind == graph.PassKind.Shadow)
+    assert(compiled.steps[0].name == "shadow")
+    assert(compiled.steps[1].kind == graph.PassKind.Opaque)
+    assert(g.disable("shadow"))
+    without := g.compile()
+    assert(without.ok && without.steps.len == 2)
+    assert(without.steps[0].name == "opaque" && without.steps[0].kind == graph.PassKind.Opaque)
+    assert(without.steps[1].name == "sky")
+}
+
+// Declaring the producer after its reader leaves the read external: the graph
+// does not reorder on its own, declaration order is the contract.
+@test fn a_later_declaration_is_not_a_producer() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass(.Opaque, "opaque", ["color"], ["shadow_map"]))
+    assert(g.add_pass(.Shadow, "shadow", ["shadow_map"], []))
+    compiled := g.compile()
+    assert(compiled.ok)
+    assert(compiled.steps[0].name == "opaque")
+    assert(compiled.steps[1].name == "shadow")
 }
 
 @test fn dependency_check_matches_the_order() {
     mut g := graph.Graph::new()
-    assert(g.add_pass("sky", ["color"], []))
-    assert(g.add_pass("opaque", ["color"], ["color"]))
-    order := g.build()
+    assert(g.add_pass(.Sky, "sky", ["color"], []))
+    assert(g.add_pass(.Opaque, "opaque", ["color"], ["color"]))
+    compiled := g.compile()
     mut passes: []graph.Pass = []
     for i in 0..g.len() { passes.push(g.pass_at(i).clone()) }
-    assert(graph.respects_dependencies(&order, &passes))
+    assert(graph.respects_dependencies(&compiled, &passes))
 }

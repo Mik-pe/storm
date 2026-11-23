@@ -1,30 +1,48 @@
-// Storm render graph: a declarative pass list with resource dependencies.
+// Storm frame graph: a typed pass list with resource dependencies.
 //
-// A pass declares the resources it writes and the resources it reads. `build`
-// validates the graph (unknown resource, duplicate pass, cycle) and returns a
-// topological order in which every producer runs before its consumers.
+// A pass is declared with a `PassKind`, the resources it writes and the ones it
+// reads. `compile()` validates the graph (unknown kind name, duplicate pass) and
+// returns the passes in an order where every producer runs before its
+// consumers; disabled passes (and the reads of them) drop out.
 //
 //   mut graph := graph.Graph::new()
-//   _ := graph.add_pass("sky", ["color"], [])
-//   _ := graph.add_pass("opaque", ["color"], ["color"])
-//   order := graph.build()
-//   // order.names == ["sky", "opaque"]
+//   _ := graph.add_pass(.Shadow, "shadow", ["shadow_map"], [])
+//   _ := graph.add_pass(.Opaque, "opaque", ["color", "depth"], ["shadow_map"])
+//   compiled := graph.compile()
+//   for i in 0..compiled.order.len { compiled.order[i].kind }   // Shadow, Opaque
 //
-// The graph is pure data: the caller maps pass names to GPU work. That keeps
-// scheduling testable without a device, and lets the same order drive a
-// headless validation run.
+// The graph owns ORDER and EXISTENCE; it does not know Vulkan. The frame
+// executor maps each `PassKind` to GPU work. Keeping that split means the
+// schedule is testable without a device, and a toggle can remove a pass (and
+// everything that depended on it) instead of leaving a no-op in the frame.
+
+pub enum PassKind {
+    Shadow = 0,
+    Sky = 1,
+    Opaque = 2,
+    Transparent = 3,
+    Overlay = 4,
+    Ui = 5,
+}
 
 pub struct Pass {
+    kind: PassKind,
     name: string,
     writes: []string,
     reads: []string,
     enabled: bool,
 }
 
-pub struct Order {
+// One entry of a compiled schedule: what to run, and under which name.
+pub struct Step {
+    kind: PassKind,
+    name: string,
+}
+
+pub struct Compiled {
     ok: bool,
     error: string,
-    names: []string,
+    steps: []Step,
 }
 
 fn find_pass(passes: &[]Pass, name: &string) -> i32 {
@@ -43,10 +61,10 @@ impl Graph {
 
     pub fn len(&self) -> i32 { self.passes.len }
 
-    pub fn add_pass(&mut self, move name: string, move writes: []string, move reads: []string) -> bool {
+    pub fn add_pass(&mut self, kind: PassKind, move name: string, move writes: []string, move reads: []string) -> bool {
         if name == "" { return false }
         if find_pass(&self.passes, &name) >= 0 { return false }
-        self.passes.push(Pass { name: name, writes: writes, reads: reads, enabled: true })
+        self.passes.push(Pass { kind: kind, name: name, writes: writes, reads: reads, enabled: true })
         true
     }
 
@@ -57,26 +75,41 @@ impl Graph {
         true
     }
 
+    pub fn enable(&mut self, name: string) -> bool {
+        index := find_pass(&self.passes, &name)
+        if index < 0 { return false }
+        self.passes[index].enabled = true
+        true
+    }
+
+    pub fn is_enabled(&self, name: string) -> bool {
+        index := find_pass(&self.passes, &name)
+        if index < 0 { return false }
+        self.passes[index].enabled
+    }
+
     pub fn pass_at(&self, index: i32) -> &Pass from self { &self.passes[index] }
 
     // DFS post-order over "latest earlier writer" edges. A read resolves to the
-    // most recent preceding pass that writes the resource, so declaration order
-    // is the tie-breaker and cycles cannot form. A read with no earlier writer
-    // means "external input" (a texture, the swapchain) and adds no edge.
-    pub fn build(&self) -> Order {
-        mut names: []string = []
+    // most recent preceding ENABLED pass that writes the resource, so
+    // declaration order is the tie-breaker and cycles cannot form. A read with
+    // no earlier enabled writer means "external input" (a texture, the
+    // swapchain) and adds no edge — so disabling a producer does not make its
+    // consumers disappear; they simply read whatever is bound there.
+    pub fn compile(&self) -> Compiled {
+        mut steps: []Step = []
         mut state: []i32 = []
         for _ in 0..self.passes.len { state.push(0) }
         for i in 0..self.passes.len {
             if !self.passes[i].enabled { continue }
-            visited := self.visit(i, &mut state, &mut names)
-            if !visited.ok { return Order { ok: false, error: visited.error, names: [] } }
+            visited := self.visit(i, &mut state, &mut steps)
+            if !visited.ok { return Compiled { ok: false, error: visited.error, steps: [] } }
         }
-        Order { ok: true, error: "", names: names }
+        Compiled { ok: true, error: "", steps: steps }
     }
 
-    fn visit(&self, index: i32, state: &mut []i32, names: &mut []string) -> Order {
-        if state[index] == 2 { return Order { ok: true, error: "", names: [] } }
+    fn visit(&self, index: i32, state: &mut []i32, steps: &mut []Step) -> Compiled {
+        if state[index] == 2 { return Compiled { ok: true, error: "", steps: [] } }
         state[index] = 1
         for r in 0..self.passes[index].reads.len {
             resource := &self.passes[index].reads[r]
@@ -86,14 +119,14 @@ impl Graph {
                 if writes_resource(&self.passes[candidate], resource) { producer = candidate }
             }
             if producer >= 0 {
-                dependency := self.visit(producer, &mut state, &mut names)
+                dependency := self.visit(producer, &mut state, &mut steps)
                 if !dependency.ok { return dependency }
             }
         }
-        if state[index] == 2 { return Order { ok: true, error: "", names: [] } }
+        if state[index] == 2 { return Compiled { ok: true, error: "", steps: [] } }
         state[index] = 2
-        names.push(self.passes[index].name.clone())
-        Order { ok: true, error: "", names: [] }
+        steps.push(Step { kind: self.passes[index].kind, name: self.passes[index].name.clone() })
+        Compiled { ok: true, error: "", steps: [] }
     }
 }
 
@@ -104,12 +137,12 @@ fn writes_resource(pass: &Pass, resource: &string) -> bool {
     false
 }
 
-// True when the order satisfies every "latest earlier writer" edge: a pass's
-// reads resolve to the most recent preceding declaration that writes the
-// resource, and that writer must appear earlier in the emitted order.
-pub fn respects_dependencies(order: &Order, passes: &[]Pass) -> bool {
-    for o in 0..order.names.len {
-        index := find_pass(passes, &order.names[o])
+// True when the schedule satisfies every "latest earlier writer" edge: a
+// pass's reads resolve to the most recent preceding enabled declaration that
+// writes the resource, and that writer must appear earlier in the schedule.
+pub fn respects_dependencies(compiled: &Compiled, passes: &[]Pass) -> bool {
+    for o in 0..compiled.steps.len {
+        index := find_pass(passes, &compiled.steps[o].name)
         if index < 0 { return false }
         for r in 0..passes[index].reads.len {
             resource := &passes[index].reads[r]
@@ -121,7 +154,7 @@ pub fn respects_dependencies(order: &Order, passes: &[]Pass) -> bool {
             if producer < 0 { continue }
             mut seen := false
             for k in 0..o {
-                if order.names[k] == passes[producer].name { seen = true }
+                if compiled.steps[k].name == passes[producer].name { seen = true }
             }
             if !seen { return false }
         }

@@ -286,24 +286,28 @@ fn main() -> i32 {
         }
         sort_back_to_front(&mut items)
 
-        // --- the render graph is rebuilt from what this frame contains ---
+        // --- the frame graph: declared in Vulkan order, compiled from what the frame contains ---
+        // Pass existence is data: a toggled-off pass is not in the schedule, so
+        // the executor never reaches it. Shadow is declared first because
+        // opaque reads its map; it is recorded in its own render pass.
         mut has_opaque := false
         for item in items { if !item.transparent { has_opaque = true } }
-        mut use_shadows := show_shadows && has_opaque
-        mut schedule := render.Graph::new()
-        if use_shadows { _ := schedule.add_pass("shadow", ["shadow_map"], []) }
-        _ := schedule.add_pass("sky", ["color", "depth"], [])
-        if use_shadows {
-            _ := schedule.add_pass("opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
-        } else {
-            _ := schedule.add_pass("opaque", ["color", "depth"], ["color", "depth"])
-        }
         mut has_transparent := false
         for item in items { if item.transparent { has_transparent = true } }
-        if has_transparent { _ := schedule.add_pass("transparent", ["color"], ["color", "depth"]) }
-        order := schedule.build()
-        if !order.ok {
-            _ := sys.eprint("storm: " + order.error)
+        mut schedule := render.Graph::new()
+        if show_shadows && has_opaque { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
+        _ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
+        if show_shadows && has_opaque {
+            _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
+        } else {
+            _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth"])
+        }
+        if has_transparent { _ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]) }
+        _ := schedule.add_pass(.Overlay, "overlay", ["color"], ["color"])
+        _ := schedule.add_pass(.Ui, "ui", ["color"], ["color"])
+        plan := schedule.compile()
+        if !plan.ok {
+            _ := sys.eprint("storm: " + plan.error)
             running = false
             continue
         }
@@ -316,60 +320,64 @@ fn main() -> i32 {
             continue
         }
 
-        // The shadow pass has to be recorded before the main render pass opens.
-        if use_shadows {
-            _ := vulkan.shadow_begin(opened.window, &sky.light_vp, &sky.light_dir_c)
-            for index in 0..items.len {
-                if !items[index].transparent {
-                    if items[index].plane {
-                        _ := vulkan.shadow_mesh(opened.window, &plane_vertices, &items[index].model.m)
-                    } else {
-                        _ := vulkan.shadow_mesh(opened.window, &cube_vertices, &items[index].model.m)
-                    }
-                }
-            }
-            _ := vulkan.shadow_end(opened.window)
-        }
-
-        opened_pass := vulkan.begin_pass(opened.window)
-        if !opened_pass.ok {
-            _ := sys.eprint("storm: " + opened_pass.error)
-            running = false
-            continue
-        }
-
-        for pass_index in 0..order.names.len {
-            name := order.names[pass_index].clone()
-            if name == "shadow" {
-                // recorded before the main pass opened
-            } else if name == "sky" {
-                _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun_push, &zenith_push, &horizon_push)
-            } else if name == "opaque" {
+        // --- execute: the schedule is the only thing that decides what runs ---
+        mut main_pass_open := false
+        mut execute_failed := false
+        for step in 0..plan.steps.len {
+            kind := plan.steps[step].kind
+            if kind == render.PassKind.Shadow {
+                // Lives in its own render pass, so the main pass must not be open.
+                _ := vulkan.shadow_begin(opened.window, &sky.light_vp, &sky.light_dir_c)
                 for index in 0..items.len {
                     if !items[index].transparent {
                         if items[index].plane {
-                            draw_item(opened.window, &plane_vertices, items[index], view_projection, camera.position, &sky, use_shadows)
+                            _ := vulkan.shadow_mesh(opened.window, &plane_vertices, &items[index].model.m)
                         } else {
-                            draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, use_shadows)
+                            _ := vulkan.shadow_mesh(opened.window, &cube_vertices, &items[index].model.m)
                         }
                     }
                 }
-            } else if name == "transparent" {
+                _ := vulkan.shadow_end(opened.window)
+                continue
+            }
+            if !main_pass_open {
+                opened_pass := vulkan.begin_pass(opened.window)
+                if !opened_pass.ok {
+                    _ := sys.eprint("storm: " + opened_pass.error)
+                    execute_failed = true
+                    break
+                }
+                main_pass_open = true
+            }
+            if kind == render.PassKind.Sky {
+                _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun_push, &zenith_push, &horizon_push)
+            } else if kind == render.PassKind.Opaque {
+                for index in 0..items.len {
+                    if !items[index].transparent {
+                        if items[index].plane {
+                            draw_item(opened.window, &plane_vertices, items[index], view_projection, camera.position, &sky, show_shadows)
+                        } else {
+                            draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, show_shadows)
+                        }
+                    }
+                }
+            } else if kind == render.PassKind.Transparent {
                 for index in 0..items.len {
                     if items[index].transparent {
                         draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, false)
                     }
                 }
+            } else if kind == render.PassKind.Overlay {
+                _ := vulkan.overlay(opened.window, f32(frame.time), if effects { 1.0 } else { 0.0 })
+            } else if kind == render.PassKind.Ui {
+                canvas.clear()
+                draw_editor(&mut canvas, &atlas, f32(frame.width), f32(frame.height),
+                    fps, frames, plan.steps.len, items.len, show_glass, show_shadows, effects)
+                quads := canvas.take()
+                _ := vulkan.ui_draw(opened.window, quads, [f32(frame.width), f32(frame.height)])
             }
         }
-
-        // --- post-process and editor overlay ---
-        _ := vulkan.overlay(opened.window, f32(frame.time), if effects { 1.0 } else { 0.0 })
-        canvas.clear()
-        draw_editor(&mut canvas, &atlas, f32(frame.width), f32(frame.height),
-            fps, frames, order.names.len, items.len, show_glass, show_shadows, effects)
-        quads := canvas.take()
-        _ := vulkan.ui_draw(opened.window, quads, [f32(frame.width), f32(frame.height)])
+        if execute_failed { running = false; continue }
 
         finished := vulkan.end(opened.window)
         if !finished.ok {

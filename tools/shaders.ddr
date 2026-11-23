@@ -15,19 +15,19 @@ struct Shader { stage: string, source: string, name: string }
 
 fn shaders() -> []Shader {
     [Shader { stage: "vert", source: "packages/storm-vulkan/shaders/mesh.vert", name: "mesh_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/mesh.frag", name: "mesh_fragment" },
-     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/sky.vert", name: "sky_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/sky.frag", name: "sky_fragment" },
-     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/shadow.vert", name: "shadow_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/shadow.frag", name: "shadow_fragment" },
-     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/overlay.vert", name: "overlay_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/overlay.frag", name: "overlay_fragment" },
-     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/ui.vert", name: "ui_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/ui.frag", name: "ui_fragment" },
-     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/env.vert", name: "env_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/env.frag", name: "env_fragment" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/prefilter.frag", name: "prefilter_fragment" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/irradiance.frag", name: "irradiance_fragment" }]
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/mesh.frag", name: "mesh_fragment" },
+        Shader { stage: "vert", source: "packages/storm-vulkan/shaders/sky.vert", name: "sky_vertex" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/sky.frag", name: "sky_fragment" },
+        Shader { stage: "vert", source: "packages/storm-vulkan/shaders/shadow.vert", name: "shadow_vertex" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/shadow.frag", name: "shadow_fragment" },
+        Shader { stage: "vert", source: "packages/storm-vulkan/shaders/overlay.vert", name: "overlay_vertex" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/overlay.frag", name: "overlay_fragment" },
+        Shader { stage: "vert", source: "packages/storm-vulkan/shaders/ui.vert", name: "ui_vertex" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/ui.frag", name: "ui_fragment" },
+        Shader { stage: "vert", source: "packages/storm-vulkan/shaders/env.vert", name: "env_vertex" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/env.frag", name: "env_fragment" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/prefilter.frag", name: "prefilter_fragment" },
+        Shader { stage: "frag", source: "packages/storm-vulkan/shaders/irradiance.frag", name: "irradiance_fragment" }]
 }
 
 // SPIR-V words from a little-endian .spv file.
@@ -56,9 +56,16 @@ fn write_module(out: string, entries: &[]Shader) {
         }
         words := read_words(spv)
         bytes.append_utf8(&mut lines, "pub fn " + s.name + "() -> [u32; " + words.len.str() + "] {\n    [\n")
+        // Four words a line: one word a line made ~13k lines that every build
+        // has to parse again; at four a line the parse costs a fraction.
         for i in 0..words.len {
-            bytes.append_utf8(&mut lines, "        " + u32(words[i]).str() + ",\n")
-            if (i + 1) % 8 == 0 { bytes.append_utf8(&mut lines, "\n") }
+            if i % 4 == 0 { bytes.append_utf8(&mut lines, "        ") }
+            bytes.append_utf8(&mut lines, u32(words[i]).str())
+            if (i + 1) % 4 == 0 || i + 1 == words.len {
+                bytes.append_utf8(&mut lines, ",\n")
+            } else {
+                bytes.append_utf8(&mut lines, ", ")
+            }
         }
         bytes.append_utf8(&mut lines, "    ]\n}\n\n")
         _ := sys.remove_file(spv)
