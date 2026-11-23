@@ -77,8 +77,8 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
 
     mut binding: [u64; 3] = [0; 3]
-    binding[0] = u64(0) + (u64(1).shl(32)) // binding 0, COMBINED_IMAGE_SAMPLER
-    binding[1] = u64(1) + (u64(16).shl(32)) // count 1, stage FRAGMENT
+    binding[0] = enums.binding_word(0, .CombinedImageSampler)
+    binding[1] = enums.stages_word(1, .Fragment)
     mut layout_info: vk2.DescriptorSetLayoutCreateInfo = zeroed()
     layout_info.sType = 32
     layout_info.bindingCount = 1

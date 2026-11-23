@@ -23,7 +23,11 @@ fn shaders() -> []Shader {
      Shader { stage: "vert", source: "packages/storm-vulkan/shaders/overlay.vert", name: "overlay_vertex" },
      Shader { stage: "frag", source: "packages/storm-vulkan/shaders/overlay.frag", name: "overlay_fragment" },
      Shader { stage: "vert", source: "packages/storm-vulkan/shaders/ui.vert", name: "ui_vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/ui.frag", name: "ui_fragment" }]
+     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/ui.frag", name: "ui_fragment" },
+     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/env.vert", name: "env_vertex" },
+     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/env.frag", name: "env_fragment" },
+     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/prefilter.frag", name: "prefilter_fragment" },
+     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/irradiance.frag", name: "irradiance_fragment" }]
 }
 
 // SPIR-V words from a little-endian .spv file.

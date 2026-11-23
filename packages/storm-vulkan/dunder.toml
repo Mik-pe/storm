@@ -2,3 +2,6 @@ name = "storm-vulkan"
 version = "0.0.1"
 root = "src/vulkan.ddr"
 test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }

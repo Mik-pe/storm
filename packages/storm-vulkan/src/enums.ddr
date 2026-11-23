@@ -121,6 +121,28 @@ pub enum DescriptorType {
 
 pub fn descriptor_type(v: DescriptorType) -> u32 { u32(i32(v)) }
 
+// One VkDescriptorSetLayoutBinding is 24 bytes = three u64 words on x86-64:
+// [binding | descriptorType<<32], [descriptorCount | stageFlags<<32], [samplers].
+// Pack through these so neither the type nor the stage is an integer at the call site.
+pub fn binding_word(binding: u32, kind: DescriptorType) -> u64 {
+    u64(binding) + (u64(descriptor_type(kind)).shl(32))
+}
+
+pub fn stages_word(count: u32, stages: ShaderStage) -> u64 {
+    u64(count) + (u64(shader_stage(stages)).shl(32))
+}
+
+pub enum PipelineStage {
+    None = 0, TopOfPipe = 1, VertexInput = 4, VertexShader = 8, FragmentShader = 128,
+    EarlyFragmentTests = 256, LateFragmentTests = 512, ColorAttachmentOutput = 1024,
+    Transfer = 4096, BottomOfPipe = 16384, AllGraphics = 32768, AllCommands = 65536,
+}
+
+pub fn pipeline_stage(v: PipelineStage) -> u32 { u32(i32(v)) }
+
+// VK_SUBPASS_EXTERNAL: the implicit subpass before/after the render pass.
+pub const SUBPASS_EXTERNAL: u32 = 4294967295
+
 pub enum SharingMode {
     Exclusive = 0, Concurrent = 1,
 }
@@ -148,6 +170,9 @@ pub fn shader_stage(v: ShaderStage) -> u32 { u32(i32(v)) }
 pub enum ImageUsage {
     TransferSrc = 1, TransferDst = 2, Sampled = 4, ColorAttachment = 16,
     DepthStencilAttachment = 32,
+    // Combined sets Storm builds images with (flags, so written as sums).
+    ColorAttachmentSampled = 20, // COLOR_ATTACHMENT | SAMPLED: env/irradiance cubes
+    TransferDstSampled = 6, // TRANSFER_DST | SAMPLED: uploaded BRDF LUT
 }
 
 pub fn image_usage(v: ImageUsage) -> u32 { u32(i32(v)) }

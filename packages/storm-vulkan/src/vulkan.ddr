@@ -7,6 +7,7 @@ import .depth as depth
 import .device as device
 import .enums as enums
 import .headless as headless
+import .ibl as ibl
 import .layout as vk
 import .pipeline as pipeline
 import .post as post
@@ -102,6 +103,18 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     if !device.create_vertex_buffer(&mut r, 4194304) { return false }
     r.stage = 0
     true
+}
+
+// Render and convolve the environment maps from the sky colours. Call once
+// after open(), before the first frame; the maps are static, so the sun and
+// sky must be the same values the scene passes to sky() every frame.
+pub fn build_environment(window: Window, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        if !ibl.setup(ref_at(address), sun, zenith, horizon) { return draw_error(0, "could not build the environment maps") }
+        DrawResult { ok: true, error: "", frames: 0 }
+    }
 }
 
 // Attach the loader to a freshly allocated renderer. Kept separate so the
@@ -662,6 +675,7 @@ pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon:
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     post.destroy(&mut r)
     ui.destroy(&mut r)
+    ibl.destroy(&mut r)
     depth.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)

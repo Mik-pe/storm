@@ -29,10 +29,12 @@ pub fn normalize(v: Vec3) -> Vec3 {
 pub struct Mat4 { m: [f32; 16] }
 
 pub fn identity() -> Mat4 {
-    Mat4 { m: [1.0, 0.0, 0.0, 0.0,
-               0.0, 1.0, 0.0, 0.0,
-               0.0, 0.0, 1.0, 0.0,
-               0.0, 0.0, 0.0, 1.0] }
+    Mat4 {
+        m: [1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0]
+    }
 }
 
 pub fn multiply(a: Mat4, b: Mat4) -> Mat4 {
@@ -48,30 +50,36 @@ pub fn multiply(a: Mat4, b: Mat4) -> Mat4 {
 }
 
 pub fn translation(x: f32, y: f32, z: f32) -> Mat4 {
-    Mat4 { m: [1.0, 0.0, 0.0, 0.0,
-               0.0, 1.0, 0.0, 0.0,
-               0.0, 0.0, 1.0, 0.0,
-               x, y, z, 1.0] }
+    Mat4 {
+        m: [1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            x, y, z, 1.0]
+    }
 }
 
 // Non-uniform scale. Column-major: the diagonal sits at 0, 5, 10, 15.
 pub fn scaling(v: Vec3) -> Mat4 {
-    Mat4 { m: [v.x, 0.0, 0.0, 0.0,
-               0.0, v.y, 0.0, 0.0,
-               0.0, 0.0, v.z, 0.0,
-               0.0, 0.0, 0.0, 1.0] }
+    Mat4 {
+        m: [v.x, 0.0, 0.0, 0.0,
+            0.0, v.y, 0.0, 0.0,
+            0.0, 0.0, v.z, 0.0,
+            0.0, 0.0, 0.0, 1.0]
+    }
 }
 
 // Orthographic projection for the shadow pass. Like perspective() it negates Y
 // because Vulkan clip space points down, and it maps the view-space z range to
 // [0, 1] instead of OpenGL's [-1, 1].
 pub fn orthographic(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Mat4 {
-    Mat4 { m: [2.0 / (right - left), 0.0, 0.0, 0.0,
-               0.0, -2.0 / (top - bottom), 0.0, 0.0,
-               0.0, 0.0, 1.0 / (near - far), 0.0,
-               -(right + left) / (right - left),
-               (top + bottom) / (top - bottom),
-               near / (near - far), 1.0] }
+    Mat4 {
+        m: [2.0 / (right - left), 0.0, 0.0, 0.0,
+            0.0, -2.0 / (top - bottom), 0.0, 0.0,
+            0.0, 0.0, 1.0 / (near - far), 0.0,
+            -(right + left) / (right - left),
+            (top + bottom) / (top - bottom),
+            near / (near - far), 1.0]
+    }
 }
 
 // Right-handed look-at. Column-major, matching Mat4 elsewhere.
@@ -79,18 +87,129 @@ pub fn look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
     f := normalize(sub(target, eye))
     s := normalize(cross(f, up))
     u := cross(s, f)
-    Mat4 { m: [s.x, u.x, -f.x, 0.0,
-                s.y, u.y, -f.y, 0.0,
-                s.z, u.z, -f.z, 0.0,
-                -dot(s, eye), -dot(u, eye), dot(f, eye), 1.0] }
+    Mat4 {
+        m: [s.x, u.x, -f.x, 0.0,
+            s.y, u.y, -f.y, 0.0,
+            s.z, u.z, -f.z, 0.0,
+            -dot(s, eye), -dot(u, eye), dot(f, eye), 1.0]
+    }
 }
 
 pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     f := f32(1.0) / (fov_y * 0.5).tan()
     // Vulkan's clip space has Y pointing down, so the Y scale is negated.
-    // Without this the whole scene renders upside down.
-    Mat4 { m: [f / aspect, 0.0, 0.0, 0.0,
-               0.0, -f, 0.0, 0.0,
-               0.0, 0.0, (far + near) / (near - far), -1.0,
-               0.0, 0.0, 2.0 * far * near / (near - far), 0.0] }
+    // Without this the whole scene renders upside down. Depth also spans
+    // [0, 1] (not OpenGL's [-1, 1]): near maps to 0 and far to 1.
+    Mat4 {
+        m: [f / aspect, 0.0, 0.0, 0.0,
+            0.0, -f, 0.0, 0.0,
+            0.0, 0.0, far / (near - far), -1.0,
+            0.0, 0.0, far * near / (near - far), 0.0]
+    }
+}
+
+// --- cubemap faces (environment map) ---
+
+pub const CUBE_FACE_COUNT: i32 = 6
+
+// The direction cube face i looks at, in Vulkan's layer order (+X, -X, +Y,
+// -Y, +Z, -Z). At sample time the hardware picks the face whose axis has the
+// largest magnitude in the direction, so these are the face centres.
+pub fn cube_face_forward(face: i32) -> Vec3 {
+    if face == 0 { return vec3(1.0, 0.0, 0.0) }
+    if face == 1 { return vec3(-1.0, 0.0, 0.0) }
+    if face == 2 { return vec3(0.0, 1.0, 0.0) }
+    if face == 3 { return vec3(0.0, -1.0, 0.0) }
+    if face == 4 { return vec3(0.0, 0.0, 1.0) }
+    vec3(0.0, 0.0, -1.0)
+}
+
+// The up vector paired with each face so the rendered image agrees with the
+// (sc, tc) axes the spec derives from the sample direction (tc is -ry, Y
+// points down, so the OpenGL up vectors apply unchanged): +Y for the four
+// side faces, -Z for +Y and +Z for -Y.
+pub fn cube_face_up(face: i32) -> Vec3 {
+    if face == 2 { return vec3(0.0, 0.0, -1.0) }
+    if face == 3 { return vec3(0.0, 0.0, 1.0) }
+    vec3(0.0, 1.0, 0.0)
+}
+
+// View matrix for one cube face, matching the spec's (sc, tc) axes: sc grows
+// toward cross(up, forward) (the opposite of a right-handed look_at) and tc
+// grows down the face, which the Y-negated projection already produces. A
+// look_at here mirrors every face and reflections come out flipped.
+pub fn cube_face_view(face: i32) -> Mat4 {
+    f := cube_face_forward(face)
+    up := cube_face_up(face)
+    s := cross(up, f)
+    Mat4 {
+        m: [s.x, up.x, -f.x, 0.0,
+            s.y, up.y, -f.y, 0.0,
+            s.z, up.z, -f.z, 0.0,
+            0.0, 0.0, 0.0, 1.0]
+    }
+}
+
+// --- split-sum BRDF lookup table ---
+
+// GGX importance-sampled BRDF for the split-sum approximation. For a given
+// NdotV and roughness it integrates the Fresnel term over the hemisphere and
+// returns (scale, bias) so that  F * G * V  ≈  F0 * scale + bias. The mesh
+// shader reads it with texture(brdf_lut, vec2(ndv, roughness)).
+pub fn brdf_lookup(ndv: f32, roughness: f32, samples: i32) -> Vec2 {
+    a := roughness * roughness
+    a2 := a * a
+    v := vec3((1.0 - ndv * ndv).sqrt(), 0.0, ndv)
+    mut scale: f32 = 0.0
+    mut bias: f32 = 0.0
+    for i in 0..samples {
+        // Hammersley sequence: radical inverse base 2 (van der Corput).
+        u1: f32 = f32(i + 1) / f32(samples + 1)
+        mut bits := i
+        mut reversed: i32 = 0
+        for _b in 0..31 {
+            reversed = reversed.shl(1).bit_or(bits.bit_and(1))
+            bits = bits.shr(1)
+        }
+        u2: f32 = (f32(reversed) + 0.5) / 2147483648.0
+        phi: f32 = 6.28318530718 * u2
+        // Importance-sample the GGX half vector.
+        cos_theta: f32 = ((1.0 - u1) / (1.0 + (a2 - 1.0) * u1)).sqrt()
+        sin_theta: f32 = (1.0 - cos_theta * cos_theta).sqrt()
+        half := vec3(sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta)
+        vdh := dot(v, half) * 2.0
+        light := vec3(vdh * half.x - v.x, vdh * half.y - v.y, vdh * half.z - v.z)
+        ndl := light.z
+        if ndl <= 0.0 { continue }
+        // Smith G1 for GGX already carries the NoL / NoV factors, so the
+        // integrand is F * G1(NoV) * G1(NoL); NoL from the sample weight and
+        // the 1/(4 NoV NoL) of the BRDF cancel against G = G1 G1 / (4 NoV NoL).
+        gv := (ndv * 2.0) / (ndv + (a2 + (1.0 - a2) * ndv * ndv).sqrt())
+        gl := (ndl * 2.0) / (ndl + (a2 + (1.0 - a2) * ndl * ndl).sqrt())
+        visibility := gv * gl
+        fc := f32(1.0) - dot(v, half)
+        fc2 := fc * fc
+        fresnel := fc2 * fc2 * fc
+        // Schlick: F = F0 + (1 - F0) * fc = F0 * (1 - fc) + fc, so the F0
+        // coefficient (scale) weights (1 - fc) and the constant term is fc.
+        scale = scale + (f32(1.0) - fresnel) * visibility
+        bias = bias + fresnel * visibility
+    }
+    vec2(scale / f32(samples), bias / f32(samples))
+}
+
+// The (scale, bias) table as interleaved pairs, row-major: texel (x, y) is
+// brdf_lookup(x / (size - 1), y / (size - 1)).
+pub fn brdf_lut(size: i32, samples: i32) -> []f32 {
+    mut out: []f32 = []
+    for y in 0..size {
+        roughness := f32(y) / f32(size - 1)
+        for x in 0..size {
+            ndv := f32(x) / f32(size - 1)
+            entry := brdf_lookup(ndv, roughness, samples)
+            out.push(entry.x)
+            out.push(entry.y)
+        }
+    }
+    out
 }

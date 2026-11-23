@@ -1,12 +1,14 @@
 #version 450
-// Cook-Torrance metallic-roughness PBR.
+// Cook-Torrance metallic-roughness PBR with split-sum image-based lighting.
 //
 // Lighting comes from three places that all agree on the same sky model:
 //   * a directional sun, shadowed by a projected distance map,
-//   * hemispheric irradiance for diffuse ambient,
-//   * the sky gradient sampled along the reflection vector for specular
-//     ambient, which is what makes metals read as metal without an env map.
-// ACES tonemap, then gamma.
+//   * diffuse irradiance from a cosine-convolved environment cubemap,
+//   * specular from a roughness-prefiltered environment cubemap and a
+//     BRDF lookup table:  env_prefiltered(r, roughness) * (F0 * scale + bias).
+// The environment is rendered once from the sky dome (env.frag), so metals
+// reflect the real sky: a horizon line, a sun highlight and blur that grows
+// with roughness. ACES tonemap, then gamma.
 layout(push_constant, std430) uniform Push {
     mat4 mvp;
     mat4 model;
@@ -24,6 +26,11 @@ layout(set = 0, binding = 1) uniform Light {
     mat4 light_vp;       // sun view-projection
     vec4 light_dir_c;    // xyz towards the sun, w = dot(light_origin, dir)
 } light;
+layout(set = 0, binding = 2) uniform samplerCube prefiltered_env;
+layout(set = 0, binding = 3) uniform samplerCube irradiance_map;
+layout(set = 0, binding = 4) uniform sampler2D brdf_lut;
+
+const float ENV_MIPS = 6.0;   // prefiltered_env mip count
 
 layout(location = 0) in vec3 world_normal;
 layout(location = 1) in vec3 world_position;
@@ -58,16 +65,6 @@ float geometry_smith(float ndv, float ndl, float roughness) {
     float gv = ndv / (ndv * (1.0 - k) + k);
     float gl = ndl / (ndl * (1.0 - k) + k);
     return gv * gl;
-}
-
-// Same curve the sky pass draws, so reflections match the visible dome. Below
-// the horizon it falls away to a dim ground tone, which is what gives metals a
-// horizon line in their reflections instead of a flat tint.
-vec3 sky_gradient(vec3 dir) {
-    if (dir.y < 0.0) {
-        return mix(sky_horizon.rgb * 0.28, sky_horizon.rgb, clamp(1.0 + dir.y * 2.2, 0.0, 1.0));
-    }
-    return mix(sky_horizon.rgb, sky_zenith.rgb, pow(dir.y, 0.55));
 }
 
 vec3 aces(vec3 x) {
@@ -130,22 +127,20 @@ void main() {
     vec3 sun = sky_sun_color.rgb * sky_sun.w * shadow;
     vec3 direct = (kd * albedo / PI + specular) * sun * ndl;
 
-    // --- ambient ---
-    vec3 sky_up = sky_gradient(vec3(0.0, 1.0, 0.0));
-    vec3 irradiance = mix(vec3(0.13, 0.15, 0.18), sky_up, n.y * 0.5 + 0.5);
-    vec3 diffuse_ambient = albedo * (1.0 - metallic) * irradiance * 0.38;
+    // --- ambient: split-sum image-based lighting ---
+    // Diffuse: irradiance convolved over the hemisphere (irradiance_map; the
+    // map holds the raw sample sum, so the 1 / PI of the integral is applied
+    // here) times kd * albedo. Metals have no diffuse.
+    vec3 irradiance = texture(irradiance_map, n).rgb;
+    vec3 diffuse_ambient = albedo * (1.0 - metallic) * irradiance / PI;
 
+    // Specular: prefiltered radiance along the reflection vector at the mip
+    // that matches roughness, scaled by the integrated BRDF F0 * scale + bias.
     vec3 r = reflect(-v, n);
-    vec3 env_dir = normalize(mix(vec3(r.x, 0.0, r.z), r, 1.0 - roughness));
-    vec3 env = sky_gradient(env_dir);
-    vec3 specular_ambient = env * fresnel_schlick(ndv, f0) * mix(0.65, 0.22, roughness);
-    // A sharp reflection of the sun in the sky, so smooth metals show a glint
-    // instead of a flat tint.
-    float glint = pow(max(dot(r, l), 0.0), mix(420.0, 16.0, roughness));
-    specular_ambient += sky_sun_color.rgb * sky_sun.w * glint * fresnel_schlick(ndv, f0) * 1.4;
-    // Grazing angles brighten the sky reflection, which is what reads as a
-    // polished surface rather than flat paint.
-    specular_ambient *= 1.0 + 0.9 * pow(1.0 - ndv, 4.0);
+    float lod = roughness * (ENV_MIPS - 1.0);
+    vec3 prefiltered = textureLod(prefiltered_env, r, lod).rgb;
+    vec2 brdf = texture(brdf_lut, vec2(ndv, roughness)).rg;
+    vec3 specular_ambient = prefiltered * (f0 * brdf.x + vec3(brdf.y));
 
     // Contact darkening where the sun is blocked, so shadows read on the ambient
     // term too instead of only killing the highlight.

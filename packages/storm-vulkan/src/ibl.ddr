@@ -1,0 +1,663 @@
+capability unsafe, stdio
+
+import core
+import std.sys as sys
+import .device as device
+import .enums as enums
+import .layout as vk
+import .shader as shader
+import .state as state
+
+// Image-based lighting, built once at startup and never touched again:
+//
+//   * a prefiltered specular cubemap, 64x64 faces, 6 mip levels: mip 0 is the
+//     sky rendered from the origin (env.frag, the same curve as sky.frag) and
+//     mip i is a GGX importance-sampled convolve of mip i-1 at roughness
+//     i / 5 (prefilter.frag). mesh.frag samples it at lod = roughness * 5.
+//   * a diffuse irradiance cubemap, 16x16 faces, cosine-convolved from mip 0
+//     (irradiance.frag).
+//   * a 64x64 BRDF lookup table (scale, bias) generated on the CPU by
+//     storm-core's brdf_lut and uploaded through a staging buffer.
+//
+// The three maps are bound on the mesh pipeline's descriptor set 0 as
+// bindings 2, 3 and 4; shadow.ddr owns that set and declares the bindings.
+
+// libc memcpy, declared here because each module keeps its own bindings.
+@extern("c", "memcpy")
+unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
+
+const ENV_SIZE: u32 = 64
+const ENV_MIPS: u32 = 6
+const IRRADIANCE_SIZE: u32 = 16
+const LUT_SIZE: u32 = 64
+const LUT_SAMPLES: i32 = 512
+
+// Cube usage: COLOR_ATTACHMENT (16) | SAMPLED (4).
+// LUT usage: SAMPLED (4) | TRANSFER_DST (2).
+
+const PUSH_BYTES: u32 = 96
+
+@c_layout
+struct Stages { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
+
+// An image plus its device memory, returned by the image helpers.
+struct ImageMemory { image: ptr, memory: ptr }
+
+// A host-visible staging buffer plus its memory, alive until the copy lands.
+struct Staging { buffer: ptr, memory: ptr }
+
+// A fullscreen-triangle pipeline for one face size. Viewport and scissor are
+// baked in (one pipeline per size) rather than dynamic: pViewports must be
+// filled in or the pipeline rasterises nothing, and this keeps the state
+// struct list to what layout.ddr already declares.
+unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_count: usize,
+    fragment_words: ptr, fragment_count: usize, layout: ptr, pass: ptr, size: u32, output: ptr) -> bool {
+    mut vmodule := ptr(0)
+    mut vinfo: vk.ShaderModuleCreateInfo = zeroed()
+    vinfo.sType = 16
+    vinfo.codeSize = vertex_count * 4
+    vinfo.pCode = vertex_words
+    if r.api.CreateShaderModule(r.device, addr(&vinfo), ptr(0), addr(&mut vmodule)) != 0 { return false }
+    mut fmodule := ptr(0)
+    mut finfo: vk.ShaderModuleCreateInfo = zeroed()
+    finfo.sType = 16
+    finfo.codeSize = fragment_count * 4
+    finfo.pCode = fragment_words
+    if r.api.CreateShaderModule(r.device, addr(&finfo), ptr(0), addr(&mut fmodule)) != 0 {
+        r.api.DestroyShaderModule(r.device, vmodule, ptr(0))
+        return false
+    }
+
+    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
+    stage.sType = 18
+    stage.stage = 1
+    stage.module = vmodule
+    stage.pName = cstr("main")
+    mut stages: Stages = zeroed()
+    stages.vertex = stage
+    stages.fragment = stage
+    stages.fragment.stage = u32(enums.shader_stage(.Fragment))
+    stages.fragment.module = fmodule
+
+    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
+    input.sType = 19
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
+    assembly.sType = 20
+    assembly.topology = enums.primitive_topology(.TriangleList)
+    mut viewport: vk.Viewport = zeroed()
+    viewport.width = f32(size)
+    viewport.height = f32(size)
+    viewport.maxDepth = 1.0
+    mut scissor: vk.Rect2D = zeroed()
+    scissor.extent.width = size
+    scissor.extent.height = size
+    mut view: vk.PipelineViewportStateCreateInfo = zeroed()
+    view.sType = 22
+    view.viewportCount = 1
+    view.pViewports = addr(&viewport)
+    view.scissorCount = 1
+    view.pScissors = addr(&scissor)
+    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
+    raster.sType = 23
+    raster.polygonMode = enums.polygon_mode(.Fill)
+    raster.cullMode = enums.cull_mode(.None)
+    raster.frontFace = enums.front_face(.CounterClockwise)
+    raster.lineWidth = 1.0
+    mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
+    samples.sType = 24
+    samples.rasterizationSamples = 1
+    mut depth: vk.PipelineDepthStencilStateCreateInfo = zeroed()
+    depth.sType = 25
+    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+    blend_attachment.colorWriteMask = enums.color_component(.RGBA)
+    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
+    blend.sType = 26
+    blend.attachmentCount = 1
+    blend.pAttachments = addr(&blend_attachment)
+
+    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
+    info.sType = 28
+    info.stageCount = 2
+    info.pStages = addr(&stages)
+    info.pVertexInputState = addr(&input)
+    info.pInputAssemblyState = addr(&assembly)
+    info.pViewportState = addr(&view)
+    info.pRasterizationState = addr(&raster)
+    info.pMultisampleState = addr(&samples)
+    info.pDepthStencilState = addr(&depth)
+    info.pColorBlendState = addr(&blend)
+    info.layout = layout
+    info.renderPass = pass
+    info.basePipelineIndex = -1
+    created := r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), output) == 0
+    // The pipeline keeps its own reference; the modules are not needed again.
+    r.api.DestroyShaderModule(r.device, vmodule, ptr(0))
+    r.api.DestroyShaderModule(r.device, fmodule, ptr(0))
+    created
+}
+
+// A 6-layer, cube-compatible OPTIMAL image with the given mip count. The
+// image and memory handles come back in outputs[0] and outputs[1] so the
+// same helper can build both cubes.
+unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemory {
+    mut info: vk.ImageCreateInfo = zeroed()
+    info.sType = 14
+    info.flags = enums.image_create(.CubeCompatible)
+    info.imageType = 1
+    info.format = enums.format(.R16G16B16A16_SFLOAT)
+    info.extent = vk.Extent3D { width: size, height: size, depth: 1 }
+    info.mipLevels = mips
+    info.arrayLayers = 6
+    info.samples = enums.samples(.Type1)
+    info.tiling = vk.IMAGE_TILING_OPTIMAL
+    info.usage = enums.image_usage(.ColorAttachmentSampled)
+    info.sharingMode = enums.sharing_mode(.Exclusive)
+    info.initialLayout = enums.image_layout(.Undefined)
+    mut result := ImageMemory { image: ptr(0), memory: ptr(0) }
+    if r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut result.image)) != 0 { return result }
+    mut req: [u64; 3] = [0; 3]
+    r.api.GetImageMemoryRequirements(r.device, result.image, addr(&mut req[0]))
+    mut requirements: vk.MemoryRequirements = zeroed()
+    requirements.size = req[0]
+    requirements.alignment = req[1]
+    requirements.memoryTypeBits = u32(req[2])
+    if !device.allocate(&r, &requirements, 1, addr(&mut result.memory)) {
+        r.api.DestroyImage(r.device, result.image, ptr(0))
+        result.image = ptr(0)
+        return result
+    }
+    if r.api.BindImageMemory(r.device, result.image, result.memory, 0) != 0 {
+        r.api.FreeMemory(r.device, result.memory, ptr(0))
+        r.api.DestroyImage(r.device, result.image, ptr(0))
+        result.image = ptr(0)
+        result.memory = ptr(0)
+    }
+    result
+}
+
+unsafe fn make_view(r: &state.Renderer, image: ptr, view_type: u32, format: u32,
+    base_mip: u32, mip_count: u32, base_layer: u32, layer_count: u32, output: ptr) -> bool {
+    mut view: vk.ImageViewCreateInfo = zeroed()
+    view.sType = 15
+    view.image = image
+    view.viewType = view_type
+    view.format = format
+    view.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    view.subresourceRange.baseMipLevel = base_mip
+    view.subresourceRange.levelCount = mip_count
+    view.subresourceRange.baseArrayLayer = base_layer
+    view.subresourceRange.layerCount = layer_count
+    r.api.CreateImageView(r.device, addr(&view), ptr(0), output) == 0
+}
+
+// Linear filtering with a mip chain: the mesh shader picks the level with
+// textureLod, so the sampler's maxLod must cover the whole chain.
+unsafe fn create_sampler(r: &state.Renderer, max_lod: f32, output: ptr) -> bool {
+    mut info: vk.SamplerCreateInfo = zeroed()
+    info.sType = 31
+    info.magFilter = enums.filter(.Linear)
+    info.minFilter = enums.filter(.Linear)
+    info.mipmapMode = enums.sampler_mipmap_mode(.Linear)
+    info.addressModeU = enums.sampler_address_mode(.ClampToEdge)
+    info.addressModeV = enums.sampler_address_mode(.ClampToEdge)
+    info.addressModeW = enums.sampler_address_mode(.ClampToEdge)
+    info.maxLod = max_lod
+    r.api.CreateSampler(r.device, addr(&info), ptr(0), output) == 0
+}
+
+unsafe fn create_framebuffer(r: &state.Renderer, pass: ptr, view: ptr, size: u32, output: ptr) -> bool {
+    mut views: [ptr; 1] = [view]
+    mut info: vk.FramebufferCreateInfo = zeroed()
+    info.sType = 37
+    info.renderPass = pass
+    info.attachmentCount = 1
+    info.pAttachments = addr(&mut views[0])
+    info.width = size
+    info.height = size
+    info.layers = 1
+    r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), output) == 0
+}
+
+// COMBINED_IMAGE_SAMPLER write for one binding. Used for the convolve sets
+// (binding 0) and for the mesh set's bindings 2, 3 and 4.
+unsafe fn write_image(r: &state.Renderer, set: ptr, binding: u32, sampler: ptr, view: ptr, layout: u32) {
+    mut image_info: vk.DescriptorImageInfo = zeroed()
+    image_info.sampler = sampler
+    image_info.imageView = view
+    image_info.imageLayout = layout
+    mut write: vk.WriteDescriptorSet = zeroed()
+    write.sType = 35
+    write.dstSet = set
+    write.dstBinding = binding
+    write.descriptorCount = 1
+    write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
+    write.pImageInfo = addr(&image_info)
+    r.api.UpdateDescriptorSets(r.device, 1, addr(&write), 0, ptr(0))
+}
+
+// Image barrier over all 6 layers of the given mip range.
+unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, old_layout: u32, new_layout: u32,
+    src_access: u32, dst_access: u32, src_stage: u32, dst_stage: u32) {
+    mut b: vk.ImageMemoryBarrier = zeroed()
+    b.sType = 45
+    b.srcAccessMask = src_access
+    b.dstAccessMask = dst_access
+    b.oldLayout = old_layout
+    b.newLayout = new_layout
+    b.srcQueueFamilyIndex = 4294967295
+    b.dstQueueFamilyIndex = 4294967295
+    b.image = image
+    b.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    b.subresourceRange.baseMipLevel = base_mip
+    b.subresourceRange.levelCount = mip_count
+    b.subresourceRange.baseArrayLayer = 0
+    b.subresourceRange.layerCount = 6
+    r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut b))
+}
+
+// Record one fullscreen draw into a face framebuffer with its push constants.
+unsafe fn draw_face(r: &state.Renderer, cmd: ptr, pipeline: ptr, layout: ptr, pass: ptr, framebuffer: ptr,
+    set: ptr, size: u32, push: &[f32; 24]) {
+    mut pass_begin: vk.RenderPassBeginInfo = zeroed()
+    pass_begin.sType = 43
+    pass_begin.renderPass = pass
+    pass_begin.framebuffer = framebuffer
+    pass_begin.renderArea.extent.width = size
+    pass_begin.renderArea.extent.height = size
+    // Clear value is a union: four float words for the colour attachment.
+    mut clear: [f32; 4] = [0.0; 4]
+    pass_begin.clearValueCount = 1
+    pass_begin.pClearValues = addr(&mut clear[0])
+    r.api.CmdBeginRenderPass(cmd, addr(&pass_begin), 0)
+    r.api.CmdBindPipeline(cmd, 0, pipeline)
+    if set != ptr(0) {
+        r.api.CmdBindDescriptorSets(cmd, 0, layout, 0, 1, addr(&set), 0, ptr(0))
+    }
+    r.api.CmdPushConstants(cmd, layout, u32(enums.shader_stage(.VertexFragment)), 0, PUSH_BYTES, addr(&push[0]))
+    r.api.CmdDraw(cmd, 3, 1, 0, 0)
+    r.api.CmdEndRenderPass(cmd)
+}
+
+// Stage the BRDF LUT words into a host-visible buffer and record the copy
+// into the LUT image on cmd. The buffer stays alive until release_staging()
+// runs after the queue has finished.
+unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging {
+    bytes := usize(words.len * 4)
+    mut stage_info: vk.BufferCreateInfo = zeroed()
+    stage_info.sType = 12
+    stage_info.size = u64(bytes)
+    stage_info.usage = enums.buffer_usage(.TransferSrc)
+    stage_info.sharingMode = enums.sharing_mode(.Exclusive)
+    mut staging := Staging { buffer: ptr(0), memory: ptr(0) }
+    if r.api.CreateBuffer(r.device, addr(&stage_info), ptr(0), addr(&mut staging.buffer)) != 0 { return staging }
+    mut requirements: vk.MemoryRequirements = zeroed()
+    r.api.GetBufferMemoryRequirements(r.device, staging.buffer, addr(&requirements))
+    if !device.allocate(&r, &requirements, 6, addr(&mut staging.memory)) {
+        r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
+        staging.buffer = ptr(0)
+        return staging
+    }
+    if r.api.BindBufferMemory(r.device, staging.buffer, staging.memory, 0) != 0 {
+        r.api.FreeMemory(r.device, staging.memory, ptr(0))
+        r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
+        staging.buffer = ptr(0)
+        staging.memory = ptr(0)
+        return staging
+    }
+    mut mapped := ptr(0)
+    if r.api.MapMemory(r.device, staging.memory, 0, u64(bytes), 0, addr(&mut mapped)) != 0 {
+        r.api.FreeMemory(r.device, staging.memory, ptr(0))
+        r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
+        staging.buffer = ptr(0)
+        staging.memory = ptr(0)
+        return staging
+    }
+    // The words are already a local array; memcpy it in (store_* on a computed
+    // pointer into mapped memory does not reach the GPU here).
+    _ := copy_bytes(mapped, addr(&words[0]), bytes)
+
+    barrier(&r, cmd, r.brdfImage, 0, 1, 0, enums.image_layout(.TransferDstOptimal), 0, 4096, 1, 4096)
+    mut copy: vk.BufferImageCopy = zeroed()
+    copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
+    copy.imageSubresource.mipLevel = 0
+    copy.imageSubresource.baseArrayLayer = 0
+    copy.imageSubresource.layerCount = 1
+    copy.imageExtent.width = LUT_SIZE
+    copy.imageExtent.height = LUT_SIZE
+    copy.imageExtent.depth = 1
+    r.api.CmdCopyBufferToImage(cmd, staging.buffer, r.brdfImage, enums.image_layout(.TransferDstOptimal), 1, addr(&copy))
+    barrier(&r, cmd, r.brdfImage, 0, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 4096, 32, 4096, 128)
+    staging
+}
+
+unsafe fn release_staging(r: &mut state.Renderer, staging: Staging) {
+    if staging.memory != ptr(0) {
+        r.api.UnmapMemory(r.device, staging.memory)
+        r.api.FreeMemory(r.device, staging.memory, ptr(0))
+    }
+    if staging.buffer != ptr(0) { r.api.DestroyBuffer(r.device, staging.buffer, ptr(0)) }
+}
+
+pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> bool {
+    if r.iblPass != ptr(0) {
+        _ := sys.eprint("ibl: the environment maps are already built\n")
+        return false
+    }
+    // Every handle is created into a local and copied into the renderer at
+    // the end: a call that takes &r cannot also borrow one of its fields.
+    mut env_view := ptr(0)
+    mut irradiance_view := ptr(0)
+    mut brdf_view := ptr(0)
+    mut env_mip_views: [ptr; 6] = [ptr(0); 6]
+    mut env_face_views: [ptr; 36] = [ptr(0); 36]
+    mut irradiance_face_views: [ptr; 6] = [ptr(0); 6]
+    mut env_framebuffers: [ptr; 36] = [ptr(0); 36]
+    mut irradiance_framebuffers: [ptr; 6] = [ptr(0); 6]
+    mut env_sampler := ptr(0)
+    mut irradiance_sampler := ptr(0)
+    mut brdf_sampler := ptr(0)
+    mut pass := ptr(0)
+    mut set_layout := ptr(0)
+    mut pool := ptr(0)
+    mut sets: [ptr; 6] = [ptr(0); 6]
+    mut pipeline_layout := ptr(0)
+    mut env_pipeline := ptr(0)
+    mut prefilter_pipelines: [ptr; 6] = [ptr(0); 6]
+    mut irradiance_pipeline := ptr(0)
+
+    // --- images ---
+    env := create_cube(&mut r, ENV_SIZE, ENV_MIPS)
+    if env.image == ptr(0) {
+        _ := sys.eprint("ibl: could not create the environment cubemap\n")
+        return false
+    }
+    irradiance := create_cube(&mut r, IRRADIANCE_SIZE, 1)
+    if irradiance.image == ptr(0) {
+        _ := sys.eprint("ibl: could not create the irradiance cubemap\n")
+        return false
+    }
+    mut lut_info := device.image_2d_info(enums.format(.R32G32_SFLOAT), LUT_SIZE, LUT_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.TransferDstSampled))
+    mut lut_image := ptr(0)
+    if r.api.CreateImage(r.device, addr(&lut_info), ptr(0), addr(&mut lut_image)) != 0 { return false }
+    mut lut_req: vk.MemoryRequirements = zeroed()
+    r.api.GetImageMemoryRequirements(r.device, lut_image, addr(&mut lut_req))
+    mut lut_memory := ptr(0)
+    if !device.allocate(&r, &lut_req, 1, addr(&mut lut_memory)) { return false }
+    if r.api.BindImageMemory(r.device, lut_image, lut_memory, 0) != 0 { return false }
+
+    // --- views: whole chains for the mesh shader, one view per mip for the
+    // prefilter's source (descriptor writes take effect at submit, so each
+    // level needs its own set and view), a 2D view per (mip, face) for the
+    // framebuffers. ---
+    if !make_view(&r, lut_image, 1, enums.format(.R32G32_SFLOAT), 0, 1, 0, 1, addr(&mut brdf_view)) { return false }
+    if !make_view(&r, env.image, 3, enums.format(.R16G16B16A16_SFLOAT), 0, ENV_MIPS, 0, 6, addr(&mut env_view)) { return false }
+    if !make_view(&r, irradiance.image, 3, enums.format(.R16G16B16A16_SFLOAT), 0, 1, 0, 6, addr(&mut irradiance_view)) { return false }
+    for mip in 0..i32(ENV_MIPS) {
+        if !make_view(&r, env.image, 3, enums.format(.R16G16B16A16_SFLOAT), u32(mip), 1, 0, 6, addr(&mut env_mip_views[mip])) { return false }
+        for face in 0..6 {
+            index := mip * 6 + face
+            if !make_view(&r, env.image, 1, enums.format(.R16G16B16A16_SFLOAT), u32(mip), 1, u32(face), 1, addr(&mut env_face_views[index])) { return false }
+        }
+    }
+    for face in 0..6 {
+        if !make_view(&r, irradiance.image, 1, enums.format(.R16G16B16A16_SFLOAT), 0, 1, u32(face), 1, addr(&mut irradiance_face_views[face])) { return false }
+    }
+
+    // --- samplers ---
+    if !create_sampler(&r, f32(ENV_MIPS), addr(&mut env_sampler)) { return false }
+    if !create_sampler(&r, 1.0, addr(&mut irradiance_sampler)) { return false }
+    if !create_sampler(&r, 1.0, addr(&mut brdf_sampler)) { return false }
+
+    // --- render pass shared by every IBL draw: one RGBA16F attachment,
+    // cleared, stored, left SHADER_READ_ONLY for the next pass to sample. ---
+    mut attachment: vk.AttachmentDescription = zeroed()
+    attachment.format = enums.format(.R16G16B16A16_SFLOAT)
+    attachment.samples = enums.samples(.Type1)
+    attachment.loadOp = enums.attachment_load_op(.Clear)
+    attachment.storeOp = enums.attachment_store_op(.Store)
+    attachment.stencilLoadOp = enums.attachment_load_op(.DontCare)
+    attachment.stencilStoreOp = enums.attachment_store_op(.DontCare)
+    attachment.initialLayout = enums.image_layout(.Undefined)
+    attachment.finalLayout = enums.image_layout(.ShaderReadOnlyOptimal)
+    mut color_ref: vk.AttachmentReference = zeroed()
+    color_ref.attachment = 0
+    color_ref.layout = enums.image_layout(.ColorAttachmentOptimal)
+    mut subpass: vk.SubpassDescription = zeroed()
+    subpass.pipelineBindPoint = enums.pipeline_bind_point(.Graphics)
+    subpass.colorAttachmentCount = 1
+    subpass.pColorAttachments = addr(&color_ref)
+    mut pass_info: vk.RenderPassCreateInfo = zeroed()
+    pass_info.sType = 38
+    pass_info.attachmentCount = 1
+    pass_info.pAttachments = addr(&attachment)
+    pass_info.subpassCount = 1
+    pass_info.pSubpasses = addr(&subpass)
+    if r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass)) != 0 { return false }
+
+    // --- framebuffers ---
+    for mip in 0..i32(ENV_MIPS) {
+        size := ENV_SIZE.shr(mip)
+        for face in 0..6 {
+            index := mip * 6 + face
+            if !create_framebuffer(&r, pass, env_face_views[index], size, addr(&mut env_framebuffers[index])) { return false }
+        }
+    }
+    for face in 0..6 {
+        if !create_framebuffer(&r, pass, irradiance_face_views[face], IRRADIANCE_SIZE, addr(&mut irradiance_framebuffers[face])) { return false }
+    }
+
+    // --- descriptor sets for the convolve passes: binding 0 = source cube ---
+    mut bindings: [u64; 3] = [0; 3]
+    bindings[0] = enums.binding_word(0, .CombinedImageSampler)
+    bindings[1] = enums.stages_word(1, .Fragment)
+    bindings[2] = 0
+    mut set_layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
+    set_layout_info.sType = 32
+    set_layout_info.bindingCount = 1
+    set_layout_info.pBindings = addr(&mut bindings[0])
+    if r.api.CreateDescriptorSetLayout(r.device, addr(&set_layout_info), ptr(0), addr(&mut set_layout)) != 0 { return false }
+    // Sets 0..4 sample mip 0..4 as the prefilter source, set 5 samples mip 0
+    // for the irradiance pass.
+    mut pool_sizes: [u32; 2] = [enums.descriptor_type(.CombinedImageSampler), 6]
+    mut pool_info: vk.DescriptorPoolCreateInfo = zeroed()
+    pool_info.sType = 33
+    pool_info.maxSets = 6
+    pool_info.poolSizeCount = 1
+    pool_info.pPoolSizes = addr(&mut pool_sizes[0])
+    if r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool)) != 0 { return false }
+    for i in 0..6 {
+        mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
+        allocate_info.sType = 34
+        allocate_info.descriptorPool = pool
+        allocate_info.descriptorSetCount = 1
+        allocate_info.pSetLayouts = addr(&set_layout)
+        if r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut sets[i])) != 0 { return false }
+        write_image(&r, sets[i], 0, env_sampler, env_mip_views[i], enums.image_layout(.ShaderReadOnlyOptimal))
+    }
+
+    // --- pipeline layout: 96 bytes of push constants, VERTEX | FRAGMENT ---
+    mut push_range: vk.PushConstantRange = zeroed()
+    push_range.stageFlags = u32(enums.shader_stage(.VertexFragment))
+    push_range.size = PUSH_BYTES
+    mut layout_info: vk.PipelineLayoutCreateInfo = zeroed()
+    layout_info.sType = 30
+    layout_info.pushConstantRangeCount = 1
+    layout_info.pPushConstantRanges = addr(&push_range)
+    layout_info.setLayoutCount = 1
+    layout_info.pSetLayouts = addr(&set_layout)
+    if r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut pipeline_layout)) != 0 { return false }
+
+    // --- pipelines: env at 64, prefilter at 32..2, irradiance at 16 ---
+    vertex := shader.env_vertex()
+    env_fragment := shader.env_fragment()
+    if !fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&env_fragment[0]), usize(env_fragment.len),
+        pipeline_layout, pass, ENV_SIZE, addr(&mut env_pipeline)) { return false }
+    prefilter_fragment := shader.prefilter_fragment()
+    for mip in 1..i32(ENV_MIPS) {
+        size := ENV_SIZE.shr(mip)
+        if !fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&prefilter_fragment[0]), usize(prefilter_fragment.len),
+            pipeline_layout, pass, size, addr(&mut prefilter_pipelines[mip])) { return false }
+    }
+    irradiance_fragment := shader.irradiance_fragment()
+    if !fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&irradiance_fragment[0]), usize(irradiance_fragment.len),
+        pipeline_layout, pass, IRRADIANCE_SIZE, addr(&mut irradiance_pipeline)) { return false }
+
+    // --- the BRDF LUT on the CPU ---
+    mut lut := core.brdf_lut(i32(LUT_SIZE), LUT_SAMPLES)
+    mut lut_words: []u32 = []
+    lut_words.reserve(lut.len)
+    for i in 0..lut.len { lut_words.push(u32(lut[i].to_bits())) }
+
+    // Everything below records into one command buffer and needs the handles
+    // through the renderer (the barrier and staging helpers read r.*), so the
+    // locals land in the renderer now.
+    r.envImage = env.image
+    r.envMemory = env.memory
+    r.envView = env_view
+    r.envSampler = env_sampler
+    r.irradianceImage = irradiance.image
+    r.irradianceMemory = irradiance.memory
+    r.irradianceView = irradiance_view
+    r.irradianceSampler = irradiance_sampler
+    r.brdfImage = lut_image
+    r.brdfMemory = lut_memory
+    r.brdfView = brdf_view
+    r.brdfSampler = brdf_sampler
+    r.iblPass = pass
+    r.iblPipelineLayout = pipeline_layout
+    r.iblSetLayout = set_layout
+    r.iblPool = pool
+    r.envPipeline = env_pipeline
+    r.irradiancePipeline = irradiance_pipeline
+    // Arrays are moved by assignment, so copy them element by element and
+    // keep using the locals below.
+    for i in 0..6 { r.envMipViews[i] = env_mip_views[i] }
+    for i in 0..36 { r.envFaceViews[i] = env_face_views[i] }
+    for i in 0..36 { r.envFramebuffers[i] = env_framebuffers[i] }
+    for i in 0..6 { r.irradianceFaceViews[i] = irradiance_face_views[i] }
+    for i in 0..6 { r.irradianceFramebuffers[i] = irradiance_framebuffers[i] }
+    for i in 0..6 { r.iblSets[i] = sets[i] }
+    for i in 0..6 { r.prefilterPipelines[i] = prefilter_pipelines[i] }
+
+    // --- one command buffer for the whole build ---
+    mut alloc: vk.CommandBufferAllocateInfo = zeroed()
+    alloc.sType = 40
+    alloc.commandPool = r.pool
+    alloc.level = 0
+    alloc.commandBufferCount = 1
+    mut cmd := ptr(0)
+    if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
+    mut begin: vk.CommandBufferBeginInfo = zeroed()
+    begin.sType = 42
+    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
+    if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
+    staging := stage_lut(&mut r, cmd, lut_words)
+    if staging.buffer == ptr(0) { return false }
+
+    // Mip 0 of every face: the sky, from the face's own basis.
+    mut push: [f32; 24] = [0.0; 24]
+    for face in 0..6 {
+        env_push(&mut push, face, sun, zenith, horizon)
+        draw_face(&r, cmd, env_pipeline, pipeline_layout, pass, env_framebuffers[face], ptr(0), ENV_SIZE, &push)
+    }
+    // Mip i: convolve mip i-1. Each level reads the one before it, so a
+    // barrier between levels makes the just-written mip available as a
+    // source (the attachment's finalLayout already set SHADER_READ_ONLY;
+    // this adds the execution dependency).
+    for mip in 1..i32(ENV_MIPS) {
+        barrier(&r, cmd, env.image, u32(mip - 1), 1, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
+        for face in 0..6 {
+            convolve_push(&mut push, face, f32(mip) / f32(ENV_MIPS - 1))
+            index := mip * 6 + face
+            draw_face(&r, cmd, prefilter_pipelines[mip], pipeline_layout, pass,
+                env_framebuffers[index], sets[mip - 1], ENV_SIZE.shr(mip), &push)
+        }
+    }
+    // Irradiance: cosine convolve of mip 0, which is SHADER_READ_ONLY and
+    // already ordered before this by the mip-1 barrier.
+    for face in 0..6 {
+        face_basis(&mut push, face)
+        draw_face(&r, cmd, irradiance_pipeline, pipeline_layout, pass,
+            irradiance_framebuffers[face], sets[0], IRRADIANCE_SIZE, &push)
+    }
+    barrier(&r, cmd, irradiance.image, 0, 1, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
+
+    if r.api.EndCommandBuffer(cmd) != 0 { return false }
+    mut submit: vk.SubmitInfo = zeroed()
+    submit.sType = 4
+    submit.commandBufferCount = 1
+    submit.pCommandBuffers = addr(&mut cmd)
+    if r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0)) != 0 { return false }
+    _ := r.api.QueueWaitIdle(r.queue)
+    release_staging(&mut r, staging)
+    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
+
+    // --- the mesh pipeline's set 0: bindings 2, 3, 4 ---
+    write_image(&r, r.shadowSet, 2, env_sampler, env_view, enums.image_layout(.ShaderReadOnlyOptimal))
+    write_image(&r, r.shadowSet, 3, irradiance_sampler, irradiance_view, enums.image_layout(.ShaderReadOnlyOptimal))
+    write_image(&r, r.shadowSet, 4, brdf_sampler, brdf_view, enums.image_layout(.ShaderReadOnlyOptimal))
+    true
+}
+
+// Push constants for the env pass: right, up, forward, sun, zenith, horizon.
+// right, up, forward as the first three vec4 of the push block, taken from
+// the tested view matrix in storm-core: columns are s, up, -forward.
+unsafe fn face_basis(push: &mut [f32; 24], face: i32) {
+    view := core.cube_face_view(face)
+    for i in 0..24 { push[i] = 0.0 }
+    for i in 0..3 { push[i] = view.m[i] }
+    for i in 0..3 { push[4 + i] = view.m[4 + i] }
+    for i in 0..3 { push[8 + i] = -view.m[8 + i] }
+}
+
+unsafe fn env_push(push: &mut [f32; 24], face: i32, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) {
+    face_basis(&mut push, face)
+    for i in 0..4 { push[12 + i] = sun[i] }
+    for i in 0..4 { push[16 + i] = zenith[i] }
+    for i in 0..4 { push[20 + i] = horizon[i] }
+}
+
+// Push constants for the convolve passes: vec4(roughness, source mip, 0, 0).
+// The irradiance pass ignores them.
+// The convolve passes share the environment pass's vertex shader, so their
+// push block starts with the face basis too; the roughness follows it.
+unsafe fn convolve_push(push: &mut [f32; 24], face: i32, roughness: f32) {
+    face_basis(&mut push, face)
+    for i in 12..24 { push[i] = 0.0 }
+    push[12] = roughness
+}
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.device == ptr(0) { return }
+    r.api.DestroyPipeline(r.device, r.envPipeline, ptr(0))
+    r.api.DestroyPipeline(r.device, r.irradiancePipeline, ptr(0))
+    for mip in 1..i32(ENV_MIPS) { r.api.DestroyPipeline(r.device, r.prefilterPipelines[mip], ptr(0)) }
+    r.api.DestroyPipelineLayout(r.device, r.iblPipelineLayout, ptr(0))
+    r.api.DestroyDescriptorPool(r.device, r.iblPool, ptr(0))
+    r.api.DestroyDescriptorSetLayout(r.device, r.iblSetLayout, ptr(0))
+    r.api.DestroyRenderPass(r.device, r.iblPass, ptr(0))
+    for mip in 0..i32(ENV_MIPS) {
+        for face in 0..6 {
+            index := mip * 6 + face
+            r.api.DestroyFramebuffer(r.device, r.envFramebuffers[index], ptr(0))
+            r.api.DestroyImageView(r.device, r.envFaceViews[index], ptr(0))
+        }
+        r.api.DestroyImageView(r.device, r.envMipViews[mip], ptr(0))
+    }
+    for face in 0..6 {
+        r.api.DestroyFramebuffer(r.device, r.irradianceFramebuffers[face], ptr(0))
+        r.api.DestroyImageView(r.device, r.irradianceFaceViews[face], ptr(0))
+    }
+    r.api.DestroyImageView(r.device, r.envView, ptr(0))
+    r.api.DestroyImageView(r.device, r.irradianceView, ptr(0))
+    r.api.DestroyImageView(r.device, r.brdfView, ptr(0))
+    r.api.DestroySampler(r.device, r.envSampler, ptr(0))
+    r.api.DestroySampler(r.device, r.irradianceSampler, ptr(0))
+    r.api.DestroySampler(r.device, r.brdfSampler, ptr(0))
+    r.api.DestroyImage(r.device, r.envImage, ptr(0))
+    r.api.DestroyImage(r.device, r.irradianceImage, ptr(0))
+    r.api.DestroyImage(r.device, r.brdfImage, ptr(0))
+    r.api.FreeMemory(r.device, r.envMemory, ptr(0))
+    r.api.FreeMemory(r.device, r.irradianceMemory, ptr(0))
+    r.api.FreeMemory(r.device, r.brdfMemory, ptr(0))
+}

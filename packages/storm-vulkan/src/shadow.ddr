@@ -83,24 +83,32 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     mut light_mapped := ptr(0)
     if r.api.MapMemory(r.device, light_memory, 0, 80, 0, addr(&mut light_mapped)) != 0 { return false }
 
-    // --- descriptor set: binding 0 sampler (fragment), binding 1 UBO (vertex+fragment) ---
-    // Two vkDescriptorSetLayoutBinding records of 24 bytes each: six u64 words.
-    // word0/3 = binding | type, word1/4 = count | stages, word2/5 = immutable samplers.
-    mut bindings: [u64; 6] = [0; 6]
-    bindings[0] = u64(0) + (u64(1).shl(32)) // binding 0, COMBINED_IMAGE_SAMPLER
-    bindings[1] = u64(1) + (u64(16).shl(32)) // count 1, stage FRAGMENT
+    // --- descriptor set: binding 0 shadow sampler, 1 light UBO, 2 prefiltered
+    // env cube, 3 irradiance cube, 4 BRDF LUT (the three IBL bindings are
+    // written by ibl.setup once the maps exist). Five 24-byte
+    // vkDescriptorSetLayoutBinding records: fifteen u64 words.
+    // word0/3/6/9/12 = binding | type, word1/4/7/10/13 = count | stages,
+    // word2/5/8/11/14 = immutable samplers.
+    mut bindings: [u64; 15] = [0; 15]
+    bindings[0] = enums.binding_word(0, .CombinedImageSampler)
+    bindings[1] = enums.stages_word(1, .Fragment)
     bindings[2] = 0
-    bindings[3] = u64(1) + (u64(6).shl(32)) // binding 1, UNIFORM_BUFFER
-    bindings[4] = u64(1) + (u64(17).shl(32)) // count 1, stages VERTEX | FRAGMENT
+    bindings[3] = enums.binding_word(1, .UniformBuffer)
+    bindings[4] = enums.stages_word(1, .VertexFragment)
     bindings[5] = 0
+    for binding in 2..5 {
+        bindings[binding * 3] = enums.binding_word(u32(binding), .CombinedImageSampler)
+        bindings[binding * 3 + 1] = enums.stages_word(1, .Fragment)
+    }
     mut layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
     layout_info.sType = 32
-    layout_info.bindingCount = 2
+    layout_info.bindingCount = 5
     layout_info.pBindings = addr(&mut bindings[0])
     mut set_layout := ptr(0)
     if r.api.CreateDescriptorSetLayout(r.device, addr(&layout_info), ptr(0), addr(&mut set_layout)) != 0 { return false }
 
-    mut pool_sizes: [u32; 4] = [1, 1, 6, 1]
+    // Four combined image samplers and one uniform buffer.
+    mut pool_sizes: [u32; 4] = [1, 4, 6, 1]
     mut pool_info: vk.DescriptorPoolCreateInfo = zeroed()
     pool_info.sType = 33
     pool_info.maxSets = 1
