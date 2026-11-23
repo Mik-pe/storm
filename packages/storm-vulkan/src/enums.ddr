@@ -227,11 +227,56 @@ pub enum Format {
 
 pub fn format(v: Format) -> u32 { u32(i32(v)) }
 
+// VkResult as a Dunder enum, the codes Storm can act on. Negative values are
+// errors; SUBOPTIMAL_KHR is a success the swapchain should still be rebuilt
+// for. Do not cast an unknown code into the enum (it panics silently, exit
+// 108): match the integer.
+pub enum VkResult {
+    Success = 0, NotReady = 1, Timeout = 2, Incomplete = 5,
+    ErrorOutOfHostMemory = -1, ErrorOutOfDeviceMemory = -2, ErrorInitializationFailed = -3,
+    ErrorDeviceLost = -4, ErrorMemoryMapFailed = -5, ErrorLayerNotPresent = -6,
+    ErrorExtensionNotPresent = -7, ErrorFeatureNotPresent = -8, ErrorIncompatibleDriver = -9,
+    ErrorFormatNotSupported = -11, ErrorUnknown = -13,
+    SuboptimalKHR = 1000001003, ErrorOutOfDateKHR = -1000001004,
+    ErrorSurfaceLostKHR = -1000000000, ErrorNativeWindowInUseKHR = -1000000001,
+    ErrorValidationFailedEXT = -1000011001,
+}
+
+// The Khronos spelling, for error messages.
+pub fn result_name(code: i32) -> string {
+    match code {
+        0 => "VK_SUCCESS",
+        1 => "VK_NOT_READY",
+        2 => "VK_TIMEOUT",
+        5 => "VK_INCOMPLETE",
+        -1 => "VK_ERROR_OUT_OF_HOST_MEMORY",
+        -2 => "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+        -3 => "VK_ERROR_INITIALIZATION_FAILED",
+        -4 => "VK_ERROR_DEVICE_LOST",
+        -5 => "VK_ERROR_MEMORY_MAP_FAILED",
+        -6 => "VK_ERROR_LAYER_NOT_PRESENT",
+        -7 => "VK_ERROR_EXTENSION_NOT_PRESENT",
+        -8 => "VK_ERROR_FEATURE_NOT_PRESENT",
+        -9 => "VK_ERROR_INCOMPATIBLE_DRIVER",
+        -11 => "VK_ERROR_FORMAT_NOT_SUPPORTED",
+        -13 => "VK_ERROR_UNKNOWN",
+        1000001003 => "VK_SUBOPTIMAL_KHR",
+        -1000001004 => "VK_ERROR_OUT_OF_DATE_KHR",
+        -1000000000 => "VK_ERROR_SURFACE_LOST_KHR",
+        -1000000001 => "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR",
+        -1000011001 => "VK_ERROR_VALIDATION_FAILED_EXT",
+        _ => "VK_ERROR_?",
+    }
+}
+
+// The frame was presented; SUBOPTIMAL still asks for a rebuild, later.
+pub fn is_success(code: i32) -> bool { code == i32(VkResult.Success) || code == i32(VkResult.SuboptimalKHR) }
+
+pub fn is_out_of_date(code: i32) -> bool { code == i32(VkResult.ErrorOutOfDateKHR) }
+
 // Extension enum values Storm compares against, as named constants (they are
 // not ordinal enums with a Dunder type of their own).
 pub const IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002
-pub const ERROR_OUT_OF_DATE_KHR: i32 = -1000001003
-pub const SUCCESS: i32 = 0
 
 pub enum Access {
     None = 0, IndirectCommandRead = 1, IndexRead = 2, VertexAttributeRead = 4, UniformRead = 8,

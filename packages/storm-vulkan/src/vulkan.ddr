@@ -303,23 +303,27 @@ fn mouse_at(r: &state.Renderer) -> MouseState {
 
 fn stage_name(r: &state.Renderer) -> string {
     stage := r.stage
-    if stage == 1 { return "SDL window" }
-    if stage == 2 { return "Vulkan device" }
-    if stage == 11 { return "instance/surface" }
-    if stage == 12 { return "physical device (mesh requires " + state.MESH_PUSH_BYTES.str() + " bytes of push constants)" }
-    if stage == 13 { return "queue family" }
-    if stage == 14 { return "logical device" }
-    if stage == 15 { return "surface format" }
-    if stage == 16 { return "swapchain" }
-    if stage == 17 { return "depth buffer" }
-    if stage == 3 { return "pipeline" }
-    if stage == 21 { return "render pass" }
-    if stage == 22 { return "mesh pipeline" }
-    if stage == 23 { return "sky pipeline" }
-    if stage == 24 { return "framebuffers" }
-    if stage == 4 { return "frame sync" }
-    if stage == 5 { return "vertex buffer" }
-    "stage " + stage.str()
+    mut name := ""
+    if stage == 1 { name = "SDL window" }
+    if stage == 2 { name = "Vulkan device" }
+    if stage == 11 { name = "instance/surface" }
+    if stage == 12 { name = "physical device (mesh requires " + state.MESH_PUSH_BYTES.str() + " bytes of push constants)" }
+    if stage == 13 { name = "queue family" }
+    if stage == 14 { name = "logical device" }
+    if stage == 15 { name = "surface format" }
+    if stage == 16 { name = "swapchain" }
+    if stage == 17 { name = "depth buffer" }
+    if stage == 3 { name = "pipeline" }
+    if stage == 21 { name = "render pass" }
+    if stage == 22 { name = "mesh pipeline" }
+    if stage == 23 { name = "sky pipeline" }
+    if stage == 24 { name = "framebuffers" }
+    if stage == 4 { name = "frame sync" }
+    if stage == 5 { name = "vertex buffer" }
+    if name.len == 0 { name = "stage " + stage.str() }
+    // What Vulkan said, when Vulkan said no.
+    if r.lastResult != 0 { name = name + " (" + enums.result_name(r.lastResult) + ")" }
+    name
 }
 
 fn draw_error(frames: i64, move message: string) -> DrawResult {
@@ -336,11 +340,11 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     mut image_index: u32 = 0
     acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
         r.image_available[slot], ptr(0), addr(&mut image_index))
-    if acquired == enums.ERROR_OUT_OF_DATE_KHR {
-        if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date", width: 0, height: 0 } }
+    if enums.is_out_of_date(acquired) {
+        if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated (" + enums.result_name(r.lastResult) + ")", width: 0, height: 0 } }
         return BeginResult { ok: false, error: "swapchain recreated; retry the frame", width: 0, height: 0 }
     }
-    if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed", width: 0, height: 0 } }
+    if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")", width: 0, height: 0 } }
     trace_step(&r, "acquired image " + i32(image_index).str())
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
     _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
@@ -505,10 +509,15 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     presented := r.api.QueuePresentKHR(r.queue, addr(&present))
     trace_step(&r, "presented " + presented.str())
     r.recording = 0
-    if presented == enums.ERROR_OUT_OF_DATE_KHR {
-        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date") }
+    if enums.is_out_of_date(presented) {
+        // The frame was not shown; build a new swapchain before the next one.
+        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date and could not be recreated (" + enums.result_name(r.lastResult) + ")") }
+    } else if presented == i32(enums.VkResult.SuboptimalKHR) {
+        // Shown, but the swapchain no longer matches the window: rebuild it
+        // now that presenting is done, and let the frame count as delivered.
+        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is suboptimal and could not be recreated (" + enums.result_name(r.lastResult) + ")") }
     } else if presented != 0 {
-        return draw_error(r.frameIndex, "presenting failed")
+        return draw_error(r.frameIndex, "presenting failed (" + enums.result_name(presented) + ")")
     }
     r.current = (r.current + 1) % 2
     r.frameIndex = r.frameIndex + 1

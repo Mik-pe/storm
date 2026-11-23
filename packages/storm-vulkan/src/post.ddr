@@ -1,6 +1,7 @@
 capability unsafe, stdio
 
 import std.sys as sys
+import .device as device
 import .enums as enums
 import .layout as vk2
 import .shader as shader
@@ -89,7 +90,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     layout_info.sType = 30
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&mut push_range)
-    if r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout)) != 0 { return false }
+    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout))
+    if code != 0 { return device.fail(&mut r, code) }
 
     mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
     info.sType = 28
@@ -106,7 +108,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     info.renderPass = r.renderPass
     info.subpass = 0
     info.basePipelineIndex = -1
-    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.postPipeline)) != 0 { return false }
+    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.postPipeline))
+    if code != 0 { return device.fail(&mut r, code) }
     true
 }
 

@@ -203,3 +203,29 @@ import ..src.vulkan as vulkan
         assert(attachment.colorBlendOp == 4)
     }
 }
+
+// The codes Storm acts on, against the Khronos VkResult reference page. The
+// old constant ERROR_OUT_OF_DATE_KHR was -1000001003, which is no VkResult at
+// all, so the out-of-date branch could never fire.
+@test fn vk_result_codes_match_the_khronos_table() {
+    assert(i32(enums.VkResult.Success) == 0)
+    assert(i32(enums.VkResult.ErrorOutOfHostMemory) == -1)
+    assert(i32(enums.VkResult.ErrorOutOfDeviceMemory) == -2)
+    assert(i32(enums.VkResult.ErrorDeviceLost) == -4)
+    assert(i32(enums.VkResult.ErrorExtensionNotPresent) == -7)
+    assert(i32(enums.VkResult.ErrorFeatureNotPresent) == -8)
+    assert(i32(enums.VkResult.ErrorIncompatibleDriver) == -9)
+    assert(i32(enums.VkResult.SuboptimalKHR) == 1000001003)
+    assert(i32(enums.VkResult.ErrorOutOfDateKHR) == -1000001004)
+    assert(i32(enums.VkResult.ErrorSurfaceLostKHR) == -1000000000)
+    assert(i32(enums.VkResult.ErrorNativeWindowInUseKHR) == -1000000001)
+    assert(enums.result_name(-1000001004) == "VK_ERROR_OUT_OF_DATE_KHR")
+    assert(enums.result_name(1000001003) == "VK_SUBOPTIMAL_KHR")
+    assert(enums.result_name(0) == "VK_SUCCESS")
+    assert(enums.result_name(12345) == "VK_ERROR_?")
+    assert(enums.is_success(0))
+    assert(enums.is_success(1000001003))
+    assert(!enums.is_success(-1000001004))
+    assert(enums.is_out_of_date(-1000001004))
+    assert(!enums.is_out_of_date(-1000001003))
+}

@@ -33,8 +33,9 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     if width == 0 || height == 0 { return false }
     info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.DepthStencilAttachment))
     mut image := ptr(0)
-    if r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image)) != 0 {
-        return false
+    mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
+    if code != 0 {
+        return device.fail(&mut r, code)
     }
     mut req: [u64; 3] = [0; 3]
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
@@ -47,10 +48,11 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
         r.api.DestroyImage(r.device, image, ptr(0))
         return false
     }
-    if r.api.BindImageMemory(r.device, image, memory, 0) != 0 {
+    code = r.api.BindImageMemory(r.device, image, memory, 0)
+    if code != 0 {
         r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyImage(r.device, image, ptr(0))
-        return false
+        return device.fail(&mut r, code)
     }
     mut view_info: vk.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
@@ -61,10 +63,11 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     view_info.subresourceRange.levelCount = 1
     view_info.subresourceRange.layerCount = 1
     mut view := ptr(0)
-    if r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view)) != 0 {
+    code = r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view))
+    if code != 0 {
         r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyImage(r.device, image, ptr(0))
-        return false
+        return device.fail(&mut r, code)
     }
     r.depthImage = image
     r.depthMemory = memory

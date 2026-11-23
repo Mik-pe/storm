@@ -5,6 +5,13 @@ import .layout as vk
 import .state as state
 
 // Vulkan instance with the surface extensions SDL asks for.
+// Every Vulkan call that can fail reports its code here; `stage_name` turns
+// it into the message. One place, so no call site can forget the "why".
+pub unsafe fn fail(r: &mut state.Renderer, code: i32) -> bool {
+    r.lastResult = code
+    false
+}
+
 unsafe fn create_instance(r: &mut state.Renderer) -> bool {
     mut app: vk.ApplicationInfo = zeroed()
     app.sType = 0
@@ -21,17 +28,21 @@ unsafe fn create_instance(r: &mut state.Renderer) -> bool {
     if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), addr(&mut names[0])) == 0 { return false }
     info.enabledExtensionCount = count
     info.ppEnabledExtensionNames = addr(&names[0])
-    if r.api.CreateInstance(addr(&info), ptr(0), addr(&mut r.instance)) != 0 { return false }
+    mut code := r.api.CreateInstance(addr(&info), ptr(0), addr(&mut r.instance))
+    if code != 0 { return fail(&mut r, code) }
     if r.window.CreateSurface(r.window.handle, r.instance, addr(&mut r.surface)) == 0 { return false }
     true
 }
 
 unsafe fn pick_physical(r: &mut state.Renderer) -> bool {
     mut count: u32 = 0
-    if r.api.EnumeratePhysicalDevices(r.instance, addr(&mut count), ptr(0)) != 0 || count == 0 { return false }
+    mut code := r.api.EnumeratePhysicalDevices(r.instance, addr(&mut count), ptr(0))
+    if code != 0 { return fail(&mut r, code) }
+    if count == 0 { return fail(&mut r, 0) }
     if count > 16 { count = 16 }
     mut devices: [ptr; 16] = [ptr(0); 16]
-    if r.api.EnumeratePhysicalDevices(r.instance, addr(&mut count), addr(&mut devices[0])) != 0 { return false }
+    code = r.api.EnumeratePhysicalDevices(r.instance, addr(&mut count), addr(&mut devices[0]))
+    if code != 0 { return fail(&mut r, code) }
     // Prefer a discrete GPU, then integrated, then anything else.
     mut best := -1
     mut best_score := -1
@@ -110,19 +121,23 @@ unsafe fn create_device(r: &mut state.Renderer) -> bool {
     device.pQueueCreateInfos = addr(&q)
     device.enabledExtensionCount = 1
     device.ppEnabledExtensionNames = addr(&swapchain)
-    if r.api.CreateDevice(r.physical, addr(&device), ptr(0), addr(&mut r.device)) != 0 { return false }
+    mut code := r.api.CreateDevice(r.physical, addr(&device), ptr(0), addr(&mut r.device))
+    if code != 0 { return fail(&mut r, code) }
     r.api.GetDeviceQueue(r.device, r.family, 0, addr(&mut r.queue))
     mut pool: vk.CommandPoolCreateInfo = zeroed()
     pool.sType = 39
     pool.flags = enums.descriptor_pool(.FreeDescriptorSet)
     pool.queueFamilyIndex = r.family
-    if r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool)) != 0 { return false }
+    code = r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool))
+    if code != 0 { return fail(&mut r, code) }
     true
 }
 
 unsafe fn pick_format(r: &mut state.Renderer) -> bool {
     mut count: u32 = 0
-    if r.api.GetPhysicalDeviceSurfaceFormatsKHR(r.physical, r.surface, addr(&mut count), ptr(0)) != 0 || count == 0 { return false }
+    mut code := r.api.GetPhysicalDeviceSurfaceFormatsKHR(r.physical, r.surface, addr(&mut count), ptr(0))
+    if code != 0 { return fail(&mut r, code) }
+    if count == 0 { return fail(&mut r, 0) }
     if count > 32 { count = 32 }
     // Each VkSurfaceFormatKHR is two u32 words (format, colorSpace). Read them as words.
     mut words: [u32; 64] = [0; 64]
@@ -142,7 +157,8 @@ unsafe fn pick_format(r: &mut state.Renderer) -> bool {
 
 unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
     mut caps: vk.SurfaceCapabilitiesKHR = zeroed()
-    if r.api.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.physical, r.surface, addr(&mut caps)) != 0 { return false }
+    mut code := r.api.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.physical, r.surface, addr(&mut caps))
+    if code != 0 { return fail(&mut r, code) }
     mut width := caps.currentExtent.width
     mut height := caps.currentExtent.height
     // 0xFFFFFFFF means "pick your own size"; use the window's.
@@ -176,9 +192,11 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
     info.compositeAlpha = 1
     info.presentMode = 2
     info.clipped = 1
-    if r.api.CreateSwapchainKHR(r.device, addr(&info), ptr(0), addr(&mut r.swapchain)) != 0 { return false }
+    code = r.api.CreateSwapchainKHR(r.device, addr(&info), ptr(0), addr(&mut r.swapchain))
+    if code != 0 { return fail(&mut r, code) }
     mut count: u32 = 8
-    if r.api.GetSwapchainImagesKHR(r.device, r.swapchain, addr(&mut count), addr(&mut r.images[0])) != 0 { return false }
+    code = r.api.GetSwapchainImagesKHR(r.device, r.swapchain, addr(&mut count), addr(&mut r.images[0]))
+    if code != 0 { return fail(&mut r, code) }
     if count == 0 || count > 8 { return false }
     r.imageCount = i32(count)
     for i in 0..i32(count) {
@@ -190,12 +208,14 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
         view.subresourceRange.aspectMask = enums.image_aspect(.Color)
         view.subresourceRange.levelCount = 1
         view.subresourceRange.layerCount = 1
-        if r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.views[i])) != 0 { return false }
+        code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.views[i]))
+        if code != 0 { return fail(&mut r, code) }
     }
     true
 }
 
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    r.lastResult = 0
     r.stage = 11
     if !create_instance(&mut r) { return false }
     r.stage = 12
@@ -274,7 +294,8 @@ pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
     info.usage = enums.image_usage(.ColorAttachment)
     info.sharingMode = enums.sharing_mode(.Exclusive)
     mut handle := ptr(0)
-    if r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle)) != 0 { return false }
+    mut code := r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle))
+    if code != 0 { return fail(&mut r, code) }
     mut requirements: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
     mut memory := ptr(0)
@@ -282,16 +303,18 @@ pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
         r.api.DestroyBuffer(r.device, handle, ptr(0))
         return false
     }
-    if r.api.BindBufferMemory(r.device, handle, memory, 0) != 0 {
+    code = r.api.BindBufferMemory(r.device, handle, memory, 0)
+    if code != 0 {
         r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyBuffer(r.device, handle, ptr(0))
-        return false
+        return fail(&mut r, code)
     }
     mut mapped := ptr(0)
-    if r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped)) != 0 {
+    code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
+    if code != 0 {
         r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyBuffer(r.device, handle, ptr(0))
-        return false
+        return fail(&mut r, code)
     }
     r.vertex.handle = handle
     r.vertex.memory = memory
@@ -307,22 +330,26 @@ pub unsafe fn setup_frames(r: &mut state.Renderer) -> bool {
     allocate_info.level = 0
     allocate_info.commandBufferCount = 2
     mut commands: [ptr; 2] = [ptr(0); 2]
-    if r.api.AllocateCommandBuffers(r.device, addr(&allocate_info), addr(&mut commands[0])) != 0 { return false }
+    mut code := r.api.AllocateCommandBuffers(r.device, addr(&allocate_info), addr(&mut commands[0]))
+    if code != 0 { return fail(&mut r, code) }
     for i in 0..2 {
         r.commands[i] = commands[i]
         mut fence: vk.FenceCreateInfo = zeroed()
         fence.sType = 11
         fence.flags = enums.fence(.Signaled)
         mut created := ptr(0)
-        if r.api.CreateFence(r.device, addr(&fence), ptr(0), addr(&mut created)) != 0 { return false }
+        code = r.api.CreateFence(r.device, addr(&fence), ptr(0), addr(&mut created))
+        if code != 0 { return fail(&mut r, code) }
         r.fences[i] = created
         mut semaphore: vk.SemaphoreCreateInfo = zeroed()
         semaphore.sType = 10
         mut available := ptr(0)
-        if r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut available)) != 0 { return false }
+        code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut available))
+        if code != 0 { return fail(&mut r, code) }
         r.image_available[i] = available
         mut finished := ptr(0)
-        if r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut finished)) != 0 { return false }
+        code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut finished))
+        if code != 0 { return fail(&mut r, code) }
         r.render_finished[i] = finished
     }
     true

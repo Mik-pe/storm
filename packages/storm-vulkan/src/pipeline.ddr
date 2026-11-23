@@ -1,5 +1,6 @@
 capability unsafe
 
+import .device as device
 import .enums as enums
 import .layout as vk
 import .shader as shader
@@ -65,7 +66,8 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
     pass.pSubpasses = addr(&subpass)
     pass.dependencyCount = 2
     pass.pDependencies = addr(&dependencies)
-    if r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.renderPass)) != 0 { return false }
+    mut code := r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.renderPass))
+    if code != 0 { return device.fail(&mut r, code) }
     true
 }
 
@@ -80,7 +82,8 @@ unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
         info.width = r.width
         info.height = r.height
         info.layers = 1
-        if r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), addr(&mut r.framebuffers[i])) != 0 { return false }
+        mut code := r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), addr(&mut r.framebuffers[i]))
+        if code != 0 { return device.fail(&mut r, code) }
     }
     true
 }
@@ -117,7 +120,8 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     // Set 0: shadow map sampler + light uniform buffer.
     layout.setLayoutCount = 1
     layout.pSetLayouts = addr(&r.shadowSetLayout)
-    if r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout)) != 0 { return false }
+    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout))
+    if code != 0 { return device.fail(&mut r, code) }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18
@@ -201,13 +205,15 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     info.layout = r.pipelineLayout
     info.renderPass = r.renderPass
     info.basePipelineIndex = -1
-    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline)) != 0 { return false }
+    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline))
+    if code != 0 { return device.fail(&mut r, code) }
     // Same pipeline with alpha blending for the transparent pass.
     enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
     // Glass is sorted back to front and must not hide geometry behind it:
     // test against the depth buffer, but never write to it.
     depth_state.depthWriteEnable = 0
-    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.transparentPipeline)) != 0 { return false }
+    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.transparentPipeline))
+    if code != 0 { return device.fail(&mut r, code) }
     true
 }
 
@@ -234,7 +240,8 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> bool {
     // Set 0: shadow map sampler + light uniform buffer.
     layout.setLayoutCount = 1
     layout.pSetLayouts = addr(&r.shadowSetLayout)
-    if r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout)) != 0 { return false }
+    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout))
+    if code != 0 { return device.fail(&mut r, code) }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18

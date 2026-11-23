@@ -54,13 +54,15 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
     vinfo.sType = 16
     vinfo.codeSize = vertex_count * 4
     vinfo.pCode = vertex_words
-    if r.api.CreateShaderModule(r.device, addr(&vinfo), ptr(0), addr(&mut vmodule)) != 0 { return false }
+    mut code := r.api.CreateShaderModule(r.device, addr(&vinfo), ptr(0), addr(&mut vmodule))
+    if code != 0 { return false }
     mut fmodule := ptr(0)
     mut finfo: vk.ShaderModuleCreateInfo = zeroed()
     finfo.sType = 16
     finfo.codeSize = fragment_count * 4
     finfo.pCode = fragment_words
-    if r.api.CreateShaderModule(r.device, addr(&finfo), ptr(0), addr(&mut fmodule)) != 0 {
+    code = r.api.CreateShaderModule(r.device, addr(&finfo), ptr(0), addr(&mut fmodule))
+    if code != 0 {
         r.api.DestroyShaderModule(r.device, vmodule, ptr(0))
         return false
     }
@@ -161,7 +163,8 @@ unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemo
         result.image = ptr(0)
         return result
     }
-    if r.api.BindImageMemory(r.device, result.image, result.memory, 0) != 0 {
+    mut code := r.api.BindImageMemory(r.device, result.image, result.memory, 0)
+    if code != 0 {
         r.api.FreeMemory(r.device, result.memory, ptr(0))
         r.api.DestroyImage(r.device, result.image, ptr(0))
         result.image = ptr(0)
@@ -292,7 +295,8 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
         staging.buffer = ptr(0)
         return staging
     }
-    if r.api.BindBufferMemory(r.device, staging.buffer, staging.memory, 0) != 0 {
+    mut code := r.api.BindBufferMemory(r.device, staging.buffer, staging.memory, 0)
+    if code != 0 {
         r.api.FreeMemory(r.device, staging.memory, ptr(0))
         r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
         staging.buffer = ptr(0)
@@ -300,7 +304,8 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
         return staging
     }
     mut mapped := ptr(0)
-    if r.api.MapMemory(r.device, staging.memory, 0, u64(bytes), 0, addr(&mut mapped)) != 0 {
+    code = r.api.MapMemory(r.device, staging.memory, 0, u64(bytes), 0, addr(&mut mapped))
+    if code != 0 {
         r.api.FreeMemory(r.device, staging.memory, ptr(0))
         r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
         staging.buffer = ptr(0)
@@ -373,12 +378,14 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     }
     mut lut_info := device.image_2d_info(enums.format(.R32G32_SFLOAT), LUT_SIZE, LUT_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.TransferDstSampled))
     mut lut_image := ptr(0)
-    if r.api.CreateImage(r.device, addr(&lut_info), ptr(0), addr(&mut lut_image)) != 0 { return false }
+    mut code := r.api.CreateImage(r.device, addr(&lut_info), ptr(0), addr(&mut lut_image))
+    if code != 0 { return device.fail(&mut r, code) }
     mut lut_req: vk.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, lut_image, addr(&mut lut_req))
     mut lut_memory := ptr(0)
     if !device.allocate(&r, &lut_req, 1, addr(&mut lut_memory)) { return false }
-    if r.api.BindImageMemory(r.device, lut_image, lut_memory, 0) != 0 { return false }
+    code = r.api.BindImageMemory(r.device, lut_image, lut_memory, 0)
+    if code != 0 { return device.fail(&mut r, code) }
 
     // --- views: whole chains for the mesh shader, one view per mip for the
     // prefilter's source (descriptor writes take effect at submit, so each
@@ -427,7 +434,8 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     pass_info.pAttachments = addr(&attachment)
     pass_info.subpassCount = 1
     pass_info.pSubpasses = addr(&subpass)
-    if r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass)) != 0 { return false }
+    code = r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass))
+    if code != 0 { return device.fail(&mut r, code) }
 
     // --- framebuffers ---
     for mip in 0..i32(ENV_MIPS) {
@@ -450,7 +458,8 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     set_layout_info.sType = 32
     set_layout_info.bindingCount = 1
     set_layout_info.pBindings = addr(&mut bindings[0])
-    if r.api.CreateDescriptorSetLayout(r.device, addr(&set_layout_info), ptr(0), addr(&mut set_layout)) != 0 { return false }
+    code = r.api.CreateDescriptorSetLayout(r.device, addr(&set_layout_info), ptr(0), addr(&mut set_layout))
+    if code != 0 { return device.fail(&mut r, code) }
     // Sets 0..4 sample mip 0..4 as the prefilter source, set 5 samples mip 0
     // for the irradiance pass.
     mut pool_sizes: [u32; 2] = [enums.descriptor_type(.CombinedImageSampler), 6]
@@ -459,14 +468,16 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     pool_info.maxSets = 6
     pool_info.poolSizeCount = 1
     pool_info.pPoolSizes = addr(&mut pool_sizes[0])
-    if r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool)) != 0 { return false }
+    code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool))
+    if code != 0 { return device.fail(&mut r, code) }
     for i in 0..6 {
         mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
         allocate_info.sType = 34
         allocate_info.descriptorPool = pool
         allocate_info.descriptorSetCount = 1
         allocate_info.pSetLayouts = addr(&set_layout)
-        if r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut sets[i])) != 0 { return false }
+        code = r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut sets[i]))
+        if code != 0 { return device.fail(&mut r, code) }
         write_image(&r, sets[i], 0, env_sampler, env_mip_views[i], enums.image_layout(.ShaderReadOnlyOptimal))
     }
 
@@ -480,7 +491,8 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     layout_info.pPushConstantRanges = addr(&push_range)
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&set_layout)
-    if r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut pipeline_layout)) != 0 { return false }
+    code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut pipeline_layout))
+    if code != 0 { return device.fail(&mut r, code) }
 
     // --- pipelines: env at 64, prefilter at 32..2, irradiance at 16 ---
     vertex := shader.env_vertex()
@@ -541,11 +553,13 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     alloc.level = 0
     alloc.commandBufferCount = 1
     mut cmd := ptr(0)
-    if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
+    code = r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
+    if code != 0 { return device.fail(&mut r, code) }
     mut begin: vk.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
-    if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
+    code = r.api.BeginCommandBuffer(cmd, addr(&begin))
+    if code != 0 { return device.fail(&mut r, code) }
     staging := stage_lut(&mut r, cmd, lut_words)
     if staging.buffer == ptr(0) { return false }
 
@@ -577,12 +591,14 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     }
     barrier(&r, cmd, irradiance.image, 0, 1, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
 
-    if r.api.EndCommandBuffer(cmd) != 0 { return false }
+    code = r.api.EndCommandBuffer(cmd)
+    if code != 0 { return device.fail(&mut r, code) }
     mut submit: vk.SubmitInfo = zeroed()
     submit.sType = 4
     submit.commandBufferCount = 1
     submit.pCommandBuffers = addr(&mut cmd)
-    if r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0)) != 0 { return false }
+    code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
+    if code != 0 { return device.fail(&mut r, code) }
     _ := r.api.QueueWaitIdle(r.queue)
     release_staging(&mut r, staging)
     _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
