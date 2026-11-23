@@ -1,0 +1,74 @@
+capability unsafe
+
+import .api as vk
+import .sdl as sdl
+
+// Per-frame GPU sync objects. Kept as parallel arrays because a @c_layout struct
+// cannot yet hold a fixed array of another @c_layout struct (ffi.md claims it can).
+@c_layout
+pub struct Buffer {
+    handle: ptr,
+    memory: ptr,
+    mapped: ptr,
+    capacity: u64,
+}
+
+// vkGetPhysicalDeviceProperties2 is not needed; only deviceName is read.
+@c_layout
+pub struct Properties {
+    apiVersion: u32, driverVersion: u32, vendorID: u32, deviceID: u32, deviceType: u32,
+    deviceName: [u8; 256],
+    rest: [u64; 128],
+}
+
+@c_layout
+pub struct MemoryProperties {
+    typeCount: u32,
+    // 32 VkMemoryType entries, each propertiesFlags followed by heapIndex.
+    types: [u32; 64],
+    heapCount: u32,
+    heaps: [u64; 32],
+}
+
+pub const FRAME_COUNT: i32 = 2
+
+// All mutable renderer state lives behind one heap allocation. Public handles
+// carry only a generation; this struct never escapes the module.
+@c_layout
+pub struct Renderer {
+    api: vk.Api,
+    loader: ptr,
+    instance: ptr,
+    surface: ptr,
+    physical: ptr,
+    device: ptr,
+    queue: ptr,
+    family: u32,
+    properties: Properties,
+    memoryProperties: MemoryProperties,
+    debugMessenger: ptr,
+    pool: ptr,
+    commands: [ptr; 2],
+    fences: [ptr; 2],
+    image_available: [ptr; 2],
+    render_finished: [ptr; 2],
+    current: i32,
+    swapchain: ptr,
+    format: u32,
+    colorSpace: u32,
+    width: u32,
+    height: u32,
+    imageCount: i32,
+    images: [ptr; 8],
+    views: [ptr; 8],
+    renderPass: ptr,
+    pipelineLayout: ptr,
+    pipeline: ptr,
+    vertexShader: ptr,
+    fragmentShader: ptr,
+    framebuffers: [ptr; 8],
+    vertex: Buffer,
+    window: sdl.Window,
+    frameIndex: i64,
+    trace: u32,
+}

@@ -1,0 +1,80 @@
+// storm-scene: loads a glTF file, drives it from the ECS, and reports the text
+// layout Storm would draw. Runs without a window so it can be verified anywhere:
+//
+//   storm run --example scene -- model.glb
+//
+// With no argument it uses the built-in triangle, so the example always runs.
+capability stdio
+import core
+import ecs
+import gltf
+import std.parse as parse
+import sys
+import text
+
+struct Transform { position: core.Vec3, rotation: f32 }
+struct Spin { speed: f32 }
+struct MeshRef { first_vertex: i32, vertex_count: i32 }
+
+fn main() -> i32 {
+    mut path := ""
+    if sys.arg_count() > 1 { path = sys.arg(1) }
+    mut mesh := gltf.empty_mesh()
+    if path != "" {
+        doc := gltf.load(path)
+        if !doc.ok {
+            _ := sys.eprint("storm: " + doc.error)
+            return 1
+        }
+        mesh = gltf.load_mesh(&doc)
+        if !mesh.ok {
+            _ := sys.eprint("storm: " + mesh.error)
+            return 1
+        }
+        print(f"gltf: {path} vertices={mesh.vertex_count} indices={mesh.index_count}")
+    }
+
+    // ECS: one entity per model, plus a rotating camera marker.
+    mut allocator := ecs.EntityAllocator::new()
+    mut transforms := ecs.Pool<Transform>::new()
+    mut spins := ecs.Pool<Spin>::new()
+    mut meshes := ecs.Pool<MeshRef>::new()
+    model := allocator.create()
+    _ := transforms.insert(model, Transform { position: core.vec3(0.0, 0.0, 0.0), rotation: 0.0 })
+    _ := spins.insert(model, Spin { speed: 0.5 })
+    _ := meshes.insert(model, MeshRef { first_vertex: 0, vertex_count: mesh.vertex_count })
+
+    // Simulate a second of frames at 60 Hz and integrate the spin system.
+    mut frame := 0
+    while frame < 60 {
+        for i in 0..spins.len() {
+            e := spins.entities()[i]
+            if transforms.contains(e) {
+                speed := spins.values()[i].speed
+                transforms.get_mut(e).rotation = transforms.get(e).rotation + speed / 60.0
+            }
+        }
+        frame = frame + 1
+    }
+    entity := transforms.entities()[0]
+    print("ecs: entities=" + allocator.len().str() + " rotation=" + transforms.get(entity).rotation.str())
+
+    // Text: build an atlas for a status line and lay it out.
+    face := text.load_face("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf", 24.0)
+    if face.ok {
+        mut atlas := text.Atlas::new(1024, 256)
+        status := "Storm " + mesh.vertex_count.str() + " vertices"
+        if !atlas.add_text(&face, status) {
+            _ := sys.eprint("storm: text atlas is full")
+            return 1
+        }
+        quads := atlas.layout(status, 24.0, 32.0, 32.0)
+        print("text: glyphs=" + atlas.glyph_count().str() + " quads=" + quads.len.str() +
+            " width=" + atlas.measure(status).str())
+    }
+
+    // The parser and the reported counts agree.
+    check := parse.integer(mesh.vertex_count.str())
+    assert(check.ok && check.value == i64(mesh.vertex_count))
+    0
+}

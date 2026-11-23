@@ -1,0 +1,7 @@
+name = "storm-text"
+version = "0.0.1"
+root = "src/text.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+skrift = { path = "../../../dunder-skrift", capabilities = ["filesystem"] }

@@ -1,0 +1,82 @@
+import ..src.gltf as gltf
+
+// Build a minimal .glb: one triangle, POSITION (3 x vec3 float), no indices.
+// JSON chunk is padded to a 4-byte boundary with spaces; BIN chunk with zeros.
+fn build_triangle_glb() -> []u8 {
+    json_text := "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],\"buffers\":[{\"byteLength\":36}]}"
+    mut json_bytes: []u8 = []
+    for ch in json_text.bytes() { json_bytes.push(u8(ch)) }
+    while json_bytes.len % 4 != 0 { json_bytes.push(u8(32)) }
+
+    // Triangle: (0,0,0) (1,0,0) (0,1,0) as little-endian f32.
+    mut bin_bytes: []u8 = []
+    values: [f32; 9] = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    for v in values {
+        bits := v.to_bits()
+        bin_bytes.push(u8(bits.bit_and(255)))
+        bin_bytes.push(u8(bits.shr(8).bit_and(255)))
+        bin_bytes.push(u8(bits.shr(16).bit_and(255)))
+        bin_bytes.push(u8(bits.shr(24).bit_and(255)))
+    }
+    while bin_bytes.len % 4 != 0 { bin_bytes.push(u8(0)) }
+
+    total := 12 + 8 + json_bytes.len + 8 + bin_bytes.len
+    mut out: []u8 = []
+    out.reserve(total)
+    // magic "glTF", version 2, total length.
+    out.push(u8(103)); out.push(u8(108)); out.push(u8(84)); out.push(u8(70))
+    out.push(u8(2)); out.push(u8(0)); out.push(u8(0)); out.push(u8(0))
+    append_u32(&mut out, u32(total))
+    append_u32(&mut out, u32(json_bytes.len))
+    append_u32(&mut out, u32(1313821723))
+    for b in json_bytes { out.push(b) }
+    append_u32(&mut out, u32(bin_bytes.len))
+    append_u32(&mut out, u32(5130562))
+    for b in bin_bytes { out.push(b) }
+    out
+}
+
+fn append_u32(out: &mut []u8, value: u32) {
+    out.push(u8(i32(value).bit_and(255)))
+    out.push(u8(i32(value).shr(8).bit_and(255)))
+    out.push(u8(i32(value).shr(16).bit_and(255)))
+    out.push(u8(i32(value).shr(24).bit_and(255)))
+}
+
+@test fn reads_a_binary_glb_triangle() {
+    data := build_triangle_glb()
+    doc := gltf.load_bytes(&data)
+    assert(doc.ok)
+    assert(doc.has_bin)
+    mesh := gltf.load_mesh(&doc)
+    assert(mesh.ok)
+    assert(mesh.vertex_count == 3)
+    assert(mesh.index_count == 3)
+    assert(mesh.positions.len == 9)
+    assert(mesh.positions[0] == 0.0 && mesh.positions[3] == 1.0 && mesh.positions[7] == 1.0)
+    // No indices in the file: the loader synthesizes 0,1,2.
+    assert(mesh.indices[0] == 0 && mesh.indices[1] == 1 && mesh.indices[2] == 2)
+}
+
+@test fn interleave_pads_missing_normals() {
+    data := build_triangle_glb()
+    doc := gltf.load_bytes(&data)
+    mesh := gltf.load_mesh(&doc)
+    stream := gltf.interleave(&mesh)
+    assert(stream.len == 18)
+    assert(stream[0] == 0.0 && stream[1] == 0.0 && stream[2] == 0.0)
+    assert(stream[3] == 0.0 && stream[4] == 1.0 && stream[5] == 0.0)
+}
+
+@test fn rejects_garbage() {
+    junk: []u8 = [1, 2, 3, 4]
+    doc := gltf.load_bytes(&junk)
+    assert(!doc.ok)
+    assert(doc.error.len > 0)
+}
+
+@test fn missing_file_is_reported() {
+    doc := gltf.load("/nonexistent/model.glb")
+    assert(!doc.ok)
+    assert(doc.error.len > 0)
+}

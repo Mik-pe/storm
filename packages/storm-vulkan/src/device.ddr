@@ -1,0 +1,290 @@
+capability unsafe
+
+import .layout as vk
+import .state as state
+
+// Vulkan instance with the surface extensions SDL asks for.
+unsafe fn create_instance(r: &mut state.Renderer) -> bool {
+    mut app: vk.ApplicationInfo = zeroed()
+    app.sType = 1
+    app.pApplicationName = cstr("storm")
+    app.apiVersion = 4194304
+    mut info: vk.InstanceCreateInfo = zeroed()
+    info.sType = 1
+    info.pApplicationInfo = addr(&app)
+    // SDL knows which platform surface extensions the window needs.
+    mut count: u32 = 0
+    if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), ptr(0)) == 0 { return false }
+    if count == 0 || count > 16 { return false }
+    mut names: [ptr; 16] = [ptr(0); 16]
+    if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), addr(&mut names[0])) == 0 { return false }
+    info.enabledExtensionCount = count
+    info.ppEnabledExtensionNames = addr(&names[0])
+    if r.api.CreateInstance(addr(&info), ptr(0), addr(&mut r.instance)) != 0 { return false }
+    if r.window.CreateSurface(r.window.handle, r.instance, addr(&mut r.surface)) == 0 { return false }
+    true
+}
+
+unsafe fn pick_physical(r: &mut state.Renderer) -> bool {
+    mut count: u32 = 0
+    if r.api.EnumeratePhysicalDevices(r.instance, addr(&mut count), ptr(0)) != 0 || count == 0 { return false }
+    if count > 16 { count = 16 }
+    mut devices: [ptr; 16] = [ptr(0); 16]
+    if r.api.EnumeratePhysicalDevices(r.instance, addr(&mut count), addr(&mut devices[0])) != 0 { return false }
+    // Prefer a discrete GPU, then integrated, then anything else.
+    mut best := -1
+    mut best_score := -1
+    for i in 0..i32(count) {
+        mut properties: state.Properties = zeroed()
+        r.api.GetPhysicalDeviceProperties(devices[i], addr(&mut properties))
+        mut score := 0
+        if properties.deviceType == 2 { score = 3 }
+        else if properties.deviceType == 1 { score = 2 }
+        else { score = 1 }
+        if score > best_score { best_score = score; best = i }
+    }
+    if best < 0 { return false }
+    r.physical = devices[best]
+    r.api.GetPhysicalDeviceProperties(r.physical, addr(&mut r.properties))
+    r.api.GetPhysicalDeviceMemoryProperties(r.physical, addr(&mut r.memoryProperties))
+    true
+}
+
+unsafe fn pick_queue(r: &mut state.Renderer) -> bool {
+    mut count: u32 = 0
+    _ := r.api.GetPhysicalDeviceQueueFamilyProperties(r.physical, addr(&mut count), ptr(0))
+    if count == 0 || count > 32 { return false }
+    // VkQueueFamilyProperties is six u32 words on 64-bit: flags, count, timestamp, gran x/y/z.
+    mut families: [u32; 192] = [0; 192]
+    _ := r.api.GetPhysicalDeviceQueueFamilyProperties(r.physical, addr(&mut count), addr(&mut families[0]))
+    mut family := 0
+    while family < i32(count) {
+        graphics := i32(families[family * 6]).bit_and(1) != 0
+        mut present: u32 = 0
+        supports := r.api.GetPhysicalDeviceSurfaceSupportKHR(r.physical, u32(family), r.surface, addr(&mut present)) == 0
+        if graphics && supports && present != 0 && families[family * 6 + 1] > 0 { break }
+        family = family + 1
+    }
+    if family == i32(count) { return false }
+    r.family = u32(family)
+    true
+}
+
+unsafe fn create_device(r: &mut state.Renderer) -> bool {
+    priority: f32 = 1.0
+    mut q: vk.DeviceQueueCreateInfo = zeroed()
+    q.sType = 2
+    q.queueFamilyIndex = r.family
+    q.queueCount = 1
+    q.pQueuePriorities = addr(&priority)
+    mut swapchain := cstr("VK_KHR_swapchain")
+    mut device: vk.DeviceCreateInfo = zeroed()
+    device.sType = 3
+    device.queueCreateInfoCount = 1
+    device.pQueueCreateInfos = addr(&q)
+    device.enabledExtensionCount = 1
+    device.ppEnabledExtensionNames = addr(&swapchain)
+    if r.api.CreateDevice(r.physical, addr(&device), ptr(0), addr(&mut r.device)) != 0 { return false }
+    r.api.GetDeviceQueue(r.device, r.family, 0, addr(&mut r.queue))
+    mut pool: vk.CommandPoolCreateInfo = zeroed()
+    pool.sType = 39
+    pool.flags = 2
+    pool.queueFamilyIndex = r.family
+    if r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool)) != 0 { return false }
+    true
+}
+
+unsafe fn pick_format(r: &mut state.Renderer) -> bool {
+    mut count: u32 = 0
+    if r.api.GetPhysicalDeviceSurfaceFormatsKHR(r.physical, r.surface, addr(&mut count), ptr(0)) != 0 || count == 0 { return false }
+    if count > 32 { count = 32 }
+    // Each VkSurfaceFormatKHR is two u32 words (format, colorSpace). Read them as words.
+    mut words: [u32; 64] = [0; 64]
+    _ := r.api.GetPhysicalDeviceSurfaceFormatsKHR(r.physical, r.surface, addr(&mut count), addr(&mut words[0]))
+    // Prefer B8G8R8A8_UNORM (44) or B8G8R8A8_SRGB (50); else take the first.
+    r.format = words[0]
+    r.colorSpace = words[1]
+    for i in 0..i32(count) {
+        f := words[i * 2]
+        if f == 44 || f == 50 { r.format = f; r.colorSpace = words[i * 2 + 1]; break }
+        if f == 37 && r.format != 44 && r.format != 50 { r.format = f; r.colorSpace = words[i * 2 + 1] }
+    }
+    true
+}
+
+unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
+    mut caps: vk.SurfaceCapabilitiesKHR = zeroed()
+    if r.api.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.physical, r.surface, addr(&mut caps)) != 0 { return false }
+    mut width := caps.currentExtent.width
+    mut height := caps.currentExtent.height
+    // 0xFFFFFFFF means "pick your own size"; use the window's.
+    if width == 4294967295 || height == 4294967295 {
+        mut w: i32 = 0
+        mut h: i32 = 0
+        r.window.GetDrawableSize(r.window.handle, addr(&mut w), addr(&mut h))
+        width = u32(w)
+        height = u32(h)
+        if width < caps.minImageExtent.width { width = caps.minImageExtent.width }
+        if height < caps.minImageExtent.height { height = caps.minImageExtent.height }
+    }
+    if width == 0 || height == 0 { return false }
+    r.width = width
+    r.height = height
+    mut images := caps.minImageCount + 1
+    if caps.maxImageCount > 0 && images > caps.maxImageCount { images = caps.maxImageCount }
+    if images > 8 { images = 8 }
+    mut info: vk.SwapchainCreateInfoKHR = zeroed()
+    info.sType = 1000001000
+    info.surface = r.surface
+    info.minImageCount = images
+    info.imageFormat = r.format
+    info.imageColorSpace = r.colorSpace
+    info.imageExtent = vk.Extent2D { width: width, height: height }
+    info.imageArrayLayers = 1
+    info.imageUsage = 16
+    info.imageSharingMode = 0
+    info.preTransform = caps.currentTransform
+    info.compositeAlpha = 1
+    info.presentMode = 2
+    info.clipped = 1
+    if r.api.CreateSwapchainKHR(r.device, addr(&info), ptr(0), addr(&mut r.swapchain)) != 0 { return false }
+    mut count: u32 = 8
+    if r.api.GetSwapchainImagesKHR(r.device, r.swapchain, addr(&mut count), addr(&mut r.images[0])) != 0 { return false }
+    if count == 0 || count > 8 { return false }
+    r.imageCount = i32(count)
+    for i in 0..i32(count) {
+        mut view: vk.ImageViewCreateInfo = zeroed()
+        view.sType = 15
+        view.image = r.images[i]
+        view.viewType = 1
+        view.format = r.format
+        view.subresourceRange.aspectMask = 1
+        view.subresourceRange.levelCount = 1
+        view.subresourceRange.layerCount = 1
+        if r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.views[i])) != 0 { return false }
+    }
+    true
+}
+
+pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    if !create_instance(&mut r) { return false }
+    if !pick_physical(&mut r) { return false }
+    if !pick_queue(&mut r) { return false }
+    if !create_device(&mut r) { return false }
+    if !pick_format(&mut r) { return false }
+    create_swapchain(&mut r)
+}
+
+// Recreate only the swapchain and its image views after a resize.
+pub unsafe fn setup_swapchain_only(r: &mut state.Renderer) -> bool {
+    create_swapchain(&mut r)
+}
+
+pub unsafe fn destroy_swapchain(r: &mut state.Renderer) {
+    _ := r.api.DeviceWaitIdle(r.device)
+    for i in 0..r.imageCount { r.api.DestroyImageView(r.device, r.views[i], ptr(0)) }
+    if r.swapchain != ptr(0) { r.api.DestroySwapchainKHR(r.device, r.swapchain, ptr(0)) }
+    r.swapchain = ptr(0)
+    r.imageCount = 0
+}
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.device != ptr(0) {
+        _ := r.api.DeviceWaitIdle(r.device)
+        destroy_swapchain(&mut r)
+        if r.vertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.vertex.memory) }
+        if r.vertex.handle != ptr(0) { r.api.DestroyBuffer(r.device, r.vertex.handle, ptr(0)) }
+        if r.vertex.memory != ptr(0) { r.api.FreeMemory(r.device, r.vertex.memory, ptr(0)) }
+        for i in 0..2 {
+            r.api.DestroyFence(r.device, r.fences[i], ptr(0))
+            r.api.DestroySemaphore(r.device, r.image_available[i], ptr(0))
+            r.api.DestroySemaphore(r.device, r.render_finished[i], ptr(0))
+        }
+        r.api.DestroyPipeline(r.device, r.pipeline, ptr(0))
+        r.api.DestroyPipelineLayout(r.device, r.pipelineLayout, ptr(0))
+        r.api.DestroyShaderModule(r.device, r.vertexShader, ptr(0))
+        r.api.DestroyShaderModule(r.device, r.fragmentShader, ptr(0))
+        r.api.DestroyRenderPass(r.device, r.renderPass, ptr(0))
+        if r.pool != ptr(0) { r.api.DestroyCommandPool(r.device, r.pool, ptr(0)) }
+        r.api.DestroyDevice(r.device, ptr(0))
+    }
+    if r.surface != ptr(0) { r.api.DestroyInstance(r.instance, ptr(0)) }
+}
+
+unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, flags: i32, output: ptr) -> bool {
+    mut i := 0
+    while i < i32(r.memoryProperties.typeCount) {
+        bits := i32(requirements.memoryTypeBits)
+        if bits.bit_and(i32(1).shl(i)) != 0 && i32(r.memoryProperties.types[i * 2]).bit_and(flags) == flags {
+            mut alloc: vk.MemoryAllocateInfo = zeroed()
+            alloc.sType = 5
+            alloc.allocationSize = requirements.size
+            alloc.memoryTypeIndex = u32(i)
+            return r.api.AllocateMemory(r.device, addr(&alloc), ptr(0), output) == 0
+        }
+        i = i + 1
+    }
+    false
+}
+
+// Host-visible vertex buffer, mapped for the renderer's lifetime.
+pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
+    mut info: vk.BufferCreateInfo = zeroed()
+    info.sType = 12
+    info.size = bytes
+    info.usage = 128
+    info.sharingMode = 0
+    mut handle := ptr(0)
+    if r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle)) != 0 { return false }
+    mut requirements: vk.MemoryRequirements = zeroed()
+    r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
+    mut memory := ptr(0)
+    if !allocate(&r, &requirements, 6, addr(&mut memory)) {
+        r.api.DestroyBuffer(r.device, handle, ptr(0))
+        return false
+    }
+    if r.api.BindBufferMemory(r.device, handle, memory, 0) != 0 {
+        r.api.FreeMemory(r.device, memory, ptr(0))
+        r.api.DestroyBuffer(r.device, handle, ptr(0))
+        return false
+    }
+    mut mapped := ptr(0)
+    if r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped)) != 0 {
+        r.api.FreeMemory(r.device, memory, ptr(0))
+        r.api.DestroyBuffer(r.device, handle, ptr(0))
+        return false
+    }
+    r.vertex.handle = handle
+    r.vertex.memory = memory
+    r.vertex.mapped = mapped
+    r.vertex.capacity = bytes
+    true
+}
+
+pub unsafe fn setup_frames(r: &mut state.Renderer) -> bool {
+    mut allocate_info: vk.CommandBufferAllocateInfo = zeroed()
+    allocate_info.sType = 40
+    allocate_info.commandPool = r.pool
+    allocate_info.level = 0
+    allocate_info.commandBufferCount = 2
+    mut commands: [ptr; 2] = [ptr(0); 2]
+    if r.api.AllocateCommandBuffers(r.device, addr(&allocate_info), addr(&mut commands[0])) != 0 { return false }
+    for i in 0..2 {
+        r.commands[i] = commands[i]
+        mut fence: vk.FenceCreateInfo = zeroed()
+        fence.sType = 11
+        fence.flags = 1
+        mut created := ptr(0)
+        if r.api.CreateFence(r.device, addr(&fence), ptr(0), addr(&mut created)) != 0 { return false }
+        r.fences[i] = created
+        mut semaphore: vk.SemaphoreCreateInfo = zeroed()
+        semaphore.sType = 10
+        mut available := ptr(0)
+        if r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut available)) != 0 { return false }
+        r.image_available[i] = available
+        mut finished := ptr(0)
+        if r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut finished)) != 0 { return false }
+        r.render_finished[i] = finished
+    }
+    true
+}

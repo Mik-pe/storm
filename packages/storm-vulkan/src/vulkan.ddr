@@ -1,0 +1,358 @@
+capability unsafe, stdio
+
+import std.bytes as b
+import std.dl as dl
+import sys
+import .api as api
+import .device as device
+import .layout as vk
+import .pipeline as pipeline
+import .sdl as sdl
+import .state as state
+
+// Storm's Vulkan window: a real VK_KHR_swapchain presentation path (no readback).
+//
+//   opened := vulkan.open("Storm", 1280, 720)
+//   while running {
+//       frame := vulkan.poll(opened.window)
+//       drawn := vulkan.draw(opened.window, &vertices, mvp)
+//       running = !frame.closed
+//   }
+//   vulkan.close(opened.window)
+//
+// Vertices are interleaved [x, y, z, r, g, b, a] f32 (28 bytes). `draw` takes a
+// column-major mat4 as [f32; 16] and uploads it as a push constant.
+
+pub struct Window { id: i64 }
+pub struct OpenResult { ok: bool, window: Window, error: string }
+pub struct Frame {
+    closed: bool,
+    width: i32,
+    height: i32,
+    scale: f64,
+    time: f64,
+    pointer_x: f64,
+    pointer_y: f64,
+    pointer_down: bool,
+    key: i32,
+    resized: bool,
+}
+pub struct DrawResult { ok: bool, error: string, frames: i64 }
+
+@c_layout
+struct Registry { active: ptr, generation: i64 }
+
+unsafe fn registry_address() -> ptr { static_bytes("linux", 16) }
+
+@extern("c", "calloc")
+unsafe fn allocate(count: usize, bytes: usize) -> ptr
+@extern("c", "free")
+unsafe fn release(address: ptr)
+@extern("c", "memcpy")
+unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
+@extern("c", "clock_gettime")
+unsafe fn clock_gettime(clock: i32, output: ptr) -> i32
+
+unsafe fn millis() -> i64 {
+    mut t: [i64; 2] = [0, 0]
+    if clock_gettime(1, addr(&mut t[0])) != 0 { return 0 }
+    t[0] * 1000 + t[1] / 1000000
+}
+
+fn open_error(move message: string) -> OpenResult {
+    OpenResult { ok: false, window: Window { id: 0 }, error: message.clone() }
+}
+
+unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32) -> bool {
+    r.width = u32(width)
+    r.height = u32(height)
+    r.frameIndex = 0
+    if !sdl.open(&mut r.window, title, width, height) { return false }
+    if !device.setup(&mut r) { return false }
+    if !pipeline.setup(&mut r) { return false }
+    if !device.setup_frames(&mut r) { return false }
+    // 1 MiB of mapped vertex space: ~37k vertices, plenty for Storm's first pass.
+    if !device.create_vertex_buffer(&mut r, 1048576) { return false }
+    true
+}
+
+// Attach the loader to a freshly allocated renderer. Kept separate so the
+// allocation can be passed as a &mut through ref_at at the call site.
+unsafe fn bootstrap(r: &mut state.Renderer, loader: ptr) -> bool {
+    r.loader = loader
+    api.load(&mut r.api, loader)
+}
+
+unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32) -> OpenResult {
+    if width < 1 || width > 8192 || height < 1 || height > 8192 {
+        return open_error("window dimensions must be between 1 and 8192")
+    }
+    if registry.active != ptr(0) { return open_error("a Storm window is already open") }
+    address := allocate(1, size_of(state.Renderer))
+    if address == ptr(0) { return open_error("could not allocate Vulkan state") }
+    loader := dl.open(cstr("libvulkan.so.1"), 2)
+    if loader == ptr(0) {
+        release(address)
+        return open_error("Vulkan loader is unavailable")
+    }
+    if !bootstrap(ref_at(address), loader) {
+        _ := dl.close(loader)
+        release(address)
+        return open_error("Vulkan loader is missing required entry points")
+    }
+    if !initialize(ref_at(address), title, width, height) {
+        device.destroy(ref_at(address))
+        _ := dl.close(loader)
+        release(address)
+        return open_error("Vulkan initialization failed (window, surface, device or swapchain)")
+    }
+    registry.generation = registry.generation + 1
+    registry.active = address
+    OpenResult { ok: true, window: Window { id: registry.generation }, error: "" }
+}
+
+// Print each submission step to stderr. Useful when a frame hangs.
+pub fn set_trace(window: Window, enabled: bool) {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address != ptr(0) { set_trace_at(ref_at(address), enabled) }
+    }
+}
+
+unsafe fn set_trace_at(r: &mut state.Renderer, enabled: bool) {
+    r.trace = if enabled { 1 } else { 0 }
+}
+
+fn trace_step(r: &state.Renderer, message: string) {
+    if r.trace != 0 { print("storm/vk: " + message) }
+}
+
+pub fn open(title: string, width: i32, height: i32) -> OpenResult {
+    unsafe { open_renderer(ref_at(registry_address()), title, width, height) }
+}
+
+unsafe fn active(registry: &Registry, window: Window) -> ptr {
+    if registry.generation != window.id { return ptr(0) }
+    registry.active
+}
+
+unsafe fn name(r: &state.Renderer) -> string {
+    mut bytes: []u8 = []
+    for i in 0..256 {
+        byte := r.properties.deviceName[i]
+        if byte == 0 { break }
+        bytes.push(byte)
+    }
+    match b.decode(&bytes) {
+        .Ok(text) => text,
+        .Err(_) => "",
+    }
+}
+
+pub fn device_name(window: Window) -> string {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return "" }
+        return name(ref_at(address))
+    }
+}
+
+unsafe fn next_frame(r: &mut state.Renderer) -> Frame {
+    sdl.poll(&mut r.window)
+    resized := r.window.resized != 0
+    Frame {
+        closed: r.window.closed != 0,
+        width: r.window.width,
+        height: r.window.height,
+        scale: 1.0,
+        time: f64(millis()) / 1000.0,
+        pointer_x: f64(r.window.x),
+        pointer_y: f64(r.window.y),
+        pointer_down: r.window.down != 0,
+        key: r.window.key,
+        resized: resized,
+    }
+}
+
+pub fn poll(window: Window) -> Frame {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) {
+            return Frame { closed: true, width: 0, height: 0, scale: 0.0, time: 0.0,
+                pointer_x: 0.0, pointer_y: 0.0, pointer_down: false, key: -1, resized: false }
+        }
+        return next_frame(ref_at(address))
+    }
+}
+
+fn draw_error(frames: i64, move message: string) -> DrawResult {
+    DrawResult { ok: false, error: message, frames: frames }
+}
+
+// Rebuild everything that depends on the swapchain size. Returns false if the
+// swapchain could not be recreated (out of date, minimized, ...).
+unsafe fn recreate(r: &mut state.Renderer) -> bool {
+    _ := r.api.DeviceWaitIdle(r.device)
+    pipeline.destroy_framebuffers(&mut r)
+    device.destroy_swapchain(&mut r)
+    if !device.setup_swapchain_only(&mut r) { return false }
+    pipeline.setup(&mut r)
+}
+
+unsafe fn submit(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16]) -> DrawResult {
+    if r.window.closed != 0 { return draw_error(r.frameIndex, "window is closed") }
+    if vertices.len % 7 != 0 || !mvp[0].is_finite() {
+        return draw_error(r.frameIndex, "vertices must be a finite [x,y,z,r,g,b,a] list")
+    }
+    for i in 0..vertices.len {
+        if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
+    }
+    bytes := vertices.len * 4
+    if u64(bytes) > r.vertex.capacity {
+        return draw_error(r.frameIndex, "vertex list exceeds the mapped buffer")
+    }
+    if vertices.len > 0 { _ := copy_bytes(r.vertex.mapped, addr(&vertices[0]), usize(bytes)) }
+
+    slot := r.current
+    trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
+    waited := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
+    if waited != 0 { return draw_error(r.frameIndex, "waiting for the frame fence failed") }
+    trace_step(&r, "fence ready; acquire")
+    mut image_index: u32 = 0
+    acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
+        r.image_available[slot], ptr(0), addr(&mut image_index))
+    if acquired == 1000001003 {
+        // VK_ERROR_OUT_OF_DATE_KHR: resize path.
+        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date") }
+        return draw_error(r.frameIndex, "swapchain recreated; retry the frame")
+    }
+    if acquired != 0 { return draw_error(r.frameIndex, "acquiring a swapchain image failed") }
+    trace_step(&r, "acquired image " + i32(image_index).str())
+
+    reset := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
+    if reset != 0 { return draw_error(r.frameIndex, "resetting the frame fence failed") }
+    _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
+    mut begin: vk.CommandBufferBeginInfo = zeroed()
+    begin.sType = 42
+    begin.flags = 1
+    trace_step(&r, "recording")
+    if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
+        return draw_error(r.frameIndex, "beginning the command buffer failed")
+    }
+    mut clear: [f32; 4] = [0.039, 0.051, 0.075, 1.0]
+    mut pass: vk.RenderPassBeginInfo = zeroed()
+    pass.sType = 43
+    pass.renderPass = r.renderPass
+    pass.framebuffer = r.framebuffers[i32(image_index)]
+    pass.renderArea.extent = vk.Extent2D { width: r.width, height: r.height }
+    pass.clearValueCount = 1
+    pass.pClearValues = addr(&clear[0])
+    r.api.CmdBeginRenderPass(r.commands[slot], addr(&pass), 0)
+    if vertices.len > 0 {
+        r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
+        offset: u64 = 0
+        r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
+        r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 1, 0, 64, addr(&mvp[0]))
+        r.api.CmdDraw(r.commands[slot], u32(vertices.len / 7), 1, 0, 0)
+    }
+    r.api.CmdEndRenderPass(r.commands[slot])
+    if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
+        return draw_error(r.frameIndex, "ending the command buffer failed")
+    }
+    mut submit_info: vk.SubmitInfo = zeroed()
+    submit_info.sType = 4
+    wait_stage: u32 = 1024
+    submit_info.waitSemaphoreCount = 1
+    submit_info.pWaitSemaphores = addr(&r.image_available[slot])
+    submit_info.pWaitDstStageMask = addr(&wait_stage)
+    submit_info.commandBufferCount = 1
+    submit_info.pCommandBuffers = addr(&r.commands[slot])
+    submit_info.signalSemaphoreCount = 1
+    submit_info.pSignalSemaphores = addr(&r.render_finished[slot])
+    trace_step(&r, "submit")
+    if r.api.QueueSubmit(r.queue, 1, addr(&submit_info), r.fences[slot]) != 0 {
+        return draw_error(r.frameIndex, "queue submission failed")
+    }
+    mut present: vk.PresentInfoKHR = zeroed()
+    present.sType = 1000001002
+    present.waitSemaphoreCount = 1
+    present.pWaitSemaphores = addr(&r.render_finished[slot])
+    present.swapchainCount = 1
+    present.pSwapchains = addr(&r.swapchain)
+    present.pImageIndices = addr(&image_index)
+    trace_step(&r, "present")
+    presented := r.api.QueuePresentKHR(r.queue, addr(&present))
+    trace_step(&r, "presented " + presented.str())
+    if presented == 1000001003 {
+        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date") }
+    } else if presented != 0 {
+        return draw_error(r.frameIndex, "presenting failed")
+    }
+    r.current = (r.current + 1) % 2
+    r.frameIndex = r.frameIndex + 1
+    DrawResult { ok: true, error: "", frames: r.frameIndex }
+}
+
+pub fn draw(window: Window, vertices: &[]f32, mvp: &[f32; 16]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        return submit(ref_at(address), &vertices, &mvp)
+    }
+}
+
+pub fn draw_identity(window: Window, vertices: &[]f32) -> DrawResult {
+    mut identity: [f32; 16] = [1.0, 0.0, 0.0, 0.0,
+                               0.0, 1.0, 0.0, 0.0,
+                               0.0, 0.0, 1.0, 0.0,
+                               0.0, 0.0, 0.0, 1.0]
+    draw(window, &vertices, &identity)
+}
+
+// Destroy GPU objects and the window. Returns the dl handle so the caller can
+// close it after the renderer allocation is released.
+unsafe fn teardown(r: &mut state.Renderer) -> ptr {
+    loader := r.loader
+    device.destroy(&mut r)
+    sdl.close(&mut r.window)
+    loader
+}
+
+unsafe fn close_window(registry: &mut Registry, window: Window) {
+    address := active(&registry, window)
+    if address != ptr(0) {
+        registry.active = ptr(0)
+        loader := teardown(ref_at(address))
+        if loader != ptr(0) { _ := dl.close(loader) }
+        release(address)
+    }
+}
+
+pub fn close(window: Window) {
+    unsafe { close_window(ref_at(registry_address()), window) }
+}
+
+// ---- Geometry helpers (interleaved [x, y, z, r, g, b, a]) ----
+
+pub fn vertex(vertices: &mut []f32, x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32) {
+    vertices.push(x)
+    vertices.push(y)
+    vertices.push(z)
+    vertices.push(r)
+    vertices.push(g)
+    vertices.push(b)
+    vertices.push(a)
+}
+
+pub fn triangle(vertices: &mut []f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32,
+    cx: f32, cy: f32, cz: f32, r: f32, g: f32, b: f32, a: f32) {
+    vertex(&mut vertices, ax, ay, az, r, g, b, a)
+    vertex(&mut vertices, bx, by, bz, r, g, b, a)
+    vertex(&mut vertices, cx, cy, cz, r, g, b, a)
+}
+
+pub fn quad(vertices: &mut []f32, x: f32, y: f32, z: f32, w: f32, h: f32,
+    r: f32, g: f32, b: f32, a: f32) {
+    triangle(&mut vertices, x, y, z, x + w, y, z, x + w, y + h, z, r, g, b, a)
+    triangle(&mut vertices, x, y, z, x + w, y + h, z, x, y + h, z, r, g, b, a)
+}

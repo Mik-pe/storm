@@ -1,0 +1,19 @@
+import ..src.core as core
+
+@test fn vectors() {
+    a := core.vec3(1.0, 0.0, 0.0)
+    b := core.vec3(0.0, 1.0, 0.0)
+    c := core.cross(a, b)
+    assert(c.x == 0.0 && c.y == 0.0 && c.z == 1.0)
+    assert(core.dot(a, b) == 0.0)
+    assert(core.length(core.vec3(3.0, 4.0, 0.0)) == 5.0)
+}
+
+@test fn matrices() {
+    i := core.identity()
+    t := core.translation(2.0, 3.0, 4.0)
+    p := core.multiply(i, t)
+    assert(p.m[12] == 2.0 && p.m[13] == 3.0 && p.m[14] == 4.0)
+    m := core.perspective(1.0, 2.0, 0.1, 100.0)
+    assert(m.m[11] == -1.0)
+}

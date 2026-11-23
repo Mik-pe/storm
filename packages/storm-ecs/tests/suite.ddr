@@ -1,0 +1,86 @@
+import ..src.ecs as ecs
+
+struct Position { x: f32, y: f32 }
+struct Velocity { dx: f32, dy: f32 }
+struct Tag { name: string }
+
+@test fn pool_insert_get_remove() {
+    mut pool := ecs.Pool<Position>::new()
+    mut allocator := ecs.EntityAllocator::new()
+    a := allocator.create()
+    b := allocator.create()
+    _ := pool.insert(a, Position { x: 1.0, y: 2.0 })
+    _ := pool.insert(b, Position { x: 3.0, y: 4.0 })
+    assert(pool.len() == 2)
+    assert(pool.contains(a) && pool.contains(b))
+    assert(pool.get(a).x == 1.0)
+    assert(pool.get(b).y == 4.0)
+    pool.get_mut(a).x = 10.0
+    assert(pool.get(a).x == 10.0)
+    removed := pool.remove(a)
+    match removed {
+        .Some(p) => { assert(p.x == 10.0) },
+        .None => { assert(false) },
+    }
+    assert(!pool.contains(a) && pool.contains(b))
+    assert(pool.len() == 1)
+    assert(pool.get(b).y == 4.0)
+}
+
+@test fn stale_handles_never_match() {
+    mut allocator := ecs.EntityAllocator::new()
+    a := allocator.create()
+    stale := a
+    assert(allocator.is_alive(a))
+    assert(allocator.destroy(a))
+    assert(!allocator.is_alive(stale))
+    b := allocator.create()
+    // Recycled slot: same index, new generation.
+    assert(b.index == stale.index && b.generation != stale.generation)
+    assert(allocator.is_alive(b))
+    assert(!allocator.is_alive(stale))
+    assert(!allocator.destroy(stale))
+    assert(allocator.destroy(b))
+    assert(allocator.len() == 0)
+}
+
+@test fn systems_iterate_packed_storage() {
+    mut allocator := ecs.EntityAllocator::new()
+    mut positions := ecs.Pool<Position>::new()
+    mut velocities := ecs.Pool<Velocity>::new()
+    for i in 0..100 {
+        e := allocator.create()
+        _ := positions.insert(e, Position { x: f32(i), y: 0.0 })
+        if i % 2 == 0 { _ := velocities.insert(e, Velocity { dx: 1.0, dy: 2.0 }) }
+    }
+    // A "system": integrate every entity that has both components.
+    for i in 0..velocities.len() {
+        e := velocities.entities()[i]
+        if positions.contains(e) {
+            v := velocities.values()[i]
+            p := positions.get_mut(e)
+            p.x = p.x + v.dx
+            p.y = p.y + v.dy
+        }
+    }
+    assert(positions.len() == 100 && velocities.len() == 50)
+    first := positions.entities()[0]
+    assert(positions.get(first).x == 1.0 && positions.get(first).y == 2.0)
+    odd := positions.entities()[1]
+    assert(positions.get(odd).x == 1.0 && positions.get(odd).y == 0.0)
+    assert(allocator.len() == 100)
+}
+
+@test fn pool_holds_resource_owning_components() {
+    mut pool := ecs.Pool<Tag>::new()
+    mut allocator := ecs.EntityAllocator::new()
+    e := allocator.create()
+    _ := pool.insert(e, Tag { name: "player" })
+    assert(pool.get(e).name == "player")
+    moved := pool.remove(e)
+    match moved {
+        .Some(t) => { assert(t.name == "player") },
+        .None => { assert(false) },
+    }
+    assert(pool.len() == 0)
+}

@@ -1,0 +1,4 @@
+name = "storm-core"
+version = "0.0.1"
+root = "src/core.ddr"
+test_root = "tests/suite.ddr"

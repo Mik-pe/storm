@@ -1,0 +1,4 @@
+name = "storm-ecs"
+version = "0.0.1"
+root = "src/ecs.ddr"
+test_root = "tests/suite.ddr"

@@ -1,0 +1,64 @@
+// Storm core: vectors, matrices and colors. Pure Dunder, no OS access.
+import std.math as math
+
+pub struct Vec2 { x: f32, y: f32 }
+pub struct Vec3 { x: f32, y: f32, z: f32 }
+pub struct Vec4 { x: f32, y: f32, z: f32, w: f32 }
+pub struct Color { r: f32, g: f32, b: f32, a: f32 }
+
+pub fn vec2(x: f32, y: f32) -> Vec2 { Vec2 { x: x, y: y } }
+pub fn vec3(x: f32, y: f32, z: f32) -> Vec3 { Vec3 { x: x, y: y, z: z } }
+pub fn vec4(x: f32, y: f32, z: f32, w: f32) -> Vec4 { Vec4 { x: x, y: y, z: z, w: w } }
+pub fn rgba(r: f32, g: f32, b: f32, a: f32) -> Color { Color { r: r, g: g, b: b, a: a } }
+
+pub fn add(a: Vec3, b: Vec3) -> Vec3 { Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z } }
+pub fn sub(a: Vec3, b: Vec3) -> Vec3 { Vec3 { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z } }
+pub fn scale(v: Vec3, s: f32) -> Vec3 { Vec3 { x: v.x * s, y: v.y * s, z: v.z * s } }
+pub fn dot(a: Vec3, b: Vec3) -> f32 { a.x * b.x + a.y * b.y + a.z * b.z }
+pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3 { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x }
+}
+pub fn length(v: Vec3) -> f32 { (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() }
+pub fn normalize(v: Vec3) -> Vec3 {
+    l := length(v)
+    if l == 0.0 { return v }
+    scale(v, 1.0 / l)
+}
+
+// Column-major 4x4 matrix; m[c*4 + r] is row r of column c (GLSL/OpenGL layout).
+pub struct Mat4 { m: [f32; 16] }
+
+pub fn identity() -> Mat4 {
+    Mat4 { m: [1.0, 0.0, 0.0, 0.0,
+               0.0, 1.0, 0.0, 0.0,
+               0.0, 0.0, 1.0, 0.0,
+               0.0, 0.0, 0.0, 1.0] }
+}
+
+pub fn multiply(a: Mat4, b: Mat4) -> Mat4 {
+    mut out: [f32; 16] = [0.0; 16]
+    for c in 0..4 {
+        for r in 0..4 {
+            mut sum: f32 = 0.0
+            for k in 0..4 { sum = sum + a.m[k * 4 + r] * b.m[c * 4 + k] }
+            out[c * 4 + r] = sum
+        }
+    }
+    Mat4 { m: out }
+}
+
+pub fn translation(x: f32, y: f32, z: f32) -> Mat4 {
+    Mat4 { m: [1.0, 0.0, 0.0, 0.0,
+               0.0, 1.0, 0.0, 0.0,
+               0.0, 0.0, 1.0, 0.0,
+               x, y, z, 1.0] }
+}
+
+pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
+    // Float methods cover sqrt/rounding only; trigonometry lives in std.math on f64.
+    f := f32(1.0 / math.tan(f64(fov_y) * 0.5))
+    Mat4 { m: [f / aspect, 0.0, 0.0, 0.0,
+               0.0, f, 0.0, 0.0,
+               0.0, 0.0, (far + near) / (near - far), -1.0,
+               0.0, 0.0, 2.0 * far * near / (near - far), 0.0] }
+}

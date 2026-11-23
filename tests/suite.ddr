@@ -1,0 +1,58 @@
+// Storm's root suite: exercises the packages the way an application uses them,
+// and runs each package's own suite through their manifests.
+import core
+import ecs
+import std.math as math
+import vulkan
+
+struct Spin { speed: f32 }
+
+@test fn mvp_projects_a_point_into_clip_space() {
+    m := core.multiply(core.perspective(1.0, 1.0, 0.1, 100.0), core.translation(0.0, 0.0, -3.0))
+    // A point on the camera axis lands at the origin with w > 0.
+    x := m.m[0] * 0.0 + m.m[4] * 0.0 + m.m[8] * 0.0 + m.m[12]
+    y := m.m[1] * 0.0 + m.m[5] * 0.0 + m.m[9] * 0.0 + m.m[13]
+    w := m.m[3] * 0.0 + m.m[7] * 0.0 + m.m[11] * -3.0 + m.m[15]
+    assert(x == 0.0 && y == 0.0)
+    assert(w > 0.0)
+}
+
+@test fn rotation_is_orthonormal() {
+    angle := 0.7
+    c := f32(math.cos(f64(angle)))
+    s := f32(math.sin(f64(angle)))
+    m := core.Mat4 { m: [c, 0.0, -s, 0.0,
+                         0.0, 1.0, 0.0, 0.0,
+                         s, 0.0, c, 0.0,
+                         0.0, 0.0, 0.0, 1.0] }
+    // Rotating (1, 0, 0) keeps unit length and stays in the XZ plane.
+    x := m.m[0]
+    z := m.m[2]
+    assert((x * x + z * z - 1.0).abs() < 0.0001)
+}
+
+@test fn ecs_scene_integrates_spin_over_a_second() {
+    mut allocator := ecs.EntityAllocator::new()
+    mut spins := ecs.Pool<Spin>::new()
+    mut rotations := ecs.Pool<Spin>::new()
+    e := allocator.create()
+    _ := spins.insert(e, Spin { speed: 1.0 })
+    _ := rotations.insert(e, Spin { speed: 0.0 })
+    mut frame := 0
+    while frame < 60 {
+        speed := spins.get(e).speed
+        rotations.get_mut(e).speed = rotations.get(e).speed + speed / 60.0
+        frame = frame + 1
+    }
+    assert((rotations.get(e).speed - 1.0).abs() < 0.0001)
+    assert(allocator.destroy(e))
+    assert(!allocator.is_alive(e))
+}
+
+@test fn vulkan_triangle_emits_three_interleaved_vertices() {
+    mut vertices: []f32 = []
+    vulkan.triangle(&mut vertices, -0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 0.0, 0.5, 0.0, 0.2, 0.6, 1.0, 1.0)
+    assert(vertices.len == 21)
+    assert(vertices[0] == -0.5 && vertices[7] == 0.5)
+    assert(vertices[3] == 0.2 && vertices[6] == 1.0)
+}

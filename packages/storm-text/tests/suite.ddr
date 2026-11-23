@@ -1,0 +1,73 @@
+capability filesystem
+
+import ..src.text as text
+
+const FONT: string = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
+
+@test fn missing_font_is_reported() {
+    face := text.load_face("/nonexistent/font.ttf", 16.0)
+    assert(!face.ok)
+    assert(face.error.len > 0)
+}
+
+@test fn rasterized_glyphs_fill_the_atlas() {
+    face := text.load_face(FONT, 32.0)
+    assert(face.ok)
+    mut atlas := text.Atlas::new(512, 256)
+    assert(atlas.add_text(&face, "Storm"))
+    assert(atlas.glyph_count() == 5)
+    // Every printable glyph has ink and a position inside the atlas.
+    mut inked := 0
+    for i in 0..atlas.glyph_count() {
+        g := atlas.glyph_at(i)
+        assert(g.ok && g.advance > 0.0)
+        if g.width > 0 && g.height > 0 {
+            assert(g.x >= 0 && g.y >= 0)
+            assert(g.x + g.width <= atlas.size())
+            mut coverage := 0
+            for row in 0..g.height {
+                for col in 0..g.width {
+                    if atlas.coverage(g.x + col, g.y + row) > 0 { coverage = coverage + 1 }
+                }
+            }
+            if coverage > 0 { inked = inked + 1 }
+        }
+    }
+    assert(inked >= 4)
+}
+
+@test fn layout_advances_left_to_right() {
+    face := text.load_face(FONT, 24.0)
+    mut atlas := text.Atlas::new(512, 256)
+    _ := atlas.add_text(&face, "AV")
+    quads := atlas.layout("AV", 24.0, 10.0, 20.0)
+    assert(quads.len == 2)
+    assert(quads[1].x > quads[0].x)
+    assert(quads[0].y >= 20.0)
+    assert(quads[0].u0 < quads[0].u1 && quads[0].v0 < quads[0].v1)
+    assert(quads[0].u1 <= 1.0 && quads[0].v1 <= 1.0)
+    assert(atlas.measure("AV") > 0.0)
+}
+
+@test fn repeated_glyphs_reuse_one_atlas_entry() {
+    face := text.load_face(FONT, 24.0)
+    mut atlas := text.Atlas::new(512, 256)
+    _ := atlas.add_text(&face, "aaa")
+    assert(atlas.glyph_count() == 1)
+    quads := atlas.layout("aaa", 24.0, 0.0, 0.0)
+    assert(quads.len == 3)
+    assert(quads[2].x > quads[1].x && quads[1].x > quads[0].x)
+}
+
+@test fn whitespace_has_metrics_but_no_ink() {
+    face := text.load_face(FONT, 24.0)
+    mut atlas := text.Atlas::new(512, 256)
+    assert(atlas.add_text(&face, "a b"))
+    // Space is registered with metrics even though it draws no ink.
+    assert(atlas.glyph_count() == 3)
+    space := atlas.find(32)
+    assert(space >= 0)
+    assert(atlas.glyph_at(space).width == 0)
+    assert(atlas.glyph_at(space).advance > 0.0)
+    assert(atlas.measure("a b") > atlas.measure("ab"))
+}

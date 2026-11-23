@@ -1,0 +1,174 @@
+capability unsafe
+
+import .layout as vk
+import .shader as shader
+import .state as state
+
+@c_layout
+struct Dependencies { before: vk.SubpassDependency, after: vk.SubpassDependency }
+
+@c_layout
+struct Stages { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
+
+@c_layout
+struct Attributes { position: vk.VertexInputAttributeDescription, color: vk.VertexInputAttributeDescription }
+
+unsafe fn targets(r: &mut state.Renderer) -> bool {
+    mut attachment: vk.AttachmentDescription = zeroed()
+    attachment.format = r.format
+    attachment.samples = 1
+    attachment.loadOp = 1
+    attachment.storeOp = 1
+    attachment.stencilLoadOp = 2
+    attachment.stencilStoreOp = 1
+    attachment.initialLayout = 0
+    attachment.finalLayout = 1000001002
+    color := vk.AttachmentReference { attachment: 0, layout: 1 }
+    mut subpass: vk.SubpassDescription = zeroed()
+    subpass.pipelineBindPoint = 0
+    subpass.colorAttachmentCount = 1
+    subpass.pColorAttachments = addr(&color)
+    mut before: vk.SubpassDependency = zeroed()
+    before.srcSubpass = 4294967295
+    before.dstSubpass = 0
+    before.srcStageMask = 1
+    before.dstStageMask = 1024
+    before.dstAccessMask = 256
+    mut after: vk.SubpassDependency = zeroed()
+    after.srcSubpass = 0
+    after.dstSubpass = 4294967295
+    after.srcStageMask = 1024
+    after.dstStageMask = 4096
+    after.srcAccessMask = 256
+    after.dstAccessMask = 2048
+    dependencies := Dependencies { before: before, after: after }
+    mut pass: vk.RenderPassCreateInfo = zeroed()
+    pass.sType = 38
+    pass.attachmentCount = 1
+    pass.pAttachments = addr(&attachment)
+    pass.subpassCount = 1
+    pass.pSubpasses = addr(&subpass)
+    pass.dependencyCount = 2
+    pass.pDependencies = addr(&dependencies)
+    if r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.renderPass)) != 0 { return false }
+    true
+}
+
+unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
+    for i in 0..r.imageCount {
+        mut info: vk.FramebufferCreateInfo = zeroed()
+        info.sType = 37
+        info.renderPass = r.renderPass
+        info.attachmentCount = 1
+        info.pAttachments = addr(&r.views[i])
+        info.width = r.width
+        info.height = r.height
+        info.layers = 1
+        if r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), addr(&mut r.framebuffers[i])) != 0 { return false }
+    }
+    true
+}
+
+unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
+    mut info: vk.ShaderModuleCreateInfo = zeroed()
+    info.sType = 16
+    info.codeSize = size
+    info.pCode = words
+    r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
+}
+
+unsafe fn pipeline(r: &mut state.Renderer) -> bool {
+    vertex := shader.vertex()
+    mut vertex_shader := r.vertexShader
+    if !module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader)) { return false }
+    r.vertexShader = vertex_shader
+    fragment := shader.fragment()
+    mut fragment_shader := r.fragmentShader
+    if !module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader)) { return false }
+    r.fragmentShader = fragment_shader
+
+    // Push constant: mat4 mvp (64 bytes), vertex stage.
+    mut push_range: vk.PushConstantRange = zeroed()
+    push_range.stageFlags = 1
+    push_range.offset = 0
+    push_range.size = 64
+    mut layout: vk.PipelineLayoutCreateInfo = zeroed()
+    layout.sType = 30
+    layout.pushConstantRangeCount = 1
+    layout.pPushConstantRanges = addr(&push_range)
+    if r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout)) != 0 { return false }
+
+    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
+    stage.sType = 18
+    stage.stage = 1
+    stage.module = r.vertexShader
+    stage.pName = cstr("main")
+    mut stages := Stages { vertex: stage, fragment: stage }
+    stages.fragment.stage = 16
+    stages.fragment.module = r.fragmentShader
+
+    // position vec3 @0, color vec4 @12, stride 28.
+    binding := vk.VertexInputBindingDescription { binding: 0, stride: 28, inputRate: 0 }
+    attributes := Attributes {
+        position: vk.VertexInputAttributeDescription { location: 0, binding: 0, format: 106, offset: 0 },
+        color: vk.VertexInputAttributeDescription { location: 1, binding: 0, format: 109, offset: 12 },
+    }
+    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
+    input.sType = 19
+    input.vertexBindingDescriptionCount = 1
+    input.pVertexBindingDescriptions = addr(&binding)
+    input.vertexAttributeDescriptionCount = 2
+    input.pVertexAttributeDescriptions = addr(&attributes)
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
+    assembly.sType = 20
+    assembly.topology = 3
+    viewport := vk.Viewport { x: 0.0, y: 0.0, width: f32(r.width), height: f32(r.height), minDepth: 0.0, maxDepth: 1.0 }
+    scissor := vk.Rect2D { offset: vk.Offset2D { x: 0, y: 0 }, extent: vk.Extent2D { width: r.width, height: r.height } }
+    mut view: vk.PipelineViewportStateCreateInfo = zeroed()
+    view.sType = 22
+    view.viewportCount = 1
+    view.pViewports = addr(&viewport)
+    view.scissorCount = 1
+    view.pScissors = addr(&scissor)
+    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
+    raster.sType = 23
+    raster.polygonMode = 0
+    raster.cullMode = 2
+    raster.frontFace = 1
+    raster.lineWidth = 1.0
+    mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
+    samples.sType = 24
+    samples.rasterizationSamples = 1
+    color := vk.PipelineColorBlendAttachmentState {
+        blendEnable: 0, srcColorBlendFactor: 0, dstColorBlendFactor: 0, colorBlendOp: 0,
+        srcAlphaBlendFactor: 0, dstAlphaBlendFactor: 0, alphaBlendOp: 0, colorWriteMask: 15,
+    }
+    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
+    blend.sType = 26
+    blend.attachmentCount = 1
+    blend.pAttachments = addr(&color)
+    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
+    info.sType = 28
+    info.stageCount = 2
+    info.pStages = addr(&stages)
+    info.pVertexInputState = addr(&input)
+    info.pInputAssemblyState = addr(&assembly)
+    info.pViewportState = addr(&view)
+    info.pRasterizationState = addr(&raster)
+    info.pMultisampleState = addr(&samples)
+    info.pColorBlendState = addr(&blend)
+    info.layout = r.pipelineLayout
+    info.renderPass = r.renderPass
+    info.basePipelineIndex = -1
+    r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline)) == 0
+}
+
+pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    if !targets(&mut r) { return false }
+    if !pipeline(&mut r) { return false }
+    framebuffers(&mut r)
+}
+
+pub unsafe fn destroy_framebuffers(r: &mut state.Renderer) {
+    for i in 0..r.imageCount { r.api.DestroyFramebuffer(r.device, r.framebuffers[i], ptr(0)) }
+}

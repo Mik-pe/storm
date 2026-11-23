@@ -1,0 +1,129 @@
+// Storm ECS: sparse-set storage, generational entity IDs, systems as functions.
+//
+// Design (Flecs/EnTT-style sparse sets, one per component type):
+//   Pool<T>  = dense []T values + dense []Entity owners + sparse index per entity.
+//   World    = entity allocator + registry of pools, addressed by component type.
+// Dunder has no runtime reflection, so each component type registers its pool
+// with the World explicitly (world.register<T>()), and systems receive the pools
+// they need. This keeps every access static, with no downcasts or type erasure.
+//
+// Entity = (index: u32, generation: u32). A stale handle never matches a live
+// entity; `is_alive` validates both halves.
+
+pub struct Entity { index: i32, generation: i32 }
+pub struct Slot { entity: Entity, dense: i32 }
+
+pub opaque struct Pool<T: Storable> {
+    dense: []T,
+    owners: []Entity,
+    sparse: []Slot,
+}
+
+impl Pool<T: Storable> {
+    pub fn new() -> Self { Self { dense: [], owners: [], sparse: [] } }
+
+    pub fn len(&self) -> i32 { self.dense.len }
+
+    pub fn contains(&self, entity: Entity) -> bool {
+        if entity.index < 0 || entity.index >= self.sparse.len { return false }
+        slot := &self.sparse[entity.index]
+        slot.entity.generation == entity.generation && slot.dense >= 0
+    }
+
+    pub fn get(&self, entity: Entity) -> &T from self {
+        &self.dense[self.sparse[entity.index].dense]
+    }
+
+    pub fn get_mut(&mut self, entity: Entity) -> &mut T from self {
+        &mut self.dense[self.sparse[entity.index].dense]
+    }
+
+    // Insert or replace. Returns the dense index the component landed at.
+    pub fn insert(&mut self, entity: Entity, move value: T) -> i32 {
+        if entity.index >= self.sparse.len {
+            while self.sparse.len <= entity.index {
+                self.sparse.push(Slot { entity: Entity { index: -1, generation: -1 }, dense: -1 })
+            }
+        }
+        if self.contains(entity) {
+            dense := self.sparse[entity.index].dense
+            self.dense[dense] = move value
+            return dense
+        }
+        self.dense.push(move value)
+        self.owners.push(entity)
+        self.sparse[entity.index] = Slot { entity: entity, dense: self.dense.len - 1 }
+        self.dense.len - 1
+    }
+
+    // Remove via swap (the array's own .remove keeps dense storage packed).
+    // Returns the removed component, or .None when the entity has no component here.
+    pub fn remove(&mut self, entity: Entity) -> Option<T> {
+        if !self.contains(entity) { return .None }
+        dense := self.sparse[entity.index].dense
+        last := self.dense.len - 1
+        if dense != last {
+            moved_owner := self.owners[last]
+            self.owners[dense] = moved_owner
+            self.sparse[moved_owner.index].dense = dense
+        }
+        _ := self.owners.remove(dense)
+        self.sparse[entity.index].dense = -1
+        .Some(self.dense.remove(dense))
+    }
+
+    pub fn clear(&mut self) {
+        self.dense.clear()
+        self.owners.clear()
+        self.sparse.clear()
+    }
+
+    pub fn values(&self) -> &[]T from self { &self.dense }
+    pub fn entities(&self) -> &[]Entity from self { &self.owners }
+}
+
+pub struct EntityAllocator {
+    // generations[i] is the current generation of slot i. A destroyed slot keeps
+    // its (already bumped) generation until reuse bumps it again, so a stale
+    // handle never matches: destroy() bumps, create() on a recycled slot bumps too.
+    generations: []i32,
+    free: []i32,
+    next: i32,
+    alive: i32,
+}
+
+impl EntityAllocator {
+    pub fn new() -> Self { Self { generations: [], free: [], next: 0, alive: 0 } }
+
+    pub fn create(&mut self) -> Entity {
+        if self.free.len > 0 {
+            index := self.free.pop()
+            self.generations[index] = self.generations[index] + 1
+            self.alive = self.alive + 1
+            return Entity { index: index, generation: self.generations[index] }
+        }
+        index := self.next
+        self.next = self.next + 1
+        self.generations.push(0)
+        self.alive = self.alive + 1
+        Entity { index: index, generation: 0 }
+    }
+
+    // A handle is alive only if its generation equals the slot's current one.
+    // destroy() bumps the slot's generation, so every handle issued before the
+    // destroy compares unequal, including handles to a slot waiting in `free`.
+    pub fn is_alive(&self, entity: Entity) -> bool {
+        entity.index >= 0 && entity.index < self.generations.len &&
+            self.generations[entity.index] == entity.generation
+    }
+
+    pub fn destroy(&mut self, entity: Entity) -> bool {
+        if !self.is_alive(entity) { return false }
+        self.generations[entity.index] = self.generations[entity.index] + 1
+        self.free.push(entity.index)
+        self.alive = self.alive - 1
+        true
+    }
+
+    pub fn len(&self) -> i32 { self.alive }
+}

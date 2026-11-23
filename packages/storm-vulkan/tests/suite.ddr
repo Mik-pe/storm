@@ -1,0 +1,11 @@
+import ..src.vulkan as vulkan
+
+@test fn geometry_helpers_emit_interleaved_vertices() {
+    mut v: []f32 = []
+    vulkan.triangle(&mut v, -0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 0.0, 0.5, 0.0, 1.0, 0.2, 0.3, 1.0)
+    assert(v.len == 21)
+    assert(v[0] == -0.5 && v[2] == 0.0 && v[3] == 1.0 && v[6] == 1.0)
+    v.clear()
+    vulkan.quad(&mut v, -1.0, -1.0, 0.0, 2.0, 2.0, 0.5, 0.5, 0.5, 1.0)
+    assert(v.len == 42)
+}

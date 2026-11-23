@@ -1,0 +1,14 @@
+name = "storm"
+version = "0.0.1"
+root = "src/main.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "packages/storm-core" }
+ecs = { path = "packages/storm-ecs" }
+vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
+gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }
+text = { path = "packages/storm-text", capabilities = ["filesystem", "stdio", "unsafe"] }
+
+[examples]
+scene = "examples/scene.ddr"

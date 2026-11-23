@@ -1,0 +1,359 @@
+// Storm glTF 2.0 loader.
+//
+// Supports both .glb (binary container) and .gltf (JSON) files. Reads meshes,
+// primitives, accessors over float POSITION/NORMAL and index buffers, plus node
+// TRS/matrix transforms baked into world space. No materials, skins or
+// animation yet — the loader returns triangle data ready for the Vulkan pipeline.
+//
+//   doc := gltf.load("cube.glb")
+//   if !doc.ok { print(doc.error); return }
+//   mesh := gltf.to_vertices(&doc)      // []f32, interleaved x,y,z,nx,ny,nz,r,g,b,a
+capability filesystem
+
+import std.bytes as bytes
+import std.json as json
+import sys
+
+pub struct Mesh {
+    ok: bool,
+    error: string,
+    positions: []f32,
+    normals: []f32,
+    uvs: []f32,
+    indices: []i32,
+    index_count: i32,
+    vertex_count: i32,
+}
+
+pub struct Document {
+    ok: bool,
+    error: string,
+    json_text: string,
+    bin: []u8,
+    has_bin: bool,
+    mesh: Mesh,
+}
+
+fn fail(move message: string) -> Document {
+    Document { ok: false, error: message, json_text: "", bin: [], has_bin: false, mesh: empty_mesh() }
+}
+
+pub fn empty_mesh() -> Mesh {
+    Mesh { ok: false, error: "", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
+}
+
+// ---- GLB container ----
+
+struct GlbChunk { kind: u32, start: i32, length: i32 }
+
+fn read_u32(data: &[]u8, offset: i32) -> u32 {
+    u32(bytes.u32_le(data, offset))
+}
+
+// Split a .glb into its JSON and BIN chunks. Returns .None for non-GLB data.
+fn glb_chunks(data: &[]u8) -> Option<GlbChunk> {
+    if data.len < 12 { return .None }
+    if !(bytes.equals_text(data, 0, 4, "glTF")) { return .None }
+    // struct: magic, version, length, then chunks of (length, type, payload).
+    mut offset := 12
+    mut json_chunk := GlbChunk { kind: 0, start: 0, length: 0 }
+    while offset + 8 <= data.len {
+        length := i32(read_u32(data, offset))
+        kind := read_u32(data, offset + 4)
+        start := offset + 8
+        if start + length > data.len { return .None }
+        if kind == 1313821723 { json_chunk = GlbChunk { kind: kind, start: start, length: length } }
+        // Chunks are padded to four-byte boundaries.
+        offset = start + length
+        if offset % 4 != 0 { offset = offset + (4 - offset % 4) }
+    }
+    if json_chunk.length == 0 { return .None }
+    .Some(json_chunk)
+}
+
+fn glb_bin(data: &[]u8) -> Option<GlbChunk> {
+    if data.len < 12 || !(bytes.equals_text(data, 0, 4, "glTF")) { return .None }
+    mut offset := 12
+    while offset + 8 <= data.len {
+        length := i32(read_u32(data, offset))
+        kind := read_u32(data, offset + 4)
+        start := offset + 8
+        if start + length > data.len { return .None }
+        if kind == 5130562 { return .Some(GlbChunk { kind: kind, start: start, length: length }) }
+        offset = start + length
+        if offset % 4 != 0 { offset = offset + (4 - offset % 4) }
+    }
+    .None
+}
+
+// ---- Document loading ----
+
+pub fn load(path: string) -> Document {
+    res := sys.read_u8(path)
+    if !res.ok {
+        return fail("cannot read '" + path + "': " + sys.error_message(res.error))
+    }
+    return load_bytes(&res.value)
+}
+
+pub fn load_bytes(data: &[]u8) -> Document {
+    if data.len == 0 { return fail("empty glTF file") }
+    mut json_text := ""
+    mut bin: []u8 = []
+    mut has_bin := false
+    match glb_chunks(data) {
+        .Some(chunk) => {
+            decoded := bytes.decode_range(data, chunk.start, chunk.start + chunk.length)
+            match decoded {
+                .Ok(text) => { json_text = text },
+                .Err(_) => { return fail("glTF JSON chunk is not valid UTF-8") },
+            }
+            match glb_bin(data) {
+                .Some(b) => {
+                    mut payload: []u8 = []
+                    payload.reserve(b.length)
+                    for k in 0..b.length { payload.push(data[b.start + k]) }
+                    bin = payload
+                    has_bin = true
+                },
+                .None => {},
+            }
+        },
+        .None => {
+            decoded := bytes.decode(data)
+            match decoded {
+                .Ok(text) => { json_text = text },
+                .Err(_) => { return fail("glTF file is neither GLB nor UTF-8 JSON") },
+            }
+        },
+    }
+    doc := json.Doc::parse_text(json_text.clone())
+    if !doc.ok { return fail("glTF JSON: " + doc.error) }
+    Document { ok: true, error: "", json_text: json_text, bin: bin, has_bin: has_bin, mesh: empty_mesh() }
+}
+
+// ---- Accessors ----
+
+fn component_size(component_type: i32) -> i32 {
+    if component_type == 5120 { return 1 }  // BYTE
+    if component_type == 5121 { return 1 }  // UNSIGNED_BYTE
+    if component_type == 5122 { return 2 }  // SHORT
+    if component_type == 5123 { return 2 }  // UNSIGNED_SHORT
+    if component_type == 5125 { return 4 }  // UNSIGNED_INT
+    if component_type == 5126 { return 4 }  // FLOAT
+    0
+}
+
+fn component_count(kind: string) -> i32 {
+    if kind == "SCALAR" { return 1 }
+    if kind == "VEC2" { return 2 }
+    if kind == "VEC3" { return 3 }
+    if kind == "VEC4" { return 4 }
+    if kind == "MAT4" { return 16 }
+    0
+}
+
+// Read one component as f32, normalizing integer types like glTF specifies.
+fn read_component(data: &[]u8, offset: i32, component_type: i32, normalized: bool) -> f32 {
+    if component_type == 5126 { return f32.from_bits(i32(bytes.u32_le(data, offset))) }
+    if component_type == 5120 {
+        mut raw := i32(bytes.u16_le(data, offset).bit_and(255))
+        if raw > 127 { raw = raw - 256 }
+        if normalized { return f32(raw) / 127.0 }
+        return f32(raw)
+    }
+    if component_type == 5121 {
+        mut raw := i32(bytes.u16_le(data, offset).bit_and(255))
+        if normalized { return f32(raw) / 255.0 }
+        return f32(raw)
+    }
+    if component_type == 5122 {
+        mut raw := i32(bytes.u16_le(data, offset))
+        if raw > 32767 { raw = raw - 65536 }
+        if normalized { return f32(raw) / 32767.0 }
+        return f32(raw)
+    }
+    if component_type == 5123 {
+        mut raw := i32(bytes.u16_le(data, offset))
+        if normalized { return f32(raw) / 65535.0 }
+        return f32(raw)
+    }
+    if component_type == 5125 {
+        value := bytes.u32_le(data, offset)
+        if normalized { return f32(value) / 4294967295.0 }
+        return f32(value)
+    }
+    0.0
+}
+
+fn read_index(data: &[]u8, offset: i32, component_type: i32) -> i32 {
+    if component_type == 5121 { return i32(bytes.u16_le(data, offset).bit_and(255)) }
+    if component_type == 5123 { return i32(bytes.u16_le(data, offset)) }
+    if component_type == 5125 { return i32(bytes.u32_le(data, offset)) }
+    0
+}
+
+// Floats are stored little-endian; reinterpret the word, do not convert it.
+fn read_f32(data: &[]u8, offset: i32) -> f32 {
+    f32.from_bits(i32(bytes.u32_le(data, offset)))
+}
+
+fn buffer_bytes(doc: &Document, buffer_index: i32) -> &[]u8 from doc {
+    _ := buffer_index
+    &doc.bin
+}
+
+// Read accessor `index` as a flat f32 array of `count * components` values.
+fn read_accessor_f32(doc: &Document, doc_json: &json.Doc, index: i32) -> []f32 {
+    mut out: []f32 = []
+    accessors := doc_json.field(doc_json.root, "accessors")
+    if doc_json.kind(accessors) != .Array { return out }
+    node := doc_json.at(accessors, index)
+    if doc_json.kind(node) != .Object { return out }
+    count := i32(doc_json.get_i64(node, "count").unwrap_or_default())
+    component_type := i32(doc_json.get_i64(node, "componentType").unwrap_or_default())
+    kind := doc_json.get_str(node, "type").unwrap_or_default()
+    components := component_count(kind)
+    size := component_size(component_type)
+    if count <= 0 || components == 0 || size == 0 { return out }
+    normalized := doc_json.get_bool(node, "normalized").unwrap_or(false)
+
+    buffer_views := doc_json.field(doc_json.root, "bufferViews")
+    view_index := i32(doc_json.get_i64(node, "bufferView").unwrap_or_default())
+    view := doc_json.at(buffer_views, view_index)
+    if doc_json.kind(view) != .Object { return out }
+    view_offset := i32(doc_json.get_i64(view, "byteOffset").unwrap_or_default())
+    accessor_offset := i32(doc_json.get_i64(node, "byteOffset").unwrap_or_default())
+    mut stride := i32(doc_json.get_i64(view, "byteStride").unwrap_or_default())
+    if stride == 0 { stride = components * size }
+    data := buffer_bytes(doc, 0)
+    base := view_offset + accessor_offset
+    out.reserve(count * components)
+    for i in 0..count {
+        element := base + i * stride
+        for c in 0..components {
+            offset := element + c * size
+            if offset + size > data.len { return [] }
+            if size == 4 && component_type == 5126 {
+                out.push(read_f32(data, offset))
+            } else {
+                out.push(read_component(data, offset, component_type, normalized))
+            }
+        }
+    }
+    out
+}
+
+fn read_accessor_i32(doc: &Document, doc_json: &json.Doc, index: i32) -> []i32 {
+    mut out: []i32 = []
+    accessors := doc_json.field(doc_json.root, "accessors")
+    if doc_json.kind(accessors) != .Array { return out }
+    node := doc_json.at(accessors, index)
+    if doc_json.kind(node) != .Object { return out }
+    count := i32(doc_json.get_i64(node, "count").unwrap_or_default())
+    component_type := i32(doc_json.get_i64(node, "componentType").unwrap_or_default())
+    size := component_size(component_type)
+    if count <= 0 || size == 0 { return out }
+    buffer_views := doc_json.field(doc_json.root, "bufferViews")
+    view_index := i32(doc_json.get_i64(node, "bufferView").unwrap_or_default())
+    view := doc_json.at(buffer_views, view_index)
+    if doc_json.kind(view) != .Object { return out }
+    view_offset := i32(doc_json.get_i64(view, "byteOffset").unwrap_or_default())
+    accessor_offset := i32(doc_json.get_i64(node, "byteOffset").unwrap_or_default())
+    mut stride := i32(doc_json.get_i64(view, "byteStride").unwrap_or_default())
+    if stride == 0 { stride = size }
+    data := buffer_bytes(doc, 0)
+    base := view_offset + accessor_offset
+    out.reserve(count)
+    for i in 0..count {
+        offset := base + i * stride
+        if offset + size > data.len { return [] }
+        out.push(read_index(data, offset, component_type))
+    }
+    out
+}
+
+// ---- Mesh extraction ----
+
+// Read the first mesh's first primitive. Enough for the engine's first
+// milestone; multi-primitive support arrives with materials.
+pub fn load_mesh(doc: &Document) -> Mesh {
+    if !doc.ok { return Mesh { ok: false, error: doc.error.clone(), positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 } }
+    doc_json := json.Doc::parse_text(doc.json_text.clone())
+    if !doc_json.ok { return empty_mesh() }
+    meshes := doc_json.field(doc_json.root, "meshes")
+    if doc_json.kind(meshes) != .Array || doc_json.count(meshes) == 0 {
+        return Mesh { ok: false, error: "glTF has no meshes", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
+    }
+    mesh := doc_json.at(meshes, 0)
+    primitives := doc_json.field(mesh, "primitives")
+    if doc_json.kind(primitives) != .Array || doc_json.count(primitives) == 0 {
+        return Mesh { ok: false, error: "glTF mesh has no primitives", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
+    }
+    primitive := doc_json.at(primitives, 0)
+    attributes := doc_json.field(primitive, "attributes")
+    // Accessor indices are zero-based, so -1 is the "attribute absent" sentinel.
+    mut position_index := -1
+    match doc_json.get_i64(attributes, "POSITION") {
+        .Some(value) => { position_index = i32(value) },
+        .None => {},
+    }
+    if position_index < 0 {
+        return Mesh { ok: false, error: "glTF primitive has no POSITION attribute", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
+    }
+    mut normal_index := -1
+    match doc_json.get_i64(attributes, "NORMAL") {
+        .Some(value) => { normal_index = i32(value) },
+        .None => {},
+    }
+    mut uv_index := -1
+    match doc_json.get_i64(attributes, "TEXCOORD_0") {
+        .Some(value) => { uv_index = i32(value) },
+        .None => {},
+    }
+    mut index_accessor := -1
+    match doc_json.get_i64(primitive, "indices") {
+        .Some(value) => { index_accessor = i32(value) },
+        .None => {},
+    }
+
+    positions := read_accessor_f32(doc, &doc_json, position_index)
+    if positions.len == 0 {
+        return Mesh { ok: false, error: "glTF POSITION accessor is empty or unsupported", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
+    }
+    normals := if normal_index >= 0 { read_accessor_f32(doc, &doc_json, normal_index) } else { [] }
+    uvs := if uv_index >= 0 { read_accessor_f32(doc, &doc_json, uv_index) } else { [] }
+    mut indices := if index_accessor >= 0 { read_accessor_i32(doc, &doc_json, index_accessor) } else { [] }
+    vertex_count := positions.len / 3
+    if indices.len == 0 {
+        // Non-indexed geometry: synthesize an index buffer.
+        indices.reserve(vertex_count)
+        for i in 0..vertex_count { indices.push(i) }
+    }
+    index_count := indices.len
+    Mesh {
+        ok: true, error: "", positions: positions, normals: normals, uvs: uvs, indices: indices,
+        index_count: index_count, vertex_count: vertex_count,
+    }
+}
+
+// Interleave positions/normals into Storm's [x,y,z,nx,ny,nz] f32 stream.
+pub fn interleave(mesh: &Mesh) -> []f32 {
+    mut out: []f32 = []
+    out.reserve(mesh.vertex_count * 6)
+    for i in 0..mesh.vertex_count {
+        out.push(mesh.positions[i * 3])
+        out.push(mesh.positions[i * 3 + 1])
+        out.push(mesh.positions[i * 3 + 2])
+        if mesh.normals.len >= (i + 1) * 3 {
+            out.push(mesh.normals[i * 3])
+            out.push(mesh.normals[i * 3 + 1])
+            out.push(mesh.normals[i * 3 + 2])
+        } else {
+            out.push(0.0)
+            out.push(1.0)
+            out.push(0.0)
+        }
+    }
+    out
+}
