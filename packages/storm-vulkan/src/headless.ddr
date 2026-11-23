@@ -155,20 +155,20 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     true
 }
 
-// Binary PPM (P6), subsampled by two in each axis.
+// Binary PPM (P6) at native resolution.
 pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
     if r.linearMapped == ptr(0) { return false }
-    width := i32(r.captureWidth / 2)
-    height := i32(r.captureHeight / 2)
+    width := i32(r.captureWidth)
+    height := i32(r.captureHeight)
     pitch := i32(r.capturePitch)
     mut out: []u8 = []
     b.append_utf8(&mut out, "P6\n" + width.str() + " " + height.str() + "\n255\n")
     mut y := 0
     while y < height {
-        row := usize(y * 2) * usize(pitch)
+        row := usize(y) * usize(pitch)
         mut x := 0
         while x < width {
-            offset := row + usize(x * 2) * 4
+            offset := row + usize(x) * 4
             // Swapchain format is B8G8R8A8_UNORM.
             out.push(load_u8(ptr(usize(r.linearMapped) + offset + 2)))
             out.push(load_u8(ptr(usize(r.linearMapped) + offset + 1)))
