@@ -14,8 +14,10 @@ import sys
 struct Shader { stage: string, source: string, name: string }
 
 fn shaders() -> []Shader {
-    [Shader { stage: "vert", source: "packages/storm-vulkan/shaders/triangle.vert", name: "vertex" },
-     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/triangle.frag", name: "fragment" }]
+    [Shader { stage: "vert", source: "packages/storm-vulkan/shaders/mesh.vert", name: "mesh_vertex" },
+     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/mesh.frag", name: "mesh_fragment" },
+     Shader { stage: "vert", source: "packages/storm-vulkan/shaders/sky.vert", name: "sky_vertex" },
+     Shader { stage: "frag", source: "packages/storm-vulkan/shaders/sky.frag", name: "sky_fragment" }]
 }
 
 // SPIR-V words from a little-endian .spv file.

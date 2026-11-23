@@ -1,11 +1,14 @@
 name = "storm"
-version = "0.0.1"
+version = "0.1.0"
 root = "src/main.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
 core = { path = "packages/storm-core" }
 ecs = { path = "packages/storm-ecs" }
+scene = { path = "packages/storm-scene" }
+render = { path = "packages/storm-render" }
+input = { path = "packages/storm-input", capabilities = ["unsafe", "filesystem", "stdio"] }
 vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
 gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }
 text = { path = "packages/storm-text", capabilities = ["filesystem", "stdio", "unsafe"] }

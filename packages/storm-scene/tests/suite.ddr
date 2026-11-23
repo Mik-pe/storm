@@ -1,0 +1,45 @@
+import ..src.scene as scene
+import core
+
+@test fn child_inherits_parent_translation() {
+    mut graph := scene.Graph::new()
+    root := graph.create_root(core.vec3(2.0, 0.0, 0.0))
+    child := graph.create_child(root, core.vec3(1.0, 0.0, 0.0))
+    graph.propagate()
+    assert(graph.world(root).matrix.m[12] == 2.0)
+    assert(graph.world(child).matrix.m[12] == 3.0)
+    assert(graph.len() == 2)
+}
+
+@test fn three_levels_compose() {
+    mut graph := scene.Graph::new()
+    a := graph.create_root(core.vec3(1.0, 0.0, 0.0))
+    b := graph.create_child(a, core.vec3(0.0, 2.0, 0.0))
+    c := graph.create_child(b, core.vec3(0.0, 0.0, 3.0))
+    graph.propagate()
+    assert(graph.world(a).matrix.m[12] == 1.0)
+    assert(graph.world(b).matrix.m[13] == 2.0)
+    assert(graph.world(c).matrix.m[12] == 1.0)
+    assert(graph.world(c).matrix.m[13] == 2.0)
+    assert(graph.world(c).matrix.m[14] == 3.0)
+}
+
+@test fn rotation_and_scale_apply_to_children() {
+    mut graph := scene.Graph::new()
+    root := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    graph.set_scale(root, 2.0)
+    child := graph.create_child(root, core.vec3(1.0, 0.0, 0.0))
+    graph.propagate()
+    // Scaling the parent doubles the child's offset.
+    assert((graph.world(child).matrix.m[12] - 2.0).abs() < 0.0001)
+}
+
+@test fn destroying_a_parent_detaches_children() {
+    mut graph := scene.Graph::new()
+    root := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    child := graph.create_child(root, core.vec3(5.0, 0.0, 0.0))
+    assert(graph.destroy(root))
+    assert(graph.parent_of(child).is_none())
+    graph.propagate()
+    assert(graph.world(child).matrix.m[12] == 5.0)
+}

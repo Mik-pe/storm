@@ -289,6 +289,89 @@ symtomen.
 
 ---
 
+---
+
+## 17. `@c_layout`-structar kan inte innehålla `string`
+
+Ett försök att lägga en felsträng i renderarstructen:
+
+```dunder
+@c_layout
+struct Renderer { depthError: string, /* ... */ }
+```
+
+```
+error[E1003]: ... only unmanaged C fields
+```
+
+Diagnostiken pekar dessutom på en rad i `stdlib/sys/winutf8.ddr` (samma
+felrapporteringsbeteende som i avsnitt 1), inte på fältet.
+
+**Workaround i Storm:** felkoder som `i32` i C-structen, och meddelandet byggs i
+en vanlig funktion utanför structen.
+
+**Rekommendation:** rätta felplatsen. Om `string` aldrig får förekomma i
+`@c_layout` bör dokumentationen i `docs/ffi.md` säga det uttryckligen.
+
+---
+
+## 18. Lån från en poolmetod blockerar hela `&mut self`
+
+```dunder
+local := self.locals.get(entity)      // &LocalTransform, lånar self
+...
+self.visit(child, ...)                // E4003: cannot mutate while borrowed
+```
+
+Lånet lever till slutet av funktionen, även om `local` bara används på nästa
+rad. Samma sak gäller loopar som läser `self.parents.values()[i]` och sedan
+anropar en `&mut self`-metod i samma iteration.
+
+**Workaround i Storm:** `.clone()` direkt vid uppslaget, och samla ihop
+barnelementen i en egen array innan rekursionen.
+
+**Rekommendation:** överväg en icke-lexikalisk lånetid (NLL) för lokala
+variabler som inte används senare i blocket. Det är den enskilt största
+ergonomiska friktionen i ECS- och scen-grafskod.
+
+---
+
+## 19. `vkCreateImage` för djupformat returnerar `VK_ERROR_OUT_OF_DEVICE_MEMORY`
+
+På `vulkan-intel` 1:26.2.2 (Intel Iris Plus, ICL GT2) via `vulkan-icd-loader`
+1.4.357:
+
+- `B8G8R8A8_UNORM` + `COLOR_ATTACHMENT` → `VK_SUCCESS`
+- `D32_SFLOAT` + `DEPTH_STENCIL_ATTACHMENT` → `-2` (`OUT_OF_DEVICE_MEMORY`)
+- `D16_UNORM` + `DEPTH_STENCIL_ATTACHMENT` → `-2`
+- `D32_SFLOAT` + `COLOR_ATTACHMENT` → `-2`
+- vilken storlek som helst (512×512 som 2256×1504)
+
+`vkGetPhysicalDeviceFormatProperties(D32_SFLOAT).optimalTilingFeatures`
+innehåller `DEPTH_STENCIL_ATTACHMENT` (bit 512), så formatet rapporteras
+stödjas. Felen är reproducerbara med en handbyggd `VkImageCreateInfo` (råa ord,
+korrekt `sType`/`pNext`/`extent`), så det är inte struct-layout.
+
+**Konsekvens i Storm:** djupbufferten är avstängd och scenen ritas i
+deklarationsordning (himmel först, sedan mark, sedan kuber). Det syns bara när
+objekt överlappar.
+
+**Rekommendation:** utred med valideringslager. Storm hade inte lager påslaget i
+instansen när detta mättes; `VK_INSTANCE_LAYERS` räcker inte utan att lagret
+listas i `VkInstanceCreateInfo`. Ett litet C-program mot samma ICD avgör om det
+är vår bindning eller drivrutinen.
+
+---
+
+## 20. Fönstret kräver en olåst session — bekräftat igen
+
+Med full renderingsväg (himmel + PBR) presenteras fem frames på
+`Intel(R) Iris(R) Plus Graphics (ICL GT2)` och sedan blockerar
+`vkAcquireNextImageKHR` när Wayland-sessionen är låst. Samma beteende som i
+avsnitt 16, nu med `--frames 5` som ett reproducerbart smoke-test.
+
+---
+
 ## Sammanfattning för Dunder-arbetet
 
 Prioriterat, högst nytta först:
@@ -301,5 +384,9 @@ Prioriterat, högst nytta först:
    ren ergonomi i numerisk kod.
 4. **Dokumentation**: capability-grants (13), `Result`/`Option`-migration (10,
    11), bit-tolkning (9), `@c_layout`-begränsningen (1).
-5. **CI mot ekosystemet**: `dunder-hundmat` och `dunder-skrift` bör byggas mot
+5. **Lån utanför block**: låt ett uppslags lån ta slut när värdet inte används
+   mer (18) — det är den största friktionen i ECS-kod.
+6. **Feldiagnostik**: fel i `@c_layout`-fält pekar på fel rad och ibland på en
+   stdlib-fil (1, 17).
+7. **CI mot ekosystemet**: `dunder-hundmat` och `dunder-skrift` bör byggas mot
    `main` (14).

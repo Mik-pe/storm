@@ -1,11 +1,36 @@
 import ..src.vulkan as vulkan
 
-@test fn geometry_helpers_emit_interleaved_vertices() {
+@test fn cube_emits_twelve_triangles_with_face_normals() {
     mut v: []f32 = []
-    vulkan.triangle(&mut v, -0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 0.0, 0.5, 0.0, 1.0, 0.2, 0.3, 1.0)
-    assert(v.len == 21)
-    assert(v[0] == -0.5 && v[2] == 0.0 && v[3] == 1.0 && v[6] == 1.0)
+    vulkan.cube(&mut v, 0.5)
+    assert(v.len == 36 * 6)
+    // First triangle is the +Z face: normal (0,0,1) and z = +0.5.
+    assert(v[3] == 0.0 && v[4] == 0.0 && v[5] == 1.0)
+    assert(v[2] == 0.5)
+    // Count normals pointing along each axis.
+    mut plus_z := 0
+    mut minus_y := 0
+    mut i := 0
+    while i < v.len {
+        if v[i + 5] == 1.0 { plus_z = plus_z + 1 }
+        if v[i + 4] == -1.0 { minus_y = minus_y + 1 }
+        i = i + 6
+    }
+    assert(plus_z == 6 && minus_y == 6)
+}
+
+@test fn plane_is_two_upward_triangles() {
+    mut v: []f32 = []
+    vulkan.plane(&mut v, 4.0)
+    assert(v.len == 6 * 6)
+    assert(v[4] == 1.0 && v[10] == 1.0 && v[16] == 1.0)
+}
+
+@test fn triangle_and_vertex_helpers_agree() {
+    mut v: []f32 = []
+    vulkan.vertex(&mut v, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0)
+    assert(v.len == 6 && v[0] == 1.0 && v[5] == 0.0)
     v.clear()
-    vulkan.quad(&mut v, -1.0, -1.0, 0.0, 2.0, 2.0, 0.5, 0.5, 0.5, 1.0)
-    assert(v.len == 42)
+    vulkan.triangle(&mut v, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    assert(v.len == 18)
 }

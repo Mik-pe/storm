@@ -1,8 +1,7 @@
-capability unsafe, stdio
+capability unsafe
 
 import std.bytes as b
 import std.dl as dl
-import sys
 import .api as api
 import .device as device
 import .layout as vk
@@ -12,16 +11,16 @@ import .state as state
 
 // Storm's Vulkan window: a real VK_KHR_swapchain presentation path (no readback).
 //
-//   opened := vulkan.open("Storm", 1280, 720)
-//   while running {
-//       frame := vulkan.poll(opened.window)
-//       drawn := vulkan.draw(opened.window, &vertices, mvp)
-//       running = !frame.closed
-//   }
-//   vulkan.close(opened.window)
+// A frame is recorded in four calls, which is what the render graph drives:
 //
-// Vertices are interleaved [x, y, z, r, g, b, a] f32 (28 bytes). `draw` takes a
-// column-major mat4 as [f32; 16] and uploads it as a push constant.
+//   result := vulkan.begin(opened.window)
+//   if result.ok {
+//       _ := vulkan.sky(opened.window, &inv_view_proj, &sun, &zenith, &horizon)
+//       _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base, &params, &camera)
+//       _ := vulkan.end(opened.window)
+//   }
+//
+// Mesh vertices are interleaved [x, y, z, nx, ny, nz] f32 (24 bytes).
 
 pub struct Window { id: i64 }
 pub struct OpenResult { ok: bool, window: Window, error: string }
@@ -37,7 +36,17 @@ pub struct Frame {
     key: i32,
     resized: bool,
 }
+pub struct BeginResult { ok: bool, error: string, width: i32, height: i32 }
 pub struct DrawResult { ok: bool, error: string, frames: i64 }
+pub struct MouseState {
+    x: i32,
+    y: i32,
+    dx: i32,
+    dy: i32,
+    buttons: u32,
+    pressed: u32,
+    scroll: f32,
+}
 
 @c_layout
 struct Registry { active: ptr, generation: i64 }
@@ -67,12 +76,19 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     r.width = u32(width)
     r.height = u32(height)
     r.frameIndex = 0
+    r.current = 0
+    r.stage = 1
     if !sdl.open(&mut r.window, title, width, height) { return false }
+    r.stage = 2
     if !device.setup(&mut r) { return false }
+    r.stage = 3
     if !pipeline.setup(&mut r) { return false }
+    r.stage = 4
     if !device.setup_frames(&mut r) { return false }
-    // 1 MiB of mapped vertex space: ~37k vertices, plenty for Storm's first pass.
-    if !device.create_vertex_buffer(&mut r, 1048576) { return false }
+    r.stage = 5
+    // 4 MiB of mapped vertex space, enough for a few hundred thousand vertices.
+    if !device.create_vertex_buffer(&mut r, 4194304) { return false }
+    r.stage = 0
     true
 }
 
@@ -88,7 +104,7 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
         return open_error("window dimensions must be between 1 and 8192")
     }
     if registry.active != ptr(0) { return open_error("a Storm window is already open") }
-    address := allocate(1, size_of(state.Renderer))
+    address := allocate(1, size_of(state.Renderer) + 8192)
     if address == ptr(0) { return open_error("could not allocate Vulkan state") }
     loader := dl.open(cstr("libvulkan.so.1"), 2)
     if loader == ptr(0) {
@@ -101,30 +117,15 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
         return open_error("Vulkan loader is missing required entry points")
     }
     if !initialize(ref_at(address), title, width, height) {
+        failure := stage_name(ref_at(address))
         device.destroy(ref_at(address))
         _ := dl.close(loader)
         release(address)
-        return open_error("Vulkan initialization failed (window, surface, device or swapchain)")
+        return open_error("Vulkan initialization failed at " + failure)
     }
     registry.generation = registry.generation + 1
     registry.active = address
     OpenResult { ok: true, window: Window { id: registry.generation }, error: "" }
-}
-
-// Print each submission step to stderr. Useful when a frame hangs.
-pub fn set_trace(window: Window, enabled: bool) {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address != ptr(0) { set_trace_at(ref_at(address), enabled) }
-    }
-}
-
-unsafe fn set_trace_at(r: &mut state.Renderer, enabled: bool) {
-    r.trace = if enabled { 1 } else { 0 }
-}
-
-fn trace_step(r: &state.Renderer, message: string) {
-    if r.trace != 0 { print("storm/vk: " + message) }
 }
 
 pub fn open(title: string, width: i32, height: i32) -> OpenResult {
@@ -157,9 +158,24 @@ pub fn device_name(window: Window) -> string {
     }
 }
 
+// Print each submission step to stdout. Useful when a frame hangs.
+pub fn set_trace(window: Window, enabled: bool) {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address != ptr(0) { set_trace_at(ref_at(address), enabled) }
+    }
+}
+
+unsafe fn set_trace_at(r: &mut state.Renderer, enabled: bool) {
+    r.trace = if enabled { 1 } else { 0 }
+}
+
+fn trace_step(r: &state.Renderer, message: string) {
+    if r.trace != 0 { print("storm/vk: " + message) }
+}
+
 unsafe fn next_frame(r: &mut state.Renderer) -> Frame {
     sdl.poll(&mut r.window)
-    resized := r.window.resized != 0
     Frame {
         closed: r.window.closed != 0,
         width: r.window.width,
@@ -170,7 +186,7 @@ unsafe fn next_frame(r: &mut state.Renderer) -> Frame {
         pointer_y: f64(r.window.y),
         pointer_down: r.window.down != 0,
         key: r.window.key,
-        resized: resized,
+        resized: r.window.resized != 0,
     }
 }
 
@@ -185,78 +201,177 @@ pub fn poll(window: Window) -> Frame {
     }
 }
 
-fn draw_error(frames: i64, move message: string) -> DrawResult {
-    DrawResult { ok: false, error: message, frames: frames }
-}
-
-// Rebuild everything that depends on the swapchain size. Returns false if the
-// swapchain could not be recreated (out of date, minimized, ...).
-unsafe fn recreate(r: &mut state.Renderer) -> bool {
-    _ := r.api.DeviceWaitIdle(r.device)
-    pipeline.destroy_framebuffers(&mut r)
-    device.destroy_swapchain(&mut r)
-    if !device.setup_swapchain_only(&mut r) { return false }
-    pipeline.setup(&mut r)
-}
-
-unsafe fn submit(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16]) -> DrawResult {
-    if r.window.closed != 0 { return draw_error(r.frameIndex, "window is closed") }
-    if vertices.len % 7 != 0 || !mvp[0].is_finite() {
-        return draw_error(r.frameIndex, "vertices must be a finite [x,y,z,r,g,b,a] list")
+pub fn key_down(window: Window, scancode: i32) -> bool {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return false }
+        return key_down_at(ref_at(address), scancode)
     }
+}
+
+pub fn key_pressed(window: Window, scancode: i32) -> bool {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return false }
+        return key_pressed_at(ref_at(address), scancode)
+    }
+}
+
+pub fn mouse(window: Window) -> MouseState {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) {
+            return MouseState { x: 0, y: 0, dx: 0, dy: 0, buttons: 0, pressed: 0, scroll: 0.0 }
+        }
+        return mouse_at(ref_at(address))
+    }
+}
+
+fn key_down_at(r: &state.Renderer, scancode: i32) -> bool {
+    if scancode < 0 || scancode >= 512 { return false }
+    r.window.keys[scancode] != 0
+}
+
+fn key_pressed_at(r: &state.Renderer, scancode: i32) -> bool {
+    if scancode < 0 || scancode >= 512 { return false }
+    r.window.pressed[scancode] != 0
+}
+
+fn mouse_at(r: &state.Renderer) -> MouseState {
+    MouseState {
+        x: r.window.x,
+        y: r.window.y,
+        dx: r.window.mouse_dx,
+        dy: r.window.mouse_dy,
+        buttons: r.window.buttons,
+        pressed: r.window.buttons_pressed,
+        scroll: r.window.wheel,
+    }
+}
+
+// ---- Frame recording ----
+
+fn stage_name(r: &state.Renderer) -> string {
+    stage := r.stage
+    if stage == 1 { return "SDL window" }
+    if stage == 2 { return "Vulkan device" }
+    if stage == 11 { return "instance/surface" }
+    if stage == 12 { return "physical device" }
+    if stage == 13 { return "queue family" }
+    if stage == 14 { return "logical device" }
+    if stage == 15 { return "surface format" }
+    if stage == 16 { return "swapchain" }
+    if stage == 3 { return "pipeline" }
+    if stage == 21 { return "render pass" }
+    if stage == 22 { return "mesh pipeline" }
+    if stage == 23 { return "sky pipeline" }
+    if stage == 24 { return "framebuffers" }
+    if stage == 4 { return "frame sync" }
+    if stage == 5 { return "vertex buffer" }
+    "stage " + stage.str()
+}
+
+fn draw_error(frames: i64, move message: string) -> DrawResult {
+    DrawResult { ok: false, error: message.clone(), frames: frames }
+}
+
+unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
+    if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed", width: 0, height: 0 } }
+    if r.recording != 0 { return BeginResult { ok: false, error: "a frame is already being recorded", width: 0, height: 0 } }
+    slot := r.current
+    trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
+    waited := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
+    if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed", width: 0, height: 0 } }
+    mut image_index: u32 = 0
+    acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
+        r.image_available[slot], ptr(0), addr(&mut image_index))
+    if acquired == 1000001003 {
+        if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date", width: 0, height: 0 } }
+        return BeginResult { ok: false, error: "swapchain recreated; retry the frame", width: 0, height: 0 }
+    }
+    if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed", width: 0, height: 0 } }
+    trace_step(&r, "acquired image " + i32(image_index).str())
+    _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
+    _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
+    mut begin: vk.CommandBufferBeginInfo = zeroed()
+    begin.sType = 42
+    begin.flags = 1
+    if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
+        return BeginResult { ok: false, error: "beginning the command buffer failed", width: 0, height: 0 }
+    }
+    mut clear_color: [f32; 4] = [0.02, 0.03, 0.05, 1.0]
+    mut pass: vk.RenderPassBeginInfo = zeroed()
+    pass.sType = 43
+    pass.renderPass = r.renderPass
+    pass.framebuffer = r.framebuffers[i32(image_index)]
+    pass.renderArea.extent.width = r.width
+    pass.renderArea.extent.height = r.height
+    pass.clearValueCount = 1
+    mut clears: [u64; 4] = [0; 4]
+    // ClearValue is a union: color floats at word 0..3, depth+stencil at word 0..1.
+    store_u32(addr(&mut clears[0]), u32(clear_color[0].to_bits()))
+    store_u32(ptr(usize(addr(&mut clears[0])) + 4), u32(clear_color[1].to_bits()))
+    store_u32(ptr(usize(addr(&mut clears[0])) + 8), u32(clear_color[2].to_bits()))
+    store_u32(ptr(usize(addr(&mut clears[0])) + 12), u32(clear_color[3].to_bits()))
+    pass.pClearValues = addr(&mut clears[0])
+    r.api.CmdBeginRenderPass(r.commands[slot], addr(&pass), 0)
+    r.imageIndex = i32(image_index)
+    r.recording = 1
+    trace_step(&r, "render pass begun")
+    BeginResult { ok: true, error: "", width: i32(r.width), height: i32(r.height) }
+}
+
+unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
+    sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
+    if r.recording == 0 { return draw_error(r.frameIndex, "sky drawn outside begin/end") }
+    slot := r.current
+    // Push constants: inv_view_proj(64) + sun(16) + zenith(16) + horizon(16).
+    mut push: [f32; 28] = [0.0; 28]
+    for i in 0..16 { push[i] = inv_view_proj[i] }
+    for i in 0..4 { push[16 + i] = sun[i] }
+    for i in 0..4 { push[20 + i] = zenith[i] }
+    for i in 0..4 { push[24 + i] = horizon[i] }
+    r.api.CmdBindPipeline(r.commands[slot], 0, r.skyPipeline)
+    r.api.CmdPushConstants(r.commands[slot], r.skyPipelineLayout, 17, 0, 112, addr(&push[0]))
+    r.api.CmdDraw(r.commands[slot], 3, 1, 0, 0)
+    DrawResult { ok: true, error: "", frames: r.frameIndex }
+}
+
+unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3]) -> DrawResult {
+    if r.recording == 0 { return draw_error(r.frameIndex, "mesh drawn outside begin/end") }
+    if vertices.len % 6 != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz] triples") }
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
     }
     bytes := vertices.len * 4
     if u64(bytes) > r.vertex.capacity {
-        return draw_error(r.frameIndex, "vertex list exceeds the mapped buffer")
+        return draw_error(r.frameIndex, "vertex list exceeds the mapped vertex buffer")
     }
-    if vertices.len > 0 { _ := copy_bytes(r.vertex.mapped, addr(&vertices[0]), usize(bytes)) }
-
-    slot := r.current
-    trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
-    waited := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
-    if waited != 0 { return draw_error(r.frameIndex, "waiting for the frame fence failed") }
-    trace_step(&r, "fence ready; acquire")
-    mut image_index: u32 = 0
-    acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
-        r.image_available[slot], ptr(0), addr(&mut image_index))
-    if acquired == 1000001003 {
-        // VK_ERROR_OUT_OF_DATE_KHR: resize path.
-        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date") }
-        return draw_error(r.frameIndex, "swapchain recreated; retry the frame")
-    }
-    if acquired != 0 { return draw_error(r.frameIndex, "acquiring a swapchain image failed") }
-    trace_step(&r, "acquired image " + i32(image_index).str())
-
-    reset := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
-    if reset != 0 { return draw_error(r.frameIndex, "resetting the frame fence failed") }
-    _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
-    mut begin: vk.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
-    begin.flags = 1
-    trace_step(&r, "recording")
-    if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
-        return draw_error(r.frameIndex, "beginning the command buffer failed")
-    }
-    mut clear: [f32; 4] = [0.039, 0.051, 0.075, 1.0]
-    mut pass: vk.RenderPassBeginInfo = zeroed()
-    pass.sType = 43
-    pass.renderPass = r.renderPass
-    pass.framebuffer = r.framebuffers[i32(image_index)]
-    pass.renderArea.extent = vk.Extent2D { width: r.width, height: r.height }
-    pass.clearValueCount = 1
-    pass.pClearValues = addr(&clear[0])
-    r.api.CmdBeginRenderPass(r.commands[slot], addr(&pass), 0)
     if vertices.len > 0 {
-        r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
-        offset: u64 = 0
-        r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
-        r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 1, 0, 64, addr(&mvp[0]))
-        r.api.CmdDraw(r.commands[slot], u32(vertices.len / 7), 1, 0, 0)
+        _ := copy_bytes(r.vertex.mapped, addr(&vertices[0]), usize(bytes))
     }
+    slot := r.current
+    mut push: [f32; 44] = [0.0; 44]
+    for i in 0..16 { push[i] = mvp[i] }
+    for i in 0..16 { push[16 + i] = model[i] }
+    for i in 0..4 { push[32 + i] = base_color[i] }
+    for i in 0..4 { push[36 + i] = params[i] }
+    for i in 0..3 { push[40 + i] = camera[i] }
+    r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
+    offset: u64 = 0
+    r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
+    r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 17, 0, 176, addr(&push[0]))
+    r.api.CmdDraw(r.commands[slot], u32(vertices.len / 6), 1, 0, 0)
+    DrawResult { ok: true, error: "", frames: r.frameIndex }
+}
+
+unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
+    if r.recording == 0 { return draw_error(r.frameIndex, "end without begin") }
+    slot := r.current
     r.api.CmdEndRenderPass(r.commands[slot])
     if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
+        r.recording = 0
         return draw_error(r.frameIndex, "ending the command buffer failed")
     }
     mut submit_info: vk.SubmitInfo = zeroed()
@@ -271,18 +386,21 @@ unsafe fn submit(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16]) -> D
     submit_info.pSignalSemaphores = addr(&r.render_finished[slot])
     trace_step(&r, "submit")
     if r.api.QueueSubmit(r.queue, 1, addr(&submit_info), r.fences[slot]) != 0 {
+        r.recording = 0
         return draw_error(r.frameIndex, "queue submission failed")
     }
+    mut image_index := u32(r.imageIndex)
     mut present: vk.PresentInfoKHR = zeroed()
     present.sType = 1000001002
     present.waitSemaphoreCount = 1
     present.pWaitSemaphores = addr(&r.render_finished[slot])
     present.swapchainCount = 1
     present.pSwapchains = addr(&r.swapchain)
-    present.pImageIndices = addr(&image_index)
+    present.pImageIndices = addr(&mut image_index)
     trace_step(&r, "present")
     presented := r.api.QueuePresentKHR(r.queue, addr(&present))
     trace_step(&r, "presented " + presented.str())
+    r.recording = 0
     if presented == 1000001003 {
         if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date") }
     } else if presented != 0 {
@@ -293,24 +411,50 @@ unsafe fn submit(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16]) -> D
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }
 
-pub fn draw(window: Window, vertices: &[]f32, mvp: &[f32; 16]) -> DrawResult {
+// Rebuild everything that depends on the swapchain size.
+unsafe fn recreate(r: &mut state.Renderer) -> bool {
+    _ := r.api.DeviceWaitIdle(r.device)
+    pipeline.destroy_framebuffers(&mut r)
+    device.destroy_swapchain(&mut r)
+    if !device.setup_swapchain_only(&mut r) { return false }
+    pipeline.setup_frames_only(&mut r)
+}
+
+pub fn begin(window: Window) -> BeginResult {
     unsafe {
         address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        return submit(ref_at(address), &vertices, &mvp)
+        if address == ptr(0) { return BeginResult { ok: false, error: "invalid or expired window handle", width: 0, height: 0 } }
+        return begin_frame(ref_at(address))
     }
 }
 
-pub fn draw_identity(window: Window, vertices: &[]f32) -> DrawResult {
-    mut identity: [f32; 16] = [1.0, 0.0, 0.0, 0.0,
-                               0.0, 1.0, 0.0, 0.0,
-                               0.0, 0.0, 1.0, 0.0,
-                               0.0, 0.0, 0.0, 1.0]
-    draw(window, &vertices, &identity)
+pub fn sky(window: Window, inv_view_proj: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        return sky_pass(ref_at(address), &inv_view_proj, &sun, &zenith, &horizon)
+    }
 }
 
-// Destroy GPU objects and the window. Returns the dl handle so the caller can
-// close it after the renderer allocation is released.
+pub fn mesh(window: Window, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        return mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera)
+    }
+}
+
+pub fn end(window: Window) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        return end_frame(ref_at(address))
+    }
+}
+
+// ---- Teardown ----
+
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     loader := r.loader
     device.destroy(&mut r)
@@ -332,27 +476,48 @@ pub fn close(window: Window) {
     unsafe { close_window(ref_at(registry_address()), window) }
 }
 
-// ---- Geometry helpers (interleaved [x, y, z, r, g, b, a]) ----
+// ---- Geometry helpers: interleaved [x, y, z, nx, ny, nz] ----
 
-pub fn vertex(vertices: &mut []f32, x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32) {
+pub fn vertex(vertices: &mut []f32, x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32) {
     vertices.push(x)
     vertices.push(y)
     vertices.push(z)
-    vertices.push(r)
-    vertices.push(g)
-    vertices.push(b)
-    vertices.push(a)
+    vertices.push(nx)
+    vertices.push(ny)
+    vertices.push(nz)
 }
 
 pub fn triangle(vertices: &mut []f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32,
-    cx: f32, cy: f32, cz: f32, r: f32, g: f32, b: f32, a: f32) {
-    vertex(&mut vertices, ax, ay, az, r, g, b, a)
-    vertex(&mut vertices, bx, by, bz, r, g, b, a)
-    vertex(&mut vertices, cx, cy, cz, r, g, b, a)
+    cx: f32, cy: f32, cz: f32, nx: f32, ny: f32, nz: f32) {
+    vertex(&mut vertices, ax, ay, az, nx, ny, nz)
+    vertex(&mut vertices, bx, by, bz, nx, ny, nz)
+    vertex(&mut vertices, cx, cy, cz, nx, ny, nz)
 }
 
-pub fn quad(vertices: &mut []f32, x: f32, y: f32, z: f32, w: f32, h: f32,
-    r: f32, g: f32, b: f32, a: f32) {
-    triangle(&mut vertices, x, y, z, x + w, y, z, x + w, y + h, z, r, g, b, a)
-    triangle(&mut vertices, x, y, z, x + w, y + h, z, x, y + h, z, r, g, b, a)
+// Axis-aligned box centred at the origin. 36 vertices, flat normals per face.
+pub fn cube(vertices: &mut []f32, half: f32) {
+    // +Z
+    triangle(&mut vertices, -half, -half, half, half, -half, half, half, half, half, 0.0, 0.0, 1.0)
+    triangle(&mut vertices, -half, -half, half, half, half, half, -half, half, half, 0.0, 0.0, 1.0)
+    // -Z
+    triangle(&mut vertices, half, -half, -half, -half, -half, -half, -half, half, -half, 0.0, 0.0, -1.0)
+    triangle(&mut vertices, half, -half, -half, -half, half, -half, half, half, -half, 0.0, 0.0, -1.0)
+    // -X
+    triangle(&mut vertices, -half, -half, -half, -half, -half, half, -half, half, half, -1.0, 0.0, 0.0)
+    triangle(&mut vertices, -half, -half, -half, -half, half, half, -half, half, -half, -1.0, 0.0, 0.0)
+    // +X
+    triangle(&mut vertices, half, -half, half, half, -half, -half, half, half, -half, 1.0, 0.0, 0.0)
+    triangle(&mut vertices, half, -half, half, half, half, -half, half, half, half, 1.0, 0.0, 0.0)
+    // +Y
+    triangle(&mut vertices, -half, half, half, half, half, half, half, half, -half, 0.0, 1.0, 0.0)
+    triangle(&mut vertices, -half, half, half, half, half, -half, -half, half, -half, 0.0, 1.0, 0.0)
+    // -Y
+    triangle(&mut vertices, -half, -half, -half, half, -half, -half, half, -half, half, 0.0, -1.0, 0.0)
+    triangle(&mut vertices, -half, -half, -half, half, -half, half, -half, -half, half, 0.0, -1.0, 0.0)
+}
+
+// Ground plane in XZ at y = 0, normal +Y.
+pub fn plane(vertices: &mut []f32, extent: f32) {
+    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, -extent, extent, 0.0, extent, 0.0, 1.0, 0.0)
+    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, extent, -extent, 0.0, extent, 0.0, 1.0, 0.0)
 }

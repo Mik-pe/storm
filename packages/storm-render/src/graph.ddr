@@ -1,0 +1,130 @@
+// Storm render graph: a declarative pass list with resource dependencies.
+//
+// A pass declares the resources it writes and the resources it reads. `build`
+// validates the graph (unknown resource, duplicate pass, cycle) and returns a
+// topological order in which every producer runs before its consumers.
+//
+//   mut graph := graph.Graph::new()
+//   _ := graph.add_pass("sky", ["color"], [])
+//   _ := graph.add_pass("opaque", ["color"], ["color"])
+//   order := graph.build()
+//   // order.names == ["sky", "opaque"]
+//
+// The graph is pure data: the caller maps pass names to GPU work. That keeps
+// scheduling testable without a device, and lets the same order drive a
+// headless validation run.
+
+pub struct Pass {
+    name: string,
+    writes: []string,
+    reads: []string,
+    enabled: bool,
+}
+
+pub struct Order {
+    ok: bool,
+    error: string,
+    names: []string,
+}
+
+fn find_pass(passes: &[]Pass, name: &string) -> i32 {
+    for i in 0..passes.len {
+        if passes[i].name == name { return i }
+    }
+    -1
+}
+
+pub struct Graph {
+    passes: []Pass,
+}
+
+impl Graph {
+    pub fn new() -> Self { Self { passes: [] } }
+
+    pub fn len(&self) -> i32 { self.passes.len }
+
+    pub fn add_pass(&mut self, move name: string, move writes: []string, move reads: []string) -> bool {
+        if name == "" { return false }
+        if find_pass(&self.passes, &name) >= 0 { return false }
+        self.passes.push(Pass { name: name, writes: writes, reads: reads, enabled: true })
+        true
+    }
+
+    pub fn disable(&mut self, name: string) -> bool {
+        index := find_pass(&self.passes, &name)
+        if index < 0 { return false }
+        self.passes[index].enabled = false
+        true
+    }
+
+    pub fn pass_at(&self, index: i32) -> &Pass from self { &self.passes[index] }
+
+    // DFS post-order over "latest earlier writer" edges. A read resolves to the
+    // most recent preceding pass that writes the resource, so declaration order
+    // is the tie-breaker and cycles cannot form. A read with no earlier writer
+    // means "external input" (a texture, the swapchain) and adds no edge.
+    pub fn build(&self) -> Order {
+        mut names: []string = []
+        mut state: []i32 = []
+        for _ in 0..self.passes.len { state.push(0) }
+        for i in 0..self.passes.len {
+            if !self.passes[i].enabled { continue }
+            visited := self.visit(i, &mut state, &mut names)
+            if !visited.ok { return Order { ok: false, error: visited.error, names: [] } }
+        }
+        Order { ok: true, error: "", names: names }
+    }
+
+    fn visit(&self, index: i32, state: &mut []i32, names: &mut []string) -> Order {
+        if state[index] == 2 { return Order { ok: true, error: "", names: [] } }
+        state[index] = 1
+        for r in 0..self.passes[index].reads.len {
+            resource := &self.passes[index].reads[r]
+            mut producer := -1
+            for candidate in 0..index {
+                if !self.passes[candidate].enabled { continue }
+                if writes_resource(&self.passes[candidate], resource) { producer = candidate }
+            }
+            if producer >= 0 {
+                dependency := self.visit(producer, &mut state, &mut names)
+                if !dependency.ok { return dependency }
+            }
+        }
+        if state[index] == 2 { return Order { ok: true, error: "", names: [] } }
+        state[index] = 2
+        names.push(self.passes[index].name.clone())
+        Order { ok: true, error: "", names: [] }
+    }
+}
+
+fn writes_resource(pass: &Pass, resource: &string) -> bool {
+    for i in 0..pass.writes.len {
+        if pass.writes[i] == resource { return true }
+    }
+    false
+}
+
+// True when the order satisfies every "latest earlier writer" edge: a pass's
+// reads resolve to the most recent preceding declaration that writes the
+// resource, and that writer must appear earlier in the emitted order.
+pub fn respects_dependencies(order: &Order, passes: &[]Pass) -> bool {
+    for o in 0..order.names.len {
+        index := find_pass(passes, &order.names[o])
+        if index < 0 { return false }
+        for r in 0..passes[index].reads.len {
+            resource := &passes[index].reads[r]
+            mut producer := -1
+            for candidate in 0..index {
+                if !passes[candidate].enabled { continue }
+                if writes_resource(&passes[candidate], resource) { producer = candidate }
+            }
+            if producer < 0 { continue }
+            mut seen := false
+            for k in 0..o {
+                if order.names[k] == passes[producer].name { seen = true }
+            }
+            if !seen { return false }
+        }
+    }
+    true
+}

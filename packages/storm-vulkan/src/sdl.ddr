@@ -4,6 +4,9 @@ import std.dl as dl
 
 // SDL2 owns the native window and the event queue. Vulkan presents to it through
 // a VK_KHR_surface created by SDL_Vulkan_CreateSurface; SDL never touches pixels.
+//
+// Input state is kept per window and updated by poll(): held keys, keys pressed
+// this frame, mouse position/delta, button bitmask and wheel delta.
 @c_layout
 pub struct Window {
     library: ptr,
@@ -18,6 +21,13 @@ pub struct Window {
     y: i32,
     width: i32,
     height: i32,
+    keys: [u8; 512],
+    pressed: [u8; 512],
+    mouse_dx: i32,
+    mouse_dy: i32,
+    buttons: u32,
+    buttons_pressed: u32,
+    wheel: f32,
     InitSubSystem: extern fn(u32) -> i32,
     QuitSubSystem: extern fn(u32),
     CreateWindow: extern fn(ptr, i32, i32, i32, i32, u32) -> ptr,
@@ -77,7 +87,7 @@ pub unsafe fn open(w: &mut Window, title: string, width: i32, height: i32) -> bo
     }
     name.push(0)
     if !load(&mut w) { return false }
-    // SDL_INIT_VIDEO = 0x20. Window flags: SDL_WINDOW_VULKAN (0x10000000) | SDL_WINDOW_RESIZABLE (0x20).
+    // SDL_INIT_VIDEO = 0x20. Flags: SDL_WINDOW_VULKAN (0x10000000) | RESIZABLE (0x20).
     if w.InitSubSystem(32) != 0 { return false }
     w.initialized = 1
     w.handle = w.CreateWindow(addr(&name[0]), 805306368, 805306368, width, height, 268435488)
@@ -86,6 +96,7 @@ pub unsafe fn open(w: &mut Window, title: string, width: i32, height: i32) -> bo
     w.width = width
     w.height = height
     w.resized = 1
+    w.key = -1
     true
 }
 
@@ -95,33 +106,66 @@ pub unsafe fn close(w: &mut Window) {
     if w.library != ptr(0) { _ := dl.close(w.library) }
 }
 
+fn scancode_valid(scancode: i32) -> bool { scancode >= 0 && scancode < 512 }
+
 pub unsafe fn poll(w: &mut Window) {
     w.key = -1
     w.resized = 0
+    w.mouse_dx = 0
+    w.mouse_dy = 0
+    w.buttons_pressed = 0
+    w.wheel = 0.0
+    for i in 0..512 { w.pressed[i] = 0 }
     if w.closed != 0 { return }
-    // SDL_Event is a tagged 56-byte union on 64-bit targets. One control
-    // event per frame preserves key and button transitions for the caller.
+    // SDL_Event is a tagged 56-byte union on 64-bit targets. Consume every
+    // event in the queue so input state is complete for this frame.
     mut event: [u64; 7] = [0; 7]
     base := addr(&mut event[0])
     for _ in 0..256 {
         if w.PollEvent(base) == 0 { break }
         kind := load_u32(base)
-        if kind == 256 { w.closed = 1; w.down = 0; break }
-        if load_u32(ptr(usize(base) + 8)) == w.id {
-            if kind == 512 {
-                action := load_u8(ptr(usize(base) + 12))
-                if action == 14 { w.closed = 1; w.down = 0; break }
-                if action == 5 || action == 6 { w.resized = 1; break }
-                if action == 13 { w.down = 0; break }
+        if kind == 256 { w.closed = 1; w.down = 0; continue }
+        if load_u32(ptr(usize(base) + 8)) != w.id && kind != 1024 && kind != 1027 { continue }
+        if kind == 512 {
+            action := load_u8(ptr(usize(base) + 12))
+            if action == 14 { w.closed = 1; w.down = 0; continue }
+            if action == 5 || action == 6 { w.resized = 1 }
+            continue
+        }
+        if kind == 768 || kind == 769 {
+            scancode := load_i32(ptr(usize(base) + 16))
+            if scancode_valid(scancode) {
+                w.keys[scancode] = if kind == 768 { 1 } else { 0 }
+                if kind == 768 { w.pressed[scancode] = 1 }
             }
-            if kind == 768 { w.key = load_i32(ptr(usize(base) + 20)); break }
-            if kind == 1024 || ((kind == 1025 || kind == 1026) && load_u8(ptr(usize(base) + 16)) == 1) {
-                w.x = load_i32(ptr(usize(base) + 20))
-                w.y = load_i32(ptr(usize(base) + 24))
-                if kind == 1024 { w.down = u32(i32(load_u32(ptr(usize(base) + 16))).bit_and(1)) }
-                else { w.down = u32(load_u8(ptr(usize(base) + 17))) }
-                break
+            w.key = load_i32(ptr(usize(base) + 20))
+            continue
+        }
+        if kind == 1024 {
+            w.x = load_i32(ptr(usize(base) + 20))
+            w.y = load_i32(ptr(usize(base) + 24))
+            w.mouse_dx = w.mouse_dx + load_i32(ptr(usize(base) + 28))
+            w.mouse_dy = w.mouse_dy + load_i32(ptr(usize(base) + 32))
+            continue
+        }
+        if kind == 1025 || kind == 1026 {
+            button := load_u8(ptr(usize(base) + 16))
+            if button < 32 {
+                mask := u32(1).shl(i32(button))
+                if kind == 1025 {
+                    w.buttons = w.buttons.bit_or(mask)
+                    w.buttons_pressed = w.buttons_pressed.bit_or(mask)
+                } else {
+                    w.buttons = w.buttons.bit_and(u32(4294967295).bit_xor(mask))
+                }
             }
+            w.x = load_i32(ptr(usize(base) + 20))
+            w.y = load_i32(ptr(usize(base) + 24))
+            continue
+        }
+        if kind == 1027 {
+            w.wheel = w.wheel + f32(load_i32(ptr(usize(base) + 20)))
+            continue
         }
     }
     if w.handle != ptr(0) { w.GetWindowSize(w.handle, addr(&mut w.width), addr(&mut w.height)) }

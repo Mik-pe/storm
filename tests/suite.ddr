@@ -49,10 +49,11 @@ struct Spin { speed: f32 }
     assert(!allocator.is_alive(e))
 }
 
-@test fn vulkan_triangle_emits_three_interleaved_vertices() {
+@test fn vulkan_cube_emits_twelve_position_normal_triangles() {
     mut vertices: []f32 = []
-    vulkan.triangle(&mut vertices, -0.5, -0.5, 0.0, 0.5, -0.5, 0.0, 0.0, 0.5, 0.0, 0.2, 0.6, 1.0, 1.0)
-    assert(vertices.len == 21)
-    assert(vertices[0] == -0.5 && vertices[7] == 0.5)
-    assert(vertices[3] == 0.2 && vertices[6] == 1.0)
+    vulkan.cube(&mut vertices, 0.5)
+    assert(vertices.len == 36 * 6)
+    // First vertex of the +Z face: position (-0.5,-0.5,0.5), normal (0,0,1).
+    assert(vertices[0] == -0.5 && vertices[2] == 0.5)
+    assert(vertices[3] == 0.0 && vertices[4] == 0.0 && vertices[5] == 1.0)
 }

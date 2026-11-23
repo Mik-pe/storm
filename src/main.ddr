@@ -1,100 +1,35 @@
 // Storm — a game engine in Dunder.
 //
-// First executable milestone: a real Vulkan swapchain window (no readback) with
-// an ECS-driven scene of spinning cubes and a push-constant VP matrix.
+// Demo scene: a sunlit sky, a PBR ground plane and three metallic cubes
+// orbiting a parent node. The frame is produced by a render graph whose passes
+// are ordered by resource dependencies, and the camera is driven by WASD +
+// right-mouse look.
+//
+//   dunder run              interactive
+//   dunder run -- --frames 60   render 60 frames and exit
 capability stdio
+
 import core
-import ecs
-import std.math as math
+import input
+import render
+import scene as scenegraph
 import std.parse as parse
 import sys
 import vulkan
 
-struct Transform { position: core.Vec3, rotation: f32 }
-struct Spin { speed: f32 }
-struct Cube { half: f32, color: core.Color }
-
-// Six faces, two triangles each, counter-clockwise seen from outside.
-fn cube_vertices(vertices: &mut []f32, half: f32, color: core.Color) {
-    r := color.r
-    g := color.g
-    b := color.b
-    a := color.a
-    vulkan.triangle(&mut vertices, -half, -half, half, half, -half, half, half, half, half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, -half, half, half, half, half, -half, half, half, r, g, b, a)
-    vulkan.triangle(&mut vertices, half, -half, -half, -half, -half, -half, -half, half, -half, r, g, b, a)
-    vulkan.triangle(&mut vertices, half, -half, -half, -half, half, -half, half, half, -half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, -half, -half, -half, -half, half, -half, half, half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, -half, -half, -half, half, half, -half, half, -half, r, g, b, a)
-    vulkan.triangle(&mut vertices, half, -half, half, half, -half, -half, half, half, -half, r, g, b, a)
-    vulkan.triangle(&mut vertices, half, -half, half, half, half, -half, half, half, half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, half, half, half, half, half, half, half, -half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, half, half, half, half, -half, -half, half, -half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, -half, -half, half, -half, -half, half, -half, half, r, g, b, a)
-    vulkan.triangle(&mut vertices, -half, -half, -half, half, -half, half, -half, -half, half, r, g, b, a)
+struct Material {
+    base: core.Color,
+    metallic: f32,
+    roughness: f32,
+    emissive: f32,
 }
 
-fn rotation_y(angle: f32) -> core.Mat4 {
-    c := f32(math.cos(f64(angle)))
-    s := f32(math.sin(f64(angle)))
-    core.Mat4 { m: [c, 0.0, -s, 0.0,
-                    0.0, 1.0, 0.0, 0.0,
-                    s, 0.0, c, 0.0,
-                    0.0, 0.0, 0.0, 1.0] }
+struct MeshRenderer {
+    // Number of vertices in the shared cube stream.
+    vertex_count: i32,
+    material: Material,
 }
 
-fn rotation_x(angle: f32) -> core.Mat4 {
-    c := f32(math.cos(f64(angle)))
-    s := f32(math.sin(f64(angle)))
-    core.Mat4 { m: [1.0, 0.0, 0.0, 0.0,
-                    0.0, c, s, 0.0,
-                    0.0, -s, c, 0.0,
-                    0.0, 0.0, 0.0, 1.0] }
-}
-
-fn transform_point(m: core.Mat4, x: f32, y: f32, z: f32) -> core.Vec3 {
-    core.Vec3 {
-        x: m.m[0] * x + m.m[4] * y + m.m[8] * z + m.m[12],
-        y: m.m[1] * x + m.m[5] * y + m.m[9] * z + m.m[13],
-        z: m.m[2] * x + m.m[6] * y + m.m[10] * z + m.m[14],
-    }
-}
-
-// Append one cube's vertices, transformed by `model`.
-fn emit_cube(vertices: &mut []f32, model: core.Mat4, half: f32, color: core.Color) {
-    before := vertices.len
-    cube_vertices(&mut vertices, half, color)
-    mut k := before
-    while k < vertices.len {
-        p := transform_point(model, vertices[k], vertices[k + 1], vertices[k + 2])
-        vertices[k] = p.x
-        vertices[k + 1] = p.y
-        vertices[k + 2] = p.z
-        k = k + 7
-    }
-}
-
-// Step-by-step smoke test: open, submit one empty frame, close. Prints each step
-// so a hang can be localized without a debugger.
-fn probe() -> i32 {
-    print("probe: opening")
-    opened := vulkan.open("Storm probe", 640, 480)
-    if !opened.ok {
-        _ := sys.eprint("probe: " + opened.error)
-        return 1
-    }
-    print("probe: opened device=" + vulkan.device_name(opened.window))
-    mut empty: []f32 = []
-    print("probe: drawing")
-    drawn := vulkan.draw_identity(opened.window, &empty)
-    print("probe: draw ok=" + drawn.ok.str() + " frames=" + drawn.frames.str() + " error=" + drawn.error)
-    print("probe: closing")
-    vulkan.close(opened.window)
-    print("probe: closed")
-    0
-}
-
-// --frames N renders exactly N frames and exits (smoke test without interaction).
 fn frame_limit() -> i64 {
     mut i := 1
     while i + 1 < sys.arg_count() {
@@ -107,7 +42,7 @@ fn frame_limit() -> i64 {
     0
 }
 
-fn trace_mode() -> bool {
+fn trace_enabled() -> bool {
     mut i := 1
     while i < sys.arg_count() {
         if sys.arg(i) == "--trace" { return true }
@@ -116,49 +51,75 @@ fn trace_mode() -> bool {
     false
 }
 
-fn probe_mode() -> bool {
-    mut i := 1
-    while i < sys.arg_count() {
-        if sys.arg(i) == "--probe" { return true }
-        i = i + 1
-    }
-    false
+// The render graph: sky fills the color buffer first, the ground and the
+// PBR meshes then cover it and write depth. Declaration order plus the
+// "latest earlier writer" rule gives sky -> ground -> meshes.
+fn build_graph() -> render.Graph {
+    mut graph := render.Graph::new()
+    _ := graph.add_pass("sky", ["color"], [])
+    _ := graph.add_pass("ground", ["color", "depth"], ["color"])
+    _ := graph.add_pass("meshes", ["color", "depth"], ["color", "depth"])
+    graph
 }
 
 fn main() -> i32 {
-    if probe_mode() { return probe() }
-    trace := trace_mode()
     limit := frame_limit()
-    opened := vulkan.open("Storm — Vulkan / Dunder (Esc to close)", 1100, 740)
+    opened := vulkan.open("Storm — Vulkan / Dunder (WASD + right mouse, Esc to quit)", 1280, 800)
     if !opened.ok {
         _ := sys.eprint("storm: " + opened.error)
         return 1
     }
+    if trace_enabled() { vulkan.set_trace(opened.window, true) }
     print("device=" + vulkan.device_name(opened.window))
-    if trace { vulkan.set_trace(opened.window, true) }
 
-    mut allocator := ecs.EntityAllocator::new()
-    mut transforms := ecs.Pool<Transform>::new()
-    mut spins := ecs.Pool<Spin>::new()
-    mut cubes := ecs.Pool<Cube>::new()
+    // --- geometry ---
+    mut cube_vertices: []f32 = []
+    vulkan.cube(&mut cube_vertices, 0.6)
+    mut plane_vertices: []f32 = []
+    vulkan.plane(&mut plane_vertices, 40.0)
 
-    offsets: [f32; 3] = [-1.7, 0.0, 1.7]
-    palette: [core.Color; 3] = [
-        core.Color { r: 0.35, g: 0.85, b: 1.0, a: 1.0 },
-        core.Color { r: 1.0, g: 0.62, b: 0.25, a: 1.0 },
-        core.Color { r: 0.78, g: 0.45, b: 1.0, a: 1.0 },
-    ]
-    for i in 0..3 {
-        e := allocator.create()
-        _ := transforms.insert(e, Transform { position: core.vec3(offsets[i], 0.0, 0.0), rotation: 0.0 })
-        _ := spins.insert(e, Spin { speed: 0.7 + f32(i) * 0.4 })
-        _ := cubes.insert(e, Cube { half: 0.55, color: palette[i] })
+    // --- scene tree: a hub with three orbiting cubes ---
+    mut graph := scenegraph.Graph::new()
+    hub := graph.create_root(core.vec3(0.0, 0.2, 0.0))
+
+    // Orbiting children, one per material.
+    gold := graph.create_child(hub, core.vec3(2.4, 0.0, 0.0))
+    copper := graph.create_child(hub, core.vec3(-1.2, 0.0, 2.1))
+    steel := graph.create_child(hub, core.vec3(-1.2, 0.0, -2.1))
+    graph.set_rotation(gold, 0.0)
+    graph.set_rotation(copper, 2.0944)
+    graph.set_rotation(steel, 4.1888)
+    graph.propagate()
+
+    gold_material := Material { base: core.rgba(0.98, 0.76, 0.30, 1.0), metallic: 1.0, roughness: 0.22, emissive: 0.0 }
+    copper_material := Material { base: core.rgba(0.96, 0.50, 0.33, 1.0), metallic: 1.0, roughness: 0.34, emissive: 0.0 }
+    steel_material := Material { base: core.rgba(0.72, 0.76, 0.82, 1.0), metallic: 0.95, roughness: 0.52, emissive: 0.0 }
+    floor_material := Material { base: core.rgba(0.16, 0.17, 0.19, 1.0), metallic: 0.0, roughness: 0.92, emissive: 0.0 }
+
+    // --- camera ---
+    mut camera := input.Camera::new(core.vec3(0.0, 1.6, 8.5))
+    camera.yaw = 0.0
+    camera.pitch = -0.08
+    camera.fov = 0.85
+
+    // --- frame loop ---
+    mut graph_schedule := build_graph()
+    order := graph_schedule.build()
+    if !order.ok {
+        _ := sys.eprint("storm: " + order.error)
+        vulkan.close(opened.window)
+        return 1
     }
 
-    mut vertices: []f32 = []
-    vertices.reserve(36 * 7 * 3)
-    mut previous := 0.0
+    sun := core.normalize(core.vec3(0.45, 0.78, 0.42))
+    zenith := core.rgba(0.11, 0.28, 0.55, 1.0)
+    horizon := core.rgba(0.72, 0.80, 0.90, 1.0)
+    mut sun_push: [f32; 4] = [sun.x, sun.y, sun.z, 1.0]
+    mut zenith_push: [f32; 4] = [zenith.r, zenith.g, zenith.b, 1.0]
+    mut horizon_push: [f32; 4] = [horizon.r, horizon.g, horizon.b, 1.0]
+
     mut frames: i64 = 0
+    mut previous := 0.0
     mut running := true
     while running {
         frame := vulkan.poll(opened.window)
@@ -167,44 +128,65 @@ fn main() -> i32 {
         if dt > 0.1 { dt = 0.1 }
         previous = frame.time
 
-        // System: spin every entity that has both Transform and Spin.
-        for i in 0..spins.len() {
-            e := spins.entities()[i]
-            if transforms.contains(e) {
-                speed := spins.values()[i].speed
-                transforms.get_mut(e).rotation = transforms.get(e).rotation + speed * f32(dt)
-            }
+        // Right mouse button captures look; the camera never spins on its own.
+        captured := (vulkan.mouse(opened.window).buttons.bit_and(input.MOUSE_RIGHT)) != 0
+        camera.update(opened.window, f32(dt), captured)
+        if vulkan.key_pressed(opened.window, input.KEY_R) {
+            camera = input.Camera::new(core.vec3(0.0, 1.6, 8.5))
+            camera.pitch = -0.08
+            camera.fov = 0.85
         }
 
-        // System: emit every entity that has both Transform and Cube.
-        vertices.clear()
-        for i in 0..cubes.len() {
-            e := cubes.entities()[i]
-            if transforms.contains(e) {
-                t := transforms.values()[i]
-                cube := cubes.values()[i]
-                model := core.multiply(
-                    core.translation(t.position.x, t.position.y, t.position.z),
-                    core.multiply(rotation_y(t.rotation), rotation_x(t.rotation * 0.6)))
-                emit_cube(&mut vertices, model, cube.half, cube.color)
-            }
-        }
+        // Animate the orbit: the hub rotates, children follow through the tree.
+        graph.set_rotation(hub, graph.local(hub).rotation_y + f32(dt) * 0.35)
+        graph.propagate()
 
         aspect := f32(frame.width) / f32(frame.height)
-        view_projection := core.multiply(
-            core.perspective(0.9, aspect, 0.1, 100.0),
-            core.translation(0.0, -0.1, -5.0))
-        drawn := vulkan.draw(opened.window, &vertices, &view_projection.m)
-        if !drawn.ok {
-            _ := sys.eprint("storm: " + drawn.error)
-            vulkan.close(opened.window)
-            return 1
+        view_projection := camera.view_projection(aspect)
+        inv_view_projection := input.inverse_view_projection(&camera, aspect)
+
+        begun := vulkan.begin(opened.window)
+        if !begun.ok {
+            if frame.resized { continue }
+            _ := sys.eprint("storm: " + begun.error)
+            running = false
+            continue
         }
-        frames = drawn.frames
-        if trace { _ := sys.eprint("frame " + frames.str()) }
+
+        // Execute the graph in its computed order.
+        for pass_index in 0..order.names.len {
+            name := order.names[pass_index].clone()
+            if name == "sky" {
+                _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun_push, &zenith_push, &horizon_push)
+            } else if name == "ground" {
+                draw_mesh(opened.window, &plane_vertices, view_projection, core.identity(), floor_material, camera.position)
+            } else if name == "meshes" {
+                draw_mesh(opened.window, &cube_vertices, view_projection, graph.world(gold).matrix, gold_material, camera.position)
+                draw_mesh(opened.window, &cube_vertices, view_projection, graph.world(copper).matrix, copper_material, camera.position)
+                draw_mesh(opened.window, &cube_vertices, view_projection, graph.world(steel).matrix, steel_material, camera.position)
+            }
+        }
+
+        finished := vulkan.end(opened.window)
+        if !finished.ok {
+            _ := sys.eprint("storm: " + finished.error)
+            running = false
+            continue
+        }
+        frames = finished.frames
         if limit > 0 && frames >= limit { running = false }
     }
     vulkan.close(opened.window)
     print("storm frames=" + frames.str())
     0
+}
+
+fn draw_mesh(window: vulkan.Window, vertices: &[]f32, view_projection: core.Mat4,
+    model: core.Mat4, material: Material, camera_position: core.Vec3) {
+    mvp := core.multiply(view_projection, model)
+    mut color: [f32; 4] = [material.base.r, material.base.g, material.base.b, material.base.a]
+    mut params: [f32; 4] = [material.metallic, material.roughness, material.emissive, 0.0]
+    mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
+    drawn := vulkan.mesh(window, vertices, &mvp.m, &model.m, &color, &params, &eye)
+    if !drawn.ok { _ := sys.eprint("storm: " + drawn.error) }
 }

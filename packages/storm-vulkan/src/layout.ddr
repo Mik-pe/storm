@@ -378,20 +378,6 @@ pub struct RenderPassBeginInfo {
 }
 
 @c_layout
-pub struct ImageMemoryBarrier {
-    sType: u32,
-    pNext: ptr,
-    srcAccessMask: u32,
-    dstAccessMask: u32,
-    oldLayout: u32,
-    newLayout: u32,
-    srcQueueFamilyIndex: u32,
-    dstQueueFamilyIndex: u32,
-    image: ptr,
-    subresourceRange: ImageSubresourceRange,
-}
-
-@c_layout
 pub struct SubmitInfo {
     sType: u32,
     pNext: ptr,
@@ -462,4 +448,67 @@ pub struct SemaphoreCreateInfo { sType: u32, pNext: ptr, flags: u32 }
 pub struct FenceCreateInfo { sType: u32, pNext: ptr, flags: u32 }
 
 @c_layout
+pub struct ImageCreateInfo {
+    sType: u32,
+    pNext: ptr,
+    flags: u32,
+    imageType: u32,
+    format: u32,
+    extent: Extent3D,
+    mipLevels: u32,
+    arrayLayers: u32,
+    samples: u32,
+    tiling: u32,
+    usage: u32,
+    sharingMode: u32,
+    queueFamilyIndexCount: u32,
+    pQueueFamilyIndices: ptr,
+    initialLayout: u32,
+}
+
+@c_layout
+pub struct ClearDepthStencilValue { depth: f32, stencil: u32 }
+
+@c_layout
+pub struct PipelineDepthStencilStateCreateInfo {
+    sType: u32,
+    pNext: ptr,
+    flags: u32,
+    depthTestEnable: u32,
+    depthWriteEnable: u32,
+    depthCompareOp: u32,
+    depthBoundsTestEnable: u32,
+    stencilTestEnable: u32,
+    front: StencilOpState,
+    back: StencilOpState,
+    minDepthBounds: f32,
+    maxDepthBounds: f32,
+}
+
+@c_layout
+pub struct StencilOpState {
+    failOp: u32,
+    passOp: u32,
+    depthFailOp: u32,
+    compareOp: u32,
+    compareMask: u32,
+    writeMask: u32,
+    reference: u32,
+}
+
+@c_layout
 pub struct Extent3D { width: u32, height: u32, depth: u32 }
+
+@c_layout
+pub struct ImageMemoryBarrier {
+    sType: u32,
+    pNext: ptr,
+    srcAccessMask: u32,
+    dstAccessMask: u32,
+    oldLayout: u32,
+    newLayout: u32,
+    srcQueueFamilyIndex: u32,
+    dstQueueFamilyIndex: u32,
+    image: ptr,
+    subresourceRange: ImageSubresourceRange,
+}

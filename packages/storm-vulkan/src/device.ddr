@@ -45,8 +45,18 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> bool {
     }
     if best < 0 { return false }
     r.physical = devices[best]
-    r.api.GetPhysicalDeviceProperties(r.physical, addr(&mut r.properties))
-    r.api.GetPhysicalDeviceMemoryProperties(r.physical, addr(&mut r.memoryProperties))
+    mut properties: state.Properties = zeroed()
+    r.api.GetPhysicalDeviceProperties(r.physical, addr(&mut properties))
+    r.properties = properties
+    // Read the 776-byte VkPhysicalDeviceMemoryProperties into a raw word buffer
+    // and copy out the two counts. Field-addressed aggregates of this size did
+    // not survive the FFI call.
+    mut raw: [u32; 194] = [0; 194]
+    r.api.GetPhysicalDeviceMemoryProperties(r.physical, addr(&mut raw[0]))
+    r.memoryProperties.typeCount = raw[0]
+    r.memoryProperties.heapCount = raw[65]
+    for i in 0..64 { r.memoryProperties.types[i] = raw[1 + i] }
+    for i in 0..64 { r.memoryProperties.heaps[i] = u64(raw[66 + i]) }
     true
 }
 
@@ -112,6 +122,9 @@ unsafe fn pick_format(r: &mut state.Renderer) -> bool {
     true
 }
 
+
+// Depth attachment matching the current swapchain extent. Recreated with it.
+
 unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
     mut caps: vk.SurfaceCapabilitiesKHR = zeroed()
     if r.api.GetPhysicalDeviceSurfaceCapabilitiesKHR(r.physical, r.surface, addr(&mut caps)) != 0 { return false }
@@ -139,7 +152,8 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
     info.minImageCount = images
     info.imageFormat = r.format
     info.imageColorSpace = r.colorSpace
-    info.imageExtent = vk.Extent2D { width: width, height: height }
+    info.imageExtent.width = width
+    info.imageExtent.height = height
     info.imageArrayLayers = 1
     info.imageUsage = 16
     info.imageSharingMode = 0
@@ -167,11 +181,17 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
 }
 
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    r.stage = 11
     if !create_instance(&mut r) { return false }
+    r.stage = 12
     if !pick_physical(&mut r) { return false }
+    r.stage = 13
     if !pick_queue(&mut r) { return false }
+    r.stage = 14
     if !create_device(&mut r) { return false }
+    r.stage = 15
     if !pick_format(&mut r) { return false }
+    r.stage = 16
     create_swapchain(&mut r)
 }
 
@@ -201,9 +221,13 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
             r.api.DestroySemaphore(r.device, r.render_finished[i], ptr(0))
         }
         r.api.DestroyPipeline(r.device, r.pipeline, ptr(0))
+        r.api.DestroyPipeline(r.device, r.skyPipeline, ptr(0))
         r.api.DestroyPipelineLayout(r.device, r.pipelineLayout, ptr(0))
+        r.api.DestroyPipelineLayout(r.device, r.skyPipelineLayout, ptr(0))
         r.api.DestroyShaderModule(r.device, r.vertexShader, ptr(0))
         r.api.DestroyShaderModule(r.device, r.fragmentShader, ptr(0))
+        r.api.DestroyShaderModule(r.device, r.skyVertexShader, ptr(0))
+        r.api.DestroyShaderModule(r.device, r.skyFragmentShader, ptr(0))
         r.api.DestroyRenderPass(r.device, r.renderPass, ptr(0))
         if r.pool != ptr(0) { r.api.DestroyCommandPool(r.device, r.pool, ptr(0)) }
         r.api.DestroyDevice(r.device, ptr(0))

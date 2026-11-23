@@ -1,0 +1,142 @@
+// Storm scene graph on top of the ECS.
+//
+// Hierarchy lives in the ECS as a LocalTransform plus an optional Parent link.
+// `propagate` walks roots in depth-first order and writes WorldTransform, so a
+// node inherits its ancestors' translation, rotation and scale.
+//
+//   mut graph := scene.Graph::new()
+//   root := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+//   child := graph.create_child(root, core.vec3(1.0, 0.0, 0.0))
+//   graph.propagate()
+//   graph.world(child).m[12]   // 1.0
+import core
+import ecs
+import std.math as math
+
+pub struct LocalTransform {
+    position: core.Vec3,
+    // Rotation around Y in radians; enough for the first scene pass.
+    rotation_y: f32,
+    scale: f32,
+}
+
+pub struct Parent { entity: ecs.Entity }
+
+pub struct WorldTransform { matrix: core.Mat4 }
+
+pub struct Graph {
+    allocator: ecs.EntityAllocator,
+    locals: ecs.Pool<LocalTransform>,
+    parents: ecs.Pool<Parent>,
+    worlds: ecs.Pool<WorldTransform>,
+}
+
+fn local_identity() -> LocalTransform {
+    LocalTransform { position: core.vec3(0.0, 0.0, 0.0), rotation_y: 0.0, scale: 1.0 }
+}
+
+fn matrix_for(local: LocalTransform) -> core.Mat4 {
+    c := f32(math.cos(f64(local.rotation_y)))
+    s := f32(math.sin(f64(local.rotation_y)))
+    rotation := core.Mat4 { m: [c, 0.0, -s, 0.0,
+                                0.0, 1.0, 0.0, 0.0,
+                                s, 0.0, c, 0.0,
+                                0.0, 0.0, 0.0, 1.0] }
+    scaled := core.Mat4 { m: [local.scale, 0.0, 0.0, 0.0,
+                              0.0, local.scale, 0.0, 0.0,
+                              0.0, 0.0, local.scale, 0.0,
+                              0.0, 0.0, 0.0, 1.0] }
+    core.multiply(core.multiply(core.translation(local.position.x, local.position.y, local.position.z), rotation), scaled)
+}
+
+impl Graph {
+    pub fn new() -> Self {
+        Self {
+            allocator: ecs.EntityAllocator::new(),
+            locals: ecs.Pool<LocalTransform>::new(),
+            parents: ecs.Pool<Parent>::new(),
+            worlds: ecs.Pool<WorldTransform>::new(),
+        }
+    }
+
+    pub fn len(&self) -> i32 { self.allocator.len() }
+
+    pub fn create_root(&mut self, position: core.Vec3) -> ecs.Entity {
+        entity := self.allocator.create()
+        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: 1.0 })
+        entity
+    }
+
+    pub fn create_child(&mut self, parent: ecs.Entity, position: core.Vec3) -> ecs.Entity {
+        entity := self.allocator.create()
+        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: 1.0 })
+        _ := self.parents.insert(entity, Parent { entity: parent })
+        entity
+    }
+
+    pub fn set_position(&mut self, entity: ecs.Entity, position: core.Vec3) {
+        if self.locals.contains(entity) { self.locals.get_mut(entity).position = position }
+    }
+
+    pub fn set_rotation(&mut self, entity: ecs.Entity, radians: f32) {
+        if self.locals.contains(entity) { self.locals.get_mut(entity).rotation_y = radians }
+    }
+
+    pub fn set_scale(&mut self, entity: ecs.Entity, scale: f32) {
+        if self.locals.contains(entity) { self.locals.get_mut(entity).scale = scale }
+    }
+
+    pub fn local(&self, entity: ecs.Entity) -> &LocalTransform from self { self.locals.get(entity) }
+    pub fn world(&self, entity: ecs.Entity) -> &WorldTransform from self { self.worlds.get(entity) }
+    pub fn parent_of(&self, entity: ecs.Entity) -> Option<ecs.Entity> {
+        if !self.parents.contains(entity) { return .None }
+        .Some(self.parents.get(entity).entity)
+    }
+
+    pub fn destroy(&mut self, entity: ecs.Entity) -> bool {
+        // Detach children so they become roots rather than dangling links.
+        mut detached: []ecs.Entity = []
+        for i in 0..self.parents.len() {
+            if self.parents.values()[i].entity.index == entity.index {
+                detached.push(self.parents.entities()[i])
+            }
+        }
+        for child in detached { _ := self.parents.remove(child) }
+        _ := self.worlds.remove(entity)
+        _ := self.locals.remove(entity)
+        self.allocator.destroy(entity)
+    }
+
+    // Depth-first walk from every root. A node's world matrix is
+    // parent_world * local; roots use their local matrix directly.
+    pub fn propagate(&mut self) {
+        for i in 0..self.locals.len() {
+            entity := self.locals.entities()[i]
+            if !self.parents.contains(entity) {
+                self.visit(entity, core.identity(), 0)
+            }
+        }
+    }
+
+    fn visit(&mut self, entity: ecs.Entity, parent_world: core.Mat4, depth: i32) {
+        if depth > 64 { return }
+        local := self.locals.get(entity).clone()
+        world := core.multiply(parent_world, matrix_for(local))
+        if self.worlds.contains(entity) {
+            self.worlds.get_mut(entity).matrix = world.clone()
+        } else {
+            _ := self.worlds.insert(entity, WorldTransform { matrix: world.clone() })
+        }
+        // Collect children before recursing: mutate-visiting them while the
+        // parent pool is borrowed is rejected by the borrow checker.
+        mut children: []ecs.Entity = []
+        for i in 0..self.parents.len() {
+            if self.parents.values()[i].entity.index == entity.index {
+                children.push(self.parents.entities()[i])
+            }
+        }
+        for child in children {
+            self.visit(child, world.clone(), depth + 1)
+        }
+    }
+}

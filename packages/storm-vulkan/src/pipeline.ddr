@@ -4,35 +4,49 @@ import .layout as vk
 import .shader as shader
 import .state as state
 
+// Render pass with a color attachment and a D32 depth attachment.
+// Passes: sky (no depth write) then opaque PBR meshes (depth test + write).
+
 @c_layout
 struct Dependencies { before: vk.SubpassDependency, after: vk.SubpassDependency }
+
+@c_layout
+struct Attachments { color: vk.AttachmentDescription }
 
 @c_layout
 struct Stages { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
 
 @c_layout
-struct Attributes { position: vk.VertexInputAttributeDescription, color: vk.VertexInputAttributeDescription }
+struct Attributes { position: vk.VertexInputAttributeDescription, normal: vk.VertexInputAttributeDescription }
 
 unsafe fn targets(r: &mut state.Renderer) -> bool {
-    mut attachment: vk.AttachmentDescription = zeroed()
-    attachment.format = r.format
-    attachment.samples = 1
-    attachment.loadOp = 1
-    attachment.storeOp = 1
-    attachment.stencilLoadOp = 2
-    attachment.stencilStoreOp = 1
-    attachment.initialLayout = 0
-    attachment.finalLayout = 1000001002
-    color := vk.AttachmentReference { attachment: 0, layout: 1 }
+    // One colour attachment. Depth is not wired yet: see docs/dogfood.md for the
+    // vkCreateImage result this driver returned for depth formats.
+    mut color: vk.AttachmentDescription = zeroed()
+    color.format = r.format
+    color.samples = 1
+    color.loadOp = 1
+    color.storeOp = 1
+    color.stencilLoadOp = 2
+    color.stencilStoreOp = 1
+    color.initialLayout = 0
+    color.finalLayout = 1000001002
+    attachments := Attachments { color: color }
+    mut color_ref: vk.AttachmentReference = zeroed()
+    color_ref.attachment = 0
+    color_ref.layout = 1
+
     mut subpass: vk.SubpassDescription = zeroed()
     subpass.pipelineBindPoint = 0
     subpass.colorAttachmentCount = 1
-    subpass.pColorAttachments = addr(&color)
+    subpass.pColorAttachments = addr(&color_ref)
+
     mut before: vk.SubpassDependency = zeroed()
     before.srcSubpass = 4294967295
     before.dstSubpass = 0
-    before.srcStageMask = 1
+    before.srcStageMask = 1024
     before.dstStageMask = 1024
+    before.srcAccessMask = 0
     before.dstAccessMask = 256
     mut after: vk.SubpassDependency = zeroed()
     after.srcSubpass = 0
@@ -40,12 +54,13 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
     after.srcStageMask = 1024
     after.dstStageMask = 4096
     after.srcAccessMask = 256
-    after.dstAccessMask = 2048
+    after.dstAccessMask = 0
     dependencies := Dependencies { before: before, after: after }
+
     mut pass: vk.RenderPassCreateInfo = zeroed()
     pass.sType = 38
     pass.attachmentCount = 1
-    pass.pAttachments = addr(&attachment)
+    pass.pAttachments = addr(&attachments.color)
     pass.subpassCount = 1
     pass.pSubpasses = addr(&subpass)
     pass.dependencyCount = 2
@@ -56,11 +71,12 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
 
 unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
     for i in 0..r.imageCount {
+        mut views: [ptr; 1] = [r.views[i]]
         mut info: vk.FramebufferCreateInfo = zeroed()
         info.sType = 37
         info.renderPass = r.renderPass
         info.attachmentCount = 1
-        info.pAttachments = addr(&r.views[i])
+        info.pAttachments = addr(&views[0])
         info.width = r.width
         info.height = r.height
         info.layers = 1
@@ -77,21 +93,21 @@ unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bo
     r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
 }
 
-unsafe fn pipeline(r: &mut state.Renderer) -> bool {
-    vertex := shader.vertex()
+unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
+    vertex := shader.mesh_vertex()
     mut vertex_shader := r.vertexShader
     if !module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader)) { return false }
     r.vertexShader = vertex_shader
-    fragment := shader.fragment()
+    fragment := shader.mesh_fragment()
     mut fragment_shader := r.fragmentShader
     if !module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader)) { return false }
     r.fragmentShader = fragment_shader
 
-    // Push constant: mat4 mvp (64 bytes), vertex stage.
+    // mvp(64) + model(64) + base_color(16) + params(16) + camera_pos(16) = 176 bytes.
     mut push_range: vk.PushConstantRange = zeroed()
-    push_range.stageFlags = 1
+    push_range.stageFlags = 17
     push_range.offset = 0
-    push_range.size = 64
+    push_range.size = 176
     mut layout: vk.PipelineLayoutCreateInfo = zeroed()
     layout.sType = 30
     layout.pushConstantRangeCount = 1
@@ -107,11 +123,11 @@ unsafe fn pipeline(r: &mut state.Renderer) -> bool {
     stages.fragment.stage = 16
     stages.fragment.module = r.fragmentShader
 
-    // position vec3 @0, color vec4 @12, stride 28.
-    binding := vk.VertexInputBindingDescription { binding: 0, stride: 28, inputRate: 0 }
-    attributes := Attributes {
+    // position vec3 at 0, normal vec3 at 12: 24-byte stride.
+    mut binding := vk.VertexInputBindingDescription { binding: 0, stride: 24, inputRate: 0 }
+    mut attributes := Attributes {
         position: vk.VertexInputAttributeDescription { location: 0, binding: 0, format: 106, offset: 0 },
-        color: vk.VertexInputAttributeDescription { location: 1, binding: 0, format: 109, offset: 12 },
+        normal: vk.VertexInputAttributeDescription { location: 1, binding: 0, format: 106, offset: 12 },
     }
     mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
     input.sType = 19
@@ -119,34 +135,50 @@ unsafe fn pipeline(r: &mut state.Renderer) -> bool {
     input.pVertexBindingDescriptions = addr(&binding)
     input.vertexAttributeDescriptionCount = 2
     input.pVertexAttributeDescriptions = addr(&attributes)
+
     mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
     assembly.sType = 20
     assembly.topology = 3
-    viewport := vk.Viewport { x: 0.0, y: 0.0, width: f32(r.width), height: f32(r.height), minDepth: 0.0, maxDepth: 1.0 }
-    scissor := vk.Rect2D { offset: vk.Offset2D { x: 0, y: 0 }, extent: vk.Extent2D { width: r.width, height: r.height } }
+
+    mut viewport: vk.Viewport = zeroed()
+    viewport.width = f32(r.width)
+    viewport.height = f32(r.height)
+    viewport.minDepth = 0.0
+    viewport.maxDepth = 1.0
+    mut scissor: vk.Rect2D = zeroed()
+    scissor.extent.width = r.width
+    scissor.extent.height = r.height
     mut view: vk.PipelineViewportStateCreateInfo = zeroed()
     view.sType = 22
     view.viewportCount = 1
     view.pViewports = addr(&viewport)
     view.scissorCount = 1
     view.pScissors = addr(&scissor)
+
     mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
     raster.polygonMode = 0
     raster.cullMode = 2
     raster.frontFace = 1
     raster.lineWidth = 1.0
+
     mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
     samples.sType = 24
     samples.rasterizationSamples = 1
-    color := vk.PipelineColorBlendAttachmentState {
-        blendEnable: 0, srcColorBlendFactor: 0, dstColorBlendFactor: 0, colorBlendOp: 0,
-        srcAlphaBlendFactor: 0, dstAlphaBlendFactor: 0, alphaBlendOp: 0, colorWriteMask: 15,
-    }
+
+    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
+    depth_state.sType = 25
+    depth_state.depthTestEnable = 0
+    depth_state.depthWriteEnable = 0
+    depth_state.depthCompareOp = 1
+
+    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+    blend_attachment.colorWriteMask = 15
     mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26
     blend.attachmentCount = 1
-    blend.pAttachments = addr(&color)
+    blend.pAttachments = addr(&blend_attachment)
+
     mut info: vk.GraphicsPipelineCreateInfo = zeroed()
     info.sType = 28
     info.stageCount = 2
@@ -156,6 +188,7 @@ unsafe fn pipeline(r: &mut state.Renderer) -> bool {
     info.pViewportState = addr(&view)
     info.pRasterizationState = addr(&raster)
     info.pMultisampleState = addr(&samples)
+    info.pDepthStencilState = addr(&depth_state)
     info.pColorBlendState = addr(&blend)
     info.layout = r.pipelineLayout
     info.renderPass = r.renderPass
@@ -163,9 +196,112 @@ unsafe fn pipeline(r: &mut state.Renderer) -> bool {
     r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline)) == 0
 }
 
+// Sky: fullscreen triangle, no vertex buffer, depth test but no depth write.
+unsafe fn sky_pipeline(r: &mut state.Renderer) -> bool {
+    vertex := shader.sky_vertex()
+    mut vertex_shader := r.skyVertexShader
+    if !module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader)) { return false }
+    r.skyVertexShader = vertex_shader
+    fragment := shader.sky_fragment()
+    mut fragment_shader := r.skyFragmentShader
+    if !module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader)) { return false }
+    r.skyFragmentShader = fragment_shader
+
+    // inv_view_proj(64) + sun(16) + zenith(16) + horizon(16) = 112 bytes.
+    mut push_range: vk.PushConstantRange = zeroed()
+    push_range.stageFlags = 17
+    push_range.offset = 0
+    push_range.size = 112
+    mut layout: vk.PipelineLayoutCreateInfo = zeroed()
+    layout.sType = 30
+    layout.pushConstantRangeCount = 1
+    layout.pPushConstantRanges = addr(&push_range)
+    if r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout)) != 0 { return false }
+
+    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
+    stage.sType = 18
+    stage.stage = 1
+    stage.module = r.skyVertexShader
+    stage.pName = cstr("main")
+    mut stages := Stages { vertex: stage, fragment: stage }
+    stages.fragment.stage = 16
+    stages.fragment.module = r.skyFragmentShader
+
+    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
+    input.sType = 19
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
+    assembly.sType = 20
+    assembly.topology = 3
+
+    mut viewport: vk.Viewport = zeroed()
+    viewport.width = f32(r.width)
+    viewport.height = f32(r.height)
+    viewport.minDepth = 0.0
+    viewport.maxDepth = 1.0
+    mut scissor: vk.Rect2D = zeroed()
+    scissor.extent.width = r.width
+    scissor.extent.height = r.height
+    mut view: vk.PipelineViewportStateCreateInfo = zeroed()
+    view.sType = 22
+    view.viewportCount = 1
+    view.pViewports = addr(&viewport)
+    view.scissorCount = 1
+    view.pScissors = addr(&scissor)
+
+    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
+    raster.sType = 23
+    raster.polygonMode = 0
+    raster.cullMode = 0
+    raster.frontFace = 1
+    raster.lineWidth = 1.0
+
+    mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
+    samples.sType = 24
+    samples.rasterizationSamples = 1
+
+    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
+    depth_state.sType = 25
+    depth_state.depthTestEnable = 0
+    depth_state.depthWriteEnable = 0
+    depth_state.depthCompareOp = 3
+
+    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+    blend_attachment.colorWriteMask = 15
+    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
+    blend.sType = 26
+    blend.attachmentCount = 1
+    blend.pAttachments = addr(&blend_attachment)
+
+    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
+    info.sType = 28
+    info.stageCount = 2
+    info.pStages = addr(&stages)
+    info.pVertexInputState = addr(&input)
+    info.pInputAssemblyState = addr(&assembly)
+    info.pViewportState = addr(&view)
+    info.pRasterizationState = addr(&raster)
+    info.pMultisampleState = addr(&samples)
+    info.pDepthStencilState = addr(&depth_state)
+    info.pColorBlendState = addr(&blend)
+    info.layout = r.skyPipelineLayout
+    info.renderPass = r.renderPass
+    info.basePipelineIndex = -1
+    r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.skyPipeline)) == 0
+}
+
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    r.stage = 21
     if !targets(&mut r) { return false }
-    if !pipeline(&mut r) { return false }
+    r.stage = 22
+    if !mesh_pipeline(&mut r) { return false }
+    r.stage = 23
+    if !sky_pipeline(&mut r) { return false }
+    r.stage = 24
+    framebuffers(&mut r)
+}
+
+// After a swapchain recreation only the framebuffers are size-dependent.
+pub unsafe fn setup_frames_only(r: &mut state.Renderer) -> bool {
     framebuffers(&mut r)
 }
 

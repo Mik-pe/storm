@@ -1,0 +1,140 @@
+// Storm input: SDL scancodes, key state and a small camera controller.
+//
+// The platform layer (storm-vulkan) reports raw state per poll; this module
+// turns it into engine concepts: held/pressed keys by name, mouse deltas and a
+// fly-style camera. It imports vulkan only for the Window handle type and the
+// state queries, never for rendering.
+import core
+import std.math as math
+import vulkan
+
+// SDL scancodes for the keys the engine binds. Values are SDL_Scancode.
+pub const KEY_A: i32 = 4
+pub const KEY_D: i32 = 7
+pub const KEY_E: i32 = 8
+pub const KEY_Q: i32 = 20
+pub const KEY_S: i32 = 22
+pub const KEY_W: i32 = 26
+pub const KEY_C: i32 = 6
+pub const KEY_R: i32 = 21
+pub const KEY_F: i32 = 9
+pub const KEY_G: i32 = 10
+pub const KEY_ESCAPE: i32 = 41
+pub const KEY_SPACE: i32 = 44
+pub const KEY_LEFT_SHIFT: i32 = 225
+pub const KEY_LEFT_CTRL: i32 = 224
+pub const KEY_LEFT: i32 = 80
+pub const KEY_RIGHT: i32 = 79
+pub const KEY_UP: i32 = 82
+pub const KEY_DOWN: i32 = 81
+
+pub const MOUSE_LEFT: u32 = 1
+pub const MOUSE_RIGHT: u32 = 2
+pub const MOUSE_MIDDLE: u32 = 4
+
+// A camera controlled with WASD + QE, arrow keys and mouse look.
+pub struct Camera {
+    position: core.Vec3,
+    // Yaw around +Y, pitch around the camera's right axis. Radians.
+    yaw: f32,
+    pitch: f32,
+    // Radians per pixel for mouse look.
+    sensitivity: f32,
+    move_speed: f32,
+    fov: f32,
+}
+
+impl Camera {
+    pub fn new(position: core.Vec3) -> Self {
+        Self { position: position, yaw: 0.0, pitch: 0.0, sensitivity: 0.0035, move_speed: 4.0, fov: 0.9 }
+    }
+
+    pub fn forward(&self) -> core.Vec3 {
+        cp := f32(math.cos(f64(self.pitch)))
+        core.normalize(core.vec3(
+            f32(math.sin(f64(self.yaw))) * cp,
+            f32(math.sin(f64(self.pitch))),
+            -f32(math.cos(f64(self.yaw))) * cp))
+    }
+
+    pub fn right(&self) -> core.Vec3 {
+        core.normalize(core.cross(self.forward(), core.vec3(0.0, 1.0, 0.0)))
+    }
+
+    pub fn view(&self) -> core.Mat4 {
+        // Look-at built from the camera basis, then a translation to the eye.
+        f := self.forward()
+        r := self.right()
+        u := core.cross(r, f)
+        core.Mat4 { m: [r.x, u.x, -f.x, 0.0,
+                        r.y, u.y, -f.y, 0.0,
+                        r.z, u.z, -f.z, 0.0,
+                        -(r.x * self.position.x + r.y * self.position.y + r.z * self.position.z),
+                        -(u.x * self.position.x + u.y * self.position.y + u.z * self.position.z),
+                         (f.x * self.position.x + f.y * self.position.y + f.z * self.position.z),
+                         1.0] }
+    }
+
+    pub fn projection(&self, aspect: f32) -> core.Mat4 {
+        core.perspective(self.fov, aspect, 0.1, 500.0)
+    }
+
+    pub fn view_projection(&self, aspect: f32) -> core.Mat4 {
+        core.multiply(self.projection(aspect), self.view())
+    }
+
+    // Apply one frame of input. `dt` is seconds, mouse deltas are pixels.
+    pub fn update(&mut self, window: vulkan.Window, dt: f32, allow_mouse: bool) {
+        m := vulkan.mouse(window)
+        if allow_mouse {
+            self.yaw = self.yaw + f32(m.dx) * self.sensitivity
+            self.pitch = self.pitch - f32(m.dy) * self.sensitivity
+        }
+        // Clamp pitch just short of straight up/down to keep the basis stable.
+        limit: f32 = 1.5533
+        if self.pitch > limit { self.pitch = limit }
+        if self.pitch < -limit { self.pitch = -limit }
+
+        mut move_x: f32 = 0.0
+        mut move_z: f32 = 0.0
+        if vulkan.key_down(window, KEY_W) { move_z = move_z + 1.0 }
+        if vulkan.key_down(window, KEY_S) { move_z = move_z - 1.0 }
+        if vulkan.key_down(window, KEY_D) { move_x = move_x + 1.0 }
+        if vulkan.key_down(window, KEY_A) { move_x = move_x - 1.0 }
+        mut lift: f32 = 0.0
+        if vulkan.key_down(window, KEY_SPACE) { lift = lift + 1.0 }
+        if vulkan.key_down(window, KEY_LEFT_CTRL) { lift = lift - 1.0 }
+        mut speed := self.move_speed
+        if vulkan.key_down(window, KEY_LEFT_SHIFT) { speed = speed * 2.0 }
+
+        step := speed * dt
+        f := self.forward()
+        r := self.right()
+        self.position = core.add(self.position, core.scale(f, move_z * step))
+        self.position = core.add(self.position, core.scale(r, move_x * step))
+        self.position.y = self.position.y + lift * step
+    }
+}
+
+// Normalized device coordinates -> world ray direction for the current camera,
+// used by the sky pass to rebuild view rays from the inverse view-projection.
+pub fn inverse_view_projection(camera: &Camera, aspect: f32) -> core.Mat4 {
+    // Invert the rigid view-projection: transpose(R) * inv(proj) with the
+    // perspective terms inverted analytically. Enough for sky rays, where only
+    // direction matters.
+    f := camera.forward()
+    r := camera.right()
+    u := core.cross(r, f)
+    mut world_from_view := core.Mat4 { m: [r.x, r.y, r.z, 0.0,
+                                          u.x, u.y, u.z, 0.0,
+                                          -f.x, -f.y, -f.z, 0.0,
+                                          0.0, 0.0, 0.0, 1.0] }
+    t := f32(1.0) / f32(math.tan(f64(camera.fov) * 0.5))
+    near: f32 = 0.1
+    far: f32 = 500.0
+    inv_proj := core.Mat4 { m: [aspect / t, 0.0, 0.0, 0.0,
+                                0.0, 1.0 / t, 0.0, 0.0,
+                                0.0, 0.0, 0.0, -1.0,
+                                0.0, 0.0, 1.0 / near, (far + near) / (near * far)] }
+    core.multiply(world_from_view, inv_proj)
+}

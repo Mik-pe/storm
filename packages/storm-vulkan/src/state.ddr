@@ -24,10 +24,11 @@ pub struct Properties {
 @c_layout
 pub struct MemoryProperties {
     typeCount: u32,
-    // 32 VkMemoryType entries, each propertiesFlags followed by heapIndex.
+    // 32 VkMemoryType entries: propertyFlags then heapIndex, 8 bytes each.
     types: [u32; 64],
     heapCount: u32,
-    heaps: [u64; 32],
+    // 32 VkMemoryHeap entries: u64 size then u32 flags, padded to 16 bytes each.
+    heaps: [u64; 64],
 }
 
 pub const FRAME_COUNT: i32 = 2
@@ -66,9 +67,17 @@ pub struct Renderer {
     pipeline: ptr,
     vertexShader: ptr,
     fragmentShader: ptr,
+    skyPipelineLayout: ptr,
+    skyPipeline: ptr,
+    skyVertexShader: ptr,
+    skyFragmentShader: ptr,
     framebuffers: [ptr; 8],
     vertex: Buffer,
     window: sdl.Window,
     frameIndex: i64,
     trace: u32,
+    recording: u32,
+    stage: u32,
+    lastResult: i32,
+    imageIndex: i32,
 }

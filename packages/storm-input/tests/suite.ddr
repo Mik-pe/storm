@@ -1,0 +1,56 @@
+import ..src.input as input
+import core
+
+@test fn forward_is_a_unit_vector_along_negative_z_at_rest() {
+    camera := input.Camera::new(core.vec3(0.0, 0.0, 5.0))
+    f := camera.forward()
+    assert(f.x.abs() < 0.0001 && f.y.abs() < 0.0001)
+    assert((f.z + 1.0).abs() < 0.0001)
+}
+
+@test fn yaw_turns_forward_and_keeps_it_normalized() {
+    mut camera := input.Camera::new(core.vec3(0.0, 0.0, 0.0))
+    camera.yaw = 1.5707963
+    f := camera.forward()
+    assert((f.x - 1.0).abs() < 0.001)
+    assert(core.length(f) > 0.999 && core.length(f) < 1.001)
+}
+
+@test fn view_matrix_puts_the_eye_at_the_origin() {
+    mut camera := input.Camera::new(core.vec3(3.0, 0.0, 0.0))
+    camera.yaw = 0.0
+    view := camera.view()
+    // The camera position transformed by the view matrix lands at the origin.
+    p := camera.position
+    x := view.m[0] * p.x + view.m[4] * p.y + view.m[8] * p.z + view.m[12]
+    y := view.m[1] * p.x + view.m[5] * p.y + view.m[9] * p.z + view.m[13]
+    z := view.m[2] * p.x + view.m[6] * p.y + view.m[10] * p.z + view.m[14]
+    assert(x.abs() < 0.0001 && y.abs() < 0.0001 && z.abs() < 0.0001)
+}
+
+@test fn right_is_perpendicular_to_forward() {
+    mut camera := input.Camera::new(core.vec3(0.0, 0.0, 0.0))
+    camera.yaw = 0.6
+    f := camera.forward()
+    r := camera.right()
+    assert(core.dot(f, r).abs() < 0.0001)
+}
+
+@test fn inverse_view_projection_maps_the_center_to_forward() {
+    camera := input.Camera::new(core.vec3(0.0, 0.0, 4.0))
+    inv := input.inverse_view_projection(&camera, 1.6)
+    // Clip-space center with z = 1 is the far plane along the view direction.
+    mut v: [f32; 4] = [0.0, 0.0, 1.0, 1.0]
+    mut out: [f32; 4] = [0.0; 4]
+    for row in 0..4 {
+        mut sum: f32 = 0.0
+        for k in 0..4 { sum = sum + inv.m[k * 4 + row] * v[k] }
+        out[row] = sum
+    }
+    assert(out[3] != 0.0)
+    dir := core.normalize(core.vec3(out[0] / out[3] - camera.position.x,
+                                    out[1] / out[3] - camera.position.y,
+                                    out[2] / out[3] - camera.position.z))
+    f := camera.forward()
+    assert(core.dot(dir, f) > 0.99)
+}

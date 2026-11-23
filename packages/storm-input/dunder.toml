@@ -1,0 +1,8 @@
+name = "storm-input"
+version = "0.0.1"
+root = "src/input.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+vulkan = { path = "../storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }

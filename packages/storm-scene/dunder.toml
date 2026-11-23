@@ -1,0 +1,8 @@
+name = "storm-scene"
+version = "0.0.1"
+root = "src/scene.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+ecs = { path = "../storm-ecs" }

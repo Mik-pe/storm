@@ -6,7 +6,9 @@ kompileras av Dunders egen kompilator, och varje språkproblem vi stöter på
 bokförs i [docs/dogfood.md](docs/dogfood.md).
 
 Första milstolpen är ett riktigt Vulkan-fönster: `VK_KHR_swapchain` med
-double-buffrade frames, inte readback och inte en SDL-blit.
+double-buffrade frames, inte readback och inte en SDL-blit. Ovanpå det sitter en
+scengraf i ECS, en deklarativ rendergraph, en fullskärmshimmel och
+metallic-roughness-PBR med en riktad sol.
 
 ## Förutsättningar
 
@@ -35,6 +37,9 @@ för sig.
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push-constant-MVP, frame-sync. | — |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. | — |
+| [`packages/storm-scene`](packages/storm-scene) | Scengraf: `LocalTransform`, förälderlänkar i ECS och djup-först-propagering till `WorldTransform`. | `core`, `ecs` |
+| [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
+| [`packages/storm-input`](packages/storm-input) | SDL-scancodes, tangentbords- och musläge samt en fly-kamera (WASD/QE, piltangenter, höger musknapp). | `core`, `vulkan` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads. | `dunder-skrift` |
 
 `packages/storm-vulkan` är medvetet fritt från ECS- och speltillstånd: det tar
@@ -42,30 +47,49 @@ en `[]f32`-vertexström och en `[f32; 16]`-matris. Motorn kopplar ihop dem.
 
 ## Vulkan-fönstret
 
+En frame spelas in i fyra anrop, vilket är vad rendergrafen driver:
+
 ```dunder
-opened := vulkan.open("Storm", 1100, 740)
-if !opened.ok { print(opened.error); return 1 }
-mut vertices: []f32 = []
-vulkan.triangle(&mut vertices, -0.5, -0.5, 0.0,  0.5, -0.5, 0.0,  0.0, 0.5, 0.0,
-    1.0, 0.4, 0.2, 1.0)
-mut running := true
-while running {
-    frame := vulkan.poll(opened.window)
-    if frame.closed || frame.key == 27 { running = false; continue }
-    drawn := vulkan.draw_identity(opened.window, &vertices)
-    if !drawn.ok { print(drawn.error); running = false }
+begun := vulkan.begin(opened.window)
+if begun.ok {
+    _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun, &zenith, &horizon)
+    _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base_color, &params, &camera)
+    _ := vulkan.end(opened.window)
 }
-vulkan.close(opened.window)
 ```
 
-Vertexformatet är interleaved `[x, y, z, r, g, b, a]` (`f32`, 28 byte).
-`draw` tar en kolumnmajor `mat4` som push constant. Swapchain-formatet väljs
-från `vkGetPhysicalDeviceSurfaceFormatsKHR` (B8G8R8A8 föredras), present-läget
-är FIFO, och en resize återskapar swapchain, image views, framebuffers och
-render pass.
+`mesh` tar interleaved `[x, y, z, nx, ny, nz]` (`f32`, 24 byte) och push
+constants `mat4 mvp`, `mat4 model`, `vec4 base_color`, `vec4 params`
+(metallic, roughness, emissive, ledig) samt `vec3 camera`. Det är 176 byte, så
+enheten måste tillåta minst 176 byte push constants (desktop-GPU:er gör det;
+`maxPushConstantsSize` är 128 som garanterat minimum i Vulkan).
 
-Sätt `vulkan.set_trace(window, true)` för att skriva varje steg i en
-inlämning till stdout — det var så deadlocken på frame 5 lokaliserades.
+`sky` ritar en fullskärmstriangel på långt plan och rekonstruerar en
+världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en
+skärmgradient. Solen är en disk plus glöd kring `sun_direction.xyz`, skalad med
+`sun_direction.w`.
+
+Rendergrafen i `src/main.ddr` deklarerar passen och deras resurser:
+
+```dunder
+mut graph := render.Graph::new()
+_ := graph.add_pass("sky", ["color"], [])
+_ := graph.add_pass("ground", ["color", "depth"], ["color"])
+_ := graph.add_pass("meshes", ["color", "depth"], ["color", "depth"])
+order := graph.build()
+```
+
+En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
+är tie-breaker och cykler kan inte uppstå. `build()` returnerar namnordningen som
+frame-loopen exekverar.
+
+### Styrning
+
+- **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint
+- **Höger musknapp + mus** – titta
+- **R** – återställ kameran, **Esc** – avsluta
+- `--frames N` – rendera N frames och avsluta (för smoke-test)
+- `--trace` – skriv varje inlämningssteg
 
 ### Körning kräver en aktiv grafisk session
 

@@ -1,0 +1,61 @@
+import ..src.graph as graph
+
+@test fn produces_order_respecting_reads() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass("sky", ["color"], []))
+    assert(g.add_pass("opaque", ["color", "depth"], ["color"]))
+    assert(g.add_pass("transparent", ["color"], ["color", "depth"]))
+    order := g.build()
+    assert(order.ok)
+    assert(order.names.len == 3)
+    assert(order.names[0] == "sky")
+    assert(order.names[1] == "opaque")
+    assert(order.names[2] == "transparent")
+}
+
+@test fn independent_passes_keep_insertion_order() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass("a", ["x"], []))
+    assert(g.add_pass("b", ["y"], []))
+    order := g.build()
+    assert(order.ok && order.names.len == 2)
+    assert(order.names[0] == "a" && order.names[1] == "b")
+}
+
+@test fn reads_resolve_to_the_latest_earlier_writer() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass("sky", ["color"], []))
+    assert(g.add_pass("opaque", ["color", "depth"], ["color"]))
+    assert(g.add_pass("fog", ["color"], ["color", "depth"]))
+    order := g.build()
+    assert(order.ok && order.names.len == 3)
+    // Declaration order already encodes the chain; no pass moves ahead.
+    assert(order.names[0] == "sky" && order.names[1] == "opaque" && order.names[2] == "fog")
+}
+
+@test fn rejects_duplicate_and_empty_names() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass("a", ["x"], []))
+    assert(!g.add_pass("a", ["y"], []))
+    assert(!g.add_pass("", ["y"], []))
+}
+
+@test fn disabled_passes_are_skipped() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass("sky", ["color"], []))
+    assert(g.add_pass("debug", ["color"], ["color"]))
+    assert(g.disable("debug"))
+    order := g.build()
+    assert(order.ok && order.names.len == 1)
+    assert(order.names[0] == "sky")
+}
+
+@test fn dependency_check_matches_the_order() {
+    mut g := graph.Graph::new()
+    assert(g.add_pass("sky", ["color"], []))
+    assert(g.add_pass("opaque", ["color"], ["color"]))
+    order := g.build()
+    mut passes: []graph.Pass = []
+    for i in 0..g.len() { passes.push(g.pass_at(i).clone()) }
+    assert(graph.respects_dependencies(&order, &passes))
+}

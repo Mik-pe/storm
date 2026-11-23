@@ -1,0 +1,4 @@
+name = "storm-render"
+version = "0.0.1"
+root = "src/graph.ddr"
+test_root = "tests/suite.ddr"
