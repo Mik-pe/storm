@@ -1,0 +1,269 @@
+// The Objective-C runtime, as far as Storm needs it: messaging, selectors,
+// strings, and classes built at run time. Metal and AppKit are Objective-C
+// frameworks, and this is the whole of what Storm knows about that.
+//
+// Every message is objc_msgSend cast to the method's own signature, which is
+// the only correct way to call it: its variadic declaration is a lie that
+// Apple's arm64 ABI does not honour (variadic words go on the stack, message
+// words go in registers). So a sender is typed by what it passes and returns.
+// The shapes Storm uses more than once are the functions below; a method with
+// another shape declares its own typed function pointer where it is called.
+//
+// Ownership follows the names. alloc, init, new and copy return an object the
+// caller owns and must release; everything else is autoreleased and lives
+// until the surrounding autorelease pool is popped. Storm never releases an
+// autoreleased object, and releases an owned one exactly once, in the
+// backend's destroy path.
+//
+// Narrow arguments that spill to the stack are packed by Apple's ABI without
+// the 8-byte rounding of the standard one (a BOOL then an unsigned short land
+// at +0 and +2), so such a method must be declared with the exact widths.
+// Storm only reads events, so it never sends one.
+
+capability unsafe
+
+import std.bytes as b
+import std.dl as dl
+import .records as records
+
+@c_layout
+pub struct Runtime {
+    getClass: extern fn(ptr) -> ptr,
+    registerName: extern fn(ptr) -> ptr,
+    msgSend: ptr,
+    release: extern fn(ptr),
+    autorelease: extern fn(ptr) -> ptr,
+    poolPush: extern fn() -> ptr,
+    poolPop: extern fn(ptr),
+    allocateClassPair: extern fn(ptr, ptr, u64) -> ptr,
+    addMethod: ptr,
+    registerClassPair: extern fn(ptr),
+    // The Metal framework's handle, for the one C function Storm needs from it.
+    metal: ptr,
+}
+
+// The runtime record lives in static storage: the event methods, which C
+// calls with nothing but the object, find it here. The selectors are cached
+// by the address of their literal, so each is registered once per call site.
+pub unsafe fn runtime_address() -> ptr { static_bytes("native", 256) }
+unsafe fn cache_address() -> ptr { static_bytes("native", 8192) }
+
+const CACHE_SLOTS: i32 = 512
+
+unsafe fn install(into: &mut Runtime, from: &Runtime) {
+    into.getClass = from.getClass
+    into.registerName = from.registerName
+    into.msgSend = from.msgSend
+    into.release = from.release
+    into.autorelease = from.autorelease
+    into.poolPush = from.poolPush
+    into.poolPop = from.poolPop
+    into.allocateClassPair = from.allocateClassPair
+    into.addMethod = from.addMethod
+    into.registerClassPair = from.registerClassPair
+    into.metal = from.metal
+}
+
+unsafe fn symbol(library: ptr, name: ptr) -> Result<ptr, string> {
+    address := dl.symbol(library, name)
+    if address == ptr(0) { return .Err("libobjc is missing " + from_cstring(name)) }
+    .Ok(address)
+}
+
+// A class is lookable-up only once its framework is loaded.
+unsafe fn framework(path: ptr, name: string) -> Result<ptr, string> {
+    handle := dl.open(path, 2)
+    if handle == ptr(0) { return .Err("the " + name + " framework could not be loaded") }
+    .Ok(handle)
+}
+
+// Resolve the runtime and load the frameworks Storm draws with: Foundation
+// (strings), QuartzCore (the layer), AppKit (the window), Metal (the GPU).
+// The handles live as long as the process and are never closed.
+pub unsafe fn load() -> Result<Runtime, string> {
+    mut rt: Runtime = zeroed()
+    objc := dl.open(cstr("/usr/lib/libobjc.A.dylib"), 2)
+    if objc == ptr(0) { return .Err("the Objective-C runtime could not be loaded") }
+    rt.getClass = ffi_fn(symbol(objc, cstr("objc_getClass"))?)
+    rt.registerName = ffi_fn(symbol(objc, cstr("sel_registerName"))?)
+    rt.msgSend = symbol(objc, cstr("objc_msgSend"))?
+    rt.release = ffi_fn(symbol(objc, cstr("objc_release"))?)
+    rt.autorelease = ffi_fn(symbol(objc, cstr("objc_autorelease"))?)
+    rt.poolPush = ffi_fn(symbol(objc, cstr("objc_autoreleasePoolPush"))?)
+    rt.poolPop = ffi_fn(symbol(objc, cstr("objc_autoreleasePoolPop"))?)
+    rt.allocateClassPair = ffi_fn(symbol(objc, cstr("objc_allocateClassPair"))?)
+    rt.addMethod = symbol(objc, cstr("class_addMethod"))?
+    rt.registerClassPair = ffi_fn(symbol(objc, cstr("objc_registerClassPair"))?)
+    _ := framework(cstr("/System/Library/Frameworks/Foundation.framework/Foundation"), "Foundation")?
+    _ := framework(cstr("/System/Library/Frameworks/QuartzCore.framework/QuartzCore"), "QuartzCore")?
+    _ := framework(cstr("/System/Library/Frameworks/AppKit.framework/AppKit"), "AppKit")?
+    rt.metal = framework(cstr("/System/Library/Frameworks/Metal.framework/Metal"), "Metal")?
+    install(ref_at(runtime_address()), &rt)
+    .Ok(rt)
+}
+
+// ---- selectors ----
+
+pub unsafe fn selector(rt: &Runtime, name: ptr) -> ptr {
+    mut slot := i32(usize(name).bit_and(usize(CACHE_SLOTS - 1)))
+    for _ in 0..CACHE_SLOTS {
+        entry := ptr(usize(cache_address()) + usize(slot * 16))
+        key := load_ptr(entry)
+        if key == name { return load_ptr(ptr(usize(entry) + 8)) }
+        if key == ptr(0) {
+            chosen := rt.registerName(name)
+            store_ptr(ptr(usize(entry) + 8), chosen)
+            store_ptr(entry, name)
+            return chosen
+        }
+        slot = (slot + 1) % CACHE_SLOTS
+    }
+    rt.registerName(name)
+}
+
+// ---- messages, by shape ----
+//
+// `send` returns an object, `tell` returns nothing, and the readers are named
+// for what they read. A method that returns nothing must be sent as `tell`:
+// its return register holds whatever the callee last left there.
+
+pub unsafe fn send(rt: &Runtime, to: ptr, name: ptr) -> ptr {
+    call: extern fn(ptr, ptr) -> ptr = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name))
+}
+
+pub unsafe fn send_to(rt: &Runtime, to: ptr, name: ptr, argument: ptr) -> ptr {
+    call: extern fn(ptr, ptr, ptr) -> ptr = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name), argument)
+}
+
+pub unsafe fn send_pair(rt: &Runtime, to: ptr, name: ptr, first: u64, second: u64) -> ptr {
+    call: extern fn(ptr, ptr, u64, u64) -> ptr = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name), first, second)
+}
+
+pub unsafe fn tell(rt: &Runtime, to: ptr, name: ptr) {
+    call: extern fn(ptr, ptr) = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name))
+}
+
+pub unsafe fn tell_to(rt: &Runtime, to: ptr, name: ptr, argument: ptr) {
+    call: extern fn(ptr, ptr, ptr) = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name), argument)
+}
+
+pub unsafe fn tell_number(rt: &Runtime, to: ptr, name: ptr, value: u64) {
+    call: extern fn(ptr, ptr, u64) = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name), value)
+}
+
+pub unsafe fn tell_decimal(rt: &Runtime, to: ptr, name: ptr, value: f64) {
+    call: extern fn(ptr, ptr, f64) = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name), value)
+}
+
+pub unsafe fn tell_size(rt: &Runtime, to: ptr, name: ptr, value: records.Size) {
+    call: extern fn(ptr, ptr, records.Size) = ffi_fn(rt.msgSend)
+    call(to, selector(rt, name), value)
+}
+
+pub unsafe fn number(rt: &Runtime, from: ptr, name: ptr) -> u64 {
+    call: extern fn(ptr, ptr) -> u64 = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name))
+}
+
+pub unsafe fn decimal(rt: &Runtime, from: ptr, name: ptr) -> f64 {
+    call: extern fn(ptr, ptr) -> f64 = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name))
+}
+
+// A BOOL, which is one byte in the low byte of the result register.
+pub unsafe fn flag(rt: &Runtime, from: ptr, name: ptr) -> bool {
+    call: extern fn(ptr, ptr) -> u8 = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name)) != 0
+}
+
+// An unsigned short: NSEvent's keyCode.
+pub unsafe fn code(rt: &Runtime, from: ptr, name: ptr) -> u16 {
+    call: extern fn(ptr, ptr) -> u16 = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name))
+}
+
+pub unsafe fn bounds(rt: &Runtime, from: ptr, name: ptr) -> records.Rect {
+    call: extern fn(ptr, ptr) -> records.Rect = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name))
+}
+
+pub unsafe fn measure(rt: &Runtime, from: ptr, name: ptr) -> records.Size {
+    call: extern fn(ptr, ptr) -> records.Size = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name))
+}
+
+pub unsafe fn position(rt: &Runtime, from: ptr, name: ptr) -> records.Point {
+    call: extern fn(ptr, ptr) -> records.Point = ffi_fn(rt.msgSend)
+    call(from, selector(rt, name))
+}
+
+// ---- objects ----
+
+// An owned instance: alloc, then init. Release it once, when it is done with.
+pub unsafe fn make(rt: &Runtime, class: ptr) -> ptr {
+    send(rt, send(rt, class, cstr("alloc")), cstr("init"))
+}
+
+pub unsafe fn class(rt: &Runtime, name: ptr) -> ptr { rt.getClass(name) }
+
+// A class born at run time, `base` under a new name.
+pub unsafe fn subclass(rt: &Runtime, base: ptr, name: ptr) -> Result<ptr, string> {
+    created := rt.allocateClassPair(base, name, 0)
+    if created == ptr(0) { return .Err("the class could not be created") }
+    .Ok(created)
+}
+
+// Give a class a method whose body is a Dunder function with the shape every
+// event method has: the object, the selector, one object argument, nothing
+// returned. True when the method was added.
+pub unsafe fn add_method(rt: &Runtime, owner: ptr, name: ptr, implementation: extern fn(ptr, ptr, ptr)) -> bool {
+    add: extern fn(ptr, ptr, extern fn(ptr, ptr, ptr), ptr) -> u8 = ffi_fn(rt.addMethod)
+    // "v@:@": nothing returned, an object, a selector, an object.
+    add(owner, selector(rt, name), implementation, cstr("v@:@")) != 0
+}
+
+pub unsafe fn register_class(rt: &Runtime, owner: ptr) { rt.registerClassPair(owner) }
+
+// ---- strings ----
+
+@extern("c", "strlen")
+unsafe fn strlen(text: ptr) -> usize
+
+// A Dunder string over a C string's bytes; the bytes are read, not kept.
+pub unsafe fn from_cstring(raw: ptr) -> string {
+    if raw == ptr(0) { return "" }
+    mut out: []u8 = []
+    n := i32(strlen(raw))
+    out.reserve(n)
+    for i in 0..n { out.push(load_u8(ptr(usize(raw) + usize(i)))) }
+    match b.decode(&out) {
+        .Ok(value) => value,
+        .Err(_) => "",
+    }
+}
+
+// An NSString over a Dunder string's UTF-8, autoreleased: it lives until the
+// surrounding pool is popped. The bytes are read during the call only. (Not
+// `string`: a function of that name would shadow the type in this module.)
+pub unsafe fn nsstring(rt: &Runtime, value: string) -> ptr {
+    init_bytes: extern fn(ptr, ptr, ptr, u64, u64) -> ptr = ffi_fn(rt.msgSend)
+    view := value.as_bytes()
+    first := if value.len == 0 { ptr(0) } else { addr(&view[0]) }
+    made := init_bytes(send(rt, class(rt, cstr("NSString")), cstr("alloc")), selector(rt, cstr("initWithBytes:length:encoding:")),
+        first, u64(value.len), 4) // NSUTF8StringEncoding
+    _ := rt.autorelease(made)
+    made
+}
+
+// The Dunder string an NSString holds.
+pub unsafe fn text(rt: &Runtime, value: ptr) -> string {
+    if value == ptr(0) { return "" }
+    from_cstring(send(rt, value, cstr("UTF8String")))
+}

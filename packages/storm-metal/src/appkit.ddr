@@ -1,0 +1,450 @@
+// The window: an AppKit NSWindow whose one view hosts a CAMetalLayer, built
+// through the Objective-C runtime, with event methods that are Dunder
+// functions. No SDL, no library Storm has to find: the system's own.
+//
+// AppKit runs on the main thread and only while asked. Storm never starts
+// the run loop: each poll drains the event queue with nextEventMatchingMask
+// and hands every event to sendEvent, which is the path real input takes.
+// The view's methods then record into one static record that the next poll
+// reads, so there is one window per process, as with the Vulkan backend.
+//
+// AppKit's coordinates have their origin at the bottom left; the pointer
+// Storm reports has it at the top left, like the UI.
+
+capability unsafe
+
+import gfx
+import std.dl as dl
+import std.sys as sys
+import .enums as enums
+import .objc as objc
+import .records as records
+
+// The application, the window, its view and the layer: owned objects, in the
+// order they were made.
+pub struct Window {
+    application: ptr,
+    window: ptr,
+    view: ptr,
+    layer: ptr,
+    // The view's size at the last poll, in points, to see a resize.
+    width: i32,
+    height: i32,
+}
+
+// A window that holds nothing yet: what a renderer starts from.
+pub unsafe fn empty() -> Window {
+    Window { application: ptr(0), window: ptr(0), view: ptr(0), layer: ptr(0), width: 0, height: 0 }
+}
+
+// NSEventMaskAny: every event, in every bit of the mask.
+pub const ANY_EVENT: u64 = 18446744073709551615
+
+// ---- what the event methods learn ----
+
+// Everything the view's methods record between two polls.
+@c_layout
+struct Sink {
+    held: u32,
+    pressed: u32,
+    x: f64,
+    y: f64,
+    dx: f64,
+    dy: f64,
+    buttons: u32,
+    buttons_pressed: u32,
+    scroll: f64,
+}
+
+unsafe fn sink_address() -> ptr { static_bytes("native", 128) }
+
+// A key went down or came up; going down counts as pressed this frame.
+unsafe fn key_event(into: &mut Sink, key: gfx.Key, down: bool) {
+    bit := u32(1).shl(i32(key))
+    if down {
+        into.held = into.held.bit_or(bit)
+        into.pressed = into.pressed.bit_or(bit)
+    } else {
+        into.held = into.held.bit_and(bit.bit_xor(4294967295))
+    }
+}
+
+// The pointer is at (x, y) from the top left, in points, and moved by
+// (dx, dy): positive to the right and down, as on every platform.
+unsafe fn pointer_event(into: &mut Sink, x: f64, y: f64, dx: f64, dy: f64) {
+    into.x = x
+    into.y = y
+    into.dx = into.dx + dx
+    into.dy = into.dy + dy
+}
+
+unsafe fn button_event(into: &mut Sink, button: u32, down: bool) {
+    if down {
+        into.buttons = into.buttons.bit_or(button)
+        into.buttons_pressed = into.buttons_pressed.bit_or(button)
+    } else {
+        into.buttons = into.buttons.bit_and(button.bit_xor(4294967295))
+    }
+}
+
+unsafe fn scroll_event(into: &mut Sink, delta: f64) { into.scroll = into.scroll + delta }
+
+// The input of the frame that ends here. What was pressed, and how far the
+// pointer moved, belongs to that frame and to no later one.
+pub unsafe fn take(into: &mut Sink) -> gfx.Input {
+    input := gfx.Input {
+        held: into.held,
+        pressed: into.pressed,
+        mouse: gfx.Mouse {
+            x: f32(into.x), y: f32(into.y), dx: f32(into.dx), dy: f32(into.dy),
+            buttons: into.buttons, pressed: into.buttons_pressed, scroll: f32(into.scroll),
+        },
+    }
+    into.pressed = 0
+    into.dx = 0.0
+    into.dy = 0.0
+    into.buttons_pressed = 0
+    into.scroll = 0.0
+    input
+}
+
+// ---- macOS keys ----
+
+// One place pairs a macOS virtual key code (kVK_* in Carbon's Events.h) with
+// the engine key it means.
+fn bind(table: &mut [i32; 128], code: i32, key: gfx.Key) { table[code] = i32(key) }
+
+// The engine's keys by macOS virtual key code. A code that is no engine key
+// is -1. The table is rebuilt on every call: fifteen stores cost less than
+// a flag that says whether it was built, and there is nothing to initialize.
+pub fn key_bit(code: u64) -> i32 {
+    mut table: [i32; 128] = [-1; 128]
+    bind(&mut table, 0, gfx.Key.A)
+    bind(&mut table, 8, gfx.Key.C)
+    bind(&mut table, 2, gfx.Key.D)
+    bind(&mut table, 125, gfx.Key.Down)
+    bind(&mut table, 14, gfx.Key.E)
+    bind(&mut table, 53, gfx.Key.Escape)
+    bind(&mut table, 3, gfx.Key.F)
+    bind(&mut table, 5, gfx.Key.G)
+    bind(&mut table, 123, gfx.Key.Left)
+    bind(&mut table, 12, gfx.Key.Q)
+    bind(&mut table, 15, gfx.Key.R)
+    bind(&mut table, 124, gfx.Key.Right)
+    bind(&mut table, 1, gfx.Key.S)
+    bind(&mut table, 49, gfx.Key.Space)
+    bind(&mut table, 17, gfx.Key.T)
+    bind(&mut table, 126, gfx.Key.Up)
+    bind(&mut table, 13, gfx.Key.W)
+    if code < 128 { table[i32(code)] } else { -1 }
+}
+
+// The engine key a modifier's key code means. The modifiers arrive as
+// flagsChanged, not keyDown, so they are not in the table above; either
+// shift key is Shift and either control key is Ctrl. -1 for any other code.
+pub fn modifier_bit(code: u64) -> i32 {
+    if code == 56 || code == 60 { return i32(gfx.Key.Shift) }
+    if code == 59 || code == 62 { return i32(gfx.Key.Ctrl) }
+    -1
+}
+
+// The event flag that says whether that modifier is down.
+pub fn modifier_flag(key: gfx.Key) -> u64 {
+    if key == gfx.Key.Shift { return enums.modifier_flag(.Shift) }
+    enums.modifier_flag(.Control)
+}
+
+// The mouse button an event type and button number mean: 0 for one Storm
+// does not report. Left, right and the middle button (the second "other").
+pub fn button_of(kind: u64, number: u64) -> u32 {
+    if kind == enums.event_type(.LeftMouseDown) || kind == enums.event_type(.LeftMouseUp) { return gfx.MOUSE_LEFT }
+    if kind == enums.event_type(.RightMouseDown) || kind == enums.event_type(.RightMouseUp) { return gfx.MOUSE_RIGHT }
+    if number == 2 { return gfx.MOUSE_MIDDLE }
+    0
+}
+
+pub fn button_went_down(kind: u64) -> bool {
+    kind == enums.event_type(.LeftMouseDown) || kind == enums.event_type(.RightMouseDown) || kind == enums.event_type(.OtherMouseDown)
+}
+
+// ---- the event methods: C calls Dunder here, nested inside poll ----
+
+fn view_key_down(view: ptr, method: ptr, event: ptr) {
+    unsafe { on_key(ref_at(objc.runtime_address()), event, true) }
+}
+
+fn view_key_up(view: ptr, method: ptr, event: ptr) {
+    unsafe { on_key(ref_at(objc.runtime_address()), event, false) }
+}
+
+fn view_flags(view: ptr, method: ptr, event: ptr) {
+    unsafe { on_flags(ref_at(objc.runtime_address()), event) }
+}
+
+// The six button messages differ only in their event's type.
+fn view_button(view: ptr, method: ptr, event: ptr) {
+    unsafe { on_button(ref_at(objc.runtime_address()), view, event) }
+}
+
+// Moved and the three drags: the same pointer, with or without a button.
+fn view_pointer(view: ptr, method: ptr, event: ptr) {
+    unsafe { on_pointer(ref_at(objc.runtime_address()), view, event) }
+}
+
+fn view_scroll(view: ptr, method: ptr, event: ptr) {
+    unsafe { on_scroll(ref_at(objc.runtime_address()), event) }
+}
+
+// A click on a window that is not key is a click, not only an activation.
+fn view_accepts_first_mouse(view: ptr, method: ptr, event: ptr) -> u8 { 1 }
+
+unsafe fn on_key(rt: &objc.Runtime, event: ptr, down: bool) {
+    bit := key_bit(u64(objc.code(rt, event, cstr("keyCode"))))
+    if bit >= 0 { key_event(ref_at(sink_address()), gfx.Key(bit), down) }
+}
+
+unsafe fn on_flags(rt: &objc.Runtime, event: ptr) {
+    code := u64(objc.code(rt, event, cstr("keyCode")))
+    bit := modifier_bit(code)
+    if bit < 0 { return }
+    key := gfx.Key(bit)
+    flags := objc.number(rt, event, cstr("modifierFlags"))
+    key_event(ref_at(sink_address()), key, flags.bit_and(modifier_flag(key)) != 0)
+}
+
+// A window point to a point from the view's top-left corner.
+unsafe fn pointer_in(rt: &objc.Runtime, view: ptr, event: ptr) -> records.Point {
+    where: extern fn(ptr, ptr) -> records.Point = ffi_fn(rt.msgSend)
+    convert: extern fn(ptr, ptr, records.Point, ptr) -> records.Point = ffi_fn(rt.msgSend)
+    at := where(event, objc.selector(rt, cstr("locationInWindow")))
+    in_view := convert(view, objc.selector(rt, cstr("convertPoint:fromView:")), at, ptr(0))
+    area := objc.bounds(rt, view, cstr("bounds"))
+    records.Point { x: in_view.x, y: area.size.height - in_view.y }
+}
+
+unsafe fn on_button(rt: &objc.Runtime, view: ptr, event: ptr) {
+    kind := objc.number(rt, event, cstr("type"))
+    button := button_of(kind, objc.number(rt, event, cstr("buttonNumber")))
+    at := pointer_in(rt, view, event)
+    pointer_event(ref_at(sink_address()), at.x, at.y, 0.0, 0.0)
+    if button != 0 { button_event(ref_at(sink_address()), button, button_went_down(kind)) }
+}
+
+unsafe fn on_pointer(rt: &objc.Runtime, view: ptr, event: ptr) {
+    at := pointer_in(rt, view, event)
+    // AppKit counts y upwards; Storm's deltas are positive downwards.
+    dy := objc.decimal(rt, event, cstr("deltaY"))
+    pointer_event(ref_at(sink_address()), at.x, at.y, objc.decimal(rt, event, cstr("deltaX")), 0.0 - dy)
+}
+
+unsafe fn on_scroll(rt: &objc.Runtime, event: ptr) {
+    scroll_event(ref_at(sink_address()), objc.decimal(rt, event, cstr("scrollingDeltaY")))
+}
+
+// ---- the window ----
+
+// The view's event methods, one line each: a Dunder function under the
+// selector AppKit sends to. Every one of them must be there, or the view
+// would silently ignore that event.
+unsafe fn add_view_methods(rt: &objc.Runtime, view_class: ptr) -> Result<(), string> {
+    require(objc.add_method(rt, view_class, cstr("keyDown:"), callback(view_key_down)))?
+    require(objc.add_method(rt, view_class, cstr("keyUp:"), callback(view_key_up)))?
+    require(objc.add_method(rt, view_class, cstr("flagsChanged:"), callback(view_flags)))?
+    require(objc.add_method(rt, view_class, cstr("mouseDown:"), callback(view_button)))?
+    require(objc.add_method(rt, view_class, cstr("mouseUp:"), callback(view_button)))?
+    require(objc.add_method(rt, view_class, cstr("rightMouseDown:"), callback(view_button)))?
+    require(objc.add_method(rt, view_class, cstr("rightMouseUp:"), callback(view_button)))?
+    require(objc.add_method(rt, view_class, cstr("otherMouseDown:"), callback(view_button)))?
+    require(objc.add_method(rt, view_class, cstr("otherMouseUp:"), callback(view_button)))?
+    require(objc.add_method(rt, view_class, cstr("mouseMoved:"), callback(view_pointer)))?
+    require(objc.add_method(rt, view_class, cstr("mouseDragged:"), callback(view_pointer)))?
+    require(objc.add_method(rt, view_class, cstr("rightMouseDragged:"), callback(view_pointer)))?
+    require(objc.add_method(rt, view_class, cstr("otherMouseDragged:"), callback(view_pointer)))?
+    require(objc.add_method(rt, view_class, cstr("scrollWheel:"), callback(view_scroll)))?
+    // "B@:@": a BOOL returned, for acceptsFirstMouse:.
+    add: extern fn(ptr, ptr, extern fn(ptr, ptr, ptr) -> u8, ptr) -> u8 = ffi_fn(rt.addMethod)
+    first_mouse := add(view_class, objc.selector(rt, cstr("acceptsFirstMouse:")), callback(view_accepts_first_mouse), cstr("B@:@")) != 0
+    require(first_mouse)
+}
+
+unsafe fn require(added: bool) -> Result<(), string> {
+    if added { return .Ok }
+    .Err("the view's event methods could not be added")
+}
+
+// A menu bar with the application menu: without it a regular application
+// cannot become active, and an application that is not active gets no keys.
+// The application retains the menu once it is set, so the objects made here
+// are released on the spot; the item the menu maker returns is autoreleased.
+unsafe fn menu_bar(rt: &objc.Runtime, application: ptr) {
+    bar := objc.make(rt, objc.class(rt, cstr("NSMenu")))
+    objc.tell_number(rt, bar, cstr("setAutoenablesItems:"), 0)
+    application_item := objc.make(rt, objc.class(rt, cstr("NSMenuItem")))
+    objc.tell_to(rt, bar, cstr("addItem:"), application_item)
+    application_menu := objc.make(rt, objc.class(rt, cstr("NSMenu")))
+    // addItemWithTitle:action:keyEquivalent:, with terminate: as the action.
+    add_item: extern fn(ptr, ptr, ptr, ptr, ptr) -> ptr = ffi_fn(rt.msgSend)
+    _ := add_item(application_menu, objc.selector(rt, cstr("addItemWithTitle:action:keyEquivalent:")),
+        objc.nsstring(rt, "Quit Storm"), rt.registerName(cstr("terminate:")), objc.nsstring(rt, "q"))
+    // setSubmenu:forItem:
+    set_submenu: extern fn(ptr, ptr, ptr, ptr) = ffi_fn(rt.msgSend)
+    set_submenu(bar, objc.selector(rt, cstr("setSubmenu:forItem:")), application_menu, application_item)
+    objc.tell_to(rt, application, cstr("setMainMenu:"), bar)
+    for owned in [application_menu, application_item, bar] { rt.release(owned) }
+}
+
+// Storm's shaders write sRGB-encoded colour. The sRGB colour space, so the
+// layer can say so; null if CoreGraphics cannot provide it, and then the
+// layer keeps the display's own.
+unsafe fn srgb_space() -> ptr {
+    core_graphics := dl.open(cstr("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"), 2)
+    if core_graphics == ptr(0) { return ptr(0) }
+    create := dl.symbol(core_graphics, cstr("CGColorSpaceCreateWithName"))
+    name := dl.symbol(core_graphics, cstr("kCGColorSpaceSRGB"))
+    release_space := dl.symbol(core_graphics, cstr("CGColorSpaceRelease"))
+    if create == ptr(0) || name == ptr(0) || release_space == ptr(0) { return ptr(0) }
+    make_space: extern fn(ptr) -> ptr = ffi_fn(create)
+    space := make_space(load_ptr(name))
+    drop_space: extern fn(ptr) = ffi_fn(release_space)
+    drop_space(space)
+    space
+}
+
+unsafe fn create(rt: &objc.Runtime, title: string, width: i32, height: i32, device: ptr) -> Result<Window, string> {
+    // --- the application: a regular one, which can become active ---
+    application := objc.send(rt, objc.class(rt, cstr("NSApplication")), cstr("sharedApplication"))
+    objc.tell_number(rt, application, cstr("setActivationPolicy:"), enums.activation_policy(.Regular))
+    menu_bar(rt, application)
+    objc.tell(rt, application, cstr("finishLaunching"))
+
+    // --- the view: a class born here, whose event methods are Dunder functions ---
+    view_class := objc.subclass(rt, objc.class(rt, cstr("NSView")), cstr("StormView"))?
+    add_view_methods(rt, view_class)?
+    objc.register_class(rt, view_class)
+
+    // --- what can fail is behind us; from here on every object is made, none is refused ---
+    view := objc.make(rt, view_class)
+    objc.tell_number(rt, view, cstr("setAutoresizingMask:"), enums.autoresizing_mask(.WidthAndHeight))
+    objc.tell_number(rt, view, cstr("setWantsLayer:"), 1)
+    layer := objc.make(rt, objc.class(rt, cstr("CAMetalLayer")))
+    objc.tell_to(rt, layer, cstr("setDevice:"), device)
+    // On a wide-gamut display the layer then shows the colours that were
+    // meant, not the same numbers read as the display's own primaries.
+    srgb := srgb_space()
+    if srgb != ptr(0) { objc.tell_to(rt, layer, cstr("setColorspace:"), srgb) }
+    objc.tell_to(rt, view, cstr("setLayer:"), layer)
+
+    // --- the window ---
+    // initWithContentRect:styleMask:backing:defer:
+    open_window: extern fn(ptr, ptr, records.Rect, u64, u64, u8) -> ptr = ffi_fn(rt.msgSend)
+    content := records.Rect { origin: records.Point { x: 0.0, y: 0.0 }, size: records.size(f64(width), f64(height)) }
+    window := open_window(objc.send(rt, objc.class(rt, cstr("NSWindow")), cstr("alloc")),
+        objc.selector(rt, cstr("initWithContentRect:styleMask:backing:defer:")),
+        content, enums.window_style(.TitledClosableMiniaturizableResizable), enums.backing_store(.Buffered), 0)
+    // Ours to release: a closed window must outlive its closing.
+    objc.tell_number(rt, window, cstr("setReleasedWhenClosed:"), 0)
+    objc.tell_to(rt, window, cstr("setContentView:"), view)
+    objc.tell_to(rt, window, cstr("setTitle:"), objc.nsstring(rt, title))
+    objc.tell_number(rt, window, cstr("setAcceptsMouseMovedEvents:"), 1)
+    objc.tell(rt, window, cstr("center"))
+    objc.tell_to(rt, window, cstr("makeKeyAndOrderFront:"), ptr(0))
+    // The view is the first responder, which is where key events go.
+    make_first: extern fn(ptr, ptr, ptr) -> u8 = ffi_fn(rt.msgSend)
+    _ := make_first(window, objc.selector(rt, cstr("makeFirstResponder:")), view)
+    // Ask to come to the front. `activate` is macOS 14; before it, the older
+    // message. The system decides whether to grant it.
+    responds: extern fn(ptr, ptr, ptr) -> u8 = ffi_fn(rt.msgSend)
+    if responds(application, objc.selector(rt, cstr("respondsToSelector:")), objc.selector(rt, cstr("activate"))) != 0 {
+        objc.tell(rt, application, cstr("activate"))
+    } else {
+        objc.tell_number(rt, application, cstr("activateIgnoringOtherApps:"), 1)
+    }
+    objc.tell_decimal(rt, layer, cstr("setContentsScale:"), objc.decimal(rt, window, cstr("backingScaleFactor")))
+    area := objc.bounds(rt, view, cstr("bounds"))
+    .Ok(Window {
+        application: application, window: window, view: view, layer: layer,
+        width: i32(area.size.width), height: i32(area.size.height),
+    })
+}
+
+// A window of the given size in points, showing the GPU's layer.
+pub unsafe fn open(rt: &objc.Runtime, title: string, width: i32, height: i32, device: ptr) -> Result<Window, string> {
+    if width < 1 || width > 8192 || height < 1 || height > 8192 {
+        return .Err("window dimensions must be between 1 and 8192")
+    }
+    pool := rt.poolPush()
+    made := create(rt, title, width, height, device)
+    rt.poolPop(pool)
+    made
+}
+
+// Close the window and release what was made for it, in reverse order.
+pub unsafe fn close(rt: &objc.Runtime, window: &mut Window) {
+    if window.window != ptr(0) { objc.tell(rt, window.window, cstr("close")) }
+    if window.view != ptr(0) { rt.release(window.view) }
+    if window.layer != ptr(0) { rt.release(window.layer) }
+    if window.window != ptr(0) { rt.release(window.window) }
+    window.view = ptr(0)
+    window.layer = ptr(0)
+    window.window = ptr(0)
+}
+
+// Hand every queued event to the application, so the view's methods run.
+unsafe fn drain(rt: &objc.Runtime, application: ptr) {
+    // nextEventMatchingMask:untilDate:inMode:dequeue:, with the distant past
+    // as the deadline: it returns at once with whatever is queued.
+    next: extern fn(ptr, ptr, u64, ptr, ptr, u8) -> ptr = ffi_fn(rt.msgSend)
+    past := objc.send(rt, objc.class(rt, cstr("NSDate")), cstr("distantPast"))
+    // NSDefaultRunLoopMode is this string.
+    mode := objc.nsstring(rt, "kCFRunLoopDefaultMode")
+    for _ in 0..1024 {
+        event := next(application, objc.selector(rt, cstr("nextEventMatchingMask:untilDate:inMode:dequeue:")),
+            ANY_EVENT, past, mode, 1)
+        if event == ptr(0) { return }
+        objc.tell_to(rt, application, cstr("sendEvent:"), event)
+    }
+}
+
+// The window as it is now: drained of its events, with the input they
+// produced. A window the user closed is reported closed.
+pub unsafe fn poll(rt: &objc.Runtime, window: &mut Window) -> gfx.Frame {
+    pool := rt.poolPush()
+    drain(rt, window.application)
+    area := objc.bounds(rt, window.view, cstr("bounds"))
+    resized := i32(area.size.width) != window.width || i32(area.size.height) != window.height
+    window.width = i32(area.size.width)
+    window.height = i32(area.size.height)
+    visible := objc.flag(rt, window.window, cstr("isVisible"))
+    scale := objc.decimal(rt, window.window, cstr("backingScaleFactor"))
+    input := take(ref_at(sink_address()))
+    rt.poolPop(pool)
+    gfx.Frame {
+        closed: !visible,
+        width: window.width,
+        height: window.height,
+        scale: f32(scale),
+        time: f64(sys.now_ms()) / 1000.0,
+        resized: resized,
+        input: input,
+    }
+}
+
+// Keep the layer's drawable size in step with the view: its points times the
+// backing scale, which is 2 on a Retina display.
+pub unsafe fn sync(rt: &objc.Runtime, window: &Window) {
+    area := objc.bounds(rt, window.view, cstr("bounds"))
+    scale := objc.decimal(rt, window.window, cstr("backingScaleFactor"))
+    wanted := records.size((area.size.width * scale).round(), (area.size.height * scale).round())
+    current := objc.measure(rt, window.layer, cstr("drawableSize"))
+    if current.width != wanted.width || current.height != wanted.height {
+        objc.tell_size(rt, window.layer, cstr("setDrawableSize:"), wanted)
+    }
+}
+
+// Whether the layer's drawables may be read back. A drawable normally exists
+// only to be shown; a capture reads its pixels, and says so before the first
+// frame, because the layer decides when it makes them.
+pub unsafe fn readable_drawables(rt: &objc.Runtime, window: &Window, readable: bool) {
+    value := u64(if readable { 0 } else { 1 })
+    objc.tell_number(rt, window.layer, cstr("setFramebufferOnly:"), value)
+}

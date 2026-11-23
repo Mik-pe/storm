@@ -1,0 +1,174 @@
+// Image-based lighting, built once at startup from the sky and never touched
+// again:
+//
+//   * a prefiltered specular cube, 64 x 64 faces, six mips: mip 0 is the sky
+//     rendered from the origin (env_fragment, the same curve as the sky
+//     dome), and mip i is a GGX importance-sampled convolve of mip i - 1 at
+//     roughness i / 5 (prefilter_fragment); the mesh shader samples it at
+//     lod = roughness * 5;
+//   * a diffuse irradiance cube, 16 x 16 faces, cosine-convolved from mip 0
+//     (irradiance_fragment);
+//   * a 64 x 64 BRDF lookup table (scale, bias) that storm-core computes.
+//
+// The same maps, the same maths and the same face bases as the Vulkan
+// backend's, so a surface is lit alike on both. Metal needs no views or
+// framebuffers for it: a render pass names its face by slice and its mip by
+// level, and a hazard between two passes on one texture is tracked for us.
+
+capability unsafe
+
+import core
+import gfx
+import .device as device
+import .enums as enums
+import .objc as objc
+import .pass as pass
+
+pub const CUBE_SIZE: u64 = 64
+pub const CUBE_MIPS: u64 = 6
+pub const IRRADIANCE_SIZE: u64 = 16
+pub const LUT_SIZE: u64 = 64
+const LUT_SAMPLES: i32 = 512
+
+// The environment's three maps, the pipelines that made them and their
+// sampler: owned, and released together.
+pub struct Environment {
+    cube: ptr,
+    irradiance: ptr,
+    brdf: ptr,
+    sampler: ptr,
+    sky_pipeline: device.Pipeline,
+    prefilter_pipeline: device.Pipeline,
+    diffuse_pipeline: device.Pipeline,
+}
+
+pub unsafe fn empty() -> Environment {
+    Environment {
+        cube: ptr(0), irradiance: ptr(0), brdf: ptr(0), sampler: ptr(0),
+        sky_pipeline: device.no_pipeline(),
+        prefilter_pipeline: device.no_pipeline(),
+        diffuse_pipeline: device.no_pipeline(),
+    }
+}
+
+// Render and convolve the maps from the sky. Everything is made or nothing
+// is kept.
+pub unsafe fn build(rt: &objc.Runtime, device: ptr, queue: ptr, library: ptr, sky: &gfx.Sky) -> Result<Environment, string> {
+    mut made := empty()
+    outcome := render(rt, device, queue, library, sky, &mut made)
+    if outcome.is_err() {
+        destroy(rt, &mut made)
+        return .Err(outcome.unwrap_err())
+    }
+    .Ok(made)
+}
+
+unsafe fn render(rt: &objc.Runtime, gpu: ptr, queue: ptr, library: ptr, sky: &gfx.Sky, made: &mut Environment) -> Result<(), string> {
+    hdr := enums.PixelFormat.RGBA16Float
+    made.cube = device.texture(rt, gpu, .Cube, hdr, CUBE_SIZE, CUBE_SIZE, CUBE_MIPS, .RenderTargetAndShaderRead, .Private)?
+    made.irradiance = device.texture(rt, gpu, .Cube, hdr, IRRADIANCE_SIZE, IRRADIANCE_SIZE, 1, .RenderTargetAndShaderRead, .Private)?
+    made.brdf = device.texture(rt, gpu, .Type2D, .RG32Float, LUT_SIZE, LUT_SIZE, 1, .ShaderRead, .Shared)?
+
+    // The BRDF LUT on the CPU: (scale, bias) pairs, row-major, two f32 a texel.
+    lut := core.brdf_lut(i32(LUT_SIZE), LUT_SAMPLES)
+    device.upload(rt, made.brdf, LUT_SIZE, LUT_SIZE, LUT_SIZE * 8, addr(&lut[0]))
+
+    // Three fullscreen pipelines over a cube face; none culls, none blends.
+    fullscreen := device.Style { vertices: .None, blend: false }
+    made.sky_pipeline = device.pipeline(rt, gpu, library, "env_vertex", "env_fragment", hdr, .Invalid, &fullscreen)?
+    made.prefilter_pipeline = device.pipeline(rt, gpu, library, "env_vertex", "prefilter_fragment", hdr, .Invalid, &fullscreen)?
+    made.diffuse_pipeline = device.pipeline(rt, gpu, library, "env_vertex", "irradiance_fragment", hdr, .Invalid, &fullscreen)?
+    // Linear between texels and between mips: the mesh shader picks the mip.
+    made.sampler = device.sampler(rt, gpu, .Linear, .Linear)?
+
+    // One command buffer for the whole build.
+    commands := objc.send(rt, queue, cstr("commandBuffer"))
+    if commands == ptr(0) { return .Err("the queue offered no command buffer for the environment maps") }
+
+    // Mip 0 of every face: the sky, from the face's own basis.
+    mut push: [f32; 24] = [0.0; 24]
+    for face in 0..6 {
+        sky_push(&mut push, face, sky)
+        draw_face(rt, commands, &made.sky_pipeline, ptr(0), made.cube, 0, u64(face), CUBE_SIZE, &push, ptr(0), ptr(0))
+    }
+    // Mip i convolves mip i - 1: each level reads the one before it.
+    for mip in 1..i32(CUBE_MIPS) {
+        for face in 0..6 {
+            convolve_push(&mut push, face, f32(mip) / f32(CUBE_MIPS - 1))
+            draw_face(rt, commands, &made.prefilter_pipeline, ptr(0), made.cube, u64(mip), u64(face), CUBE_SIZE.shr(mip), &push, made.cube, made.sampler)
+        }
+    }
+    // Irradiance: a cosine convolve of mip 0.
+    for face in 0..6 {
+        face_basis(&mut push, face)
+        draw_face(rt, commands, &made.diffuse_pipeline, ptr(0), made.irradiance, 0, u64(face), IRRADIANCE_SIZE, &push, made.cube, made.sampler)
+    }
+
+    objc.tell(rt, commands, cstr("commit"))
+    objc.tell(rt, commands, cstr("waitUntilCompleted"))
+    status := objc.number(rt, commands, cstr("status"))
+    if status != u64(enums.command_status(.Completed)) {
+        return .Err("building the environment maps failed: " + device.reason(rt, objc.send(rt, commands, cstr("error"))))
+    }
+    .Ok
+}
+
+// One fullscreen draw into `level` and `slice` of a cube, sampling `source`
+// when there is one.
+unsafe fn draw_face(rt: &objc.Runtime, commands: ptr, pipeline: &device.Pipeline, depth_state: ptr, target: ptr, level: u64, slice: u64,
+    size: u64, push: &[f32; 24], source: ptr, sampler: ptr) {
+    descriptor := pass.descriptor(rt, target, level, slice, ptr(0), false)
+    encoder := pass.begin(rt, commands, descriptor, size, size, depth_state)
+    if encoder == ptr(0) { return }
+    pass.bind(rt, encoder, pipeline)
+    // The vertex stage reads the face basis, the fragment stage what follows
+    // it: the one block, bound to both.
+    pass.vertex_bytes(rt, encoder, addr(&push[0]), 96, 0)
+    pass.fragment_bytes(rt, encoder, addr(&push[0]), 96, 0)
+    if source != ptr(0) {
+        pass.fragment_texture(rt, encoder, source, 0)
+        pass.fragment_sampler(rt, encoder, sampler, 0)
+    }
+    pass.triangles(rt, encoder, 3)
+    pass.end(rt, encoder)
+}
+
+// Push constants for the sky pass: right, up, forward, sun, zenith, horizon.
+// right, up, forward as the first three float4, taken from the tested view
+// matrix in storm-core: columns are s, up, -forward.
+unsafe fn face_basis(push: &mut [f32; 24], face: i32) {
+    view := core.cube_face_view(face)
+    for i in 0..24 { push[i] = 0.0 }
+    for i in 0..3 { push[i] = view.m[i] }
+    for i in 0..3 { push[4 + i] = view.m[4 + i] }
+    for i in 0..3 { push[8 + i] = -view.m[8 + i] }
+}
+
+unsafe fn sky_push(push: &mut [f32; 24], face: i32, sky: &gfx.Sky) {
+    face_basis(&mut push, face)
+    for i in 0..4 { push[12 + i] = sky.sun[i] }
+    for i in 0..4 { push[16 + i] = sky.zenith[i] }
+    for i in 0..4 { push[20 + i] = sky.horizon[i] }
+}
+
+// The block of a convolve: the face basis, then the roughness where the sky
+// pass has its sun.
+unsafe fn convolve_push(push: &mut [f32; 24], face: i32, roughness: f32) {
+    face_basis(&mut push, face)
+    for i in 12..24 { push[i] = 0.0 }
+    push[12] = roughness
+}
+
+// Release the maps, what made them and their sampler.
+pub unsafe fn destroy(rt: &objc.Runtime, made: &mut Environment) {
+    for owned in [made.sky_pipeline.state, made.prefilter_pipeline.state, made.diffuse_pipeline.state, made.sampler, made.brdf, made.irradiance, made.cube] {
+        if owned != ptr(0) { rt.release(owned) }
+    }
+    made.sky_pipeline = device.no_pipeline()
+    made.prefilter_pipeline = device.no_pipeline()
+    made.diffuse_pipeline = device.no_pipeline()
+    made.sampler = ptr(0)
+    made.brdf = ptr(0)
+    made.irradiance = ptr(0)
+    made.cube = ptr(0)
+}

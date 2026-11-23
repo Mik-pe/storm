@@ -1,0 +1,109 @@
+// How a render pass is opened and drawn into: a descriptor that names its
+// attachments, an encoder for it, what every pass shares once it is open,
+// and the draws. A pass that is open is ended by `end`; nothing here tracks
+// which pass is open, which is the renderer's business (its Pass value).
+
+capability unsafe
+
+import .device as device
+import .enums as enums
+import .objc as objc
+import .records as records
+
+// A descriptor for a render pass with one colour attachment, or none when
+// `colour` is null: a mip `level` and a `slice` (for a cube face) of
+// `colour`, cleared. And a depth attachment, or none when `depth` is null,
+// cleared to the far plane and kept after the pass only when `keep_depth`
+// says so (the shadow map is read by the next pass; the main depth buffer
+// is read by no one).
+pub unsafe fn descriptor(rt: &objc.Runtime, colour: ptr, level: u64, slice: u64, depth: ptr, keep_depth: bool) -> ptr {
+    pass := objc.send(rt, objc.class(rt, cstr("MTLRenderPassDescriptor")), cstr("renderPassDescriptor"))
+    if colour != ptr(0) {
+        target := device.attachment(rt, objc.send(rt, pass, cstr("colorAttachments")), 0)
+        objc.tell_to(rt, target, cstr("setTexture:"), colour)
+        objc.tell_number(rt, target, cstr("setLevel:"), level)
+        objc.tell_number(rt, target, cstr("setSlice:"), slice)
+        objc.tell_number(rt, target, cstr("setLoadAction:"), enums.load_action(.Clear))
+        objc.tell_number(rt, target, cstr("setStoreAction:"), enums.store_action(.Store))
+    }
+    if depth != ptr(0) {
+        target := objc.send(rt, pass, cstr("depthAttachment"))
+        objc.tell_to(rt, target, cstr("setTexture:"), depth)
+        objc.tell_number(rt, target, cstr("setLoadAction:"), enums.load_action(.Clear))
+        after := if keep_depth { enums.store_action(.Store) } else { enums.store_action(.DontCare) }
+        objc.tell_number(rt, target, cstr("setStoreAction:"), after)
+    }
+    pass
+}
+
+// Open the pass on a command buffer and set what every pass shares: the
+// mirrored viewport over all `width` x `height` pixels (records.viewport,
+// the one place Storm's clip space and Metal's differ), a scissor over the
+// same pixels, which are counted from the top left and never mirrored, and
+// the depth state (null for a pass with no depth attachment). The encoder,
+// or null if the pass could not begin.
+pub unsafe fn begin(rt: &objc.Runtime, command_buffer: ptr, descriptor: ptr, width: u64, height: u64, depth_state: ptr) -> ptr {
+    encoder := objc.send_to(rt, command_buffer, cstr("renderCommandEncoderWithDescriptor:"), descriptor)
+    if encoder == ptr(0) { return ptr(0) }
+    // MTLViewport travels by value, which on arm64 is a pointer to a copy.
+    mut view := records.viewport(width, height)
+    set_viewport: extern fn(ptr, ptr, ptr) = ffi_fn(rt.msgSend)
+    set_viewport(encoder, objc.selector(rt, cstr("setViewport:")), addr(&mut view))
+    // MTLScissorRect: x, y, width, height, four NSUInteger, the same way.
+    mut scissor: [u64; 4] = [0, 0, width, height]
+    set_scissor: extern fn(ptr, ptr, ptr) = ffi_fn(rt.msgSend)
+    set_scissor(encoder, objc.selector(rt, cstr("setScissorRect:")), addr(&mut scissor[0]))
+    // A pass without a depth attachment is given none: a nil state is refused.
+    if depth_state != ptr(0) { objc.tell_to(rt, encoder, cstr("setDepthStencilState:"), depth_state) }
+    encoder
+}
+
+pub unsafe fn end(rt: &objc.Runtime, encoder: ptr) { objc.tell(rt, encoder, cstr("endEncoding")) }
+
+// Bind a pipeline and tell the encoder what goes with it: which faces are
+// culled, and that a front face winds counter-clockwise on the screen,
+// where y points down (the same front face as on the Vulkan backend).
+pub unsafe fn bind(rt: &objc.Runtime, encoder: ptr, pipeline: &device.Pipeline) {
+    objc.tell_to(rt, encoder, cstr("setRenderPipelineState:"), pipeline.state)
+    objc.tell_number(rt, encoder, cstr("setCullMode:"), enums.cull_mode(pipeline.cull))
+    objc.tell_number(rt, encoder, cstr("setFrontFacingWinding:"), enums.winding(.CounterClockwise))
+}
+
+// The pass's constants: `bytes` copied from `words` when the call is made.
+pub unsafe fn vertex_bytes(rt: &objc.Runtime, encoder: ptr, words: ptr, bytes: u64, index: u64) {
+    // setVertexBytes:length:atIndex:
+    set: extern fn(ptr, ptr, ptr, u64, u64) = ffi_fn(rt.msgSend)
+    set(encoder, objc.selector(rt, cstr("setVertexBytes:length:atIndex:")), words, bytes, index)
+}
+
+pub unsafe fn fragment_bytes(rt: &objc.Runtime, encoder: ptr, words: ptr, bytes: u64, index: u64) {
+    // setFragmentBytes:length:atIndex:
+    set: extern fn(ptr, ptr, ptr, u64, u64) = ffi_fn(rt.msgSend)
+    set(encoder, objc.selector(rt, cstr("setFragmentBytes:length:atIndex:")), words, bytes, index)
+}
+
+// A buffer for the vertex stage at an index, read from `offset` into it.
+pub unsafe fn vertex_buffer(rt: &objc.Runtime, encoder: ptr, buffer: ptr, offset: u64, index: u64) {
+    // setVertexBuffer:offset:atIndex:
+    set: extern fn(ptr, ptr, ptr, u64, u64) = ffi_fn(rt.msgSend)
+    set(encoder, objc.selector(rt, cstr("setVertexBuffer:offset:atIndex:")), buffer, offset, index)
+}
+
+pub unsafe fn fragment_texture(rt: &objc.Runtime, encoder: ptr, texture: ptr, index: u64) {
+    // setFragmentTexture:atIndex:
+    set: extern fn(ptr, ptr, ptr, u64) = ffi_fn(rt.msgSend)
+    set(encoder, objc.selector(rt, cstr("setFragmentTexture:atIndex:")), texture, index)
+}
+
+pub unsafe fn fragment_sampler(rt: &objc.Runtime, encoder: ptr, sampler: ptr, index: u64) {
+    // setFragmentSamplerState:atIndex:
+    set: extern fn(ptr, ptr, ptr, u64) = ffi_fn(rt.msgSend)
+    set(encoder, objc.selector(rt, cstr("setFragmentSamplerState:atIndex:")), sampler, index)
+}
+
+// `count` vertices as a list of triangles.
+pub unsafe fn triangles(rt: &objc.Runtime, encoder: ptr, count: u64) {
+    // drawPrimitives:vertexStart:vertexCount:
+    draw: extern fn(ptr, ptr, u64, u64, u64) = ffi_fn(rt.msgSend)
+    draw(encoder, objc.selector(rt, cstr("drawPrimitives:vertexStart:vertexCount:")), enums.primitive_type(.Triangle), 0, count)
+}

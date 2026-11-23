@@ -1,0 +1,8 @@
+name = "storm-metal"
+version = "0.0.1"
+root = "src/metal.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+gfx = { path = "../storm-gfx" }

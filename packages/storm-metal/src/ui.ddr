@@ -1,0 +1,91 @@
+// The text atlas and the quads the editor draws: a one-byte coverage atlas
+// uploaded once, a pipeline for quads in points, and a shared buffer of
+// vertices that every frame appends to from its own start.
+
+capability unsafe
+
+import .device as device
+import .objc as objc
+import .pass as pass
+
+pub const ATLAS_SIZE: i32 = 1024
+// Eight f32 a vertex: x, y, u, v, r, g, b, a.
+pub const FLOATS_PER_VERTEX: i32 = 8
+const VERTEX_CAPACITY: u64 = 1048576
+
+// The atlas texture, its sampler and pipeline, and the vertex buffer: owned.
+pub struct Atlas {
+    texture: ptr,
+    sampler: ptr,
+    pipeline: device.Pipeline,
+    vertices: device.Buffer,
+    // Where the frame's UI vertices end; reset by the frame.
+    cursor: u64,
+}
+
+pub unsafe fn empty() -> Atlas {
+    Atlas { texture: ptr(0), sampler: ptr(0), pipeline: device.no_pipeline(), vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 }, cursor: 0 }
+}
+
+pub unsafe fn create(rt: &objc.Runtime, gpu: ptr, library: ptr) -> Result<Atlas, string> {
+    mut made := empty()
+    outcome := fill(rt, gpu, library, &mut made)
+    if outcome.is_err() {
+        destroy(rt, &mut made)
+        return .Err(outcome.unwrap_err())
+    }
+    .Ok(made)
+}
+
+unsafe fn fill(rt: &objc.Runtime, gpu: ptr, library: ptr, made: &mut Atlas) -> Result<(), string> {
+    made.texture = device.texture(rt, gpu, .Type2D, .R8Unorm, u64(ATLAS_SIZE), u64(ATLAS_SIZE), 1, .ShaderRead, .Shared)?
+    // Glyph quads are drawn close to the size they were rasterized at, so the
+    // lookup lands between texels: linear filtering keeps the strokes smooth.
+    made.sampler = device.sampler(rt, gpu, .Linear, .NotMipmapped)?
+    quads := device.Style { vertices: .Ui, blend: true }
+    made.pipeline = device.pipeline(rt, gpu, library, "ui_vertex", "ui_fragment", .BGRA8Unorm, .Depth32Float, &quads)?
+    made.vertices = device.buffer(rt, gpu, VERTEX_CAPACITY)?
+    .Ok
+}
+
+// Upload the packed glyph coverage: one byte a pixel, `width` x `height`,
+// exactly width * height of them.
+pub unsafe fn upload(rt: &objc.Runtime, atlas: &Atlas, pixels: &[]u8, width: i32, height: i32) -> Result<(), string> {
+    if width < 1 || height < 1 || width > ATLAS_SIZE || height > ATLAS_SIZE || pixels.len != width * height {
+        return .Err("the atlas is not " + width.str() + " x " + height.str() + " bytes of coverage")
+    }
+    device.upload(rt, atlas.texture, u64(width), u64(height), u64(width), addr(&pixels[0]))
+    .Ok
+}
+
+// Append the frame's quads and draw them. `screen` is the window in points.
+pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_state: ptr, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
+    if vertices.len == 0 { return .Ok }
+    if vertices.len % FLOATS_PER_VERTEX != 0 { return .Err("UI vertices must be [x, y, u, v, r, g, b, a] tuples") }
+    offset := atlas.cursor
+    if !device.append(&atlas.vertices, &mut atlas.cursor, u64(vertices.len * 4), addr(&vertices[0])) {
+        return .Err("the frame's UI needs more than the UI vertex buffer holds")
+    }
+    pass.bind(rt, encoder, &atlas.pipeline)
+    objc.tell_to(rt, encoder, cstr("setDepthStencilState:"), depth_state)
+    pass.vertex_buffer(rt, encoder, atlas.vertices.handle, offset, 0)
+    mut push := [screen[0], screen[1], 0.0, 0.0]
+    pass.vertex_bytes(rt, encoder, addr(&push[0]), 16, 1)
+    pass.fragment_texture(rt, encoder, atlas.texture, 0)
+    pass.fragment_sampler(rt, encoder, atlas.sampler, 0)
+    pass.triangles(rt, encoder, u64(vertices.len / FLOATS_PER_VERTEX))
+    .Ok
+}
+
+// The frame starts here: its quads overwrite the last frame's.
+pub unsafe fn begin_frame(atlas: &mut Atlas) { atlas.cursor = 0 }
+
+pub unsafe fn destroy(rt: &objc.Runtime, atlas: &mut Atlas) {
+    for owned in [atlas.pipeline.state, atlas.sampler, atlas.texture] {
+        if owned != ptr(0) { rt.release(owned) }
+    }
+    atlas.pipeline = device.no_pipeline()
+    atlas.sampler = ptr(0)
+    atlas.texture = ptr(0)
+    device.release_buffer(rt, &mut atlas.vertices)
+}

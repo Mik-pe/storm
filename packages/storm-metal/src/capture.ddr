@@ -1,0 +1,26 @@
+// A captured frame as a binary PPM (P6) at native resolution: the format
+// Storm's QA reads on every backend. Metal hands a frame over as BGRA8, four
+// bytes a pixel in display order, rows from the top.
+
+import std.bytes as bytes
+
+// The PPM of a BGRA8 image `width` x `height`. `bgra` must hold exactly
+// width * height * 4 bytes; anything else is not an image and gives an
+// empty result.
+pub fn ppm(bgra: &[]u8, width: i32, height: i32) -> []u8 {
+    pixels := width * height
+    if width < 1 || height < 1 || pixels < 1 || bgra.len != pixels * 4 { return [] }
+    mut out: []u8 = []
+    out.reserve(pixels * 3 + 20)
+    bytes.append_utf8(&mut out, "P6\n" + width.str() + " " + height.str() + "\n255\n")
+    for y in 0..height {
+        for x in 0..width {
+            // Blue, green, red, unused: PPM wants red, green, blue.
+            at := (y * width + x) * 4
+            out.push(bgra[at + 2])
+            out.push(bgra[at + 1])
+            out.push(bgra[at])
+        }
+    }
+    out
+}

@@ -1,0 +1,128 @@
+// Metal and AppKit constants as Dunder enums, with the only converters to the
+// integers the frameworks take. The values are the SDK's, printed by its own
+// compiler rather than recited, and pinned in tests/suite.ddr. A call site
+// writes `enums.pixel_format(.BGRA8Unorm)` and there is no way to spell
+// RGBA8Unorm (70) where BGRA8Unorm (80) was meant.
+//
+// Metal's numbers are not Vulkan's: source alpha is 4 here and 6 there, a
+// 2D texture is 2 here and 1 there. Nothing in this file is shared with
+// storm-vulkan, on purpose.
+//
+// Flag-like enums carry the combinations Storm needs as named values.
+
+pub enum PixelFormat {
+    Invalid = 0, A8Unorm = 1, R8Unorm = 10, R32Float = 55, RG32Float = 105,
+    RGBA16Float = 115, RGBA8Unorm = 70, BGRA8Unorm = 80, Depth32Float = 252,
+}
+
+pub fn pixel_format(v: PixelFormat) -> u64 { u64(i32(v)) }
+
+pub enum TextureType { Type2D = 2, Cube = 5 }
+
+pub fn texture_type(v: TextureType) -> u64 { u64(i32(v)) }
+
+pub enum TextureUsage { ShaderRead = 1, RenderTarget = 4, RenderTargetAndShaderRead = 5 }
+
+pub fn texture_usage(v: TextureUsage) -> u64 { u64(i32(v)) }
+
+pub enum StorageMode { Shared = 0, Private = 2 }
+
+pub fn storage_mode(v: StorageMode) -> u64 { u64(i32(v)) }
+
+pub enum LoadAction { DontCare = 0, Load = 1, Clear = 2 }
+
+pub fn load_action(v: LoadAction) -> u64 { u64(i32(v)) }
+
+pub enum StoreAction { DontCare = 0, Store = 1 }
+
+pub fn store_action(v: StoreAction) -> u64 { u64(i32(v)) }
+
+pub enum PrimitiveType { Triangle = 3 }
+
+pub fn primitive_type(v: PrimitiveType) -> u64 { u64(i32(v)) }
+
+pub enum CullMode { None = 0, Front = 1, Back = 2 }
+
+pub fn cull_mode(v: CullMode) -> u64 { u64(i32(v)) }
+
+pub enum Winding { Clockwise = 0, CounterClockwise = 1 }
+
+pub fn winding(v: Winding) -> u64 { u64(i32(v)) }
+
+pub enum CompareFunction { Never = 0, Less = 1, LessEqual = 3, Always = 7 }
+
+pub fn compare_function(v: CompareFunction) -> u64 { u64(i32(v)) }
+
+pub enum BlendFactor { Zero = 0, One = 1, SourceAlpha = 4, OneMinusSourceAlpha = 5 }
+
+pub fn blend_factor(v: BlendFactor) -> u64 { u64(i32(v)) }
+
+pub enum BlendOperation { Add = 0 }
+
+// How far a command buffer has got.
+pub enum CommandBufferStatus { Completed = 4 }
+
+pub fn command_status(v: CommandBufferStatus) -> u64 { u64(i32(v)) }
+
+pub fn blend_operation(v: BlendOperation) -> u64 { u64(i32(v)) }
+
+pub enum SamplerFilter { Nearest = 0, Linear = 1 }
+
+pub fn sampler_filter(v: SamplerFilter) -> u64 { u64(i32(v)) }
+
+pub enum SamplerMipFilter { NotMipmapped = 0, Linear = 2 }
+
+pub fn sampler_mip_filter(v: SamplerMipFilter) -> u64 { u64(i32(v)) }
+
+pub enum SamplerAddressMode { ClampToEdge = 0 }
+
+pub fn sampler_address_mode(v: SamplerAddressMode) -> u64 { u64(i32(v)) }
+
+pub enum VertexStepFunction { PerVertex = 1 }
+
+pub fn vertex_step_function(v: VertexStepFunction) -> u64 { u64(i32(v)) }
+
+pub enum VertexFormat { Float3 = 30, Float4 = 31 }
+
+pub fn vertex_format(v: VertexFormat) -> u64 { u64(i32(v)) }
+
+// What MTLResourceOptions says about a new buffer: its storage mode, in
+// bits 4 to 7 (a shared buffer is 0, a private one 2 << 4).
+pub enum BufferStorage { Shared = 0, Private = 32 }
+
+pub fn buffer_storage(v: BufferStorage) -> u64 { u64(i32(v)) }
+
+// ---- AppKit ----
+
+pub enum ActivationPolicy { Regular = 0 }
+
+pub fn activation_policy(v: ActivationPolicy) -> u64 { u64(i32(v)) }
+
+pub enum WindowStyle { Titled = 1, Closable = 2, Miniaturizable = 4, Resizable = 8, TitledClosableMiniaturizableResizable = 15 }
+
+pub fn window_style(v: WindowStyle) -> u64 { u64(i32(v)) }
+
+pub enum BackingStore { Buffered = 2 }
+
+pub fn backing_store(v: BackingStore) -> u64 { u64(i32(v)) }
+
+pub enum EventType {
+    LeftMouseDown = 1, LeftMouseUp = 2, RightMouseDown = 3, RightMouseUp = 4,
+    MouseMoved = 5, LeftMouseDragged = 6, RightMouseDragged = 7,
+    KeyDown = 10, KeyUp = 11, FlagsChanged = 12, ScrollWheel = 22,
+    OtherMouseDown = 25, OtherMouseUp = 26,
+}
+
+pub fn event_type(v: EventType) -> u64 { u64(i32(v)) }
+
+pub enum ModifierFlag { Shift = 131072, Control = 262144 }
+
+pub fn modifier_flag(v: ModifierFlag) -> u64 { u64(i32(v)) }
+
+pub enum AutoresizingMask { Width = 2, Height = 16, WidthAndHeight = 18 }
+
+pub fn autoresizing_mask(v: AutoresizingMask) -> u64 { u64(i32(v)) }
+
+pub enum StringEncoding { UTF8 = 4 }
+
+pub fn string_encoding(v: StringEncoding) -> u64 { u64(i32(v)) }

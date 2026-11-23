@@ -1,0 +1,61 @@
+// Records Metal and AppKit take and return by value, in their C layout.
+//
+// The float records (a pair, a point, a rectangle, a clear colour) travel in
+// floating-point registers and Dunder passes them by value. The larger
+// integer records (a region, a size, a viewport) travel on Apple's arm64 as
+// a pointer to a copy the caller makes, so a method taking one is declared
+// with a `ptr` and given `addr(&mut record)`: verified against a C oracle
+// before any of this was written on it. Their sizes are pinned against the
+// SDK in tests/suite.ddr.
+
+// CGSize and NSSize: width and height in points, or in pixels.
+@c_layout
+pub struct Size { width: f64, height: f64 }
+
+// CGPoint and NSPoint.
+@c_layout
+pub struct Point { x: f64, y: f64 }
+
+// CGRect and NSRect.
+@c_layout
+pub struct Rect { origin: Point, size: Size }
+
+// MTLViewport: six CGFloat.
+@c_layout
+pub struct Viewport {
+    origin_x: f64, origin_y: f64, width: f64, height: f64,
+    near: f64, far: f64,
+}
+
+// MTLClearColor.
+@c_layout
+pub struct ClearColor { red: f64, green: f64, blue: f64, alpha: f64 }
+
+// MTLSize and MTLOrigin: three NSUInteger each.
+@c_layout
+pub struct Extent { width: u64, height: u64, depth: u64 }
+@c_layout
+pub struct Origin { x: u64, y: u64, z: u64 }
+
+// MTLRegion.
+@c_layout
+pub struct Region { origin: Origin, size: Extent }
+
+pub fn extent(width: u64, height: u64) -> Extent { Extent { width: width, height: height, depth: 1 } }
+pub fn origin(x: u64, y: u64) -> Origin { Origin { x: x, y: y, z: 0 } }
+pub fn region(x: u64, y: u64, width: u64, height: u64) -> Region {
+    Region { origin: origin(x, y), size: extent(width, height) }
+}
+pub fn size(width: f64, height: f64) -> Size { Size { width: width, height: height } }
+
+// The viewport of every pass. Storm's clip space has y pointing down and
+// Metal's points up; a viewport with its origin at the bottom and a negative
+// height maps clip -1 to the top row, so every pipeline, and every shader
+// ported unchanged, sees the clip space the rest of Storm was written for.
+// This is the one place that difference lives.
+pub fn viewport(width: u64, height: u64) -> Viewport {
+    Viewport {
+        origin_x: 0.0, origin_y: f64(height), width: f64(width), height: 0.0 - f64(height),
+        near: 0.0, far: 1.0,
+    }
+}

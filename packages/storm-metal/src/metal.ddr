@@ -1,0 +1,564 @@
+// Storm's Metal backend: a CAMetalLayer in an AppKit window on macOS,
+// through the Objective-C runtime. It implements gfx.Backend; what it
+// promises is written there. Nothing outside this package needs to know that
+// Metal, AppKit or Objective-C exist, and nothing has to be installed for it.
+//
+// A frame is one command buffer with two render passes at most (the sun's
+// shadow map, then colour and depth), shown by the layer. What Vulkan passes
+// as push constants is a struct in the constant address space, handed to a
+// stage as bytes with the draw.
+//
+// Storm's clip space has y pointing down and Metal's points up. Every pass
+// uses the mirrored viewport of records.viewport, and nothing else here or
+// in the shaders knows that the two differ.
+//
+// The renderer owns what it holds: the window, the device's objects, the
+// environment maps and the atlas. `close` releases each of them once, in
+// the reverse of the order they were made.
+
+capability unsafe, filesystem, stdio
+
+import gfx
+import std.dl as dl
+import std.sys as sys
+import .appkit as appkit
+import .capture as capture
+import .device as device
+import .enums as enums
+import .ibl as ibl
+import .objc as objc
+import .pass as pass
+import .records as records
+import .shader as shader
+import .ui as ui
+
+// 4 MiB of vertex space, enough for a few hundred thousand vertices.
+const VERTEX_CAPACITY: u64 = 4194304
+const SHADOW_SIZE: u64 = 1024
+
+// The constants of each draw, in f32. One number each, and every array and
+// byte count below is derived from it.
+const SKY_FLOATS: i32 = 28   // inv_view_proj(16) sun(4) zenith(4) horizon(4)
+const MESH_FLOATS: i32 = 60  // mvp(16) model(16) base_color(4) params(4) camera(4) sun(4) sun_color(4) zenith(4) horizon(4)
+const LIGHT_FLOATS: i32 = 16 // the sun's view-projection
+const SHADOW_FLOATS: i32 = 32 // light_vp(16) model(16)
+
+const NOT_A_MESH: string = "a mesh is not [x,y,z,nx,ny,nz] triples, or the frame's vertex space ran out"
+
+// Which pass is open, if any. A draw meant for one pass is refused in the
+// other instead of landing in it.
+pub enum Pass { None = 0, Shadow = 1, Main = 2 }
+
+pub struct Renderer {
+    objc: objc.Runtime,
+    window: appkit.Window,
+    // The device's objects, in the order they were made.
+    device: ptr,
+    queue: ptr,
+    library: ptr,
+    mesh_pipeline: device.Pipeline,
+    glass_pipeline: device.Pipeline,
+    sky_pipeline: device.Pipeline,
+    shadow_pipeline: device.Pipeline,
+    overlay_pipeline: device.Pipeline,
+    depth_write: ptr,
+    depth_test: ptr,
+    depth_off: ptr,
+    shadow_sampler: ptr,
+    shadow_map: ptr,
+    depth_buffer: ptr,
+    environment: ibl.Environment,
+    atlas: ui.Atlas,
+    vertices: device.Buffer,
+    // The frame being recorded: its autorelease pool, its drawable, and
+    // what has been opened in it.
+    pool: ptr,
+    drawable: ptr,
+    target: ptr,
+    command_buffer: ptr,
+    encoder: ptr,
+    pass: Pass,
+    light_vp: [f32; LIGHT_FLOATS],
+    // The drawable's size in pixels.
+    width: u64,
+    height: u64,
+    vertex_cursor: u64,
+    frames: i64,
+    capturing: u8,
+    trace: u8,
+    // The pixels of the last captured frame, BGRA8, until the next one.
+    captured: []u8,
+}
+
+pub fn open(title: string, width: i32, height: i32) -> Result<Renderer, string> {
+    unsafe { open_renderer(title, width, height) }
+}
+
+unsafe fn empty() -> Renderer {
+    Renderer {
+        objc: zeroed(),
+        window: appkit.empty(),
+        device: ptr(0), queue: ptr(0), library: ptr(0),
+        mesh_pipeline: device.no_pipeline(), glass_pipeline: device.no_pipeline(), sky_pipeline: device.no_pipeline(),
+        shadow_pipeline: device.no_pipeline(), overlay_pipeline: device.no_pipeline(),
+        depth_write: ptr(0), depth_test: ptr(0), depth_off: ptr(0),
+        shadow_sampler: ptr(0), shadow_map: ptr(0), depth_buffer: ptr(0),
+        environment: ibl.empty(),
+        atlas: ui.empty(),
+        vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
+        pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), encoder: ptr(0),
+        pass: .None,
+        light_vp: [0.0; LIGHT_FLOATS],
+        width: 0, height: 0, vertex_cursor: 0, frames: 0, capturing: 0, trace: 0,
+        captured: [],
+    }
+}
+
+unsafe fn open_renderer(title: string, width: i32, height: i32) -> Result<Renderer, string> {
+    if width < 1 || width > 8192 || height < 1 || height > 8192 {
+        return .Err("window dimensions must be between 1 and 8192")
+    }
+    runtime := objc.load()?
+    pool := runtime.poolPush()
+    outcome := create(runtime, title, width, height)
+    runtime.poolPop(pool)
+    outcome
+}
+
+unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32) -> Result<Renderer, string> {
+    // MTLCreateSystemDefaultDevice: the one C function Storm needs from Metal.
+    create_device: extern fn() -> ptr = ffi_fn(dl.symbol(runtime.metal, cstr("MTLCreateSystemDefaultDevice")))
+    chosen := create_device()
+    if chosen == ptr(0) { return .Err("this Mac has no GPU Metal can draw with") }
+    mut made := empty()
+    made.objc = runtime
+    made.device = chosen
+    outcome := prepare(&mut made, title, width, height)
+    if outcome.is_err() {
+        destroy(&mut made)
+        return .Err(outcome.unwrap_err())
+    }
+    .Ok(made)
+}
+
+// Everything a renderer holds, in the order `close` releases it. Either all
+// of it is made, or what was made is released and the reason comes back.
+unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32) -> Result<(), string> {
+    r.window = appkit.open(&r.objc, title, width, height, r.device)?
+    r.queue = objc.send(&r.objc, r.device, cstr("newCommandQueue"))
+    if r.queue == ptr(0) { return .Err("the device could not make a command queue") }
+    r.library = library(r)?
+    r.mesh_pipeline = mesh_pipeline(r, false)?
+    r.glass_pipeline = mesh_pipeline(r, true)?
+    on_screen := enums.PixelFormat.BGRA8Unorm // the layer's own format
+    depth := enums.PixelFormat.Depth32Float
+    fullscreen := device.Style { vertices: .None, blend: false }
+    r.sky_pipeline = device.pipeline(&r.objc, r.device, r.library, "sky_vertex", "sky_fragment", on_screen, depth, &fullscreen)?
+    r.shadow_pipeline = shadow_pipeline(r)?
+    blended := device.Style { vertices: .None, blend: true }
+    r.overlay_pipeline = device.pipeline(&r.objc, r.device, r.library, "overlay_vertex", "overlay_fragment", on_screen, depth, &blended)?
+    r.depth_write = device.depth_state(&r.objc, r.device, .Less, true)?
+    r.depth_test = device.depth_state(&r.objc, r.device, .Less, false)?
+    r.depth_off = device.depth_state(&r.objc, r.device, .Always, false)?
+    r.shadow_sampler = device.sampler(&r.objc, r.device, .Nearest, .NotMipmapped)?
+    r.shadow_map = device.texture(&r.objc, r.device, .Type2D, depth, SHADOW_SIZE, SHADOW_SIZE, 1, .RenderTargetAndShaderRead, .Private)?
+    r.atlas = ui.create(&r.objc, r.device, r.library)?
+    r.vertices = device.buffer(&r.objc, r.device, VERTEX_CAPACITY)?
+    .Ok
+}
+
+// The shader library, compiled by the system from the source Storm carries
+// (shader.ddr, generated from shaders/storm.metal): the build needs no shader
+// compiler.
+unsafe fn library(r: &Renderer) -> Result<ptr, string> {
+    options := objc.make(&r.objc, objc.class(&r.objc, cstr("MTLCompileOptions")))
+    // newLibraryWithSource:options:error:
+    compile: extern fn(ptr, ptr, ptr, ptr, ptr) -> ptr = ffi_fn(r.objc.msgSend)
+    mut error: ptr = ptr(0)
+    made := compile(r.device, objc.selector(&r.objc, cstr("newLibraryWithSource:options:error:")),
+        objc.nsstring(&r.objc, shader.SOURCE), options, addr(&mut error))
+    r.objc.release(options)
+    if made == ptr(0) { return .Err("the shaders did not compile: " + device.reason(&r.objc, error)) }
+    .Ok(made)
+}
+
+// The mesh pipeline: culls back faces and tests depth. Glass is the same,
+// blended, and keeps its depth out of the buffer.
+unsafe fn mesh_pipeline(r: &Renderer, blend: bool) -> Result<device.Pipeline, string> {
+    style := device.Style { vertices: .Mesh, blend: blend }
+    device.pipeline(&r.objc, r.device, r.library, "mesh_vertex", "mesh_fragment", .BGRA8Unorm, .Depth32Float, &style)
+}
+
+// The shadow pipeline writes the depth map itself: no colour attachment and
+// no fragment function.
+unsafe fn shadow_pipeline(r: &Renderer) -> Result<device.Pipeline, string> {
+    style := device.Style { vertices: .Mesh, blend: false }
+    device.pipeline(&r.objc, r.device, r.library, "shadow_vertex", "", .Invalid, .Depth32Float, &style)
+}
+
+fn trace(r: &Renderer, message: string) {
+    if r.trace != 0 { print("storm/mtl: " + message) }
+}
+
+// ---- recording a frame ----
+
+unsafe fn record_begin(r: &mut Renderer) -> Result<(), string> {
+    appkit.sync(&r.objc, &r.window)
+    // A frame a caller never ended is dropped here, not left to leak.
+    if r.pool != ptr(0) { r.objc.poolPop(r.pool) }
+    r.pool = r.objc.poolPush()
+    r.drawable = objc.send(&r.objc, r.window.layer, cstr("nextDrawable"))
+    if r.drawable == ptr(0) { return refuse(&mut r, "the window offered no drawable to render into") }
+    r.target = objc.send(&r.objc, r.drawable, cstr("texture"))
+    width := objc.number(&r.objc, r.target, cstr("width"))
+    height := objc.number(&r.objc, r.target, cstr("height"))
+    if r.depth_buffer == ptr(0) || width != r.width || height != r.height {
+        // The depth buffer shares the drawable's size and follows it.
+        if r.depth_buffer != ptr(0) { r.objc.release(r.depth_buffer) }
+        made := device.texture(&r.objc, r.device, .Type2D, .Depth32Float, width, height, 1, .RenderTarget, .Private)
+        if made.is_err() { return refuse(&mut r, made.unwrap_err()) }
+        r.depth_buffer = made.unwrap()
+        r.width = width
+        r.height = height
+        trace(r, "depth buffer " + width.str() + "x" + height.str())
+    }
+    r.command_buffer = objc.send(&r.objc, r.queue, cstr("commandBuffer"))
+    if r.command_buffer == ptr(0) { return refuse(&mut r, "the queue offered no command buffer") }
+    r.encoder = ptr(0)
+    r.pass = .None
+    // Every stream is appended anew: the frame owns its cursors.
+    r.vertex_cursor = 0
+    ui.begin_frame(&mut r.atlas)
+    trace(r, "frame " + r.frames.str() + ": " + width.str() + "x" + height.str())
+    .Ok
+}
+
+// Give up on the frame that was being begun: its pool goes with it.
+unsafe fn refuse(r: &mut Renderer, move message: string) -> Result<(), string> {
+    if r.pool != ptr(0) { r.objc.poolPop(r.pool) }
+    r.pool = ptr(0)
+    r.drawable = ptr(0)
+    r.target = ptr(0)
+    r.command_buffer = ptr(0)
+    r.encoder = ptr(0)
+    r.pass = .None
+    .Err(message)
+}
+
+// Open a pass `size_wide` x `size_high` over the frame's command buffer.
+unsafe fn open_pass(r: &mut Renderer, descriptor: ptr, size_wide: u64, size_high: u64, depth_state: ptr, which: Pass) -> Result<(), string> {
+    if r.command_buffer == ptr(0) { return .Err("a pass began outside a frame") }
+    if r.pass != .None { return .Err("a pass is already open") }
+    encoder := pass.begin(&r.objc, r.command_buffer, descriptor, size_wide, size_high, depth_state)
+    if encoder == ptr(0) { return .Err("the pass could not begin") }
+    r.encoder = encoder
+    r.pass = which
+    .Ok
+}
+
+// The mesh stream of one draw: checked, appended to the vertex buffer at
+// the frame's cursor, and bound for the vertex stage. False when it is not a
+// vertex list or the frame's vertex space has run out.
+unsafe fn append_vertices(r: &mut Renderer, vertices: &[]f32) -> bool {
+    if vertices.len == 0 || vertices.len % 6 != 0 { return false }
+    for i in 0..vertices.len { if !vertices[i].is_finite() { return false } }
+    offset := r.vertex_cursor
+    if !device.append(&r.vertices, &mut r.vertex_cursor, u64(vertices.len * 4), addr(&vertices[0])) { return false }
+    pass.vertex_buffer(&r.objc, r.encoder, r.vertices.handle, offset, 0)
+    true
+}
+
+unsafe fn record_shadow(r: &mut Renderer, sky: &gfx.Sky) -> Result<(), string> {
+    descriptor := pass.descriptor(&r.objc, ptr(0), 0, 0, r.shadow_map, true)
+    open_pass(&mut r, descriptor, SHADOW_SIZE, SHADOW_SIZE, r.depth_write, .Shadow)?
+    pass.bind(&r.objc, r.encoder, &r.shadow_pipeline)
+    r.light_vp = sky.light_vp.clone()
+    trace(r, "shadow pass")
+    .Ok
+}
+
+unsafe fn record_shadow_mesh(r: &mut Renderer, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string> {
+    if r.pass != .Shadow { return .Err("a shadow mesh was drawn outside the shadow pass") }
+    if !append_vertices(&mut r, &vertices) { return .Err(NOT_A_MESH) }
+    mut push: [f32; SHADOW_FLOATS] = [0.0; SHADOW_FLOATS]
+    for i in 0..16 { push[i] = r.light_vp[i] }
+    for i in 0..16 { push[16 + i] = model[i] }
+    pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), u64(SHADOW_FLOATS * 4), 1)
+    pass.triangles(&r.objc, r.encoder, u64(vertices.len / 6))
+    .Ok
+}
+
+// Close whichever pass is open.
+unsafe fn record_end_pass(r: &mut Renderer) -> Result<(), string> {
+    if r.encoder == ptr(0) { return .Err("no pass is open") }
+    pass.end(&r.objc, r.encoder)
+    r.encoder = ptr(0)
+    r.pass = .None
+    .Ok
+}
+
+unsafe fn record_main(r: &mut Renderer) -> Result<(), string> {
+    descriptor := pass.descriptor(&r.objc, r.target, 0, 0, r.depth_buffer, false)
+    open_pass(&mut r, descriptor, r.width, r.height, r.depth_off, .Main)?
+    trace(r, "main pass")
+    .Ok
+}
+
+// A draw in the main pass, or the reason there is none. The draw then binds
+// its own pipeline and depth state, with borrows of the renderer it shares.
+unsafe fn require_main(r: &Renderer) -> Result<(), string> {
+    if r.pass != .Main { return .Err("a draw was made outside the main pass") }
+    .Ok
+}
+
+// The depth state a pipeline's draws go with.
+unsafe fn use_pipeline(r: &Renderer, pipeline: &device.Pipeline, depth: ptr) {
+    pass.bind(&r.objc, r.encoder, pipeline)
+    objc.tell_to(&r.objc, r.encoder, cstr("setDepthStencilState:"), depth)
+}
+
+unsafe fn record_sky(r: &mut Renderer, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> {
+    require_main(&r)?
+    use_pipeline(r, &r.sky_pipeline, r.depth_off)
+    mut push: [f32; SKY_FLOATS] = [0.0; SKY_FLOATS]
+    for i in 0..16 { push[i] = inv_view_projection[i] }
+    for i in 0..4 { push[16 + i] = sun[i] }
+    for i in 0..4 { push[20 + i] = zenith[i] }
+    for i in 0..4 { push[24 + i] = horizon[i] }
+    // Both stages read the one block.
+    pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), u64(SKY_FLOATS * 4), 0)
+    pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), u64(SKY_FLOATS * 4), 0)
+    pass.triangles(&r.objc, r.encoder, 3)
+    .Ok
+}
+
+unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
+    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, blended: bool) -> Result<(), string> {
+    require_main(&r)?
+    if blended {
+        use_pipeline(r, &r.glass_pipeline, r.depth_test)
+    } else {
+        use_pipeline(r, &r.mesh_pipeline, r.depth_write)
+    }
+    if !append_vertices(&mut r, &vertices) { return .Err(NOT_A_MESH) }
+    mut push: [f32; MESH_FLOATS] = [0.0; MESH_FLOATS]
+    for i in 0..16 { push[i] = mvp[i] }
+    for i in 0..16 { push[16 + i] = model[i] }
+    for i in 0..4 { push[32 + i] = base_color[i] }
+    for i in 0..4 { push[36 + i] = params[i] }
+    for i in 0..3 { push[40 + i] = camera[i] }
+    for i in 0..4 { push[44 + i] = sky.sun[i] }
+    for i in 0..4 { push[48 + i] = sky.sun_color[i] }
+    for i in 0..4 { push[52 + i] = sky.zenith[i] }
+    for i in 0..4 { push[56 + i] = sky.horizon[i] }
+    // Both stages read the one block; the fragment stage also reads the
+    // sun's view-projection, for the shadow lookup.
+    pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), u64(MESH_FLOATS * 4), 1)
+    pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), u64(MESH_FLOATS * 4), 1)
+    light := sky.light_vp.clone()
+    pass.fragment_bytes(&r.objc, r.encoder, addr(&light[0]), u64(LIGHT_FLOATS * 4), 2)
+    pass.fragment_texture(&r.objc, r.encoder, r.shadow_map, 0)
+    pass.fragment_texture(&r.objc, r.encoder, r.environment.cube, 1)
+    pass.fragment_texture(&r.objc, r.encoder, r.environment.irradiance, 2)
+    pass.fragment_texture(&r.objc, r.encoder, r.environment.brdf, 3)
+    pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
+    pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
+    pass.triangles(&r.objc, r.encoder, u64(vertices.len / 6))
+    .Ok
+}
+
+// The overlay over the finished scene: `time` in seconds, `amount` 0 to 1.
+unsafe fn record_overlay(r: &mut Renderer, time: f32, amount: f32) -> Result<(), string> {
+    if amount <= 0.0 { return .Ok }
+    require_main(&r)?
+    use_pipeline(r, &r.overlay_pipeline, r.depth_off)
+    // The overlay places its grain in pixels, so its size is the drawable's.
+    push := [f32(r.width), f32(r.height), time, amount]
+    pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), 16, 0)
+    pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), 16, 0)
+    pass.triangles(&r.objc, r.encoder, 3)
+    .Ok
+}
+
+unsafe fn record_ui(r: &mut Renderer, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
+    if r.pass != .Main { return .Err("the UI was drawn outside the main pass") }
+    ui.draw(&r.objc, &mut r.atlas, r.encoder, r.depth_off, &vertices, screen)
+}
+
+// The frame's pixels, BGRA8, read back from its drawable.
+unsafe fn read_pixels(r: &mut Renderer) -> Result<(), string> {
+    count := i32(r.width * r.height * 4)
+    mut pixels: []u8 = []
+    pixels.reserve(count)
+    for _ in 0..count { pixels.push(0) }
+    // getBytes:bytesPerRow:fromRegion:mipmapLevel:
+    read: extern fn(ptr, ptr, ptr, u64, ptr, u64) = ffi_fn(r.objc.msgSend)
+    mut area := records.region(0, 0, r.width, r.height)
+    read(r.target, objc.selector(&r.objc, cstr("getBytes:bytesPerRow:fromRegion:mipmapLevel:")),
+        addr(&pixels[0]), r.width * 4, addr(&mut area), 0)
+    r.captured = pixels
+    .Ok
+}
+
+// Show the frame, or keep its pixels when it is a capture.
+unsafe fn finish(r: &mut Renderer) -> Result<(), string> {
+    if r.capturing == 1 {
+        objc.tell(&r.objc, r.command_buffer, cstr("commit"))
+        objc.tell(&r.objc, r.command_buffer, cstr("waitUntilCompleted"))
+        status := objc.number(&r.objc, r.command_buffer, cstr("status"))
+        if status != enums.command_status(.Completed) {
+            failure := objc.send(&r.objc, r.command_buffer, cstr("error"))
+            return .Err("the captured frame did not finish: " + device.reason(&r.objc, failure))
+        }
+        return read_pixels(&mut r)
+    }
+    objc.tell_to(&r.objc, r.command_buffer, cstr("presentDrawable:"), r.drawable)
+    objc.tell(&r.objc, r.command_buffer, cstr("commit"))
+    trace(r, "presented")
+    .Ok
+}
+
+unsafe fn record_end(r: &mut Renderer) -> Result<i64, string> {
+    if r.pool == ptr(0) { return .Err("end without begin") }
+    // A pass a caller left open is closed here, so nothing outlives the frame.
+    if r.encoder != ptr(0) { _ := record_end_pass(&mut r) }
+    outcome := finish(&mut r)
+    r.objc.poolPop(r.pool)
+    r.pool = ptr(0)
+    r.drawable = ptr(0)
+    r.target = ptr(0)
+    r.command_buffer = ptr(0)
+    if outcome.is_err() { return .Err(outcome.unwrap_err()) }
+    r.frames = r.frames + 1
+    .Ok(r.frames)
+}
+
+// Release everything the renderer holds, in the reverse of the order it was
+// made, each exactly once.
+unsafe fn destroy(r: &mut Renderer) {
+    if r.pool != ptr(0) {
+        r.objc.poolPop(r.pool)
+        r.pool = ptr(0)
+    }
+    // A command buffer keeps every resource it uses alive until it completes,
+    // so the GPU may still be working through the last frame while these
+    // references go: nothing is freed under it.
+    device.release_buffer(&r.objc, &mut r.vertices)
+    ui.destroy(&r.objc, &mut r.atlas)
+    ibl.destroy(&r.objc, &mut r.environment)
+    for owned in [r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
+        r.overlay_pipeline.state, r.shadow_pipeline.state, r.sky_pipeline.state, r.glass_pipeline.state, r.mesh_pipeline.state,
+        r.library, r.queue] {
+        if owned != ptr(0) { r.objc.release(owned) }
+    }
+    r.depth_buffer = ptr(0)
+    r.shadow_map = ptr(0)
+    r.shadow_sampler = ptr(0)
+    r.depth_off = ptr(0)
+    r.depth_test = ptr(0)
+    r.depth_write = ptr(0)
+    r.overlay_pipeline = device.no_pipeline()
+    r.shadow_pipeline = device.no_pipeline()
+    r.sky_pipeline = device.no_pipeline()
+    r.glass_pipeline = device.no_pipeline()
+    r.mesh_pipeline = device.no_pipeline()
+    r.library = ptr(0)
+    r.queue = ptr(0)
+    appkit.close(&r.objc, &mut r.window)
+    if r.device != ptr(0) {
+        r.objc.release(r.device)
+        r.device = ptr(0)
+    }
+}
+
+// ---- the contract: every promise in gfx.Backend, kept with Metal ----
+
+impl gfx.Backend for Renderer {
+    fn poll(&mut self) -> gfx.Frame {
+        unsafe { appkit.poll(&self.objc, &mut self.window) }
+    }
+
+    fn device_name(&self) -> string {
+        unsafe { objc.text(&self.objc, objc.send(&self.objc, self.device, cstr("name"))) }
+    }
+
+    fn set_trace(&mut self, enabled: bool) {
+        self.trace = if enabled { 1 } else { 0 }
+    }
+
+    fn capture_next(&mut self) -> Result<(), string> {
+        unsafe { appkit.readable_drawables(&self.objc, &self.window, true) }
+        self.capturing = 1
+        .Ok
+    }
+
+    fn save_capture(&mut self, path: string) -> Result<(), string> {
+        if self.captured.len == 0 { return .Err("no frame has been captured") }
+        image := capture.ppm(&self.captured, i32(self.width), i32(self.height))
+        if image.len == 0 { return .Err("the captured frame is not an image") }
+        match sys.write_bytes(path, &image) {
+            .Ok(_) => .Ok,
+            .Err(error) => .Err("could not write the capture: " + sys.io_error_message(error)),
+        }
+    }
+
+    fn build_environment(&mut self, sky: &gfx.Sky) -> Result<(), string> {
+        unsafe {
+            // Built again means built anew: the previous maps go first.
+            ibl.destroy(&self.objc, &mut self.environment)
+            built := ibl.build(&self.objc, self.device, self.queue, self.library, sky)
+            if built.is_err() { return .Err(built.unwrap_err()) }
+            self.environment = built.unwrap()
+            .Ok
+        }
+    }
+
+    fn begin(&mut self) -> Result<(), string> {
+        unsafe { record_begin(&mut self) }
+    }
+
+    fn shadow_begin(&mut self, sky: &gfx.Sky) -> Result<(), string> {
+        unsafe { record_shadow(&mut self, sky) }
+    }
+
+    fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string> {
+        unsafe { record_shadow_mesh(&mut self, &vertices, &model) }
+    }
+
+    fn shadow_end(&mut self) -> Result<(), string> {
+        unsafe { record_end_pass(&mut self) }
+    }
+
+    fn begin_pass(&mut self) -> Result<(), string> {
+        unsafe { record_main(&mut self) }
+    }
+
+    fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> {
+        unsafe { record_sky(&mut self, &inv_view_projection, &sun, &zenith, &horizon) }
+    }
+
+    fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, surface: gfx.Surface) -> Result<(), string> {
+        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, surface == gfx.Surface.Blended) }
+    }
+
+    fn overlay(&mut self, time: f32, amount: f32) -> Result<(), string> {
+        unsafe { record_overlay(&mut self, time, amount) }
+    }
+
+    fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> {
+        unsafe { ui.upload(&self.objc, &self.atlas, &pixels, width, height) }
+    }
+
+    fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string> {
+        unsafe { record_ui(&mut self, &vertices, screen) }
+    }
+
+    fn end(&mut self) -> Result<i64, string> {
+        unsafe { record_end(&mut self) }
+    }
+
+    fn close(move mut self) {
+        unsafe { destroy(&mut self) }
+    }
+}

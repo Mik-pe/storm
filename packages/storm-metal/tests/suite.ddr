@@ -1,0 +1,181 @@
+// storm-metal's tests run without a window and without a GPU: the values the
+// backend hands to the frameworks, the records it passes by value, and the
+// pure logic behind its input and its captures. A frame needs a display
+// session; that proof is a capture (docs/dogfood.md, "Metal på macOS").
+import gfx
+import ..src.appkit as appkit
+import ..src.capture as capture
+import ..src.enums as enums
+import ..src.records as records
+
+// The values as the macOS SDK's own compiler prints them: a C program that
+// printf's each constant against the Metal and AppKit headers. Metal's
+// numbers are not Vulkan's (source alpha is 4 here and 6 there, a 2D texture
+// is 2 here and 1 there), so this pins every value Storm converts to a
+// framework integer, and a table recited from the Vulkan side cannot ship.
+@test fn metal_and_appkit_values_match_the_sdk_table() {
+    assert(enums.pixel_format(.Invalid) == 0)
+    assert(enums.pixel_format(.A8Unorm) == 1)
+    assert(enums.pixel_format(.R8Unorm) == 10)
+    assert(enums.pixel_format(.R32Float) == 55)
+    assert(enums.pixel_format(.RG32Float) == 105)
+    assert(enums.pixel_format(.RGBA16Float) == 115)
+    assert(enums.pixel_format(.RGBA8Unorm) == 70)
+    assert(enums.pixel_format(.BGRA8Unorm) == 80)
+    assert(enums.pixel_format(.Depth32Float) == 252)
+    assert(enums.texture_type(.Type2D) == 2)
+    assert(enums.texture_type(.Cube) == 5)
+    assert(enums.texture_usage(.ShaderRead) == 1)
+    assert(enums.texture_usage(.RenderTarget) == 4)
+    assert(enums.texture_usage(.RenderTargetAndShaderRead) == 5)
+    assert(enums.storage_mode(.Shared) == 0)
+    assert(enums.storage_mode(.Private) == 2)
+    assert(enums.load_action(.DontCare) == 0)
+    assert(enums.load_action(.Load) == 1)
+    assert(enums.load_action(.Clear) == 2)
+    assert(enums.store_action(.DontCare) == 0)
+    assert(enums.store_action(.Store) == 1)
+    assert(enums.primitive_type(.Triangle) == 3)
+    assert(enums.cull_mode(.None) == 0)
+    assert(enums.cull_mode(.Front) == 1)
+    assert(enums.cull_mode(.Back) == 2)
+    assert(enums.winding(.Clockwise) == 0)
+    assert(enums.winding(.CounterClockwise) == 1)
+    assert(enums.compare_function(.Never) == 0)
+    assert(enums.compare_function(.Less) == 1)
+    assert(enums.compare_function(.LessEqual) == 3)
+    assert(enums.compare_function(.Always) == 7)
+    assert(enums.blend_factor(.Zero) == 0)
+    assert(enums.blend_factor(.One) == 1)
+    assert(enums.blend_factor(.SourceAlpha) == 4)
+    assert(enums.blend_factor(.OneMinusSourceAlpha) == 5)
+    assert(enums.blend_operation(.Add) == 0)
+    assert(enums.sampler_filter(.Nearest) == 0)
+    assert(enums.sampler_filter(.Linear) == 1)
+    assert(enums.sampler_mip_filter(.NotMipmapped) == 0)
+    assert(enums.sampler_mip_filter(.Linear) == 2)
+    assert(enums.sampler_address_mode(.ClampToEdge) == 0)
+    assert(enums.vertex_step_function(.PerVertex) == 1)
+    assert(enums.vertex_format(.Float3) == 30)
+    assert(enums.vertex_format(.Float4) == 31)
+    assert(enums.buffer_storage(.Shared) == 0)
+    assert(enums.buffer_storage(.Private) == 32)
+    assert(enums.command_status(.Completed) == 4)
+    assert(enums.activation_policy(.Regular) == 0)
+    assert(enums.window_style(.Titled) == 1)
+    assert(enums.window_style(.Closable) == 2)
+    assert(enums.window_style(.Miniaturizable) == 4)
+    assert(enums.window_style(.Resizable) == 8)
+    assert(enums.window_style(.TitledClosableMiniaturizableResizable) == 15)
+    assert(enums.backing_store(.Buffered) == 2)
+    assert(enums.event_type(.LeftMouseDown) == 1)
+    assert(enums.event_type(.LeftMouseUp) == 2)
+    assert(enums.event_type(.RightMouseDown) == 3)
+    assert(enums.event_type(.RightMouseUp) == 4)
+    assert(enums.event_type(.MouseMoved) == 5)
+    assert(enums.event_type(.LeftMouseDragged) == 6)
+    assert(enums.event_type(.RightMouseDragged) == 7)
+    assert(enums.event_type(.KeyDown) == 10)
+    assert(enums.event_type(.KeyUp) == 11)
+    assert(enums.event_type(.FlagsChanged) == 12)
+    assert(enums.event_type(.ScrollWheel) == 22)
+    assert(enums.event_type(.OtherMouseDown) == 25)
+    assert(enums.event_type(.OtherMouseUp) == 26)
+    assert(enums.modifier_flag(.Shift) == 131072)
+    assert(enums.modifier_flag(.Control) == 262144)
+    assert(enums.autoresizing_mask(.Width) == 2)
+    assert(enums.autoresizing_mask(.Height) == 16)
+    assert(enums.autoresizing_mask(.WidthAndHeight) == 18)
+    assert(enums.string_encoding(.UTF8) == 4)
+    assert(appkit.ANY_EVENT == 18446744073709551615)
+}
+
+// The records Metal and AppKit take by value, in the sizes the SDK's
+// compiler gives their C counterparts. One byte off and a message reads its
+// neighbour's argument.
+@test fn record_layouts_match_the_c_ones() {
+    assert(size_of(records.Size) == 16) // CGSize, NSSize
+    assert(size_of(records.Point) == 16) // CGPoint, NSPoint
+    assert(size_of(records.Rect) == 32) // CGRect, NSRect
+    assert(size_of(records.Viewport) == 48) // MTLViewport
+    assert(size_of(records.ClearColor) == 32) // MTLClearColor
+    assert(size_of(records.Extent) == 24) // MTLSize
+    assert(size_of(records.Origin) == 24) // MTLOrigin
+    assert(size_of(records.Region) == 48) // MTLRegion
+    area := records.region(3, 4, 640, 400)
+    assert(area.origin.x == 3 && area.origin.y == 4 && area.origin.z == 0)
+    assert(area.size.width == 640 && area.size.height == 400 && area.size.depth == 1)
+}
+
+// Storm's clip space has y pointing down and Metal's points up. The
+// viewport is the one place that difference lives: its origin moves to the
+// bottom and its height is negative, so clip -1 is the top row. Nothing else
+// changes: x is untouched, and depth keeps its [0, 1].
+@test fn the_viewport_mirrors_y_and_nothing_else() {
+    view := records.viewport(2560, 1600)
+    assert(view.origin_x == 0.0 && view.origin_y == 1600.0)
+    assert(view.width == 2560.0 && view.height == -1600.0)
+    assert(view.near == 0.0 && view.far == 1.0)
+}
+
+// The engine's keys by macOS virtual key code (kVK_* in Carbon's Events.h).
+@test fn macos_key_codes_mean_the_right_engine_keys() {
+    assert(appkit.key_bit(13) == i32(gfx.Key.W))
+    assert(appkit.key_bit(1) == i32(gfx.Key.S))
+    assert(appkit.key_bit(2) == i32(gfx.Key.D))
+    assert(appkit.key_bit(0) == i32(gfx.Key.A))
+    assert(appkit.key_bit(14) == i32(gfx.Key.E))
+    assert(appkit.key_bit(15) == i32(gfx.Key.R))
+    assert(appkit.key_bit(17) == i32(gfx.Key.T))
+    assert(appkit.key_bit(5) == i32(gfx.Key.G))
+    assert(appkit.key_bit(53) == i32(gfx.Key.Escape))
+    assert(appkit.key_bit(49) == i32(gfx.Key.Space))
+    assert(appkit.key_bit(123) == i32(gfx.Key.Left))
+    assert(appkit.key_bit(124) == i32(gfx.Key.Right))
+    assert(appkit.key_bit(126) == i32(gfx.Key.Up))
+    assert(appkit.key_bit(125) == i32(gfx.Key.Down))
+    // A key Storm does not bind, and a code out of the table's range.
+    assert(appkit.key_bit(6) == -1) // Z
+    assert(appkit.key_bit(500) == -1)
+    // Either key of a modifier is that modifier.
+    assert(appkit.modifier_bit(56) == i32(gfx.Key.Shift))
+    assert(appkit.modifier_bit(60) == i32(gfx.Key.Shift))
+    assert(appkit.modifier_bit(59) == i32(gfx.Key.Ctrl))
+    assert(appkit.modifier_bit(62) == i32(gfx.Key.Ctrl))
+    assert(appkit.modifier_bit(13) == -1)
+    // ...and the event flag that says whether it is down.
+    assert(appkit.modifier_flag(gfx.Key.Shift) == enums.modifier_flag(.Shift))
+    assert(appkit.modifier_flag(gfx.Key.Ctrl) == enums.modifier_flag(.Control))
+}
+
+// Which mouse button an event means, and whether it went down.
+@test fn mouse_events_mean_the_right_buttons() {
+    assert(appkit.button_of(enums.event_type(.LeftMouseDown), 0) == gfx.MOUSE_LEFT)
+    assert(appkit.button_of(enums.event_type(.RightMouseUp), 1) == gfx.MOUSE_RIGHT)
+    // The middle button is the second of the "other" buttons.
+    assert(appkit.button_of(enums.event_type(.OtherMouseDown), 2) == gfx.MOUSE_MIDDLE)
+    assert(appkit.button_of(enums.event_type(.OtherMouseDown), 3) == 0)
+    assert(appkit.button_went_down(enums.event_type(.LeftMouseDown)))
+    assert(appkit.button_went_down(enums.event_type(.RightMouseDown)))
+    assert(appkit.button_went_down(enums.event_type(.OtherMouseDown)))
+    assert(!appkit.button_went_down(enums.event_type(.LeftMouseUp)))
+    assert(!appkit.button_went_down(enums.event_type(.RightMouseDragged)))
+}
+
+// A captured frame is BGRA8, rows from the top; the PPM is RGB in the same
+// order, behind a header that says the size.
+@test fn a_captured_frame_becomes_a_ppm_of_the_same_picture() {
+    // One pixel then black, in BGRA8: blue 10, green 20, red 30.
+    bgra: []u8 = [10, 20, 30, 255, 0, 0, 0, 255]
+    image := capture.ppm(&bgra, 2, 1)
+    header := "P6\n2 1\n255\n"
+    assert(image.len == header.len + 6)
+    for i in 0..header.len { assert(image[i] == header[i]) }
+    // Red, green, blue: the channels reordered, the values untouched.
+    assert(image[header.len] == 30 && image[header.len + 1] == 20 && image[header.len + 2] == 10)
+    assert(image[header.len + 3] == 0 && image[header.len + 4] == 0 && image[header.len + 5] == 0)
+    // The same bytes are not a picture of any other size.
+    assert(capture.ppm(&bgra, 1, 1).len == 0)
+    assert(capture.ppm(&bgra, 4, 1).len == 0)
+    assert(capture.ppm(&bgra, 0, 2).len == 0)
+}
