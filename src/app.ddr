@@ -731,21 +731,27 @@ fn draw_editor(canvas: &mut ui.Canvas, atlas: &text.Atlas, ui_state: &mut widget
         _ := transform_slider(&mut ui_state, &mut canvas, atlas, 20, p, &mut graph, sel, .X, rx + 20.0, iy + 312.0, 380.0, "x", -20.0, 20.0, &t)
     }
 
-    // Bottom bar with the controls and the live pass toggles.
+    // Bottom bar: how to move, how the game is going, and the three pass
+    // toggles as chips that name their own key.
     by := height - 92.0
     canvas.panel(26.0, by, width - 52.0, 66.0, &panel_fill, &panel_border)
-    canvas.text(atlas, "WASD move   Space/Ctrl up-down   Shift sprint   R reset   T glass   G shadows   E effects", 46.0, by + 18.0, BODY_SCALE, &dim)
+    canvas.text(atlas, "WASD move   Space/Ctrl up-down   Shift sprint   R reset", 46.0, by + 18.0, BODY_SCALE, &dim)
     status := if score >= total { "all orbs collected! R to respawn" } else { "walk into the green orbs" }
     canvas.text(atlas, status, 46.0, by + 40.0, BODY_SCALE, &if score >= total { accent } else { body })
-    mut chip_x := width - 470.0
+    // The chips sit flush with the bar's right edge, however wide the labels.
+    labels := ["T glass", "G shadows", "E effects"]
+    gap: f32 = 10.0
+    padding: f32 = 26.0
+    mut chips_width: f32 = 0.0
+    for chip in 0..3 { chips_width = chips_width + ui.Canvas::text_width(atlas, labels[chip], BODY_SCALE) + padding + gap }
+    mut chip_x := width - 26.0 - chips_width
     for chip in 0..3 {
-        label := if chip == 0 { "glass" } else if chip == 1 { "shadows" } else { "effects" }
         on := if chip == 0 { glass } else if chip == 1 { shadows } else { effects }
-        chip_width := ui.Canvas::text_width(atlas, label, BODY_SCALE) + 26.0
+        chip_width := ui.Canvas::text_width(atlas, labels[chip], BODY_SCALE) + padding
         fill := if on { ui.rgba(0.10, 0.35, 0.30, 0.85) } else { ui.rgba(0.14, 0.16, 0.20, 0.85) }
         ink := if on { ui.rgb(0.55, 0.95, 0.75) } else { ui.rgb(0.45, 0.50, 0.58) }
         canvas.rect(chip_x, by + 16.0, chip_width, 34.0, &fill)
-        canvas.text(atlas, label, chip_x + 13.0, by + 22.0, BODY_SCALE, &ink)
-        chip_x = chip_x + chip_width + 10.0
+        canvas.text(atlas, labels[chip], chip_x + 13.0, by + 22.0, BODY_SCALE, &ink)
+        chip_x = chip_x + chip_width + gap
     }
 }
