@@ -37,13 +37,15 @@
 
 ## 1. Nuläge (mätt i koden, 2026-11-23 efter steg 2 och 4)
 
-- **3 råa enum-heltal** i pipeline-state (var 135 före steg 2): `shadow.ddr`
-  262–265, vertexlayouten `inputRate: 0` och `format: 106` ×2. De väntar på
-  next-steps 3a (ett gemensamt vertexformat som ägs på ett ställe). Fyra
+- **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
+  Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
+  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Fyra
   `sType: 18` skrivs också för hand (`ui.ddr` ×2, `post.ddr` ×2) — de är
   strukturtagningsnummer, inte enums, men samma sorts tal-utan-vittne.
-- **Enums är ett eget lager:** `enums.ddr` har 33 `pub enum` och 41
-  konverterare; 227 anrop i paketet går genom `enums.*(.Variant)`. Endast två
+- **Enums är ett eget lager:** `enums.ddr` har 33 `pub enum` och 43
+  `pub fn`: 41 konverterare/namngivna värden och två skrivare av C-poster
+  (`apply_blend`, `apply_vertex_input`); 225 anrop i paketet går genom
+  `enums.*(.Variant)`. Endast två
   namngivna `u32`-konstanter lever kvar i `layout.ddr`
   (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
 - `state.ddr` `Renderer`: **134 fält, 144 rader** (var ~60 när steget
@@ -180,11 +182,12 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    33 enums, 41 konverterare, 227 anrop); paketdelningen är kvar.*
 2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
-   *Status: klart 2026-11-23. 135 → **3** råa enum-heltal i structfält —
-   de tre som är kvar är vertexlayouten i `shadow.ddr:262–265`
-   (`inputRate: 0`, `format: 106` ×2), som nästa steg (next-steps 3a, ett
-   gemensamt vertexformat) tar genom att låta en funktion äga beskrivningen.
-   AE = 0 mot baslinjen inklusive två spec-korrigeringar av layouter
+   *Status: klart 2026-11-23. 135 → **0** råa enum-heltal i structfält: de
+   sista tre var vertexlayouten i `shadow.ddr` (`inputRate: 0`,
+   `format: 106` ×2); next-steps 3a tog dem genom att låta
+   `layout.vertex_input()` äga beskrivningen och `enums.apply_vertex_input`
+   skriva enum-fälten, så det inte finns en andra plats att hålla lika.
+   AE = 0 mot baslinjen, inklusive två spec-korrigeringar av layouter
    (fynd 44). `post → ui`-beroendet borta.*
 3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
    *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och

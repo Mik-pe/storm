@@ -66,7 +66,8 @@ if begun.ok {
 }
 ```
 
-`mesh` tar sex `f32` per vertex för position och normal, en `Sky` (solen,
+`mesh` tar åtta `f32` per vertex — position, normal och uv, ett format som
+`layout.vertex_input()` äger och båda mesh-pipelinearna deklarerar — en `Sky` (solen,
 himlen och ljusmatrisen, samlade i `vulkan.sky_params`) och kamerans position.
 Meshpasset använder 240 byte push constants för två matriser, material, kamera
 och himmelsljus; ljusmatrisen ligger i en uniform buffer. Storm kontrollerar
@@ -189,7 +190,7 @@ efter den. Se `docs/dogfood.md` "Om ECS-frågorna".
 doc := gltf.load("model.glb")
 if !doc.ok { print(doc.error); return 1 }
 mesh := gltf.load_mesh(&doc)
-stream := gltf.interleave(&mesh)   // [x,y,z,nx,ny,nz] per vertex
+stream := gltf.interleave(&mesh)   // [x,y,z,nx,ny,nz,u,v] per vertex
 ```
 
 Laddaren läser `.glb` (JSON- och BIN-chunk) och `.gltf`. Accessorns

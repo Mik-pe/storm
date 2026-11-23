@@ -468,6 +468,36 @@ varningarna så är fallet borta. Skrift är Mickes repo; det är (b) som gälle
 tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
 *i praktiken* är en filterregel tills syskonen är rena.)
 
+**63. E3003 "too many arguments" säger inte hur många som väntades.** Ett
+anrop med ett argument för mycket ger `error[E3003]: too many arguments`
+och inget tal. I Storm (`triangle(&mut vertices, …)` med 19 argument mot 18
+parametrar efter `&mut`) satt markören på det *sista* argumentet, och utan
+antal lästes det som ett *tak* (språket tillåter inte så många) i stället
+för en *räkning* (du gav ett för mycket) — jag mätte därför taket i
+isolation med 17, 18, 19 och 20 parametrar: alla går igenom. Minimal repro:
+`fn f2(a: f32, b: f32) -> f32 { a + b }` + `f2(1.0, 2.0, 3.0)` →
+`E3003 too many arguments`, markör på `f2`, inget "expected 2, got 3".
+För få heter det `E3003 wrong argument count`, också utan tal.
+*Workaround:* räkna argumenten för hand mot deklarationen, eller mät
+taket i isolation. *Rekommendation:* `expected N arguments, got M` i båda
+meddelandena. (Felet var mitt — en vertex med 18 positionsargument är
+oläslig oavsett språk; grunden blev en `Vertex`-post och `push_quad`, inte
+en rad till med tal.)
+
+**Om vertexformatet (3a).** Stride, offset och format stod på två ställen
+(`pipeline.ddr` via enums, `shadow.ddr` med `inputRate: 0`, `format: 106`
+×2) och "ändra på båda eller ingen" var en regel att komma ihåg — AGENTS.md
+kallar det ett bandaid över en grund som inte bär. Nu äger `layout.ddr`
+-posten `VertexInput { binding, attributes }` hela beskrivningen
+(`VERTEX_FLOATS = 8`, `VERTEX_BYTES = 32`, offset 0/12/24),
+`enums.apply_vertex_input` skriver enum-fälten, och båda pipelinearna
+deklarerar samma post; `mesh_pass` och `shadow.mesh` validerar mot
+`VERTEX_FLOATS`. Tre råa heltal kvar → noll, och det finns ingen andra
+plats att glömma. En mätfälla på vägen: testet `addr(&c) - addr(&b) == 16`
+mätte tre *kopior* av fälten (`a := input.attributes.position` …), inte
+posten — fynd 39/54 igen, råorden `[0,0,0,0][1,0,0,12][2,0,0,24]` mätta i
+isolation var korrekta och testet var fel.
+
 **Om ECS-frågorna.** Poolerna hade `entities()` och `values()` men inga
 queries; fyra system loopade entiteter för hand med `contains`-kontroller
 (`drawables`, orbräknaren, orbplockaren, editorns radlista). Nu: `Match
@@ -507,8 +537,8 @@ objects 13) utan tangentbord.
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 75 tester passerade (mätning
-2026-11-23, `93c20bc`: 4 rot + 71 paket, 6 663 ms byggtid): de 60 som
+underpaketen kördes var för sig och alla 77 tester passerade (mätning
+2026-11-23 efter 3a: 4 rot + 73 paket, 6 772 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
@@ -527,7 +557,11 @@ komponenter, neutralgrå åt materiallösa, hierarkins world-matriser i
 `drawables`, en laddad mesh som komponent med sin vertexström), fyra i
 `storm-ui` (träffyta, knappens kant, sliderns drag och klämma, radval), ett i
 `storm-vulkan` (alla `VkResult`-koder mot Khronos) och ett i `storm-gltf`
-(Khronos `Box.glb`: 24 verticer, 36 index, expanderad ström).
+(Khronos `Box.glb`: 24 verticer, 36 index, expanderad ström). Efter 3a:
+en till i `storm-vulkan` (`vertex_input_declares_the_whole_stream`: storlek
+48/60, 16 byte mellan attributen, råorden i C-ordning) och en till i
+`storm-gltf` (`FoxFixed.glb`: 464 verticer, 1728 index, `TEXCOORD_0` utan
+`NORMAL`, uv (0.5287, 0.6786) för index 0 utläst ur filen med Python).
 Scenexemplet verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
 står rättvänt i den bilden. Textåtergivningen verifierades med parvisa
@@ -570,6 +604,6 @@ underkant, alltså textåtergivningen som inte ingick i IBL:s bas.
 7 passed fast paketets `tests/suite.ddr` har 5 `@test`, och `storm-ui` 9 fast
 den har 7: de två extra är samma två `@test fn` i Skrifts egen källmodul
 (`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
-`path`-beroendet. Storms egna är därför **75** = 4 rot + 71 paket. En mätning
-som summerar `passed`-raden över paketen får 79 och räknar Skrifts tester som
+`path`-beroendet. Storms egna är därför **77** = 4 rot + 73 paket. En mätning
+som summerar `passed`-raden över paketen får 81 och räknar Skrifts tester som
 Storms; räkna `@test` i `tests/suite.ddr` i stället.
