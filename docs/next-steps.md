@@ -85,38 +85,109 @@ Matematiken (kubytornas baser, projektionen och BRDF-integralen) ligger i
 
 En vertexström delas av kuber, plan, glTF-modeller och skuggpasset, så
 formatet ändras på alla platser i ett steg eller ingen. Idag: 24 byte,
-`position vec3` + `normal vec3` (`pipeline.ddr:136`, `shadow.ddr:262`),
-`vulkan.cube`/`plane` ger 6 floats, `gltf.interleave` ger 6 fast `Mesh.uvs`
-läses från `TEXCOORD_0`.
+`position vec3` + `normal vec3`, beskriven **två gånger** —
+`pipeline.ddr:136` (via `enums.format`) och `shadow.ddr:262` (med råa tal:
+`inputRate: 0`, `format: 106` ×2; tre av de heltal design.md steg 2 säger
+är borta) — medan `vulkan.cube`/`plane` ger 6 floats, `gltf.interleave` ger
+6 fast `Mesh.uvs` läses från `TEXCOORD_0`, och `mesh_pass`/`shadow.mesh`
+validerar `len % 6`.
+
+### Beslut inför 3a–3c (researchad 2026-11-23)
+
+- **Ett ställe äger vertexformatet.** Inte två pipeline-beskrivningar som
+  hålls lika "för hand". Ett `vk.Attributes`-värde med tre attribut
+  (location 0 pos, 1 normal, 2 uv; offset 0/12/24, stride 32) byggs av en
+  funktion i `pipeline.ddr`, och `shadow.ddr` använder samma beskrivning
+  (shadern läser bara location 0, men pipelinen måste fortfarande deklarera
+  allt bufferten innehåller — annars läser skuggpasset 24-byte-stride ur
+  en 32-byte-ström och hela skuggkartan blir fel *utan något felmeddelande*).
+  Det är det enda sättet "ändra på alla platser eller ingen" upphör att vara
+  en regel man kommer ihåg: det finns en plats. `stride` och `% 8`-valideringen
+  i `mesh_pass`/`shadow.mesh` härleds ur samma konstant (`VERTEX_FLOATS`).
+- **Ingen V-flip. Någonsin.** glTF 2.0 §3.8.3: UV (0,0) är bildens **övre
+  vänstra** hörn. Vulkan, D3D och Metal har alla samma konvention — bara
+  OpenGL (och WebGL via `UNPACK_FLIP_Y`) har nedre vänstra. Storm samplar i
+  Vulkan: `texture(base_color, uv)` rakt av, bilden laddas som den ligger i
+  PNG:n (rad 0 = överst). OpenGL-reflexen `v = 1 - v` är fel här; den ska
+  inte ens finnas som kommentar i koden, bara här som förklaring.
+- **UV saknas → `(0, 0)`, inte fel.** Khronos `Box.glb` har bara `POSITION`
+  + `NORMAL` (verifierat mot filen), FoxFixed har `TEXCOORD_0`. Filament gör
+  samma val (en dummy-buffert för UV0 när materialet inte kräver den).
+- **`R8G8B8A8_SRGB` för `baseColorTexture`, `UNORM` för allt annat.** Spec
+  §3.9.2: "The base color texture MUST contain 8-bit values encoded with the
+  sRGB transfer function … decoded to real linear values before any
+  computations; SHOULD be decoded before linear interpolation" — hårdvarans
+  sRGB-avkodning vid sampling uppfyller exakt det, och Storms `mesh.frag`
+  räknar redan linjärt och tonemappar med ACES. `metallicRoughnessTexture`
+  (G = roughness, B = metallic), normal- och occlusion-kartor är **linjära**
+  (UNORM). PNG:ns egen ICC/gamma ignoreras (spec: "MUST be ignored").
+  `enums.Format` har båda (`R8G8B8A8_SRGB = 43`, `_UNORM = 37`).
+- **PNG i ren Dunder — zlib finns redan.** `dunder-skrift` har en publik
+  pur-Dunder `zlib_decompress(src, offset, length, expected_len)` (RFC 1950/
+  1951, WOFF1:s tavlor). *Bevisat:* den dekomprimerar FoxFixed `IDAT`
+  (26 707 byte) byte-identiskt mot Pythons zlib — 3 146 752 byte = 1024 ×
+  1024 × 3 + 1024 filterbyte — på 0,27 s. `expected_len = 0` betyder okänd
+  längd (används bara för `reserve`). Det som saknas är PNG-containern:
+  chunk-walk (`IHDR`/`IDAT`/`IEND`, längd big-endian), ihopsättning av
+  flera `IDAT`-chunkar (FoxFixed har en, spec tillåter flera), och de fem
+  filtertyperna (None/Sub/Up/Average/Paeth, en filterbyte per rad). FoxFixed
+  är enklast möjliga: 1024², bitdepth 8, **colortype 2 (RGB)**, interlace 0
+  → avkodaren måste expandera RGB→RGBA; colortype 6 (RGBA) och 4 (grå+alfa)
+  kommer näst, interlace (Adam7) och palett senare. `zlib_decompress` bor i
+  `skrift.sfnt`; antingen importeras den därifrån (ett teckensnittspaket som
+  avkodningspunkt för texturer är fel lager) eller lyfts till `std.bytes`/
+  ett `std.inflate` i Dunder-repot — det senare är rätt hemvist, eftersom
+  både WOFF, PNG och ZIP är konsumenter. *Beslut: lyft till Dunder-stdlib
+  (eget fynd), använd `skrift.sfnt` till dess.*
+- **Sampler från glTF:s `samplers[]`, inte hårdkodat.** FoxFixed:
+  `magFilter 9729` (LINEAR), `wrapS/T 10497` (REPEAT), ingen `minFilter`
+  (→ implementation-defined enligt spec; Fox.glb anger 9987 =
+  LINEAR_MIPMAP_LINEAR, så mipmaps är att vänta). Storm har
+  `enums.Filter` och `enums.SamplerAddressMode`; glTF-talen (9728/9729,
+  33071/33648/10497) ska vara en enum i `storm-gltf`, inte ett `i32` som
+  skickas mot Vulkan. Första steget (3b, checkermönster utan fil) använder
+  `ClampToEdge` + `Linear` som `ibl.create_sampler` redan gör.
+- **Mipmap från dag ett.** En 1024²-textur utan mipmaps skimrar på avstånd;
+  `blit`-kedjan finns i `ibl.ddr` (`create_cube` med mipnivåer). Kedjan
+  byggs med `vkCmdBlitImage` per nivå (inget `vkGenerateMipmaps` i Vulkan 1.0
+  utan `VK_KHR_maintenance5`/1.3) — eller först med `mipLevels = 1` och
+  `maxLod = 0` som bevis, mipmaps som 3b:2.
 
 ### 3a. Ett vertexformat: position, normal, uv (nästa)
 
 Åtta floats per vertex, 32 byte, uv `(0,0)` när modellen saknar
-`TEXCOORD_0`. Berörda: de två pipeline-beskrivningarna, `vulkan.cube`/
-`plane`, `gltf.interleave`, `mesh.vert` (`layout(location = 2) in vec2 uv`,
-vidare till `mesh.frag`), `shadow.vert` (läser bara location 0, oförändrad
-i beteende). Bevis: `interleave`-test mot Khronos `Box.glb` (6 → 8 floats,
-uv = 0) och en texturerad fixtur (`FoxFixed.glb`, 44 KB, CC-BY 4.0 med
-attribution i filen: 464 verticer, 1728 index, TEXCOORD_0 + en PNG),
-capture med uv som färg (`out = vec4(uv, 0, 1)`) och pixelprover i hörnen;
+`TEXCOORD_0`. Bevis: `interleave`-test mot Khronos `Box.glb` (36 index ×
+8 floats, alla uv = 0) och FoxFixed (464 verticer, 1728 index, TEXCOORD_0
++ en 1024² PNG i BIN-chunken); `vulkan.cube`/`plane` testas på
+`len % 8 == 0` och att uv-komponenterna är ändliga; capture med uv som färg
+(`out = vec4(uv, 0, 1)`) på `--glb FoxFixed.glb` och pixelprover i hörnen;
 sedan tillbaka till PBR och AE = 0 mot baslinjen (uv påverkar inte färgen
-än). Budget: en timme.
+än). Budget: en timme. Berörda, med det gemensamma formatet ovan:
+`pipeline.ddr` (ägare av beskrivningen), `shadow.ddr` (konsument),
+`vulkan.ddr` (`vertex`/`triangle`/`cube`/`plane`, `mesh_pass` `% 6` → `% 8`),
+`gltf.interleave`, `scene.Mesh`-dokumentationen, `mesh.vert`
+(`layout(location = 2) in vec2 uv` → `mesh.frag`), `shadow.vert`
+(oförändrad i beteende), README ("sex `f32` per vertex").
 
 ### 3b. Sampling
 
 `vkCreateImage` + staging + `vkCmdCopyBufferToImage` + layoutövergångar
-finns för miljökuben (`ibl.ddr`) — samma maskineri för en `R8G8B8A8_UNORM`-
-bild, plus `vkCreateSampler`, descriptor (binding 5 på mesh-pipelinen) och
-`texture(base_color, uv)` i `mesh.frag`. Bevis: en 2×2-checker genererad i
-Dunder på en plan-yta, pixelprover i fyra rutor.
+finns för miljökuben (`ibl.ddr`: `create_cube`, `stage_lut`, `barrier`,
+`make_view`, `write_image`) — samma maskineri för en `R8G8B8A8_UNORM`-bild,
+plus `vkCreateSampler`, descriptor (binding 5 på mesh-pipelinen; layouten i
+`shadow.ddr` går från 5 till 6 bindingar) och `texture(base_color, uv)` i
+`mesh.frag`. Bevis: en 2×2-checker genererad i Dunder på en plan-yta,
+pixelprover i fyra rutor; `bufferRowLength = 0` betyder tight packning
+(spec: "tightly packed according to imageExtent") — PNG-rader är tight.
 
 ### 3c. glTF-bilder och material
 
-`images`/`textures` ur GLB:n (BIN-chunken håller PNG:erna — avkodning av
-PNG krävs; `dunder-skrift` har zlib för sfnt, kolla om den räcker), samt
-`pbrMetallicRoughness` (`baseColorFactor`, `baseColorTexture`,
-`metallicFactor`, `roughnessFactor`). Bevis: FoxFixed renderas med sin
-päls, capture jämförd mot Khronos referensbild i komposition.
+`images`/`textures`/`samplers`/`pbrMetallicRoughness` (`baseColorFactor`
+× `baseColorTexture`, `metallicFactor`, `roughnessFactor`) ur GLB:n, med
+PNG-avkodningen ovan. Bevis: FoxFixed renderas med sin päls (compare mot
+Khronos referensbild i komposition), och `Box.glb` (ingen textur, bara
+`baseColorFactor` röd) renderas fortfarande röd — faktorn utan textur är
+den vanligaste glTF-materialtypen och får inte brytas.
 
 ## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning, ECS-frågor
 

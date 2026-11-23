@@ -429,6 +429,42 @@ accessor till en lokal först (`names := g.names()`), vilket alltid går.
 Diagnosen nämner interna modulnummer (`__dunder_module_66`) i stället för
 typerna `Pool<Name>` / `Pool<LocalTransform>`, vilket gör den oläslig.
 
+**61. En pur-Dunder zlib-inflate finns — i teckensnittspaketet.** Stdlib har
+`base64`, `sha256`, `crypto`, men ingen inflate/deflate. `dunder-skrift`
+har en publik, komplett RFC 1950/1951-avkodare (`skrift.sfnt.zlib_decompress
+(src: &[]u8, offset, length, expected_len) -> InflateResult { ok, error,
+data }`) skriven för WOFF1:s tabeller, med adler32-kontroll. *Bevisat
+2026-11-23:* den dekomprimerar `FoxFixed.glb`:s PNG-`IDAT` (26 707 byte,
+dynamisk Huffman) **byte-identiskt** mot Pythons `zlib.decompress` —
+3 146 752 byte på 0,27 s — med `expected_len = 0` (okänd längd; argumentet
+används bara till `reserve`). Funktionens kontrakt antyger det inte:
+parametern heter `expected_len` och WOFF-slipan skickar alltid tabellens
+längd. Att den fungerar utan är alltså en egenskap man råkar utnyttja, inte
+en som dokumenterats. PNG-avkodning i ren Dunder (Storm textursteg 3c) behöver
+*inflate* + en chunk-walk + fem filtertyper — alltså finns 90 % av PNG redan
+i ekosystemet, men på fel adress: varje konsument (WOFF, PNG, ZIP, gzip)
+som importerar `skrift.sfnt` för inflate gör teckensnittspaketet till ett
+beroende för bilddata. *Workaround:* importera från `skrift.sfnt` och säg
+varför. *Rekommendation:* lyft `zlib_decompress`/`adler32`/`BitStream`/
+`HuffTable` till `std.inflate` (eller `std.bytes`) i Dunder-repot med
+skrifts befintliga tester som bas, och dokumentera att `expected_len ≤ 0`
+betyder "okänd längd". Skrift importerar det i sin tur.
+
+**62. Beroendets varningar visas vid varje bygge — och kan inte stängas av
+därifrån.** `dunder build` av Storm skriver sex varningar från
+`dunder-skrift` (`binary.ddr:4 W1002 unused import 'sys'`, `font.ddr:5,14
+W1002 'bin'/'bytes'`, `sfnt.ddr:544–548 W1001 unused variable 'i'` ×5) vid
+**varje** kompilering, däribland `tools/build-time.ddr`:s. Det är rätt att
+kompilatorn visar dem — Skrift har faktiskt död kod och Micke har
+nolltolerans för det — men det gör Storms regel "0 varningar i Storms egna
+paket" omöjlig att kontrollera med `dunder check` + `grep warning` utan att
+handskriva ett undantag per syskonrepo. *Workaround:* `grep -v dunder-skrift`.
+*Rekommendation:* antingen (a) en `--warnings deps|own`-flagga på `check`/
+`build`, eller (b) — enklast och mest ärligt — Skrift rensar de sex
+varningarna så är fallet borta. Skrift är Mickes repo; det är (b) som gäller
+tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
+*i praktiken* är en filterregel tills syskonen är rena.)
+
 **Om ECS-frågorna.** Poolerna hade `entities()` och `values()` men inga
 queries; fyra system loopade entiteter för hand med `contains`-kontroller
 (`drawables`, orbräknaren, orbplockaren, editorns radlista). Nu: `Match
@@ -468,7 +504,8 @@ objects 13) utan tangentbord.
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 73 tester passerade: de 60 som
+underpaketen kördes var för sig och alla 75 tester passerade (mätning
+2026-11-23, `c2243e1`: 4 rot + 71 paket, 6 644 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre

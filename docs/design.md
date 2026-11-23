@@ -167,9 +167,12 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    29 enums, 137 anrop); paketdelningen är kvar.*
 2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
-   *Status: klart 2026-11-23. 135 → 0 råa enum-heltal i structfält, AE = 0
-   mot baslinjen inklusive två spec-korrigeringar av layouter (fynd 44).
-   `post → ui`-beroendet borta.*
+   *Status: klart 2026-11-23. 135 → **3** råa enum-heltal i structfält —
+   de tre som är kvar är vertexlayouten i `shadow.ddr:262–265`
+   (`inputRate: 0`, `format: 106` ×2), som nästa steg (next-steps 3a, ett
+   gemensamt vertexformat) tar genom att låta en funktion äga beskrivningen.
+   AE = 0 mot baslinjen inklusive två spec-korrigeringar av layouter
+   (fynd 44). `post → ui`-beroendet borta.*
 3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
    *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
