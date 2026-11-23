@@ -1,12 +1,14 @@
 capability unsafe
 
+import gfx
 import std.dl as dl
 
 // SDL2 owns the native window and the event queue. Vulkan presents to it through
 // a VK_KHR_surface created by SDL_Vulkan_CreateSurface; SDL never touches pixels.
 //
 // Input state is kept per window and updated by poll(): held keys, keys pressed
-// this frame, mouse position/delta, button bitmask and wheel delta.
+// this frame, mouse position/delta, button bitmask and wheel delta. `input`
+// turns that raw state into the engine's keys and pointer.
 @c_layout
 pub struct Window {
     library: ptr,
@@ -169,4 +171,52 @@ pub unsafe fn poll(w: &mut Window) {
         }
     }
     if w.handle != ptr(0) { w.GetWindowSize(w.handle, addr(&mut w.width), addr(&mut w.height)) }
+}
+
+// One place pairs an SDL scancode with the engine key it means.
+fn bind(table: &mut [i32; 512], scancode: i32, key: gfx.Key) { table[scancode] = i32(key) }
+
+// The window's raw key and mouse state as the engine sees it.
+pub fn input(w: &Window) -> gfx.Input {
+    // Rebuilt on every call: twenty-one stores cost less than a flag that
+    // says whether the table was built, and a window never polled is right too.
+    mut table: [i32; 512] = [-1; 512]
+    bind(&mut table, 4, gfx.Key.A)
+    bind(&mut table, 6, gfx.Key.C)
+    bind(&mut table, 7, gfx.Key.D)
+    bind(&mut table, 81, gfx.Key.Down)
+    bind(&mut table, 8, gfx.Key.E)
+    bind(&mut table, 41, gfx.Key.Escape)
+    bind(&mut table, 9, gfx.Key.F)
+    bind(&mut table, 10, gfx.Key.G)
+    bind(&mut table, 80, gfx.Key.Left)
+    bind(&mut table, 20, gfx.Key.Q)
+    bind(&mut table, 21, gfx.Key.R)
+    bind(&mut table, 79, gfx.Key.Right)
+    bind(&mut table, 22, gfx.Key.S)
+    bind(&mut table, 44, gfx.Key.Space)
+    bind(&mut table, 23, gfx.Key.T)
+    bind(&mut table, 82, gfx.Key.Up)
+    bind(&mut table, 26, gfx.Key.W)
+    // Left and right of a modifier are one key to the engine.
+    bind(&mut table, 224, gfx.Key.Ctrl)
+    bind(&mut table, 228, gfx.Key.Ctrl)
+    bind(&mut table, 225, gfx.Key.Shift)
+    bind(&mut table, 229, gfx.Key.Shift)
+    mut held: u32 = 0
+    mut pressed: u32 = 0
+    for scancode in 0..512 {
+        bit := table[scancode]
+        if bit < 0 { continue }
+        if w.keys[scancode] != 0 { held = held.bit_or(u32(1).shl(bit)) }
+        if w.pressed[scancode] != 0 { pressed = pressed.bit_or(u32(1).shl(bit)) }
+    }
+    gfx.Input {
+        held: held,
+        pressed: pressed,
+        mouse: gfx.Mouse {
+            x: f32(w.x), y: f32(w.y), dx: f32(w.mouse_dx), dy: f32(w.mouse_dy),
+            buttons: w.buttons, pressed: w.buttons_pressed, scroll: w.wheel,
+        },
+    }
 }

@@ -4,43 +4,37 @@ import ..src.layout as vk
 import ..src.depth as depth
 import ..src.device as device
 import ..src.enums as enums
+import gfx
 import ..src.headless as headless
+import ..src.sdl as sdl
 import ..src.state as state
-import ..src.vulkan as vulkan
 
-@test fn cube_emits_twelve_triangles_with_face_normals() {
-    mut v: []f32 = []
-    vulkan.cube(&mut v, 0.5)
-    assert(v.len == 36 * 6)
-    // First triangle is the +Z face: normal (0,0,1) and z = +0.5.
-    assert(v[3] == 0.0 && v[4] == 0.0 && v[5] == 1.0)
-    assert(v[2] == 0.5)
-    // Count normals pointing along each axis.
-    mut plus_z := 0
-    mut minus_y := 0
-    mut i := 0
-    while i < v.len {
-        if v[i + 5] == 1.0 { plus_z = plus_z + 1 }
-        if v[i + 4] == -1.0 { minus_y = minus_y + 1 }
-        i = i + 6
+// The raw SDL state of a window, as the engine's keys and pointer. Either
+// shift key is Shift; a key held since an earlier frame is down but not
+// newly pressed.
+@test fn sdl_key_state_becomes_engine_input() {
+    unsafe {
+        mut window: sdl.Window = zeroed()
+        assert(!sdl.input(&window).down(gfx.Key.W))
+        window.keys[4] = 1 // SDL_SCANCODE_A
+        window.pressed[4] = 1
+        window.keys[26] = 1 // SDL_SCANCODE_W, held since an earlier frame
+        window.keys[229] = 1 // right shift
+        window.x = 12
+        window.y = 34
+        window.mouse_dx = 3
+        window.mouse_dy = -2
+        window.buttons = 2
+        window.buttons_pressed = 2
+        window.wheel = 1.0
+        input := sdl.input(&window)
+        assert(input.down(gfx.Key.A) && input.hit(gfx.Key.A))
+        assert(input.down(gfx.Key.W) && !input.hit(gfx.Key.W))
+        assert(input.down(gfx.Key.Shift) && !input.down(gfx.Key.Ctrl) && !input.down(gfx.Key.S))
+        assert(input.mouse.x == 12.0 && input.mouse.y == 34.0 && input.mouse.dx == 3.0 && input.mouse.dy == -2.0)
+        assert(input.button_down(gfx.MOUSE_RIGHT) && !input.button_down(gfx.MOUSE_LEFT) && input.button_hit(gfx.MOUSE_RIGHT))
+        assert(input.mouse.scroll == 1.0)
     }
-    assert(plus_z == 6 && minus_y == 6)
-}
-
-@test fn plane_is_two_upward_triangles() {
-    mut v: []f32 = []
-    vulkan.plane(&mut v, 4.0)
-    assert(v.len == 6 * 6)
-    assert(v[4] == 1.0 && v[10] == 1.0 && v[16] == 1.0)
-}
-
-@test fn triangle_and_vertex_helpers_agree() {
-    mut v: []f32 = []
-    vulkan.vertex(&mut v, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0)
-    assert(v.len == 6 && v[0] == 1.0 && v[5] == 0.0)
-    v.clear()
-    vulkan.triangle(&mut v, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-    assert(v.len == 18)
 }
 
 @test fn barrier_struct_matches_the_c_abi() {

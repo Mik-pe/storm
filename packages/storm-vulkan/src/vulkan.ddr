@@ -1,7 +1,22 @@
+// Storm's Vulkan backend: a real VK_KHR_swapchain presentation path (no
+// readback) in an SDL window, for Linux. It implements gfx.Backend; what
+// it promises is written there, and nothing outside this package needs to
+// know that Vulkan or SDL exist.
+//
+//   match vulkan.open("Storm", 1280, 800) {
+//       .Ok(window) => { ... }
+//       .Err(message) => { ... }
+//   }
+//
+// The shadow pass has its own render pass before begin_pass. Mesh vertices
+// are interleaved [x, y, z, nx, ny, nz] f32 (24 bytes).
+
 capability unsafe, stdio
 
+import gfx
 import std.bytes as b
 import std.dl as dl
+import std.sys as sys
 import .api as api
 import .depth as depth
 import .device as device
@@ -16,52 +31,19 @@ import .ui as ui
 import .sdl as sdl
 import .state as state
 
-// Storm's Vulkan window: a real VK_KHR_swapchain presentation path (no readback).
-//
-// A frame is recorded in five calls, which is what the render graph drives:
-//
-//   result := vulkan.begin(opened.window)
-//   if result.ok {
-//       _ := vulkan.begin_pass(opened.window)
-//       _ := vulkan.sky(opened.window, &inv_view_proj, &sun, &zenith, &horizon)
-//       _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base, &params, &camera, &sky)
-//       _ := vulkan.end(opened.window)
-//   }
-//
-// The shadow pass has its own render pass before begin_pass:
-// shadow_begin / shadow_mesh per object / shadow_end.
-// Mesh vertices are interleaved [x, y, z, nx, ny, nz] f32 (24 bytes).
-
+// A live renderer, by generation: the handle is a plain value the
+// application can copy, and an expired one is refused, never followed.
 pub struct Window { id: i64 }
-pub struct OpenResult { ok: bool, window: Window, error: string }
-pub struct Frame {
-    closed: bool,
-    width: i32,
-    height: i32,
-    scale: f64,
-    time: f64,
-    pointer_x: f64,
-    pointer_y: f64,
-    pointer_down: bool,
-    key: i32,
-    resized: bool,
-}
-pub struct BeginResult { ok: bool, error: string, width: i32, height: i32 }
-pub struct DrawResult { ok: bool, error: string, frames: i64 }
-pub struct MouseState {
-    x: i32,
-    y: i32,
-    dx: i32,
-    dy: i32,
-    buttons: u32,
-    pressed: u32,
-    scroll: f32,
-}
+
+// What one recorded step came to. Private: the trait methods turn these
+// into Result values.
+struct BeginResult { ok: bool, error: string }
+struct DrawResult { ok: bool, error: string, frames: i64 }
 
 @c_layout
 struct Registry { active: ptr, generation: i64 }
 
-unsafe fn registry_address() -> ptr { static_bytes("linux", 16) }
+unsafe fn registry_address() -> ptr { static_bytes("native", 16) }
 
 @extern("c", "calloc")
 unsafe fn allocate(count: usize, bytes: usize) -> ptr
@@ -69,18 +51,6 @@ unsafe fn allocate(count: usize, bytes: usize) -> ptr
 unsafe fn release(address: ptr)
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
-@extern("c", "clock_gettime")
-unsafe fn clock_gettime(clock: i32, output: ptr) -> i32
-
-unsafe fn millis() -> i64 {
-    mut t: [i64; 2] = [0, 0]
-    if clock_gettime(1, addr(&mut t[0])) != 0 { return 0 }
-    t[0] * 1000 + t[1] / 1000000
-}
-
-fn open_error(move message: string) -> OpenResult {
-    OpenResult { ok: false, window: Window { id: 0 }, error: message.clone() }
-}
 
 unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32) -> bool {
     r.width = u32(width)
@@ -108,55 +78,44 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     true
 }
 
-// Render and convolve the environment maps from the sky colours. Call once
-// after open(), before the first frame; the maps are static, so the sun and
-// sky must be the same values the scene passes to sky() every frame.
-pub fn build_environment(window: Window, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        if !ibl.setup(ref_at(address), sun, zenith, horizon) { return draw_error(0, "could not build the environment maps") }
-        DrawResult { ok: true, error: "", frames: 0 }
-    }
-}
+// The live renderer behind a handle, or null for one that has expired.
+unsafe fn renderer(window: Window) -> ptr { active(ref_at(registry_address()), window) }
 
-// Attach the loader to a freshly allocated renderer. Kept separate so the
-// allocation can be passed as a &mut through ref_at at the call site.
 unsafe fn bootstrap(r: &mut state.Renderer, loader: ptr) -> bool {
     r.loader = loader
     api.load(&mut r.api, loader)
 }
 
-unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32) -> OpenResult {
+unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32) -> Result<Window, string> {
     if width < 1 || width > 8192 || height < 1 || height > 8192 {
-        return open_error("window dimensions must be between 1 and 8192")
+        return .Err("window dimensions must be between 1 and 8192")
     }
-    if registry.active != ptr(0) { return open_error("a Storm window is already open") }
+    if registry.active != ptr(0) { return .Err("a Storm window is already open") }
     address := allocate(1, size_of(state.Renderer) + 8192)
-    if address == ptr(0) { return open_error("could not allocate Vulkan state") }
+    if address == ptr(0) { return .Err("could not allocate Vulkan state") }
     loader := dl.open(cstr("libvulkan.so.1"), 2)
     if loader == ptr(0) {
         release(address)
-        return open_error("Vulkan loader is unavailable")
+        return .Err("Vulkan loader is unavailable")
     }
     if !bootstrap(ref_at(address), loader) {
         _ := dl.close(loader)
         release(address)
-        return open_error("Vulkan loader is missing required entry points")
+        return .Err("Vulkan loader is missing required entry points")
     }
     if !initialize(ref_at(address), title, width, height) {
         failure := stage_name(ref_at(address))
         device.destroy(ref_at(address))
         _ := dl.close(loader)
         release(address)
-        return open_error("Vulkan initialization failed at " + failure)
+        return .Err("Vulkan initialization failed at " + failure)
     }
     registry.generation = registry.generation + 1
     registry.active = address
-    OpenResult { ok: true, window: Window { id: registry.generation }, error: "" }
+    .Ok(Window { id: registry.generation })
 }
 
-pub fn open(title: string, width: i32, height: i32) -> OpenResult {
+pub fn open(title: string, width: i32, height: i32) -> Result<Window, string> {
     unsafe { open_renderer(ref_at(registry_address()), title, width, height) }
 }
 
@@ -178,43 +137,10 @@ unsafe fn name(r: &state.Renderer) -> string {
     }
 }
 
-pub fn device_name(window: Window) -> string {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return "" }
-        return name(ref_at(address))
-    }
-}
-
-// Print each submission step to stdout. Useful when a frame hangs.
-// Ask for one offscreen frame; the pixels stay readable until save_capture.
-pub fn capture_next(window: Window) -> bool {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return false }
-        capture_next_at(ref_at(address))
-    }
-}
-
 unsafe fn capture_next_at(r: &mut state.Renderer) -> bool {
     if !headless.setup(&mut r) { return false }
     r.captureOn = 1
     true
-}
-
-pub fn save_capture(window: Window, path: string) -> bool {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return false }
-        headless.save(ref_at(address), path)
-    }
-}
-
-pub fn set_trace(window: Window, enabled: bool) {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address != ptr(0) { set_trace_at(ref_at(address), enabled) }
-    }
 }
 
 unsafe fn set_trace_at(r: &mut state.Renderer, enabled: bool) {
@@ -225,84 +151,23 @@ fn trace_step(r: &state.Renderer, message: string) {
     if r.trace != 0 { print("storm/vk: " + message) }
 }
 
-unsafe fn next_frame(r: &mut state.Renderer) -> Frame {
+unsafe fn next_frame(r: &mut state.Renderer) -> gfx.Frame {
     sdl.poll(&mut r.window)
-    Frame {
+    gfx.Frame {
         closed: r.window.closed != 0,
         width: r.window.width,
         height: r.window.height,
         scale: 1.0,
-        time: f64(millis()) / 1000.0,
-        pointer_x: f64(r.window.x),
-        pointer_y: f64(r.window.y),
-        pointer_down: r.window.down != 0,
-        key: r.window.key,
+        time: f64(sys.now_ms()) / 1000.0,
         resized: r.window.resized != 0,
+        input: sdl.input(&r.window),
     }
 }
 
-pub fn poll(window: Window) -> Frame {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) {
-            return Frame {
-                closed: true, width: 0, height: 0, scale: 0.0, time: 0.0,
-                pointer_x: 0.0, pointer_y: 0.0, pointer_down: false, key: -1, resized: false
-            }
-        }
-        return next_frame(ref_at(address))
-    }
+// An expired handle describes a closed window with no input.
+fn closed_frame() -> gfx.Frame {
+    gfx.Frame { closed: true, width: 0, height: 0, scale: 1.0, time: 0.0, resized: false, input: gfx.Input::empty() }
 }
-
-pub fn key_down(window: Window, scancode: i32) -> bool {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return false }
-        return key_down_at(ref_at(address), scancode)
-    }
-}
-
-pub fn key_pressed(window: Window, scancode: i32) -> bool {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return false }
-        return key_pressed_at(ref_at(address), scancode)
-    }
-}
-
-pub fn mouse(window: Window) -> MouseState {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) {
-            return MouseState { x: 0, y: 0, dx: 0, dy: 0, buttons: 0, pressed: 0, scroll: 0.0 }
-        }
-        return mouse_at(ref_at(address))
-    }
-}
-
-fn key_down_at(r: &state.Renderer, scancode: i32) -> bool {
-    if scancode < 0 || scancode >= 512 { return false }
-    r.window.keys[scancode] != 0
-}
-
-fn key_pressed_at(r: &state.Renderer, scancode: i32) -> bool {
-    if scancode < 0 || scancode >= 512 { return false }
-    r.window.pressed[scancode] != 0
-}
-
-fn mouse_at(r: &state.Renderer) -> MouseState {
-    MouseState {
-        x: r.window.x,
-        y: r.window.y,
-        dx: r.window.mouse_dx,
-        dy: r.window.mouse_dy,
-        buttons: r.window.buttons,
-        pressed: r.window.buttons_pressed,
-        scroll: r.window.wheel,
-    }
-}
-
-// ---- Frame recording ----
 
 fn stage_name(r: &state.Renderer) -> string {
     stage := r.stage
@@ -334,29 +199,31 @@ fn draw_error(frames: i64, move message: string) -> DrawResult {
 }
 
 unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
-    if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed", width: 0, height: 0 } }
-    if r.recording != 0 { return BeginResult { ok: false, error: "a frame is already being recorded", width: 0, height: 0 } }
+    if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed" } }
+    if r.recording != 0 { return BeginResult { ok: false, error: "a frame is already being recorded" } }
     slot := r.current
     trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
     waited := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
-    if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed", width: 0, height: 0 } }
+    if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed" } }
     mut image_index: u32 = 0
     acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
         r.image_available[slot], ptr(0), addr(&mut image_index))
     if enums.is_out_of_date(acquired) {
-        if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated (" + enums.result_name(r.lastResult) + ")", width: 0, height: 0 } }
-        return BeginResult { ok: false, error: "swapchain recreated; retry the frame", width: 0, height: 0 }
+        if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated (" + enums.result_name(r.lastResult) + ")" } }
+        return BeginResult { ok: false, error: "swapchain recreated; retry the frame" }
     }
-    if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")", width: 0, height: 0 } }
+    if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
     trace_step(&r, "acquired image " + i32(image_index).str())
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
     _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
+    // Per-frame cursors: every stream is appended anew, by the frame itself.
     r.vertexCursor = 0
+    r.uiCursor = 0
     mut begin: vk.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
-        return BeginResult { ok: false, error: "beginning the command buffer failed", width: 0, height: 0 }
+        return BeginResult { ok: false, error: "beginning the command buffer failed" }
     }
     mut clear_color: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
     mut pass: vk.RenderPassBeginInfo = zeroed()
@@ -380,18 +247,18 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     r.pendingClear = clears
     r.pendingPass.pClearValues = addr(&mut r.pendingClear[0])
     r.recording = 1
-    BeginResult { ok: true, error: "", width: i32(r.width), height: i32(r.height) }
+    BeginResult { ok: true, error: "" }
 }
 
 // Open the main render pass. Called after prepare_frame and after the optional
 // shadow pass has been recorded into the same command buffer.
 unsafe fn open_main_pass(r: &mut state.Renderer) -> BeginResult {
-    if r.recording == 0 { return BeginResult { ok: false, error: "no frame in flight", width: 0, height: 0 } }
+    if r.recording == 0 { return BeginResult { ok: false, error: "no frame in flight" } }
     pass := r.pendingPass.clone()
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
     r.api.CmdBindDescriptorSets(r.commands[r.current], 0, r.pipelineLayout, 0, 1, addr(&r.shadowSet), 0, ptr(0))
     trace_step(&r, "render pass begun")
-    BeginResult { ok: true, error: "", width: i32(r.width), height: i32(r.height) }
+    BeginResult { ok: true, error: "" }
 }
 
 unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
@@ -411,7 +278,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 }
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky, blended: bool) -> DrawResult {
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, blended: bool) -> DrawResult {
     if r.recording == 0 { return draw_error(r.frameIndex, "mesh drawn outside begin/end") }
     if vertices.len % 6 != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz] triples") }
     for i in 0..vertices.len {
@@ -538,147 +405,177 @@ unsafe fn recreate(r: &mut state.Renderer) -> bool {
     pipeline.setup_frames_only(&mut r)
 }
 
-pub fn begin(window: Window) -> BeginResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return BeginResult { ok: false, error: "invalid or expired window handle", width: 0, height: 0 } }
-        return begin_frame(ref_at(address))
-    }
+// ---- the contract: every promise in gfx.Backend, kept with Vulkan ----
+
+fn begun(move result: BeginResult) -> Result<(), string> {
+    if result.ok { return .Ok }
+    .Err(result.error)
 }
 
-pub fn sky(window: Window, inv_view_proj: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        return sky_pass(ref_at(address), &inv_view_proj, &sun, &zenith, &horizon)
-    }
+fn drawn(move result: DrawResult) -> Result<(), string> {
+    if result.ok { return .Ok }
+    .Err(result.error)
 }
 
-pub fn mesh(window: Window, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        return mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, false)
-    }
-}
-
-// Open the main render pass. Call after begin() and after any shadow pass.
-pub fn begin_pass(window: Window) -> BeginResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return BeginResult { ok: false, error: "invalid or expired window handle", width: 0, height: 0 } }
-        return open_main_pass(ref_at(address))
-    }
-}
-
-// --- shadow pass (recorded before the main pass, same command buffer) ---
-
-pub fn shadow_begin(window: Window, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        _ := shadow.set_light(ref_at(address), &light_vp, &light_dir_c)
-        if !shadow.begin(ref_at(address), &light_vp, &light_dir_c) {
-            return draw_error(0, "shadow pass could not start")
+impl gfx.Backend for Window {
+    fn poll(&mut self) -> gfx.Frame {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return closed_frame() }
+            return next_frame(ref_at(address))
         }
-        DrawResult { ok: true, error: "", frames: 0 }
     }
-}
 
-pub fn shadow_mesh(window: Window, vertices: &[]f32, model: &[f32; 16]) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        if !shadow.mesh(ref_at(address), &vertices, &model) {
-            return draw_error(0, "shadow mesh rejected")
+    fn device_name(&self) -> string {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return "" }
+            return name(ref_at(address))
         }
-        DrawResult { ok: true, error: "", frames: 0 }
     }
-}
 
-pub fn shadow_end(window: Window) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        _ := shadow.end(ref_at(address))
-        DrawResult { ok: true, error: "", frames: 0 }
+    fn set_trace(&mut self, enabled: bool) {
+        unsafe {
+            address := renderer(self.clone())
+            if address != ptr(0) { set_trace_at(ref_at(address), enabled) }
+        }
     }
-}
 
-// Same geometry path with alpha blending, for the transparent pass.
-pub fn mesh_blended(window: Window, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        return mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, true)
+    fn capture_next(&mut self) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !capture_next_at(ref_at(address)) { return .Err("could not set up the capture target") }
+            .Ok
+        }
     }
-}
 
-// Paint the cinematic overlay over the finished scene.
-pub fn overlay(window: Window, time: f32, amount: f32) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        if !post.draw(ref_at(address), time, amount) { return draw_error(0, "overlay draw failed") }
-        DrawResult { ok: true, error: "", frames: 0 }
+    fn save_capture(&mut self, path: string) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !headless.save(ref_at(address), path) { return .Err("could not write the capture") }
+            .Ok
+        }
     }
-}
 
-// Draw UI quads in screen pixels. Rectangles set uv.x to -1.
-pub fn ui_draw(window: Window, vertices: []f32, screen: [f32; 2]) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        if !ui.draw(ref_at(address), vertices, screen) { return draw_error(0, "UI draw failed") }
-        DrawResult { ok: true, error: "", frames: 0 }
+    fn build_environment(&mut self, sky: &gfx.Sky) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !ibl.setup(ref_at(address), &sky.sun, &sky.zenith, &sky.horizon) {
+                return .Err("could not build the environment maps")
+            }
+            .Ok
+        }
     }
-}
 
-// Reset the UI vertex cursor; called once per frame before building quads.
-pub fn ui_reset(window: Window) {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return }
-        ui.reset(ref_at(address))
+    fn begin(&mut self) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            return begun(begin_frame(ref_at(address)))
+        }
     }
-}
 
-// Upload the packed glyph coverage atlas.
-pub fn ui_atlas(window: Window, pixels: []u8, width: i32, height: i32) -> bool {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return false }
-        return ui.upload_atlas(ref_at(address), pixels, width, height)
+    // The sun's shadow map, in its own render pass, before begin_pass.
+    fn shadow_begin(&mut self, sky: &gfx.Sky) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !shadow.begin(ref_at(address), &sky.light_vp, &sky.light_dir_c) {
+                return .Err("shadow pass could not start")
+            }
+            .Ok
+        }
     }
-}
 
-pub fn end(window: Window) -> DrawResult {
-    unsafe {
-        address := active(ref_at(registry_address()), window)
-        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
-        return end_frame(ref_at(address))
+    fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !shadow.mesh(ref_at(address), &vertices, &model) { return .Err("shadow mesh rejected") }
+            .Ok
+        }
     }
-}
 
-// Lighting parameters shared by the sky pass and the mesh pass. Keeping one
-// struct means the dome you see and the light the surfaces receive cannot drift
-// apart.
-pub struct Sky {
-    sun: [f32; 4], // xyz towards the sun, w = intensity
-    sun_color: [f32; 4],
-    zenith: [f32; 4],
-    horizon: [f32; 4],
-    light_vp: [f32; 16], // sun view-projection for the shadow lookup
-    light_dir_c: [f32; 4], // xyz towards the sun, w = dot(light_origin, dir)
-}
+    fn shadow_end(&mut self) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !shadow.end(ref_at(address)) { return .Err("shadow pass is not open") }
+            .Ok
+        }
+    }
 
-pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon: [f32; 4],
-    light_vp: [f32; 16], light_dir_c: [f32; 4]) -> Sky {
-    Sky {
-        sun: sun.clone(), sun_color: sun_color.clone(), zenith: zenith.clone(), horizon: horizon.clone(),
-        light_vp: light_vp.clone(), light_dir_c: light_dir_c.clone()
+    // Open the main render pass. Call after begin() and after any shadow pass.
+    fn begin_pass(&mut self) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            return begun(open_main_pass(ref_at(address)))
+        }
+    }
+
+    fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            return drawn(sky_pass(ref_at(address), &inv_view_projection, &sun, &zenith, &horizon))
+        }
+    }
+
+    fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, surface: gfx.Surface) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, surface == gfx.Surface.Blended))
+        }
+    }
+
+    // Paint the cinematic overlay over the finished scene.
+    fn overlay(&mut self, time: f32, amount: f32) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !post.draw(ref_at(address), time, amount) { return .Err("overlay draw failed") }
+            .Ok
+        }
+    }
+
+    // Upload the packed glyph coverage atlas.
+    fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !ui.upload_atlas(ref_at(address), pixels, width, height) { return .Err("atlas upload failed") }
+            .Ok
+        }
+    }
+
+    // Draw UI quads in points. Rectangles set uv.x to -1.
+    fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            if !ui.draw(ref_at(address), vertices, screen) { return .Err("UI draw failed") }
+            .Ok
+        }
+    }
+
+    fn end(&mut self) -> Result<i64, string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            finished := end_frame(ref_at(address))
+            if finished.ok { return .Ok(finished.frames) }
+            .Err(finished.error)
+        }
+    }
+
+    fn close(move self) {
+        unsafe { close_window(ref_at(registry_address()), self) }
     }
 }
 
@@ -703,56 +600,4 @@ unsafe fn close_window(registry: &mut Registry, window: Window) {
         if loader != ptr(0) { _ := dl.close(loader) }
         release(address)
     }
-}
-
-pub fn close(window: Window) {
-    unsafe { close_window(ref_at(registry_address()), window) }
-}
-
-// ---- Geometry helpers: interleaved [x, y, z, nx, ny, nz] ----
-
-pub fn vertex(vertices: &mut []f32, x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32) {
-    vertices.push(x)
-    vertices.push(y)
-    vertices.push(z)
-    vertices.push(nx)
-    vertices.push(ny)
-    vertices.push(nz)
-}
-
-pub fn triangle(vertices: &mut []f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32,
-    cx: f32, cy: f32, cz: f32, nx: f32, ny: f32, nz: f32) {
-    vertex(&mut vertices, ax, ay, az, nx, ny, nz)
-    vertex(&mut vertices, bx, by, bz, nx, ny, nz)
-    vertex(&mut vertices, cx, cy, cz, nx, ny, nz)
-}
-
-// Axis-aligned box centred at the origin. 36 vertices, flat normals per face.
-pub fn cube(vertices: &mut []f32, half: f32) {
-    // +Z
-    triangle(&mut vertices, -half, -half, half, half, -half, half, half, half, half, 0.0, 0.0, 1.0)
-    triangle(&mut vertices, -half, -half, half, half, half, half, -half, half, half, 0.0, 0.0, 1.0)
-    // -Z
-    triangle(&mut vertices, half, -half, -half, -half, -half, -half, -half, half, -half, 0.0, 0.0, -1.0)
-    triangle(&mut vertices, half, -half, -half, -half, half, -half, half, half, -half, 0.0, 0.0, -1.0)
-    // -X
-    triangle(&mut vertices, -half, -half, -half, -half, -half, half, -half, half, half, -1.0, 0.0, 0.0)
-    triangle(&mut vertices, -half, -half, -half, -half, half, half, -half, half, -half, -1.0, 0.0, 0.0)
-    // +X
-    triangle(&mut vertices, half, -half, half, half, -half, -half, half, half, -half, 1.0, 0.0, 0.0)
-    triangle(&mut vertices, half, -half, half, half, half, -half, half, half, half, 1.0, 0.0, 0.0)
-    // +Y
-    triangle(&mut vertices, -half, half, half, half, half, half, half, half, -half, 0.0, 1.0, 0.0)
-    triangle(&mut vertices, -half, half, half, half, half, -half, -half, half, -half, 0.0, 1.0, 0.0)
-    // -Y
-    triangle(&mut vertices, -half, -half, -half, half, -half, -half, half, -half, half, 0.0, -1.0, 0.0)
-    triangle(&mut vertices, -half, -half, -half, half, -half, half, -half, -half, half, 0.0, -1.0, 0.0)
-}
-
-// Ground plane in XZ at y = 0, normal +Y.
-pub fn plane(vertices: &mut []f32, extent: f32) {
-    // Wound so the upward face survives back-face culling under the mesh
-    // pipeline's clockwise front face.
-    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, extent, extent, 0.0, -extent, 0.0, 1.0, 0.0)
-    triangle(&mut vertices, -extent, 0.0, -extent, -extent, 0.0, extent, extent, 0.0, extent, 0.0, 1.0, 0.0)
 }

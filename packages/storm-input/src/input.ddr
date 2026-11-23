@@ -1,39 +1,15 @@
-// Storm input: SDL scancodes, key state and a small camera controller.
+// Storm input: a camera controller on the engine's input.
 //
-// The platform layer (storm-vulkan) reports raw state per poll; this module
-// turns it into engine concepts: held/pressed keys by name, mouse deltas and a
-// fly-style camera. It imports vulkan only for the Window handle type and the
-// state queries, never for rendering.
+// A backend reports each frame's input as a gfx.Input (gfx.Key, the pointer);
+// this module turns it into engine concepts: a fly-style camera. It imports
+// no backend, so everything here is testable without a window.
+
 import core
+import gfx
 import std.math as _
-import vulkan
 
-// SDL scancodes for the keys the engine binds. Values are SDL_Scancode.
-pub const KEY_A: i32 = 4
-pub const KEY_D: i32 = 7
-pub const KEY_E: i32 = 8
-pub const KEY_Q: i32 = 20
-pub const KEY_S: i32 = 22
-pub const KEY_W: i32 = 26
-pub const KEY_C: i32 = 6
-pub const KEY_T: i32 = 23
-pub const KEY_R: i32 = 21
-pub const KEY_F: i32 = 9
-pub const KEY_G: i32 = 10
-pub const KEY_ESCAPE: i32 = 41
-pub const KEY_SPACE: i32 = 44
-pub const KEY_LEFT_SHIFT: i32 = 225
-pub const KEY_LEFT_CTRL: i32 = 224
-pub const KEY_LEFT: i32 = 80
-pub const KEY_RIGHT: i32 = 79
-pub const KEY_UP: i32 = 82
-pub const KEY_DOWN: i32 = 81
-
-pub const MOUSE_LEFT: u32 = 1
-pub const MOUSE_RIGHT: u32 = 2
-pub const MOUSE_MIDDLE: u32 = 4
-
-// A camera controlled with WASD + QE, arrow keys and mouse look.
+// A fly-style camera: WASD to move, Space/Ctrl to rise and sink, Shift to
+// double the speed, and the mouse to look when the caller allows it.
 pub struct Camera {
     position: core.Vec3,
     // Yaw around +Y, pitch around the camera's right axis. Radians.
@@ -84,12 +60,11 @@ impl Camera {
         core.multiply(self.projection(aspect), self.view())
     }
 
-    // Apply one frame of input. `dt` is seconds, mouse deltas are pixels.
-    pub fn update(&mut self, window: vulkan.Window, dt: f32, allow_mouse: bool) {
-        m := vulkan.mouse(window)
+    // Apply one frame of input. `dt` is seconds, mouse deltas are points.
+    pub fn update(&mut self, input: &gfx.Input, dt: f32, allow_mouse: bool) {
         if allow_mouse {
-            self.yaw = self.yaw + f32(m.dx) * self.sensitivity
-            self.pitch = self.pitch - f32(m.dy) * self.sensitivity
+            self.yaw = self.yaw + input.mouse.dx * self.sensitivity
+            self.pitch = self.pitch - input.mouse.dy * self.sensitivity
         }
         // Clamp pitch just short of straight up/down to keep the basis stable.
         limit: f32 = 1.5533
@@ -98,15 +73,15 @@ impl Camera {
 
         mut move_x: f32 = 0.0
         mut move_z: f32 = 0.0
-        if vulkan.key_down(window, KEY_W) { move_z = move_z + 1.0 }
-        if vulkan.key_down(window, KEY_S) { move_z = move_z - 1.0 }
-        if vulkan.key_down(window, KEY_D) { move_x = move_x + 1.0 }
-        if vulkan.key_down(window, KEY_A) { move_x = move_x - 1.0 }
+        if input.down(gfx.Key.W) { move_z = move_z + 1.0 }
+        if input.down(gfx.Key.S) { move_z = move_z - 1.0 }
+        if input.down(gfx.Key.D) { move_x = move_x + 1.0 }
+        if input.down(gfx.Key.A) { move_x = move_x - 1.0 }
         mut lift: f32 = 0.0
-        if vulkan.key_down(window, KEY_SPACE) { lift = lift + 1.0 }
-        if vulkan.key_down(window, KEY_LEFT_CTRL) { lift = lift - 1.0 }
+        if input.down(gfx.Key.Space) { lift = lift + 1.0 }
+        if input.down(gfx.Key.Ctrl) { lift = lift - 1.0 }
         mut speed := self.move_speed
-        if vulkan.key_down(window, KEY_LEFT_SHIFT) { speed = speed * 2.0 }
+        if input.down(gfx.Key.Shift) { speed = speed * 2.0 }
 
         step := speed * dt
         f := self.forward()

@@ -5,4 +5,4 @@ test_root = "tests/suite.ddr"
 
 [dependencies]
 core = { path = "../storm-core" }
-vulkan = { path = "../storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
+gfx = { path = "../storm-gfx" }

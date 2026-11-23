@@ -1,5 +1,6 @@
-import ..src.input as input
 import core
+import gfx
+import ..src.input as input
 
 @test fn forward_is_a_unit_vector_along_negative_z_at_rest() {
     camera := input.Camera::new(core.vec3(0.0, 0.0, 5.0))
@@ -53,4 +54,45 @@ import core
                                     out[2] / out[3] - camera.position.z))
     f := camera.forward()
     assert(core.dot(dir, f) > 0.99)
+}
+
+// The camera is driven by an Input value, so it can be exercised without a
+// window: forward is W, the mouse turns only when allowed to, and pitch is
+// clamped so the basis never degenerates.
+@test fn camera_walks_forward_on_w_and_strafes_on_d() {
+    mut camera := input.Camera::new(core.vec3(0.0, 2.0, 9.5))
+    camera.yaw = 0.0
+    mut keys := gfx.Input::empty()
+    keys.held = u32(1).shl(i32(gfx.Key.W))
+    for _ in 0..60 { camera.update(&keys, 1.0 / 60.0, false) }
+    // One second at the default speed of 4, straight ahead (towards -z).
+    assert((camera.position.z - 5.5).abs() < 0.01 && camera.position.x.abs() < 0.0001 && camera.position.y == 2.0)
+
+    mut strafe := input.Camera::new(core.vec3(0.0, 0.0, 0.0))
+    mut d := gfx.Input::empty()
+    d.held = u32(1).shl(i32(gfx.Key.D)).bit_or(u32(1).shl(i32(gfx.Key.Shift)))
+    for _ in 0..60 { strafe.update(&d, 1.0 / 60.0, false) }
+    // D is to the right of forward (-z), which is +x; shift doubles the speed.
+    assert((strafe.position.x - 8.0).abs() < 0.01 && strafe.position.z.abs() < 0.0001)
+}
+
+@test fn camera_looks_only_when_allowed_and_clamps_pitch() {
+    mut camera := input.Camera::new(core.vec3(0.0, 0.0, 0.0))
+    mut moved := gfx.Input::empty()
+    moved.mouse.dx = 100.0
+    moved.mouse.dy = 40.0
+    camera.update(&moved, 0.016, false)
+    assert(camera.yaw == 0.0 && camera.pitch == 0.0)
+    camera.update(&moved, 0.016, true)
+    assert((camera.yaw - 100.0 * camera.sensitivity).abs() < 0.00001)
+    assert((camera.pitch + 40.0 * camera.sensitivity).abs() < 0.00001)
+    // Dragging down for long stops just short of straight down.
+    for _ in 0..600 { camera.update(&moved, 0.016, true) }
+    assert(camera.pitch == -1.5533)
+    // Opposite keys cancel: the camera stays where it is.
+    mut still := input.Camera::new(core.vec3(1.0, 1.0, 1.0))
+    mut both := gfx.Input::empty()
+    both.held = u32(1).shl(i32(gfx.Key.W)).bit_or(u32(1).shl(i32(gfx.Key.S))).bit_or(u32(1).shl(i32(gfx.Key.Space))).bit_or(u32(1).shl(i32(gfx.Key.Ctrl)))
+    for _ in 0..60 { still.update(&both, 0.5, true) }
+    assert(still.position.x == 1.0 && still.position.y == 1.0 && still.position.z == 1.0)
 }
