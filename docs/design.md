@@ -32,7 +32,8 @@
    `storm-gfx`-gränssnittet, aldrig med en backend. Ett gränssnitt som inte
    går att beskriva utan att nämna Vulkan är fel designat. Mätt 2026-11-23:
    noll `Vk`-typer läcker utanför `storm-vulkan` (bra), men `main.ddr` gör
-   36 anrop direkt mot `vulkan.` och `storm-input` importerar `vulkan` för
+   33 anrop direkt mot `vulkan.` (25 distinkta funktioner) och `storm-input`
+   importerar `vulkan` för
    tangent/mus — det är de två platserna Metal skulle tvinga fram en
    omskrivning av, och där nästa arkitektursteg börjar.
 
@@ -62,7 +63,10 @@
 - Beroenden: `storm-input -> storm-vulkan` (för `Window` och
   tangent/mus-råläge), `storm-text -> dunder-skrift` via `../../../dunder-skrift`
   (syskonkatalog utan versionslås).
-- `main.ddr` gör 36 anrop direkt mot `vulkan.` (26 distinkta funktioner).
+- `main.ddr` gör 33 anrop direkt mot `vulkan.` (25 distinkta funktioner).
+  Appens egen logik ligger utanför det: `src/args.ddr` (argumenttolkning över
+  en `[]string`) och `src/game.ddr` (orberna, sorteringen, draw-klassificeringen)
+  är rena funktioner över `storm-scene`, testade i rot-sviten utan fönster.
 
 Lagren i storm-vulkan (5 075 rader exkl. genererad SPIR-V):
 
@@ -215,7 +219,8 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 Scenen bor i ECS:et (`storm-scene`: `LocalTransform` med olikformig skala,
 `Name`, `Mesh { shape, vertices }`, `Material`); `drawables()` är det enda
 renderaren konsumerar. Render-grafen (`storm-render`) äger passordningen och
--existensen; `main.ddr` är exekutorn som mappar `PassKind` → Vulkan-anrop och
+-existensen; `main.ddr` är exekutorn som mappar `PassKind` → Vulkan-anrop
+(gränssnittet mot app-logiken är `game.casts_shadow`/`is_transparent`/`geometry_of`) och
 öppnar huvudpasset lat. Editorn är immediate-mode ovanpå `storm-ui`-widgets
 (`Pointer`, hot/active-id), skriver i ECS via fält-id:n (`MaterialField`,
 `TransformField`) eftersom en `Option` inte kan bära `&mut` (E3099). En

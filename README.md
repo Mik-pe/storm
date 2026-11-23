@@ -109,6 +109,10 @@ dubblerad pass) och returnerar `Compiled.steps` i den ordning frame-loopen
 exekverar. Grafen äger ordning och existens; den vet inte vad Vulkan är. Det är
 `main.ddr` som mappar varje `PassKind` till GPU-arbete och öppnar huvudpasset
 lat vid första passet som inte har ett eget (skuggpasset har sitt eget).
+Appens egen logik ligger bredvid, utan Vulkan: `src/args.ddr` tolkar
+argumenten ur en `[]string` och `src/game.ddr` äger orberna, sorteringen och
+vilka drawables som är transparenta eller kastar skugga — båda testade i
+rotpaketets svit utan fönster.
 
 Huvudpasset har en djupbilaga (`D32_SFLOAT`), så opaque geometri behöver ingen
 sortering: mesh-pipelinen testar och skriver djup, glaspipelinen testar men

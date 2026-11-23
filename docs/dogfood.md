@@ -559,8 +559,8 @@ objects 13) utan tangentbord.
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 77 tester passerade (mätning
-2026-11-23 efter 3a: 4 rot + 73 paket, 6 772 ms byggtid): de 60 som
+underpaketen kördes var för sig och alla 80 tester passerade (mätning
+2026-11-24: 7 rot + 73 paket, 6 743 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
@@ -626,6 +626,8 @@ underkant, alltså textåtergivningen som inte ingick i IBL:s bas.
 7 passed fast paketets `tests/suite.ddr` har 5 `@test`, och `storm-ui` 9 fast
 den har 7: de två extra är samma två `@test fn` i Skrifts egen källmodul
 (`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
-`path`-beroendet. Storms egna är därför **77** = 4 rot + 73 paket. En mätning
+`path`-beroendet. Storms egna är därför **80** = 7 rot + 73 paket (tre till i roten
+2026-11-24: argumenttolkningen och orbspelet flyttades ur `main.ddr` till
+`src/args.ddr`/`src/game.ddr` just för att kunna testas utan fönster). En mätning
 som summerar `passed`-raden över paketen får 81 och räknar Skrifts tester som
 Storms; räkna `@test` i `tests/suite.ddr` i stället.

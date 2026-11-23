@@ -12,7 +12,7 @@ och räv renderas fortfarande vitgrå, men deras UV:er ligger nu i strömmen
 (`interleave` läser `TEXCOORD_0`, `(0,0)` när den saknas) och väntar på en
 sampler. Därefter **4** (glTF-noder, så scengrafen byggs från filen), och sedan
 **storm-gfx-gränssnittet** (design.md §2, princip 7): multiplatform är
-planerat (Metal på macOS), så nästa arkitektursteg är att `main.ddr`:s 36
+planerat (Metal på macOS), så nästa arkitektursteg är att `main.ddr`:s 33
 direkta `vulkan.`-anrop och `storm-input`:s beroende av backenden flyttas
 upp till ett gränssnitt som inte nämner Vulkan — storm-vulkan blir dess
 första implementation, Metal den andra. Först därefter storm-vk (genererade
