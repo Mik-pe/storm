@@ -12,7 +12,7 @@ layout(location = 1) out vec4 v_color;
 
 void main() {
     vec2 ndc = vec2(pack0.x / push.screen.x * 2.0 - 1.0,
-                    1.0 - pack0.y / push.screen.y * 2.0);
+                    pack0.y / push.screen.y * 2.0 - 1.0);
     gl_Position = vec4(ndc, 0.0, 1.0);
     v_uv = pack0.zw;
     v_color = tint;

@@ -96,13 +96,32 @@ UI-pipen men en nästan additiv blandning i overlay-pipen: en quad med
 Skillnaden mellan pipelinerna är bara shader och push-konstanter. Tills orsaken
 är hittad är effekterna opt-in (`--effects`) och avstängda som standard.
 
-**Öppen fråga: textatlasen.** Glyfatlasen packas korrekt på CPU (95 glyfer,
-14 121 täckta pixlar), staging-bufferten innehåller rätt värden och uppladdningen
-rapporterar framgång, men en quad som samplar hela atlasen blir helt svart. Kvar
-att utreda: om `vkCmdCopyBufferToImage` faktiskt når bilden, eller om
-R32_SFLOAT-vyn behöver `VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT` verifieras per
-format. Nästa steg är att läsa tillbaka bilden med `vkCmdCopyImageToBuffer` till
-en staging-buffer och jämföra med CPU-atlasen.
+**34. En descriptor-layout som packas för hand måste matcha skrivningen.**
+UI-seten deklarerade `binding[0] = u64(1).shl(32)`, vilket är binding 1 av typen
+`SAMPLER`, medan `vkUpdateDescriptorSets` skrev binding 0 som
+`COMBINED_IMAGE_SAMPLER`. `vkCreateDescriptorSetLayout` och
+`vkUpdateDescriptorSets` rapporterade inga fel; setet hade bara ingen bindning 0,
+så `texture(atlas, uv)` returnerade noll för varje fragment. Rätt packning är
+`u64(binding) + (u64(typ).shl(32))`, samma mönster som skuggpasset använder.
+Slutsats: packa aldrig två fält i en `u64` utan att skriva båda termerna.
+
+**35. Två vertexattribut på samma location.** UI-pipen deklarerade både
+`position` och `uv` på `location = 0` och satte
+`vertexAttributeDescriptionCount = 2`. Attributet på `location = 1` (tint)
+skickades därför aldrig in, och `v_color` blev odefinierad. Vertexen är åtta
+floats: `location 0 = vec4(x, y, u, v)` på offset 0 och
+`location 1 = vec4(r, g, b, a)` på offset 16. Drivrutinen accepterade den
+dubbla locationen utan ett ord.
+
+**36. UI-shaderns Y-axel använde OpenGL-konventionen.** `1.0 - y/h*2` ger NDC-y
+uppåt; Vulkan har y nedåt, så hela editor-UI:t ritades upp och ner – kontrollraden
+hamnade högst upp och glyferna stod på huvudet. Mesh-shadern hade rätt konvention
+via sin projektion, men UI-shadern behövde `y/h*2 - 1`. Testa alltid en overlay
+mot en känd kant innan slutsatser dras om textur eller blending.
+
+**Textatlasen samplar nu.** De tre felen ovan var hela kedjan: glyferna packades
+och laddades upp korrekt hela tiden. Editor-UI:t visar läsbar text i
+`--capture`-bilden, och kontrollraden ligger längst ner där den ska.
 
 ## Verifiering
 

@@ -8,14 +8,13 @@ interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Det här är nästa ordn
 Skuggpass med MAX-blending i en R32-bild, transparent pass med egen blend-pipeline
 och en rendergraph som byggs om varje frame utifrån scenens innehåll. Kvar nedan.
 
-## 0b. Textrenderingen
+## 0b. Klart: textrenderingen
 
-Atlasen packas på CPU och laddas upp via staging-buffer till en OPTIMAL-tilad
-R32_SFLOAT-bild, men samplingen ger noll. Läs tillbaka bilden med
-`vkCmdCopyImageToBuffer` och jämför med CPU-atlasen, och verifiera
-`vkGetPhysicalDeviceFormatProperties` för R32_SFLOAT med SAMPLED + linear
-filtering. Alternativ: rendera atlasen till en bild via ett eget renderpass
-(den vägen är bevisad fungera för skuggkartan).
+Textatlasen samplar: UI-vertexen matar `vec4(x, y, u, v)` på location 0 och
+`vec4(r, g, b, a)` på location 16, descriptor-layouten deklarerar binding 0 som
+`COMBINED_IMAGE_SAMPLER`, och UI-shadern räknar NDC med Vulkans y-ned-konvention.
+Felen och deras orsaker står i [dogfood.md](dogfood.md#uppföljning-editor-ui-overlay-effekter-och-textatlasen)
+(fynd 34–36).
 
 ## 1. Djupbuffert
 

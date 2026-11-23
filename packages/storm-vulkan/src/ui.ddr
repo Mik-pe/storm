@@ -68,7 +68,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
 
     mut binding: [u64; 3] = [0; 3]
-    binding[0] = u64(1).shl(32)                 // binding 0, COMBINED_IMAGE_SAMPLER
+    binding[0] = u64(0) + (u64(1).shl(32))      // binding 0, COMBINED_IMAGE_SAMPLER
     binding[1] = u64(1) + (u64(16).shl(32))     // count 1, stage FRAGMENT
     mut layout_info: vk2.DescriptorSetLayoutCreateInfo = zeroed()
     layout_info.sType = 32
@@ -119,9 +119,9 @@ struct Stages {
 
 @c_layout
 struct Attributes {
-    position: vk2.VertexInputAttributeDescription,
-    uv: vk2.VertexInputAttributeDescription,
-    color: vk2.VertexInputAttributeDescription,
+    // One vertex is 8 floats: xy = position, zw = uv, then rgba.
+    pack0: vk2.VertexInputAttributeDescription,
+    tint: vk2.VertexInputAttributeDescription,
 }
 
 unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
@@ -145,9 +145,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     binding_desc.inputRate = 0
 
     mut attributes := Attributes {
-        position: vk2.VertexInputAttributeDescription { location: 0, binding: 0, format: 109, offset: 0 },
-        uv: vk2.VertexInputAttributeDescription { location: 0, binding: 0, format: 109, offset: 0 },
-        color: vk2.VertexInputAttributeDescription { location: 1, binding: 0, format: 109, offset: 16 },
+        pack0: vk2.VertexInputAttributeDescription { location: 0, binding: 0, format: 109, offset: 0 },
+        tint: vk2.VertexInputAttributeDescription { location: 1, binding: 0, format: 109, offset: 16 },
     }
 
     mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()

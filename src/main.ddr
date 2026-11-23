@@ -207,10 +207,18 @@ fn main() -> i32 {
         return 1
     }
     mut atlas := text.Atlas::new(1024, 1024)
-    packed := atlas.add_text(&face, GLYPHS)
+    if !atlas.add_text(&face, GLYPHS) {
+        _ := sys.eprint("storm: no glyphs packed")
+        vulkan.close(opened.window)
+        return 1
+    }
     pixels := atlas.copy_pixels()
     atlas_size := atlas.size()
-    uploaded := vulkan.ui_atlas(opened.window, pixels, atlas_size, atlas_size)
+    if !vulkan.ui_atlas(opened.window, pixels, atlas_size, atlas_size) {
+        _ := sys.eprint("storm: atlas upload failed")
+        vulkan.close(opened.window)
+        return 1
+    }
     mut canvas := ui.Canvas::new()
     mut fps: f32 = 0.0
 
