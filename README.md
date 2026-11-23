@@ -12,7 +12,7 @@ metallic-roughness-PBR med en riktad sol.
 
 ## Förutsättningar
 
-- `dunder` i `PATH` (0.10.0 eller nyare).
+- `dunder` byggd från [9f9b341](https://github.com/Mik-pe/dunder/commit/9f9b341) eller senare på `main`.
 - `dunder-skrift` som **syskonkatalog**: `~/Work/dunder-skrift`. Samma
   konvention som `dunder-hundmat` använder. `packages/storm-text` har ett
   `path`-beroende till den.
@@ -22,7 +22,7 @@ metallic-roughness-PBR med en riktad sol.
 ```sh
 dunder run                      # Vulkan-fönster med tre roterande kuber
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
-dunder test                     # hela sviten
+dunder test                     # rotpaketets tester
 ```
 
 ## Paket
@@ -47,22 +47,22 @@ en `[]f32`-vertexström och en `[f32; 16]`-matris. Motorn kopplar ihop dem.
 
 ## Vulkan-fönstret
 
-En frame spelas in i fyra anrop, vilket är vad rendergrafen driver:
+Ett enkelt färgpass kan spelas in så här.
 
 ```dunder
 begun := vulkan.begin(opened.window)
 if begun.ok {
+    _ := vulkan.begin_pass(opened.window)
     _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun, &zenith, &horizon)
-    _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base_color, &params, &camera)
+    _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base_color, &params, &camera, &lighting)
     _ := vulkan.end(opened.window)
 }
 ```
 
-`mesh` tar interleaved `[x, y, z, nx, ny, nz]` (`f32`, 24 byte) och push
-constants `mat4 mvp`, `mat4 model`, `vec4 base_color`, `vec4 params`
-(metallic, roughness, emissive, ledig) samt `vec3 camera`. Det är 176 byte, så
-enheten måste tillåta minst 176 byte push constants (desktop-GPU:er gör det;
-`maxPushConstantsSize` är 128 som garanterat minimum i Vulkan).
+`mesh` tar sex `f32` per vertex för position och normal. Meshpasset använder
+240 byte push constants för två matriser, material, kamera och himmelsljus.
+Ljusmatrisen ligger i en uniform buffer. Storm kontrollerar enhetens
+`maxPushConstantsSize` när den väljer GPU.
 
 `sky` ritar en fullskärmstriangel på långt plan och rekonstruerar en
 världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en
@@ -91,8 +91,8 @@ frame-loopen exekverar.
 - **Höger musknapp + mus** – titta
 - **R** – återställ kameran, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
-- `--capture fil.ppm` – rendera en frame **headless** till en PPM, utan fönster
-  och utan skärm (fungerar över SSH och med låst session)
+- `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
+  Även denna väg öppnar SDL och behöver tillgång till en grafisk session.
 - `--trace` – skriv varje inlämningssteg
 
 ### Fönsterprov och headless-körning
@@ -157,7 +157,7 @@ rita dem — se [docs/next-steps.md](docs/next-steps.md).
 ```sh
 dunder build                    # bygger src/main.ddr
 dunder run --example scene      # ECS/glTF/text utan fönster
-dunder test                     # hela sviten
+dunder test                     # rotpaketets tester
 dunder run tools/shaders.ddr    # kompilerar om shaders till src/shader.ddr
 ```
 

@@ -108,6 +108,9 @@ pub struct ImageViewCreateInfo {
 pub struct ComponentMapping { r: u32, g: u32, b: u32, a: u32 }
 
 @c_layout
+pub struct SubresourceLayout { offset: u64, size: u64, rowPitch: u64, arrayPitch: u64, depthPitch: u64 }
+
+@c_layout
 pub struct ImageSubresourceRange {
     aspectMask: u32,
     baseMipLevel: u32,
@@ -446,6 +449,9 @@ pub struct SemaphoreCreateInfo { sType: u32, pNext: ptr, flags: u32 }
 
 @c_layout
 pub struct FenceCreateInfo { sType: u32, pNext: ptr, flags: u32 }
+
+pub const IMAGE_TILING_OPTIMAL: u32 = 0
+pub const IMAGE_TILING_LINEAR: u32 = 1
 
 @c_layout
 pub struct ImageCreateInfo {

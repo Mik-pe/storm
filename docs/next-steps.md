@@ -10,11 +10,11 @@ och en rendergraph som byggs om varje frame utifrån scenens innehåll. Kvar ned
 
 ## 1. Djupbuffert
 
-Ett C-prov på samma Intel-GPU skapade både en D16- och en D32-bild.
-Storms tidigare fel vid bildskapandet behöver följas upp i motorns anrop.
+Både C-provet och Storms typade bildbeskrivning skapade D16- och D32-bilder
+på samma Intel-GPU. Skuggbilden använder nu optimal tiling.
 Se [grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy).
 
-När det fungerar: två bilagor i render passet, `VkPipelineDepthStencilStateCreateInfo`
+Nästa motorändring är två bilagor i renderpasset, `VkPipelineDepthStencilStateCreateInfo`
 med `depthTestEnable`/`depthWriteEnable`, djup-clear och en `D32_SFLOAT`-bild
 som återskapas med swapchainen.
 
@@ -70,8 +70,8 @@ ackumulator för fasta fysiksteg (t.ex. 120 Hz) hör till kärnan.
 
 ## Klart: headless capture
 
-`--capture fil.ppm` renderar en frame utan fönster och skriver den till disk.
-Det är så skärmdumpar tas när sessionen är låst eller maskinen körs över SSH.
+`--capture fil.ppm` skriver en bildruta från en mappad Vulkan-bild.
+Över SSH behöver SDL fortfarande tillgång till den grafiska sessionen.
 Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy)
 
 ## Kända begränsningar i dag
@@ -81,7 +81,6 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
 - En swapchain i taget per process (`Registry.active`).
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
 - Vertexbufferten är 4 MiB och mappad permanent; en mesh-ström per draw.
-- Push constants kräver 176 byte (`maxPushConstantsSize`); enheter med 128
-  byte fungerar inte för mesh-pipen.
+- Meshpasset kräver 240 byte push constants. Enhetsvalet kontrollerar `maxPushConstantsSize`.
 - Ingen `vkDestroySurfaceKHR`-anrop: `vkDestroyInstance` städar ytan.
 - Valideringslager aktiveras inte automatiskt.

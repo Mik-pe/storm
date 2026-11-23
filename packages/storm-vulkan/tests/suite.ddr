@@ -1,4 +1,9 @@
+capability unsafe
+
 import ..src.layout as vk
+import ..src.device as device
+import ..src.headless as headless
+import ..src.state as state
 import ..src.vulkan as vulkan
 
 @test fn cube_emits_twelve_triangles_with_face_normals() {
@@ -38,4 +43,29 @@ import ..src.vulkan as vulkan
 
 @test fn barrier_struct_matches_the_c_abi() {
     assert(size_of(vk.ImageMemoryBarrier) == 72)
+}
+
+@test fn image_creation_and_device_limits_match_the_vulkan_abi() {
+    unsafe {
+        mut properties: state.Properties = zeroed()
+        assert(usize(addr(&properties.limits.maxPushConstantsSize)) - usize(addr(&properties)) == 328)
+        assert(size_of(state.Properties) >= 824)
+        image := device.image_2d_info(126, 512, 128, vk.IMAGE_TILING_OPTIMAL, 32)
+        assert(image.sType == 14 && image.imageType == 1 && image.format == 126)
+        assert(image.extent.width == 512 && image.extent.height == 128 && image.extent.depth == 1)
+        assert(image.mipLevels == 1 && image.arrayLayers == 1 && image.samples == 1)
+        assert(image.tiling == 0 && vk.IMAGE_TILING_LINEAR == 1 && image.usage == 32)
+        assert(image.sharingMode == 0 && image.pNext == ptr(0))
+    }
+}
+
+@test fn capture_layout_honors_offset_padding_and_allocation_bounds() {
+    mut layout: vk.SubresourceLayout = unsafe { zeroed() }
+    layout.offset = 16
+    layout.rowPitch = 256
+    assert(headless.capture_layout_fits(4, 2, &layout, 288))
+    assert(!headless.capture_layout_fits(4, 2, &layout, 287))
+    assert(!headless.capture_layout_fits(4, 1, &layout, 15))
+    layout.rowPitch = 15
+    assert(!headless.capture_layout_fits(4, 1, &layout, 288))
 }

@@ -4,8 +4,6 @@ import .layout as vk
 import .shader as shader
 import .state as state
 
-// Render pass with a color attachment and a D32 depth attachment.
-// Passes: sky (no depth write) then opaque PBR meshes (depth test + write).
 
 @c_layout
 struct Dependencies { before: vk.SubpassDependency, after: vk.SubpassDependency }
@@ -109,7 +107,7 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     mut push_range: vk.PushConstantRange = zeroed()
     push_range.stageFlags = 17
     push_range.offset = 0
-    push_range.size = 240
+    push_range.size = state.MESH_PUSH_BYTES
     mut layout: vk.PipelineLayoutCreateInfo = zeroed()
     layout.sType = 30
     layout.pushConstantRangeCount = 1

@@ -6,13 +6,7 @@ import .layout as vk
 import .shader as shader
 import .state as state
 
-// Shadow map without a depth attachment.
-//
-// This driver refuses to create any depth image with optimal tiling
-// (VK_ERROR_OUT_OF_DEVICE_MEMORY) and gives linear depth no features at all, so
-// the shadow target is an R32_SFLOAT colour image instead: the fragment stage
-// writes the distance along the light direction and MIN blending keeps the
-// smallest one per texel, which is a depth map by another name.
+// The shadow pass stores light-space distance in R32_SFLOAT with MAX blending.
 
 // libc memcpy, declared here because each module keeps its own bindings.
 @extern("c", "memcpy")
@@ -31,20 +25,9 @@ struct AttrPair { position: vk.VertexInputAttributeDescription, normal: vk.Verte
 
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // --- image ---
-    mut words: [u32; 22] = [0; 22]
-    words[0] = 14
-    words[5] = 1
-    words[6] = FORMAT_R32_SFLOAT
-    words[7] = SHADOW_SIZE
-    words[8] = SHADOW_SIZE
-    words[9] = 1
-    words[10] = 1
-    words[11] = 1
-    words[12] = 1
-    words[13] = 1          // OPTIMAL: colour formats accept it
-    words[14] = 20         // COLOR_ATTACHMENT | SAMPLED
+    image_create_info := device.image_2d_info(FORMAT_R32_SFLOAT, SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, 20)
     mut image := ptr(0)
-    if r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image)) != 0 {
+    if r.api.CreateImage(r.device, addr(&image_create_info), ptr(0), addr(&mut image)) != 0 {
         _ := sys.eprint("shadow: could not create the shadow map")
         return false
     }

@@ -5,7 +5,7 @@
 // fly-style camera. It imports vulkan only for the Window handle type and the
 // state queries, never for rendering.
 import core
-import std.math as math
+import std.math as _
 import vulkan
 
 // SDL scancodes for the keys the engine binds. Values are SDL_Scancode.
@@ -51,11 +51,11 @@ impl Camera {
     }
 
     pub fn forward(&self) -> core.Vec3 {
-        cp := f32(math.cos(f64(self.pitch)))
+        cp := self.pitch.cos()
         core.normalize(core.vec3(
-            f32(math.sin(f64(self.yaw))) * cp,
-            f32(math.sin(f64(self.pitch))),
-            -f32(math.cos(f64(self.yaw))) * cp))
+            self.yaw.sin() * cp,
+            self.pitch.sin(),
+            -self.yaw.cos() * cp))
     }
 
     pub fn right(&self) -> core.Vec3 {
@@ -130,7 +130,7 @@ pub fn inverse_view_projection(camera: &Camera, aspect: f32) -> core.Mat4 {
                                           u.x, u.y, u.z, 0.0,
                                           -f.x, -f.y, -f.z, 0.0,
                                           0.0, 0.0, 0.0, 1.0] }
-    t := f32(1.0) / f32(math.tan(f64(camera.fov) * 0.5))
+    t := f32(1.0) / (camera.fov * 0.5).tan()
     near: f32 = 0.1
     far: f32 = 500.0
     inv_proj := core.Mat4 { m: [aspect / t, 0.0, 0.0, 0.0,

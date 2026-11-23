@@ -4,8 +4,10 @@
 //   Pool<T>  = dense []T values + dense []Entity owners + sparse index per entity.
 // Systems receive the typed pools they use.
 //
-// Entity = (index: u32, generation: u32). A stale handle never matches a live
+// Entity = (index: i32, generation: i32). A stale handle never matches a live
 // entity; `is_alive` validates both halves.
+
+import std.array as array
 
 pub struct Entity { index: i32, generation: i32 }
 pub struct Slot { entity: Entity, dense: i32 }
@@ -56,16 +58,13 @@ impl Pool<T: Storable> {
     pub fn remove(&mut self, entity: Entity) -> Option<T> {
         if !self.contains(entity) { return .None }
         dense := self.sparse[entity.index].dense
-        last := self.dense.len - 1
-        if dense != last {
-            moved_owner := self.owners[last]
-            self.owners.swap(dense, last)
-            self.dense.swap(dense, last)
+        _ := array.swap_remove(&mut self.owners, dense)
+        if dense < self.owners.len {
+            moved_owner := self.owners[dense]
             self.sparse[moved_owner.index].dense = dense
         }
-        _ := self.owners.pop()
         self.sparse[entity.index].dense = -1
-        .Some(self.dense.pop())
+        .Some(array.swap_remove(&mut self.dense, dense))
     }
 
     pub fn clear(&mut self) {

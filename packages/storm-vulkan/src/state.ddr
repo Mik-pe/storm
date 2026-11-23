@@ -4,8 +4,6 @@ import .api as vk
 import .layout as vkl
 import .sdl as sdl
 
-// Per-frame GPU sync objects. Kept as parallel arrays because a @c_layout struct
-// cannot yet hold a fixed array of another @c_layout struct (ffi.md claims it can).
 @c_layout
 pub struct Buffer {
     handle: ptr,
@@ -14,12 +12,20 @@ pub struct Buffer {
     capacity: u64,
 }
 
-// vkGetPhysicalDeviceProperties2 is not needed; only deviceName is read.
+@c_layout
+pub struct Limits {
+    maxImageDimension1D: u32, maxImageDimension2D: u32, maxImageDimension3D: u32,
+    maxImageDimensionCube: u32, maxImageArrayLayers: u32, maxTexelBufferElements: u32,
+    maxUniformBufferRange: u32, maxStorageBufferRange: u32, maxPushConstantsSize: u32,
+    rest: [u64; 128],
+}
+
 @c_layout
 pub struct Properties {
     apiVersion: u32, driverVersion: u32, vendorID: u32, deviceID: u32, deviceType: u32,
     deviceName: [u8; 256],
-    rest: [u64; 128],
+    pipelineCacheUUID: [u8; 16],
+    limits: Limits,
 }
 
 @c_layout
@@ -33,6 +39,7 @@ pub struct MemoryProperties {
 }
 
 pub const FRAME_COUNT: i32 = 2
+pub const MESH_PUSH_BYTES: u32 = 240
 
 // All mutable renderer state lives behind one heap allocation. Public handles
 // carry only a generation; this struct never escapes the module.

@@ -11,7 +11,7 @@
 //   graph.world(child).m[12]   // 1.0
 import core
 import ecs
-import std.math as math
+import std.math as _
 
 pub struct LocalTransform {
     position: core.Vec3,
@@ -36,8 +36,8 @@ fn local_identity() -> LocalTransform {
 }
 
 fn matrix_for(local: &LocalTransform) -> core.Mat4 {
-    c := f32(math.cos(f64(local.rotation_y)))
-    s := f32(math.sin(f64(local.rotation_y)))
+    c := local.rotation_y.cos()
+    s := local.rotation_y.sin()
     rotation := core.Mat4 { m: [c, 0.0, -s, 0.0,
                                 0.0, 1.0, 0.0, 0.0,
                                 s, 0.0, c, 0.0,

@@ -14,20 +14,9 @@ import .state as state
 struct DependencyPair { before: vk.SubpassDependency, after: vk.SubpassDependency }
 
 unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> bool {
-    mut words: [u32; 22] = [0; 22]
-    words[0] = 14          // VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
-    words[5] = 1           // VK_IMAGE_TYPE_2D
-    words[6] = format
-    words[7] = width
-    words[8] = height
-    words[9] = 1
-    words[10] = 1
-    words[11] = 1
-    words[12] = 1
-    words[13] = tiling
-    words[14] = usage
+    info := device.image_2d_info(format, width, height, tiling, usage)
     mut image := ptr(0)
-    if r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image)) != 0 { return false }
+    if r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image)) != 0 { return false }
     mut req: [u64; 3] = [0; 3]
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
     if req[0] == 0 { return false }
@@ -59,12 +48,21 @@ unsafe fn make_view(r: &state.Renderer, image: ptr, format: u32) -> ptr {
     handle
 }
 
+pub fn capture_layout_fits(width: u32, height: u32, layout: &vk.SubresourceLayout, allocation: u64) -> bool {
+    row := u64(width) * 4
+    if width == 0 || height == 0 || layout.rowPitch < row || layout.offset > allocation { return false }
+    available := allocation - layout.offset
+    if available < row { return false }
+    u64(height - 1) <= (available - row) / layout.rowPitch
+}
+
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     if r.width == 0 || r.height == 0 { return false }
+    if r.format != 37 && r.format != 43 && r.format != 44 && r.format != 50 { return false }
     mut off_image := ptr(0)
     mut off_memory := ptr(0)
     mut off_size: [u64; 1] = [0]
-    if !make_image(&r, r.format, r.width, r.height, 1, 17, 6, addr(&mut off_image), addr(&mut off_memory), addr(&mut off_size[0])) {
+    if !make_image(&r, r.format, r.width, r.height, vk.IMAGE_TILING_LINEAR, 17, 6, addr(&mut off_image), addr(&mut off_memory), addr(&mut off_size[0])) {
         _ := sys.eprint("capture: no offscreen image")
         return false
     }
@@ -129,10 +127,9 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     mut mapped := ptr(0)
     if r.api.MapMemory(r.device, off_memory, 0, off_size[0], 0, addr(&mut mapped)) != 0 { return false }
     mut sub: [u32; 3] = [1, 0, 0]
-    mut layout_words: [u64; 6] = [0; 6]
-    r.api.GetImageSubresourceLayout(r.device, off_image, addr(&mut sub[0]), addr(&mut layout_words[0]))
-    mut pitch: u64 = u64(r.width) * 4
-    if layout_words[2] > pitch && layout_words[2] < u64(r.width) * 8 { pitch = layout_words[2] }
+    mut layout: vk.SubresourceLayout = zeroed()
+    r.api.GetImageSubresourceLayout(r.device, off_image, addr(&mut sub[0]), addr(&mut layout))
+    if !capture_layout_fits(r.width, r.height, &layout, off_size[0]) { return false }
 
     r.offscreenImage = off_image
     r.offscreenView = view
@@ -140,11 +137,11 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     r.offscreenFramebuffer = framebuffer
     r.linearImage = off_image
     r.linearMemory = off_memory
-    r.linearMapped = mapped
+    r.linearMapped = ptr(usize(mapped) + usize(layout.offset))
     r.captureWidth = r.width
     r.captureHeight = r.height
-    r.capturePitch = pitch
-    _ := sys.eprint("capture: ready " + r.width.str() + "x" + r.height.str() + " pitch=" + pitch.str())
+    r.capturePitch = layout.rowPitch
+    _ := sys.eprint("capture: ready " + r.width.str() + "x" + r.height.str() + " pitch=" + layout.rowPitch.str())
     true
 }
 
@@ -153,19 +150,20 @@ pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
     if r.linearMapped == ptr(0) { return false }
     width := i32(r.captureWidth)
     height := i32(r.captureHeight)
-    pitch := i32(r.capturePitch)
+    pitch := usize(r.capturePitch)
+    red := if r.format == 44 || r.format == 50 { usize(2) } else { usize(0) }
+    blue := usize(2) - red
     mut out: []u8 = []
     b.append_utf8(&mut out, "P6\n" + width.str() + " " + height.str() + "\n255\n")
     mut y := 0
     while y < height {
-        row := usize(y) * usize(pitch)
+        row := usize(y) * pitch
         mut x := 0
         while x < width {
             offset := row + usize(x) * 4
-            // Swapchain format is B8G8R8A8_UNORM.
-            out.push(load_u8(ptr(usize(r.linearMapped) + offset + 2)))
+            out.push(load_u8(ptr(usize(r.linearMapped) + offset + red)))
             out.push(load_u8(ptr(usize(r.linearMapped) + offset + 1)))
-            out.push(load_u8(ptr(usize(r.linearMapped) + offset)))
+            out.push(load_u8(ptr(usize(r.linearMapped) + offset + blue)))
             x = x + 1
         }
         y = y + 1

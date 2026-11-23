@@ -6,7 +6,7 @@ import .state as state
 // Vulkan instance with the surface extensions SDL asks for.
 unsafe fn create_instance(r: &mut state.Renderer) -> bool {
     mut app: vk.ApplicationInfo = zeroed()
-    app.sType = 1
+    app.sType = 0
     app.pApplicationName = cstr("storm")
     app.apiVersion = 4194304
     mut info: vk.InstanceCreateInfo = zeroed()
@@ -37,6 +37,7 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> bool {
     for i in 0..i32(count) {
         mut properties: state.Properties = zeroed()
         r.api.GetPhysicalDeviceProperties(devices[i], addr(&mut properties))
+        if properties.limits.maxPushConstantsSize < state.MESH_PUSH_BYTES { continue }
         mut score := 0
         if properties.deviceType == 2 { score = 3 }
         else if properties.deviceType == 1 { score = 2 }
@@ -58,6 +59,20 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> bool {
     for i in 0..64 { r.memoryProperties.types[i] = raw[1 + i] }
     for i in 0..64 { r.memoryProperties.heaps[i] = u64(raw[66 + i]) }
     true
+}
+
+pub unsafe fn image_2d_info(format: u32, width: u32, height: u32, tiling: u32, usage: u32) -> vk.ImageCreateInfo {
+    mut info: vk.ImageCreateInfo = zeroed()
+    info.sType = 14
+    info.imageType = 1
+    info.format = format
+    info.extent = vk.Extent3D { width: width, height: height, depth: 1 }
+    info.mipLevels = 1
+    info.arrayLayers = 1
+    info.samples = 1
+    info.tiling = tiling
+    info.usage = usage
+    info
 }
 
 unsafe fn pick_queue(r: &mut state.Renderer) -> bool {
