@@ -125,9 +125,11 @@ och laddades upp korrekt hela tiden. Editor-UI:t visar läsbar text i
 
 ## Verifiering
 
-På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de åtta underpaketen
-kördes var för sig och alla 43 tester passerade. Scenexemplet verifierade ECS och textlayout. En bildruta
-renderades på Intel Iris Plus via SSH med tillgång till Wayland-sessionen.
+På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
+underpaketen kördes var för sig och alla 48 tester passerade. Scenexemplet
+verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
+SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
+står rättvänt i den bilden.
 På ARM64/macOS passerade alla 83 grupper i Dunders självhostsvit, inklusive
 Hundmat och Skrift. Linuxkörningen gav 79 av 81 godkända grupper. DWARF-provet
 passerade separat med LLVM:s `dwarfdump`. HTTP-klientens prov för avbrott under
