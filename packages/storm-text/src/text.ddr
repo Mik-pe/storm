@@ -76,6 +76,15 @@ impl Atlas {
     pub fn glyph_count(&self) -> i32 { self.glyphs.len }
     pub fn size(&self) -> i32 { self.width }
 
+    // The pixel size the glyphs were rasterized at, which is the size the
+    // face was loaded at; 0 while there are no glyphs. A higher-density
+    // display packs the same glyphs at a larger size, and whoever draws them
+    // asks this instead of being told.
+    pub fn raster_size(&self) -> f32 {
+        if self.glyphs.len == 0 { return 0.0 }
+        self.glyphs[0].size
+    }
+
     pub fn find(&self, codepoint: i32) -> i32 {
         for i in 0..self.glyphs.len {
             if self.glyphs[i].codepoint == codepoint { return i }

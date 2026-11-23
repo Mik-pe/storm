@@ -32,11 +32,69 @@ import text
 
 // --- widgets: buttons, sliders and rows from a Pointer, no window ---
 
+// The platform's own monospace font: a path typed here would load on one
+// machine and leave these tests with no glyphs, passing, anywhere else.
 fn widget_atlas() -> text.Atlas {
-    face := text.load_face("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf", 22.0)
+    face := text.load_font(22.0)
+    assert(face.ok)
     mut atlas := text.Atlas::new(256, 256)
-    _ := atlas.add_text(&face, "+ cube metallic roughness xyz.0123456789-")
+    assert(atlas.add_text(&face, "+ cube metallic roughness xyz.0123456789-"))
+    assert(atlas.glyph_count() > 20)
     atlas
+}
+
+// A Retina display packs the atlas at twice the size. The same text must
+// then land at the same place and the same size on screen, drawn from
+// twice as many pixels: the canvas asks the atlas how big its glyphs are
+// instead of assuming one raster size.
+@test fn an_atlas_rasterized_at_twice_the_size_draws_the_same_text() {
+    small := text.load_font(ui.RASTER_SIZE)
+    large := text.load_font(ui.RASTER_SIZE * 2.0)
+    assert(small.ok && large.ok)
+    mut a := text.Atlas::new(512, 512)
+    mut b := text.Atlas::new(512, 512)
+    assert(a.add_text(&small, "Storm 0.42") && b.add_text(&large, "Storm 0.42"))
+    assert(a.raster_size() == ui.RASTER_SIZE && b.raster_size() == ui.RASTER_SIZE * 2.0)
+    // Advances and bearings scale exactly with the raster size, so the string
+    // is as wide on screen from either atlas.
+    narrow := ui.Canvas::text_width(&a, "Storm 0.42", 1.0)
+    wide := ui.Canvas::text_width(&b, "Storm 0.42", 1.0)
+    assert(narrow > 60.0)
+    assert((narrow - wide).abs() < 0.01)
+    mut canvas_a := ui.Canvas::new()
+    mut canvas_b := ui.Canvas::new()
+    ink := ui.white(1.0)
+    canvas_a.text(&a, "Storm 0.42", 10.0, 20.0, 1.0, &ink)
+    canvas_b.text(&b, "Storm 0.42", 10.0, 20.0, 1.0, &ink)
+    assert(canvas_a.vertex_count() > 0 && canvas_a.vertex_count() == canvas_b.vertex_count())
+    va := canvas_a.vertices()
+    vb := canvas_b.vertices()
+    // Each quad is six vertices of eight floats: x, y, u, v, r, g, b, a; the
+    // first and last vertex sit on its left edge, the other four on its right.
+    for v in 0..va.len / 8 {
+        corner := v % 6
+        x_a := va[v * 8]
+        y_a := va[v * 8 + 1]
+        x_b := vb[v * 8]
+        y_b := vb[v * 8 + 1]
+        if corner == 0 || corner == 5 {
+            // Where a glyph begins is pen + bearing: exact in both atlases.
+            assert((x_a - x_b).abs() < 0.01)
+        } else {
+            // Its bitmap's extent is rounded to whole pixels at whichever size
+            // it was rasterized, with an anti-aliased margin that does not
+            // scale (measured: an r is a 12 px bitmap at 22 and 20 px at 44),
+            // so the far edge may differ by a point or two of margin.
+            assert((x_a - x_b).abs() < 2.5)
+        }
+        // Top and bottom likewise sit on whole raster pixels.
+        assert((y_a - y_b).abs() < 1.5)
+        for field in 4..8 { assert(va[v * 8 + field] == vb[v * 8 + field]) }
+    }
+    // An atlas with nothing in it has no raster size and draws nothing.
+    mut empty := text.Atlas::new(16, 16)
+    assert(empty.raster_size() == 0.0)
+    assert(ui.Canvas::text_width(&empty, "Storm", 1.0) == 0.0)
 }
 
 fn pointer(x: f32, y: f32, down: bool, pressed: bool) -> widgets.Pointer {

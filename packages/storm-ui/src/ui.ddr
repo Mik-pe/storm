@@ -6,11 +6,21 @@
 
 import text
 
-// Glyphs are rasterized at this pixel size. The editor draws them at scales
-// between 0.8 and 1.2, i.e. close to the rasterized size, so the LINEAR
-// filtered atlas neither undersamples strokes nor blurs them. Lower values
-// make the small sizes crisper at the cost of a blockier title.
+// Text is drawn at this many points when its scale is 1. The editor draws at
+// scales between 0.8 and 1.2, so strokes are neither undersampled nor
+// blurred. The atlas may be rasterized at any size: a Retina display packs
+// it at twice RASTER_SIZE and the text is then twice as sharp, at the same
+// size on screen, because the canvas asks the atlas (raster_size) instead of
+// assuming.
 pub const RASTER_SIZE: f32 = 22.0
+
+// How many screen points one raster pixel of an atlas covers, when text is
+// drawn at `scale`. Nothing to draw, nothing to scale.
+fn points_per_pixel(atlas: &text.Atlas, scale: f32) -> f32 {
+    raster := atlas.raster_size()
+    if raster <= 0.0 { return 0.0 }
+    scale * RASTER_SIZE / raster
+}
 
 pub struct Color {
     r: f32,
@@ -90,19 +100,24 @@ impl Canvas {
         self.rect(x + 1.0, y + 1.0, w - 2.0, h - 2.0, fill)
     }
 
-    // Draw a string with its top-left corner at (x, y). `scale` 1.0 is the
-    // size the atlas was rasterized at.
+    // Draw a string with its top-left corner at (x, y), in points. `scale`
+    // 1.0 draws it RASTER_SIZE points tall on screen, whatever pixel size
+    // the atlas was rasterized at.
     pub fn text(&mut self, atlas: &text.Atlas, value: string, x: f32, y: f32, scale: f32, color: &Color) {
-        quads := atlas.layout(value, RASTER_SIZE, 0.0, 0.0)
+        per_pixel := points_per_pixel(atlas, scale)
+        if per_pixel <= 0.0 { return }
+        // The atlas lays out in its own raster pixels.
+        quads := atlas.layout(value, atlas.raster_size(), 0.0, 0.0)
         for quad in quads {
-            qx := x + quad.x * scale
-            qy := y + quad.y * scale
-            self.quad(qx, qy, quad.width * scale, quad.height * scale,
+            qx := x + quad.x * per_pixel
+            qy := y + quad.y * per_pixel
+            self.quad(qx, qy, quad.width * per_pixel, quad.height * per_pixel,
                 quad.u0, quad.v0, quad.u1, quad.v1, color)
         }
     }
 
+    // Width of a laid-out string in points, at the same `scale` as `text`.
     pub fn text_width(atlas: &text.Atlas, value: string, scale: f32) -> f32 {
-        atlas.measure(value) * scale
+        atlas.measure(value) * points_per_pixel(atlas, scale)
     }
 }

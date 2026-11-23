@@ -372,11 +372,15 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     mut total: i32 = orbs_left(&graph)
 
     // --- editor text: --font <path>, else the platform's own monospace font ---
+    // The glyphs are rasterized at the display's density (2 on Retina), so
+    // they are sharp there and the same size everywhere: the canvas asks the
+    // atlas how large they are.
+    density := window.poll().scale
     font := text.find_font(value_argument("--font"))
     if font.len == 0 {
         return stop(move window, "no monospace font found; pass --font <path>")
     }
-    face := text.load_face(font, ui.RASTER_SIZE)
+    face := text.load_face(font, ui.RASTER_SIZE * density)
     if !face.ok {
         return stop(move window, "font missing: " + face.error)
     }
