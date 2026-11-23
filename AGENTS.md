@@ -26,6 +26,18 @@ Gäller alla som arbetar i repot, människor som agenter.
 ## Kod
 
 - Allt är Dunder. Inga byggskript i andra språk; `tools/` är Dunder-program.
+- **Arbeta från första principer.** Innan ett steg: vad är problemet
+  egentligen, vilka delar är oföränderliga fakta (API:t, formatet,
+  matematiken), vilka är val? Gör inte om vad andra gjort utan att veta
+  varför det är valt; välj det enklaste som uppfyller fakta.
+- **Arkitekturen ska vara framtidssäker.** Det som kommer hända men inte
+  finns än ska vara *möjligt att lägga till utan att riva*:
+  multiplatform är planerat (Metal på macOS, en annan fönsteryta).
+  Regeln som gör det verkligt: **app och paket talar bara med gränssnitt,
+  aldrig med en backend.** `storm-vulkan` är dagens enda backend; inget
+  utanför den ska veta att Vulkan finns. Ett gränssnitt som inte går att
+  beskriva utan att nämna Vulkan är fel designat (`docs/design.md` §2,
+  princip 7).
 - Noll död kod: inga `#[allow]`-liknande uttryck, inga oanvända importer
   (Dunder varnar — en varning är ett fel här). Radera i stället för att
   kommentera bort; git bevarar det.
