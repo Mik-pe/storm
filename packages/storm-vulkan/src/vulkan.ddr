@@ -18,15 +18,18 @@ import .state as state
 
 // Storm's Vulkan window: a real VK_KHR_swapchain presentation path (no readback).
 //
-// A frame is recorded in four calls, which is what the render graph drives:
+// A frame is recorded in five calls, which is what the render graph drives:
 //
 //   result := vulkan.begin(opened.window)
 //   if result.ok {
+//       _ := vulkan.begin_pass(opened.window)
 //       _ := vulkan.sky(opened.window, &inv_view_proj, &sun, &zenith, &horizon)
-//       _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base, &params, &camera)
+//       _ := vulkan.mesh(opened.window, &vertices, &mvp, &model, &base, &params, &camera, &sky)
 //       _ := vulkan.end(opened.window)
 //   }
 //
+// The shadow pass has its own render pass before begin_pass:
+// shadow_begin / shadow_mesh per object / shadow_end.
 // Mesh vertices are interleaved [x, y, z, nx, ny, nz] f32 (24 bytes).
 
 pub struct Window { id: i64 }
