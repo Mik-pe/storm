@@ -193,6 +193,12 @@ Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
 - **Bara `main`.** Inga pull requester, inga reviews, ingen CI. Arbete
   commit:as på `main` och pushas direkt när `check`, testerna och
   byggbudgeten är gröna.
+- **Från första principer.** Varje steg börjar med vad som är fakta och vad
+  som är val; det enklaste som uppfyller fakta vinner.
+- **Framtidssäker arkitektur.** Multiplatform är planerat (Metal på macOS,
+  andra fönsterytor). App och paket talar bara med gränssnitt, aldrig med
+  en backend: `storm-vulkan` är dagens enda backend, och inget utanför
+  den ska veta att Vulkan finns. Se [docs/design.md](docs/design.md) §2.
 - **Noll död kod.** En varning från kompilatorn är ett fel.
 - **Dunder-brister bokförs** i [docs/dogfood.md](docs/dogfood.md), ett numrerat
   fynd per brist, medan de är färska.

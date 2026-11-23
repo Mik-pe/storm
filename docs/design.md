@@ -24,6 +24,15 @@
    fel. `Result<T, E>` med en enum är typat, testbart och självbeskrivande.
 6. **Pixelbevis krävs för grafik.** En capture är ett faktum. Gäller
    oavsett struktur.
+7. **Multiplatform är planerat, inte hypotetiskt.** Metal på macOS (och en
+   annan fönsteryta än SDL) ska kunna läggas till utan att röra ett enda
+   paket ovanför backenden. Därför: appen och pakagen talar med
+   `storm-gfx`-gränssnittet, aldrig med en backend. Ett gränssnitt som inte
+   går att beskriva utan att nämna Vulkan är fel designat. Mätt 2026-11-23:
+   noll `Vk`-typer läcker utanför `storm-vulkan` (bra), men `main.ddr` gör
+   36 anrop direkt mot `vulkan.` och `storm-input` importerar `vulkan` för
+   tangent/mus — det är de två platserna Metal skulle tvinga fram en
+   omskrivning av, och där nästa arkitektursteg börjar.
 
 ## 1. Nuläge (mätt i koden)
 
@@ -52,20 +61,33 @@ Fyra paket med en riktad beroendegraf, inga cykler:
 ```
 storm-vk        (ny)  FFI-bindings: funktioner, structar, ENUMS. Inget annat.
    ▲
-storm-gfx       (ny)  Vulkan-backend: Device, Swapchain, Pipeline, Resurser.
-   ▲                API:typat, Result-returnerande. Inga råa heltal ut.
+storm-gfx       (ny)  Backend-gränssnitt + Vulkan-implementation: Device,
+   │                  Swapchain, Pipeline, Resurser. API: typat, Result-
+   │                  returnerande. Inga råa heltal ut.
+   ▲
 storm-render    (finns) Rendergraf: passer, resurser, sortering. Ingen Vulkan.
    ▲
 storm-ui/text   (finns) UI och text: ritar via storm-render, aldrig via Vulkan.
 ```
 
+Metal på macOS (planerat) blir en andra implementation av samma
+`storm-gfx`-gränssnitt (`storm-metal`), inte ett parallelt API: det som
+skiljer sig är hur en yta skapas och hur pipelines och buffertar uttrycks,
+inte vad en swapchain, ett renderpass eller en textur *är*. Gränssnittet
+designas efter de gemensamma begreppen; Vulkan-specifika detaljer
+(renderpass-objekt, explicita layoutövergångar) stannar i implementationen.
+
 Regler:
 
-- Endast `storm-gfx` importerar `storm-vk`.
+- Endast `storm-gfx` importerar `storm-vk` (och, senare, endast `storm-gfx`-
+  gränssnittets Metal-implementation importerar Metal-bindings).
 - Endast `src/main.ddr` (appen) och `storm-render` importerar `storm-gfx`.
 - `storm-ui`/`storm-text` känner inte till `VkImage`, `VkPipeline` eller
-  något annat som börjar med `Vk`.
+  något annat som börjar med `Vk` — och inte heller `MTLDevice` eller något
+  annat som börjar med `MTL`.
 - Inga `u32`-fält i publika API:er där en enum finns.
+- Ett gränssnitt som inte går att beskriva utan att nämna Vulkan är fel
+  designat.
 
 ## 3. Enums i FFI-lagret
 

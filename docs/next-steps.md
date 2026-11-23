@@ -3,7 +3,21 @@
 Milstolpe 2 är klar: scenträd, rendergraph, himmel och PBR-material, med
 interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Djupbufferten är också
 klar (avsnitt 0c), miljöbelysningen med (avsnitt 0d), och editorn, grafen
-som faktiskt styr och glTF-laddning (avsnitt 0e). Det här är nästa ordning.
+som faktiskt styr, glTF-laddning och ECS-frågor (avsnitt 0e).
+
+**Ordningen efter 0e, beslutad 2026-11-23 mot koden:** först **3a** (UV i
+vertexströmmen, ett format överallt), sedan **3b–3c** (sampling, glTF-bilder)
+— det är den kedja som gör störst synlig skillnad: Khronos hjälm och räv
+renderas idag vitgrå för att `interleave` slänger de UV:er parsern läser.
+Därefter **4** (glTF-noder, så scengrafen byggs från filen), och sedan
+**storm-gfx-gränssnittet** (design.md §2, princip 7): multiplatform är
+planerat (Metal på macOS), så nästa arkitektursteg är att `main.ddr`:s 36
+direkta `vulkan.`-anrop och `storm-input`:s beroende av backenden flyttas
+upp till ett gränssnitt som inte nämner Vulkan — storm-vulkan blir dess
+första implementation, Metal den andra. Först därefter storm-vk (genererade
+bindings): 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men ingen
+funktion saknas för den. Instancing (5), fler ljus (7), input (8) och tid
+(9) kommer efter det.
 
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
@@ -67,30 +81,62 @@ Matematiken (kubytornas baser, projektionen och BRDF-integralen) ligger i
 `storm-core` och har sju tester utan display. Felen på vägen står i
 [dogfood.md](dogfood.md#uppföljning-ibl) (fynd 46–50).
 
-## 3. Texturpipeline (text och material)
+## 3. Texturer (UV i strömmen, sampling, glTF-bilder)
 
-`packages/storm-text` producerar en R8-atlas och quads. Kvar: `vkCreateImage`
-(R8_UNORM), staging-buffer, `vkCmdCopyBufferToImage`, layoutövergångar,
-`vkCreateSampler`, descriptor set-layout/pool/set och en tredje pipeline med
-samma vertexformat men sampler. Samma maskineri ger material- och
-normalmappar från glTF.
+En vertexström delas av kuber, plan, glTF-modeller och skuggpasset, så
+formatet ändras på alla platser i ett steg eller ingen. Idag: 24 byte,
+`position vec3` + `normal vec3` (`pipeline.ddr:136`, `shadow.ddr:262`),
+`vulkan.cube`/`plane` ger 6 floats, `gltf.interleave` ger 6 fast `Mesh.uvs`
+läses från `TEXCOORD_0`.
 
-## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning
+### 3a. Ett vertexformat: position, normal, uv (nästa)
+
+Åtta floats per vertex, 32 byte, uv `(0,0)` när modellen saknar
+`TEXCOORD_0`. Berörda: de två pipeline-beskrivningarna, `vulkan.cube`/
+`plane`, `gltf.interleave`, `mesh.vert` (`layout(location = 2) in vec2 uv`,
+vidare till `mesh.frag`), `shadow.vert` (läser bara location 0, oförändrad
+i beteende). Bevis: `interleave`-test mot Khronos `Box.glb` (6 → 8 floats,
+uv = 0) och en texturerad fixtur (`FoxFixed.glb`, 44 KB, CC-BY 4.0 med
+attribution i filen: 464 verticer, 1728 index, TEXCOORD_0 + en PNG),
+capture med uv som färg (`out = vec4(uv, 0, 1)`) och pixelprover i hörnen;
+sedan tillbaka till PBR och AE = 0 mot baslinjen (uv påverkar inte färgen
+än). Budget: en timme.
+
+### 3b. Sampling
+
+`vkCreateImage` + staging + `vkCmdCopyBufferToImage` + layoutövergångar
+finns för miljökuben (`ibl.ddr`) — samma maskineri för en `R8G8B8A8_UNORM`-
+bild, plus `vkCreateSampler`, descriptor (binding 5 på mesh-pipelinen) och
+`texture(base_color, uv)` i `mesh.frag`. Bevis: en 2×2-checker genererad i
+Dunder på en plan-yta, pixelprover i fyra rutor.
+
+### 3c. glTF-bilder och material
+
+`images`/`textures` ur GLB:n (BIN-chunken håller PNG:erna — avkodning av
+PNG krävs; `dunder-skrift` har zlib för sfnt, kolla om den räcker), samt
+`pbrMetallicRoughness` (`baseColorFactor`, `baseColorTexture`,
+`metallicFactor`, `roughnessFactor`). Bevis: FoxFixed renderas med sin
+päls, capture jämförd mot Khronos referensbild i komposition.
+
+## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning, ECS-frågor
 
 Render-grafen äger nu ordningen (`PassKind`, `Compiled.steps`), skuggpasset är
 ett pass bland de andra och huvudpasset öppnas lat; editorn listar ECS:et,
 väljer, och skriver material/transform via sliders; åtta orber att plocka
 med poäng i HUD:en; `--glb` laddar en modell (autoskalad) in i scenen, och
-parsern läser riktiga filer (fynd 59). Kvar: texturer (avsnitt 3), resten av
-glTF (nodes/materials/scenes nedan), typade Vulkan-handles (design.md steg 1), sub-5-s-bygge (fynd 56: det är Dunders
-kompilator).
+parsern läser riktiga filer (fynd 59); ECS:t har frågor (`join2`/`join3` med
+dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
+`AGENTS.md` (bygget under 20 s, mätt med `tools/build-time.ddr`; bara main,
+inga PR:s eller CI). Kvar: texturer (avsnitt 3), resten av glTF (nodes/
+materials/scenes nedan), typade Vulkan-handles (design.md steg 1), sub-5-s-
+bygge (fynd 56: det är Dunders kompilator).
 
 ## 4. glTF-scener
 
 Laddaren läser geometri (och indexbufferten) och en modell kan laddas in som
-scennod med `--glb`. Nästa steg är `nodes` (TRS/matris), `scenes`,
-`materials` (`pbrMetallicRoughness`), `textures`/`images` och att bygga
-scengrafen direkt från filen i stället för att koda den i `main.ddr`.
+scennod med `--glb`. Nästa steg är `nodes` (TRS/matris), `scenes`, och att
+bygga scengrafen direkt från filen i stället för att koda den i `main.ddr`;
+`materials` och `textures`/`images` hör till texturstegen (3b–3c).
 
 ## 5. Instancing
 
@@ -98,12 +144,6 @@ Demot gör en draw call per kub. Med `vkCmdDrawIndexed` och en instansbuffert
 (modellmatris + material per instans) blir hela scenen en draw call. Det är
 också första gången ECS behöver en "renderbar"-vy: en systemfunktion som
 packar om poolerna till GPU-data.
-
-## 6. Skuggor
-
-En shadow map-pass i rendergrafen: djupbild från solens vy, samplas i
-PBR-shadern med PCF. Rendergrafen är redan byggd för det — lägg till passet
-`shadow` med `["shadow_depth"]` som skrivning och låt `meshes` läsa den.
 
 ## 7. Fler ljus
 
