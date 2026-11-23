@@ -5,13 +5,20 @@
 //
 // Run it on a Mac that is logged in (it needs the window server):
 //
-//   dunder run tools/selftest.ddr        (from packages/storm-metal)
+//   dunder run tools/selftest.ddr                     report on stdout
+//   dunder run tools/selftest.ddr -- report.txt       report in that file too
 //
-// Exit status is 0 when every check passed and 1 otherwise. The captures it
-// reads go to build/, which is not kept. Each check is chosen so that one
-// specific mistake fails it: a frame the wrong way up, a depth test that is
-// not there, the wrong front face, a resize that is not followed, a key that
-// never arrives.
+// A report file is how a launch without a terminal is read back, and the
+// capture then goes next to the file:
+//
+//   dunder build tools/selftest.ddr --app -o build/Selftest.app
+//   open build/Selftest.app --args /tmp/selftest.txt
+//
+// Exit status is 0 when every check passed and 1 otherwise. Without a report
+// file the capture goes to build/, which is not kept. Each check is chosen so
+// that one specific mistake fails it: a frame the wrong way up, a depth test
+// that is not there, the wrong front face, a resize that is not followed, a
+// key that never arrives.
 
 capability unsafe, filesystem, stdio
 
@@ -22,38 +29,69 @@ import ..src.appkit as appkit
 import ..src.metal as metal
 import ..src.objc as objc
 
-const CAPTURE: string = "build/selftest.ppm"
+// The window the probes draw into, in points.
 const WIDTH: i32 = 640
 const HEIGHT: i32 = 400
 
 // ---- reporting ----
+//
+// Every line goes to stdout and, when there is one, to the report file.
+
+// The report file, from the first program argument; "" for stdout only.
+fn report() -> string {
+    if sys.arg_count() < 2 { return "" }
+    sys.arg(1)
+}
+
+// Where this run's capture goes: next to the report file, or in build/,
+// which is not kept.
+fn capture_path() -> string {
+    if report().len == 0 { return "build/selftest.ppm" }
+    directory(report()) + "/selftest.ppm"
+}
+
+// Everything up to the last slash.
+fn directory(path: string) -> string {
+    mut i := path.len - 1
+    while i > 0 && path[i] != 47 { i = i - 1 }
+    path[0..i]
+}
+
+fn say(move line: string) {
+    print(line)
+    if report().len == 0 { return }
+    _ := sys.append_text(report(), line + "\n")
+}
 
 fn expect(failures: &mut i32, what: string, ok: bool) {
     if ok {
-        print("ok    " + what)
+        say("ok    " + what)
     } else {
         failures = failures + 1
-        print("FAIL  " + what)
+        say("FAIL  " + what)
     }
 }
+
+// Something true of this launch that is not the backend's to decide.
+fn note(what: string) { say("note  " + what) }
 
 // A call that must succeed, and must say why if it did not.
 fn worked(failures: &mut i32, what: string, move result: Result<(), string>) {
     if result.is_ok() {
-        print("ok    " + what)
+        say("ok    " + what)
     } else {
         failures = failures + 1
-        print("FAIL  " + what + ": " + result.unwrap_err())
+        say("FAIL  " + what + ": " + result.unwrap_err())
     }
 }
 
 // A call the contract refuses, and the reason it gives.
 fn refused(failures: &mut i32, what: string, move result: Result<(), string>) {
     if result.is_err() {
-        print("ok    " + what + " was refused: " + result.unwrap_err())
+        say("ok    " + what + " was refused: " + result.unwrap_err())
     } else {
         failures = failures + 1
-        print("FAIL  " + what + " was accepted")
+        say("FAIL  " + what + " was accepted")
     }
 }
 
@@ -93,7 +131,7 @@ fn unreadable(move why: string) -> Image {
 }
 
 fn read_capture() -> Image {
-    data := sys.read_u8(CAPTURE)
+    data := sys.read_u8(capture_path())
     if !data.ok { return unreadable("the capture could not be read back") }
     mut reader := Reader { bytes: data.value, at: 0 }
     if reader.bytes.len < 14 || reader.bytes[0] != 80 || reader.bytes[1] != 54 { return unreadable("not a binary PPM") }
@@ -199,6 +237,25 @@ fn input_checks(failures: &mut i32) {
             return
         }
         mut window := opened.unwrap()
+
+        // Keyboard events go to the key window. Whether an application may
+        // become key depends on how it was launched, not on the backend:
+        // launched by LaunchServices (Finder, the Dock, `open`) it is;
+        // launched in the background, from an agent's shell, the system does
+        // not it activate itself, and a click on the window does.
+        mut state := appkit.activation(&rt, &window)
+        opened_at := sys.now_ms()
+        while sys.now_ms() - opened_at < 5000 && !appkit.is_key(&rt, &window) {
+            sys.sleep_ms(10)
+            _ := appkit.poll(&rt, &mut window)
+            state = appkit.activation(&rt, &window)
+        }
+        seen := " (the application is " + if state.0 { "active" } else { "not active" } + "; frontmost is " + state.1 + ")"
+        if appkit.is_key(&rt, &window) {
+            note("the window became the key window " + (sys.now_ms() - opened_at).str() + " ms after it opened, so it gets keys unasked" + seen)
+        } else {
+            note("the window did not become the key window within 5000 ms, so it gets keys after a click on it" + seen)
+        }
 
         first := appkit.poll(&rt, &mut window)
         expect(&mut failures, "a new window reports no input and is not closed",
@@ -310,7 +367,7 @@ fn frame_checks(failures: &mut i32) {
     // Nothing drawn: the clear colour, red, everywhere.
     mut drawn := window.begin().is_ok() && window.begin_pass().is_ok() && window.end().is_ok()
     worked(&mut failures, "an empty frame is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     empty := read_capture()
     wanted := i32(f32(WIDTH) * scale).str() + " x " + i32(f32(HEIGHT) * scale).str()
     expect(&mut failures, "the capture can be read" + if empty.ok { "" } else { " (" + empty.error + ")" }, empty.ok)
@@ -325,7 +382,7 @@ fn frame_checks(failures: &mut i32) {
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_atlas([255], 1, 1).is_ok() &&
     window.ui_draw(quads, [f32(WIDTH), f32(HEIGHT)]).is_ok() && window.end().is_ok()
     worked(&mut failures, "a frame of UI quads is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     ui_frame := read_capture()
     expect(&mut failures, "a UI quad is where its points say: blue in the top-left corner, green in the bottom-right",
         ui_frame.ok && is_blue(under(&ui_frame, 40.0, 40.0, scale)) && is_green(under(&ui_frame, f32(WIDTH) - 40.0, f32(HEIGHT) - 40.0, scale)))
@@ -338,7 +395,7 @@ fn frame_checks(failures: &mut i32) {
     // the mirrored viewport is for.
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.sky(&view, &sun, &green, &red).is_ok() && window.end().is_ok()
     worked(&mut failures, "a frame of sky is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     dome := read_capture()
     top := under(&dome, f32(WIDTH) / 2.0, 12.0, scale)
     bottom := under(&dome, f32(WIDTH) / 2.0, f32(HEIGHT) - 12.0, scale)
@@ -362,7 +419,7 @@ fn frame_checks(failures: &mut i32) {
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, .Opaque).is_ok() &&
     window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the far cube, then the near one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     centre := f32(WIDTH) / 2.0
     middle := f32(HEIGHT) / 2.0
     far_first := read_capture()
@@ -372,7 +429,7 @@ fn frame_checks(failures: &mut i32) {
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, .Opaque).is_ok() &&
     window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the near cube, then the far one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     near_first := read_capture()
     expect(&mut failures, "drawn near first, the near cube is still in front, so depth decides, not order: rgb " + rgb(under(&near_first, centre, middle, scale)),
         near_first.ok && is_red(under(&near_first, centre, middle, scale)))
@@ -386,13 +443,13 @@ fn frame_checks(failures: &mut i32) {
     away := plane_facing(false)
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &facing, &facing, &blue, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the plane facing the viewer is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     front := read_capture()
     expect(&mut failures, "the plane's front face, the one whose normal points at the viewer, is drawn: rgb " + rgb(under(&front, centre, middle, scale)),
         front.ok && is_blue(under(&front, centre, middle, scale)))
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &away, &away, &blue, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the plane turned away is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     back := read_capture()
     expect(&mut failures, "its back face is culled: the clear colour shows where it would be: rgb " + rgb(under(&back, centre, middle, scale)),
         back.ok && is_red(under(&back, centre, middle, scale)))
@@ -405,7 +462,7 @@ fn frame_checks(failures: &mut i32) {
         after.width == 900 && after.height == 520 && after.resized && !after.closed)
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_draw(corners(900.0, 520.0), [900.0, 520.0]).is_ok() && window.end().is_ok()
     worked(&mut failures, "a frame after the resize is recorded", if drawn { .Ok } else { .Err("a step failed") })
-    worked(&mut failures, "and saved", window.save_capture(CAPTURE))
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
     resized := read_capture()
     expect(&mut failures, "at the new size", resized.ok && resized.width == i32(900.0 * scale) && resized.height == i32(520.0 * scale))
     expect(&mut failures, "with the quads in its corners, not the old frame's",
@@ -425,7 +482,7 @@ fn frame_checks(failures: &mut i32) {
 }
 
 fn main() -> i32 {
-    if !sys.mkdir("build").ok && !sys.metadata("build").ok {
+    if report().len == 0 && !sys.mkdir("build").ok && !sys.metadata("build").ok {
         _ := sys.eprint("selftest: cannot make the build directory for captures\n")
         return 1
     }
@@ -433,11 +490,11 @@ fn main() -> i32 {
     mut failures: i32 = 0
     input_checks(&mut failures)
     frame_checks(&mut failures)
-    _ := sys.remove_file(CAPTURE)
+    _ := sys.remove_file(capture_path())
     if failures > 0 {
-        _ := sys.eprint("selftest: " + failures.str() + " checks failed\n")
+        say("selftest: " + failures.str() + " checks failed")
         return 1
     }
-    print("selftest: every check passed in " + (sys.now_ms() - started).str() + " ms")
+    say("selftest: every check passed in " + (sys.now_ms() - started).str() + " ms")
     0
 }

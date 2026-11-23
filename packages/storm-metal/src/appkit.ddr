@@ -487,6 +487,17 @@ pub unsafe fn synthesize_click(rt: &objc.Runtime, window: &Window, kind: u64, x:
     objc.tell_to(rt, window.window, cstr("sendEvent:"), event)
 }
 
+// Whether the application is active, and the name of the application that
+// is frontmost: what a self-test needs to say why a window is, or is not, key.
+pub unsafe fn activation(rt: &objc.Runtime, window: &Window) -> (bool, string) {
+    workspace := objc.send(rt, objc.class(rt, cstr("NSWorkspace")), cstr("sharedWorkspace"))
+    frontmost := objc.send(rt, workspace, cstr("frontmostApplication"))
+    (objc.flag(rt, window.application, cstr("isActive")), objc.text(rt, objc.send(rt, frontmost, cstr("localizedName"))))
+}
+
+// Whether the window is the key window: the one keyboard events go to.
+pub unsafe fn is_key(rt: &objc.Runtime, window: &Window) -> bool { objc.flag(rt, window.window, cstr("isKeyWindow")) }
+
 // Size the window's content, in points, as a drag of its corner would.
 pub unsafe fn resize(rt: &objc.Runtime, window: &Window, width: i32, height: i32) {
     // setContentSize:
