@@ -30,7 +30,7 @@ unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 @c_layout
 struct AtlasImage { image: ptr, memory: ptr, mapped: ptr }
 
-unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
+unsafe fn create_atlas(r: &mut state.Renderer) -> state.SetupStep {
     mut words: [u32; 22] = [0; 22]
     words[0] = 14
     words[5] = 1
@@ -45,14 +45,15 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     words[14] = 6 // VK_IMAGE_USAGE_SAMPLED_BIT | TRANSFER_DST_BIT
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut requirements: vk2.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut requirements))
     mut memory := ptr(0)
-    if !device.allocate(&r, &requirements, 6, addr(&mut memory)) { return false }
-    if memory == ptr(0) { return false }
+    code = device.allocate(&r, &requirements, 6, addr(&mut memory))
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
+    if memory == ptr(0) { return .Ui }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut view_info: vk2.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
     view_info.image = image
@@ -63,7 +64,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     view_info.subresourceRange.layerCount = 1
     mut view := ptr(0)
     code = r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut sampler_info: vk2.SamplerCreateInfo = zeroed()
     sampler_info.sType = 31
@@ -78,7 +79,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     sampler_info.maxLod = 1.0
     mut sampler := ptr(0)
     code = r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut binding: [u64; 3] = [0; 3]
     binding[0] = enums.binding_word(0, .CombinedImageSampler)
@@ -88,7 +89,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     layout_info.bindingCount = 1
     layout_info.pBindings = ptr(usize(addr(&mut binding[0])))
     code = r.api.CreateDescriptorSetLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiSetLayout))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut pool_size: [u32; 2] = [1, 1]
     mut pool_info: vk2.DescriptorPoolCreateInfo = zeroed()
@@ -97,7 +98,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     pool_info.poolSizeCount = 1
     pool_info.pPoolSizes = ptr(usize(addr(&mut pool_size[0])))
     code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut r.uiPool))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut allocate_info: vk2.DescriptorSetAllocateInfo = zeroed()
     allocate_info.sType = 34
@@ -105,7 +106,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     allocate_info.descriptorSetCount = 1
     allocate_info.pSetLayouts = addr(&mut r.uiSetLayout)
     code = r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut r.uiSet))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut image_info: vk2.DescriptorImageInfo = zeroed()
     image_info.sampler = sampler
@@ -124,16 +125,18 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     r.uiAtlasMemory = memory
     r.uiAtlasView = view
     r.uiSampler = sampler
-    true
+    .Ready
 }
 
-unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
+unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     vert := shader.ui_vertex()
     frag := shader.ui_fragment()
     mut vert_module := ptr(0)
-    if !module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module)) { return false }
+    mut code := device.shader_module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module))
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut frag_module := ptr(0)
-    if !module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module)) { return false }
+    code = device.shader_module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module))
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     r.uiVertShader = vert_module
     r.uiFragShader = frag_module
 
@@ -212,8 +215,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     layout_info.pSetLayouts = addr(&mut r.uiSetLayout)
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&mut push_range)
-    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout))
-    if code != 0 { return device.fail(&mut r, code) }
+    code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout))
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
     info.sType = 28
@@ -231,20 +234,12 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     info.subpass = 0
     info.basePipelineIndex = -1
     code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.uiPipeline))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    true
+    .Ready
 }
 
-unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
-    mut info: vk2.ShaderModuleCreateInfo = zeroed()
-    info.sType = 16
-    info.codeSize = size
-    info.pCode = words
-    r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
-}
-
-unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
+unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
     mut info: vk2.BufferCreateInfo = zeroed()
     info.sType = 12
     info.size = bytes
@@ -252,126 +247,45 @@ unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
     info.sharingMode = enums.sharing_mode(.Exclusive)
     mut handle := ptr(0)
     mut code := r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut requirements: vk2.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
     mut memory := ptr(0)
-    if !device.allocate(&r, &requirements, 6, addr(&mut memory)) { return false }
-    if memory == ptr(0) { return false }
+    code = device.allocate(&r, &requirements, 6, addr(&mut memory))
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
+    if memory == ptr(0) { return .Ui }
     code = r.api.BindBufferMemory(r.device, handle, memory, 0)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut mapped := ptr(0)
     code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     r.uiVertex.handle = handle
     r.uiVertex.memory = memory
     r.uiVertex.mapped = mapped
     r.uiVertex.capacity = bytes
-    true
+    .Ready
 }
 
-// One-shot barrier on the graphics queue.
-unsafe fn submit_barrier(r: &mut state.Renderer, src_stage: u32, dst_stage: u32, src_access: u32, dst_access: u32, old_layout: u32, new_layout: u32) -> bool {
-    mut alloc: vk2.CommandBufferAllocateInfo = zeroed()
-    alloc.sType = 40
-    alloc.commandPool = r.pool
-    alloc.level = 0
-    alloc.commandBufferCount = 1
-    mut cmd := ptr(0)
-    mut code := r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
-    if code != 0 { return device.fail(&mut r, code) }
-    mut begin: vk2.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
-    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
-    code = r.api.BeginCommandBuffer(cmd, addr(&begin))
-    if code != 0 { return device.fail(&mut r, code) }
-    mut barrier: vk2.ImageMemoryBarrier = zeroed()
-    barrier.sType = 45
-    barrier.srcAccessMask = src_access
-    barrier.dstAccessMask = dst_access
-    barrier.oldLayout = old_layout
-    barrier.newLayout = new_layout
-    barrier.srcQueueFamilyIndex = 4294967295
-    barrier.dstQueueFamilyIndex = 4294967295
-    barrier.image = r.uiAtlasImage
-    barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    barrier.subresourceRange.levelCount = 1
-    barrier.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
-    code = r.api.EndCommandBuffer(cmd)
-    if code != 0 { return device.fail(&mut r, code) }
-    mut submit: vk2.SubmitInfo = zeroed()
-    submit.sType = 4
-    submit.commandBufferCount = 1
-    submit.pCommandBuffers = addr(&mut cmd)
-    code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
-    if code != 0 { return device.fail(&mut r, code) }
-    _ := r.api.QueueWaitIdle(r.queue)
-    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
-    true
-}
-
-// A fresh image is in VK_IMAGE_LAYOUT_UNDEFINED; sampling it needs an explicit
-// transition to SHADER_READ_ONLY_OPTIMAL.
-unsafe fn transition_atlas(r: &mut state.Renderer) -> bool {
-    mut alloc: vk2.CommandBufferAllocateInfo = zeroed()
-    alloc.sType = 40
-    alloc.commandPool = r.pool
-    alloc.level = 0
-    alloc.commandBufferCount = 1
-    mut cmd := ptr(0)
-    mut code := r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
-    if code != 0 { return device.fail(&mut r, code) }
-    mut begin: vk2.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
-    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
-    code = r.api.BeginCommandBuffer(cmd, addr(&begin))
-    if code != 0 { return device.fail(&mut r, code) }
-    mut barrier: vk2.ImageMemoryBarrier = zeroed()
-    barrier.sType = 45
-    barrier.dstAccessMask = enums.access(.ShaderRead)
-    barrier.oldLayout = enums.image_layout(.Undefined)
-    barrier.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
-    barrier.srcQueueFamilyIndex = 4294967295
-    barrier.dstQueueFamilyIndex = 4294967295
-    barrier.image = r.uiAtlasImage
-    barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    barrier.subresourceRange.levelCount = 1
-    barrier.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, 1, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
-    code = r.api.EndCommandBuffer(cmd)
-    if code != 0 { return device.fail(&mut r, code) }
-    mut submit: vk2.SubmitInfo = zeroed()
-    submit.sType = 4
-    submit.commandBufferCount = 1
-    submit.pCommandBuffers = addr(&mut cmd)
-    code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
-    if code != 0 { return device.fail(&mut r, code) }
-    _ := r.api.QueueWaitIdle(r.queue)
-    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
-    true
-}
-
-pub unsafe fn setup(r: &mut state.Renderer) -> bool {
-    if !create_atlas(&mut r) {
+pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
+    if create_atlas(&mut r) != .Ready {
         _ := sys.eprint("ui: no atlas")
-        return false
+        return .Ui
     }
-    if !create_pipeline(&mut r) { return false }
-    if !create_buffer(&mut r, 1048576) { return false }
-    true
+    if create_pipeline(&mut r) != .Ready { return .Ui }
+    if create_buffer(&mut r, 1048576) != .Ready { return .Ui }
+    .Ready
 }
 
 // Upload the coverage atlas once the glyphs have been packed. The pixels go
 // through a host-visible staging buffer because the atlas itself has to be
 // OPTIMAL tiled to be sampleable on this driver.
-pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32) -> bool {
-    if width <= 0 || height <= 0 || width > i32(ATLAS_SIZE) || height > i32(ATLAS_SIZE) { return false }
+pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32) -> state.SetupStep {
+    if width <= 0 || height <= 0 || width > i32(ATLAS_SIZE) || height > i32(ATLAS_SIZE) { return .Ui }
     pixels_count := u64(width) * u64(height)
-    if pixels_count == 0 { return false }
+    if pixels_count == 0 { return .Ui }
     // The copy below widens exactly one coverage byte per atlas pixel; a slice
     // of another length would read past it or leave the tail of the image stale.
-    if u64(pixels.len) != pixels_count { return false }
+    if u64(pixels.len) != pixels_count { return .Ui }
     bytes := pixels_count * 4
 
     mut stage_info: vk2.BufferCreateInfo = zeroed()
@@ -381,16 +295,17 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     stage_info.sharingMode = enums.sharing_mode(.Exclusive)
     mut staging := ptr(0)
     mut code := r.api.CreateBuffer(r.device, addr(&stage_info), ptr(0), addr(&mut staging))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut requirements: vk2.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, staging, addr(&mut requirements))
     mut staging_memory := ptr(0)
-    if !device.allocate(&r, &requirements, 6, addr(&mut staging_memory)) { return false }
+    code = device.allocate(&r, &requirements, 6, addr(&mut staging_memory))
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     code = r.api.BindBufferMemory(r.device, staging, staging_memory, 0)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut mapped := ptr(0)
     code = r.api.MapMemory(r.device, staging_memory, 0, bytes, 0, addr(&mut mapped))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     // Widen the coverage bytes to floats so the atlas matches the shadow map's
     // format, which this driver samples without trouble. The widening happens in
     // a local array and is memcpy'd in: store_f32 on a computed pointer does not
@@ -407,12 +322,12 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     alloc.commandBufferCount = 1
     mut cmd := ptr(0)
     code = r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut begin: vk2.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     code = r.api.BeginCommandBuffer(cmd, addr(&begin))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     mut to_transfer: vk2.ImageMemoryBarrier = zeroed()
     to_transfer.sType = 45
@@ -452,19 +367,19 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     r.api.CmdPipelineBarrier(cmd, 4096, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_sample))
 
     code = r.api.EndCommandBuffer(cmd)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     mut submit: vk2.SubmitInfo = zeroed()
     submit.sType = 4
     submit.commandBufferCount = 1
     submit.pCommandBuffers = addr(&mut cmd)
     code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
     _ := r.api.QueueWaitIdle(r.queue)
     _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
     _ := r.api.UnmapMemory(r.device, staging_memory)
     r.api.DestroyBuffer(r.device, staging, ptr(0))
     r.api.FreeMemory(r.device, staging_memory, ptr(0))
-    true
+    .Ready
 }
 
 // Push vertices and draw them. Rectangles set uv.x to -1.

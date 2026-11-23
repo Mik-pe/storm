@@ -13,27 +13,28 @@ import .state as state
 // the finished frame into this linear, host-visible colour image. The pixels
 // are then read straight out of mapped memory.
 
-unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> bool {
+unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> i32 {
     info := device.image_2d_info(format, width, height, tiling, usage)
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
-    if code != 0 { return false }
+    if code != 0 { return code }
     mut req: [u64; 3] = [0; 3]
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
-    if req[0] == 0 { return false }
+    if req[0] == 0 { return -13 }
     mut requirements: vk.MemoryRequirements = zeroed()
     requirements.size = req[0]
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    if !device.allocate(&r, &requirements, flags, addr(&mut memory)) { return false }
+    code = device.allocate(&r, &requirements, flags, addr(&mut memory))
+    if code != 0 { return code }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
-    if code != 0 { return false }
+    if code != 0 { return code }
     mut size_slot := req[0]
     store_u64(size_out, size_slot)
     store_ptr(image_out, image)
     store_ptr(memory_out, memory)
-    true
+    0
 }
 
 unsafe fn make_view(r: &state.Renderer, image: ptr, format: u32) -> ptr {
@@ -58,19 +59,17 @@ pub fn capture_layout_fits(width: u32, height: u32, layout: &vk.SubresourceLayou
     u64(height - 1) <= (available - row) / layout.rowPitch
 }
 
-pub unsafe fn setup(r: &mut state.Renderer) -> bool {
-    if r.width == 0 || r.height == 0 { return false }
-    if !enums.format_has_bytes(r.format) { return false }
+pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
+    if r.width == 0 || r.height == 0 { return .CaptureTarget }
+    if !enums.format_has_bytes(r.format) { return .CaptureTarget }
     mut target := ptr(0)
     mut target_memory := ptr(0)
     mut target_size: [u64; 1] = [0]
     // LINEAR so its memory can be mapped and read straight back.
-    if !make_image(&r, r.format, r.width, r.height, vk.IMAGE_TILING_LINEAR, 17, 6, addr(&mut target), addr(&mut target_memory), addr(&mut target_size[0])) {
-        _ := sys.eprint("capture: no target image")
-        return false
-    }
+    mut code := make_image(&r, r.format, r.width, r.height, vk.IMAGE_TILING_LINEAR, 17, 6, addr(&mut target), addr(&mut target_memory), addr(&mut target_size[0]))
+    if code != 0 { return device.fail(&mut r, code, .CaptureTarget) }
     view := make_view(&r, target, r.format)
-    if view == ptr(0) { return false }
+    if view == ptr(0) { return .CaptureTarget }
 
     mut views: [ptr; 2] = [view, r.depthView]
     mut fbi: vk.FramebufferCreateInfo = zeroed()
@@ -82,16 +81,16 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     fbi.height = r.height
     fbi.layers = 1
     mut framebuffer := ptr(0)
-    mut code := r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer))
-    if code != 0 { return device.fail(&mut r, code) }
+    code = r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer))
+    if code != 0 { return device.fail(&mut r, code, .CaptureTarget) }
 
     mut mapped := ptr(0)
     code = r.api.MapMemory(r.device, target_memory, 0, target_size[0], 0, addr(&mut mapped))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .CaptureTarget) }
     mut sub: [u32; 3] = [1, 0, 0]
     mut layout: vk.SubresourceLayout = zeroed()
     r.api.GetImageSubresourceLayout(r.device, target, addr(&mut sub[0]), addr(&mut layout))
-    if !capture_layout_fits(r.width, r.height, &layout, target_size[0]) { return false }
+    if !capture_layout_fits(r.width, r.height, &layout, target_size[0]) { return .CaptureTarget }
 
     r.linearImage = target
     r.linearMemory = target_memory
@@ -101,7 +100,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     r.captureHeight = r.height
     r.capturePitch = layout.rowPitch
     _ := sys.eprint("capture: ready " + r.width.str() + "x" + r.height.str() + " pitch=" + layout.rowPitch.str())
-    true
+    .Ready
 }
 
 // Binary PPM (P6) at native resolution.

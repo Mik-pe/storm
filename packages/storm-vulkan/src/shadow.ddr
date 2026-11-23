@@ -20,14 +20,14 @@ const CLEAR_FAR: f32 = 1000.0
 @c_layout
 struct StagePair { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
 
-pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // --- image ---
     image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.ColorAttachmentSampled))
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&image_create_info), ptr(0), addr(&mut image))
     if code != 0 {
         _ := sys.eprint("shadow: could not create the shadow map")
-        return device.fail(&mut r, code)
+        return device.fail(&mut r, code, .Shadow)
     }
     mut req: [u64; 3] = [0; 3]
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
@@ -36,9 +36,10 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    if !device.allocate(&r, &requirements, 1, addr(&mut memory)) { return false }
+    code = device.allocate(&r, &requirements, 1, addr(&mut memory))
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut view_info: vk.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
@@ -50,7 +51,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     view_info.subresourceRange.layerCount = 1
     mut view := ptr(0)
     code = r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- sampler ---
     mut sampler_info: vk.SamplerCreateInfo = zeroed()
@@ -64,7 +65,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     sampler_info.maxLod = 0.0
     mut sampler := ptr(0)
     code = r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- light uniform buffer: mat4 light_vp + vec4 light_dir_c = 80 bytes ---
     mut buffer_info: vk.BufferCreateInfo = zeroed()
@@ -74,16 +75,17 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     buffer_info.sharingMode = enums.sharing_mode(.Exclusive)
     mut light_buffer := ptr(0)
     code = r.api.CreateBuffer(r.device, addr(&buffer_info), ptr(0), addr(&mut light_buffer))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
     mut breq: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, light_buffer, addr(&mut breq))
     mut light_memory := ptr(0)
-    if !device.allocate(&r, &breq, 6, addr(&mut light_memory)) { return false }
+    code = device.allocate(&r, &breq, 6, addr(&mut light_memory))
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
     code = r.api.BindBufferMemory(r.device, light_buffer, light_memory, 0)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
     mut light_mapped := ptr(0)
     code = r.api.MapMemory(r.device, light_memory, 0, 80, 0, addr(&mut light_mapped))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- descriptor set: binding 0 shadow sampler, 1 light UBO, 2 prefiltered
     // env cube, 3 irradiance cube, 4 BRDF LUT (the three IBL bindings are
@@ -108,7 +110,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     layout_info.pBindings = addr(&mut bindings[0])
     mut set_layout := ptr(0)
     code = r.api.CreateDescriptorSetLayout(r.device, addr(&layout_info), ptr(0), addr(&mut set_layout))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // Four combined image samplers and one uniform buffer.
     mut pool_sizes: [u32; 4] = [1, 4, 6, 1]
@@ -119,7 +121,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     pool_info.pPoolSizes = addr(&mut pool_sizes[0])
     mut pool := ptr(0)
     code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
     allocate_info.sType = 34
@@ -128,7 +130,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     allocate_info.pSetLayouts = addr(&set_layout)
     mut set := ptr(0)
     code = r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut set))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut image_info: vk.DescriptorImageInfo = zeroed()
     image_info.sampler = sampler
@@ -200,7 +202,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     pass_info.pDependencies = addr(&deps)
     mut pass := ptr(0)
     code = r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut views: [ptr; 1] = [view]
     mut fbi: vk.FramebufferCreateInfo = zeroed()
@@ -213,7 +215,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     fbi.layers = 1
     mut framebuffer := ptr(0)
     code = r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- pipeline ---
     vertex := shader.shadow_vertex()
@@ -223,7 +225,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     module_info.codeSize = usize(vertex.len * 4)
     module_info.pCode = addr(&vertex[0])
     code = r.api.CreateShaderModule(r.device, addr(&module_info), ptr(0), addr(&mut vshader))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
     fragment := shader.shadow_fragment()
     mut fshader := ptr(0)
     mut module_info2: vk.ShaderModuleCreateInfo = zeroed()
@@ -231,7 +233,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     module_info2.codeSize = usize(fragment.len * 4)
     module_info2.pCode = addr(&fragment[0])
     code = r.api.CreateShaderModule(r.device, addr(&module_info2), ptr(0), addr(&mut fshader))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // light_vp(64) + model(64) + light_dir_c(16) = 144 bytes.
     mut push_range: vk.PushConstantRange = zeroed()
@@ -243,7 +245,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     layout_info2.pPushConstantRanges = addr(&push_range)
     mut pipeline_layout := ptr(0)
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info2), ptr(0), addr(&mut pipeline_layout))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18
@@ -324,7 +326,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     info.basePipelineIndex = -1
     mut pipeline := ptr(0)
     code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut pipeline))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     r.shadowImage = image
     r.shadowMemory = memory
@@ -342,7 +344,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     r.lightMapped = light_mapped
     r.shadowVertShader = vshader
     r.shadowFragShader = fshader
-    true
+    .Ready
 }
 
 // Writes the light matrix into the mapped uniform buffer.

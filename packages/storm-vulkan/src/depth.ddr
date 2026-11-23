@@ -29,13 +29,13 @@ pub fn depth_clear(depth: f32) -> u64 {
     u64(float_bits(depth))
 }
 
-pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
-    if width == 0 || height == 0 { return false }
+pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.SetupStep {
+    if width == 0 || height == 0 { return .DepthBuffer }
     info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.DepthStencilAttachment))
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
     if code != 0 {
-        return device.fail(&mut r, code)
+        return device.fail(&mut r, code, .DepthBuffer)
     }
     mut req: [u64; 3] = [0; 3]
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
@@ -44,15 +44,15 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    if !device.allocate(&r, &requirements, 0, addr(&mut memory)) {
+    if device.allocate(&r, &requirements, 0, addr(&mut memory)) != 0 {
         r.api.DestroyImage(r.device, image, ptr(0))
-        return false
+        return .DepthBuffer
     }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
     if code != 0 {
         r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyImage(r.device, image, ptr(0))
-        return device.fail(&mut r, code)
+        return device.fail(&mut r, code, .DepthBuffer)
     }
     mut view_info: vk.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
@@ -67,12 +67,12 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     if code != 0 {
         r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyImage(r.device, image, ptr(0))
-        return device.fail(&mut r, code)
+        return device.fail(&mut r, code, .DepthBuffer)
     }
     r.depthImage = image
     r.depthMemory = memory
     r.depthView = view
-    true
+    .Ready
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {

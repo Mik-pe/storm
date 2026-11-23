@@ -21,8 +21,9 @@
 4. **Ägarskap är explicit.** En god-struct med 60 fält betyder att varje
    funktion kan röra allt. Den som skapar en resurs äger den och släpper
    den — i omvänd ordning.
-5. **Errors är värden.** `r.stage = 17` + en uppslagstabell är ett outypat
-   fel. `Result<T, E>` med en enum är typat, testbart och självbeskrivande.
+5. **Errors är värden.** En `u32` man tilldelar före varje steg plus en
+   uppslagstabell är ett outypat fel. En enum som *är* returvärdet är typat,
+   testbart och självbeskrivande (`SetupStep`, §5 steg 4).
 6. **Pixelbevis krävs för grafik.** En capture är ett faktum. Gäller
    oavsett struktur.
 7. **Multiplatform är planerat, inte hypotetiskt.** Metal på macOS (och en
@@ -48,12 +49,16 @@
   `enums.*(.Variant)`. Endast två
   namngivna `u32`-konstanter lever kvar i `layout.ddr`
   (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
-- `state.ddr` `Renderer`: **134 fält, 144 rader** (var ~60 när steget
-  skrevs; IBL, djup, skuggor, post, UI och headless har alla lagt till sina).
-  Varje modul tar `&mut Renderer`.
-- **17 stage-nummer** plus reset (`r.stage = 0`), 18 tilldelningar; sedan
-  steg 4 binder dessutom varje Vulkan-anrop sin `VkResult`-kod, så
-  `stage_name` säger *vad Vulkan svarade*, inte bara var.
+- `state.ddr` `Renderer`: **131 fält** (var ~60 när steget skrevs; IBL,
+  djup, skuggor, post, UI och headless har alla lagt till sina). Varje
+  modul tar `&mut Renderer`.
+- **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
+  returnerar `state.SetupStep` (`Ready` eller steget som föll); `device.fail(&mut r, code, step)`
+  sätter `r.lastResult` och ger steget tillbaka, så en Vulkan-kod kan inte
+  rapporteras utan sin plats. Hjälpare med `&Renderer` (immutable) returnerar
+  koden `-> i32` och ägaren med `&mut` binder den: `code := helper(…); if code
+  != 0 { return device.fail(&mut r, code, .Step) }`. 109 `fail`-platser,
+  30 funktioner, noll `stage`-tilldelningar.
 - Beroenden: `storm-input -> storm-vulkan` (för `Window` och
   tangent/mus-råläge), `storm-text -> dunder-skrift` via `../../../dunder-skrift`
   (syskonkatalog utan versionslås).
@@ -194,13 +199,14 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
    (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
    `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
-   `Renderer`-structen (134 fält) är kvar.*
+   `Renderer`-structen (131 fält) är kvar.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
-   *Status: första halvan klar 2026-11-23 — `VkResult` är en Dunder-enum med
-   Khronos-värden, 92 Vulkan-anrop binder och testar sin kod (81 när fynd 57
-   skrevs; `ibl.ddr` tillkom) och `stage_name` säger vad Vulkan svarade
-   (fynd 57: OUT_OF_DATE hade ett värde som inte finns);
-   `r.stage = N` som stegmarkör är kvar.*
+   *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
+   (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
+   returvärdet `SetupStep` i stället för `r.stage = N`: `name()` är en
+   exhaustiv match (E3006 när ett steg läggs till utan namn) och
+   `describe` sätter ihop `"steg (VK_…)"`. Tester: `fail` ger steget tillbaka
+   och sätter koden för varje steg; varje steg har ett namn.*
 5. **Dra `ui.ddr`/`post.ddr` ur backend.** `storm-input` slipper Vulkan.
 6. **Lås skrift-dependency.** README/design: uppdatera.
 

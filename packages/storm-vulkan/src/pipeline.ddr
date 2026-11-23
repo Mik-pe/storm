@@ -6,7 +6,7 @@ import .layout as vk
 import .shader as shader
 import .state as state
 
-unsafe fn targets(r: &mut state.Renderer) -> bool {
+unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     mut color: vk.AttachmentDescription = zeroed()
     color.format = r.format
     color.samples = enums.samples(.Type1)
@@ -67,11 +67,11 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
     pass.dependencyCount = 2
     pass.pDependencies = addr(&dependencies)
     mut code := r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.renderPass))
-    if code != 0 { return device.fail(&mut r, code) }
-    true
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
+    .Ready
 }
 
-unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
+unsafe fn framebuffers(r: &mut state.Renderer) -> state.SetupStep {
     for i in 0..r.imageCount {
         mut views: [ptr; 2] = [r.views[i], r.depthView]
         mut info: vk.FramebufferCreateInfo = zeroed()
@@ -83,27 +83,21 @@ unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
         info.height = r.height
         info.layers = 1
         mut code := r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), addr(&mut r.framebuffers[i]))
-        if code != 0 { return device.fail(&mut r, code) }
+        if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     }
-    true
+    .Ready
 }
 
-unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
-    mut info: vk.ShaderModuleCreateInfo = zeroed()
-    info.sType = 16
-    info.codeSize = size
-    info.pCode = words
-    r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
-}
-
-unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
+unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     vertex := shader.mesh_vertex()
     mut vertex_shader := r.vertexShader
-    if !module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader)) { return false }
+    mut code := device.shader_module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     r.vertexShader = vertex_shader
     fragment := shader.mesh_fragment()
     mut fragment_shader := r.fragmentShader
-    if !module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader)) { return false }
+    code = device.shader_module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     r.fragmentShader = fragment_shader
 
     // mvp(64) model(64) base_color(16) params(16) camera(16) sun(16)
@@ -120,8 +114,8 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     // Set 0: shadow map sampler + light uniform buffer.
     layout.setLayoutCount = 1
     layout.pSetLayouts = addr(&r.shadowSetLayout)
-    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout))
-    if code != 0 { return device.fail(&mut r, code) }
+    code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18
@@ -204,26 +198,28 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     info.renderPass = r.renderPass
     info.basePipelineIndex = -1
     code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     // Same pipeline with alpha blending for the transparent pass.
     enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
     // Glass is sorted back to front and must not hide geometry behind it:
     // test against the depth buffer, but never write to it.
     depth_state.depthWriteEnable = 0
     code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.transparentPipeline))
-    if code != 0 { return device.fail(&mut r, code) }
-    true
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
+    .Ready
 }
 
 // Sky: fullscreen triangle, no vertex buffer, depth test but no depth write.
-unsafe fn sky_pipeline(r: &mut state.Renderer) -> bool {
+unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     vertex := shader.sky_vertex()
     mut vertex_shader := r.skyVertexShader
-    if !module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader)) { return false }
+    mut code := device.shader_module(&r, addr(&vertex[0]), usize(vertex.len * 4), addr(&mut vertex_shader))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     r.skyVertexShader = vertex_shader
     fragment := shader.sky_fragment()
     mut fragment_shader := r.skyFragmentShader
-    if !module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader)) { return false }
+    code = device.shader_module(&r, addr(&fragment[0]), usize(fragment.len * 4), addr(&mut fragment_shader))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     r.skyFragmentShader = fragment_shader
 
     // inv_view_proj(64) + sun(16) + zenith(16) + horizon(16) = 112 bytes.
@@ -238,8 +234,8 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> bool {
     // Set 0: shadow map sampler + light uniform buffer.
     layout.setLayoutCount = 1
     layout.pSetLayouts = addr(&r.shadowSetLayout)
-    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout))
-    if code != 0 { return device.fail(&mut r, code) }
+    code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18
@@ -309,22 +305,23 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> bool {
     info.layout = r.skyPipelineLayout
     info.renderPass = r.renderPass
     info.basePipelineIndex = -1
-    r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.skyPipeline)) == 0
+    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.skyPipeline))
+    if code != 0 { return device.fail(&mut r, code, .Pipeline) }
+    .Ready
 }
 
-pub unsafe fn setup(r: &mut state.Renderer) -> bool {
-    r.stage = 21
-    if !targets(&mut r) { return false }
-    r.stage = 22
-    if !mesh_pipeline(&mut r) { return false }
-    r.stage = 23
-    if !sky_pipeline(&mut r) { return false }
-    r.stage = 24
+pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
+    mut step := targets(&mut r)
+    if step != .Ready { return step }
+    step = mesh_pipeline(&mut r)
+    if step != .Ready { return step }
+    step = sky_pipeline(&mut r)
+    if step != .Ready { return step }
     framebuffers(&mut r)
 }
 
 // After a swapchain recreation only the framebuffers are size-dependent.
-pub unsafe fn setup_frames_only(r: &mut state.Renderer) -> bool {
+pub unsafe fn setup_frames_only(r: &mut state.Renderer) -> state.SetupStep {
     framebuffers(&mut r)
 }
 

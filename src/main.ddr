@@ -381,8 +381,9 @@ fn main() -> i32 {
     }
     pixels := atlas.copy_pixels()
     atlas_size := atlas.size()
-    if !vulkan.ui_atlas(opened.window, pixels, atlas_size, atlas_size) {
-        _ := sys.eprint("storm: atlas upload failed")
+    uploaded := vulkan.ui_atlas(opened.window, pixels, atlas_size, atlas_size)
+    if !uploaded.ok {
+        _ := sys.eprint("storm: " + uploaded.error)
         vulkan.close(opened.window)
         return 1
     }
