@@ -17,3 +17,129 @@ import ..src.core as core
     m := core.perspective(1.0, 2.0, 0.1, 100.0)
     assert(m.m[11] == -1.0)
 }
+
+fn view_x(v: core.Mat4, p: core.Vec3) -> f32 { v.m[0] * p.x + v.m[4] * p.y + v.m[8] * p.z }
+fn view_y(v: core.Mat4, p: core.Vec3) -> f32 { v.m[1] * p.x + v.m[5] * p.y + v.m[9] * p.z }
+
+fn near(a: f32, b: f32, tolerance: f32) -> bool {
+    (a - b).abs() < tolerance
+}
+
+@test fn cube_face_views_look_along_their_face_axis() {
+    // The face order is Vulkan's layer order: +X, -X, +Y, -Y, +Z, -Z.
+    for face in 0..core.CUBE_FACE_COUNT {
+        forward := core.cube_face_forward(face)
+        up := core.cube_face_up(face)
+        // The up vector may not be parallel to the face direction.
+        assert(core.length(core.cross(forward, up)).abs() > 0.99)
+        view := core.cube_face_view(face)
+        // A point one unit along the face direction lands on the view axis,
+        // in front of the camera (negative view-space z).
+        target := core.scale(forward, 3.0)
+        x := view.m[0] * target.x + view.m[4] * target.y + view.m[8] * target.z + view.m[12]
+        y := view.m[1] * target.x + view.m[5] * target.y + view.m[9] * target.z + view.m[13]
+        z := view.m[2] * target.x + view.m[6] * target.y + view.m[10] * target.z + view.m[14]
+        assert(near(x, 0.0, 0.001) && near(y, 0.0, 0.001))
+        assert(near(z, -3.0, 0.001))
+    }
+}
+
+@test fn cube_face_basis_is_orthonormal_and_matches_the_spec_axes() {
+    // For the +X face the spec maps sc = -rz and tc = -ry. With Vulkan's
+    // clip space (x right, y down on screen) a point with +ry must therefore
+    // land at a negative view-space y, and a point with +rz at a negative x.
+    view := core.cube_face_view(0)
+    up_point_y := view_y(view, core.vec3(1.0, 0.5, 0.0))
+    z_point_x := view_x(view, core.vec3(1.0, 0.0, 0.5))
+    // Column 0 of the view is the right vector; for +X it is (0, 0, -1).
+    assert(near(view.m[0], 0.0, 0.001) && near(view.m[1], 0.0, 0.001) && near(view.m[2], -1.0, 0.001))
+    // Column 1 is the up vector (0, 1, 0): view-space y grows with world y.
+    assert(near(up_point_y, 0.5, 0.001))
+    assert(near(z_point_x, -0.5, 0.001))
+    // Every face view is a rigid rotation with unit, perpendicular axes whose
+    // right vector is cross(up, forward) for the face's own forward and up.
+    for face in 0..core.CUBE_FACE_COUNT {
+        v := core.cube_face_view(face)
+        right := core.vec3(v.m[0], v.m[1], v.m[2])
+        up := core.vec3(v.m[4], v.m[5], v.m[6])
+        back := core.vec3(v.m[8], v.m[9], v.m[10])
+        forward := core.cube_face_forward(face)
+        up_axis := core.cube_face_up(face)
+        assert(near(core.length(right), 1.0, 0.001) && near(core.length(up), 1.0, 0.001) && near(core.length(back), 1.0, 0.001))
+        assert(near(core.dot(right, up), 0.0, 0.001) && near(core.dot(right, back), 0.0, 0.001) && near(core.dot(up, back), 0.0, 0.001))
+        // The spec's sc axis is cross(up, forward), not look_at's cross(forward, up).
+        expected_right := core.cross(up_axis, forward)
+        assert(near(core.dot(right, expected_right), 1.0, 0.001))
+        // right x up = -forward (back is -forward): the face basis is
+        // left-handed by design, matching the spec's sc = cross(up, forward).
+        crossed := core.cross(right, up)
+        assert(near(core.dot(crossed, back), -1.0, 0.001))
+    }
+}
+
+@test fn perspective_maps_near_to_zero_and_far_to_one() {
+    p := core.perspective(1.57079632679, 1.0, 0.1, 10.0)
+    // 90 degrees vertical: f = 1 / tan(45 deg) = 1, Y negated for Vulkan.
+    assert(near(p.m[0], 1.0, 0.0001) && near(p.m[5], -1.0, 0.0001))
+    assert(p.m[11] == -1.0)
+    // A point straight ahead at the near plane maps to depth 0, far to 1.
+    near_point := p.m[10] * -0.1 + p.m[14]
+    near_w := p.m[11] * -0.1
+    far_point := p.m[10] * -10.0 + p.m[14]
+    far_w := p.m[11] * -10.0
+    assert(near(near_point / near_w, 0.0, 0.0001))
+    assert(near(far_point / far_w, 1.0, 0.0001))
+    // A point on the frustum edge at 45 degrees lands on the clip boundary.
+    x := p.m[0] * 1.0 + p.m[8] * -1.0
+    w := p.m[11] * -1.0
+    assert(near(x / w, 1.0, 0.0001))
+}
+
+@test fn brdf_lookup_is_one_zero_at_normal_incidence_and_zero_roughness() {
+    // A perfect mirror seen head-on: F = F0 exactly, so scale 1 and bias 0.
+    entry := core.brdf_lookup(1.0, 0.0, 512)
+    assert(near(entry.x, 1.0, 0.001))
+    assert(entry.y.abs() < 0.001)
+}
+
+@test fn brdf_lookup_loses_energy_with_roughness() {
+    // Energy leaves the specular lobe as roughness grows, so scale falls
+    // monotonically; the bias peaks just above roughness 0 (a near-delta lobe)
+    // and then falls too. The Python reference gives bias 0.0316 / 0.0254 /
+    // 0.0040 at roughness 0.1 / 0.5 / 0.9 for ndv 0.5.
+    mut previous_scale: f32 = 10.0
+    for step in 0..5 {
+        roughness := f32(step) * 0.25
+        entry := core.brdf_lookup(0.5, roughness, 256)
+        assert(entry.x < previous_scale)
+        assert(entry.x >= 0.0 && entry.x <= 1.0)
+        assert(entry.y >= 0.0 && entry.y <= 1.0)
+        previous_scale = entry.x
+    }
+    smooth := core.brdf_lookup(0.5, 0.1, 512)
+    medium := core.brdf_lookup(0.5, 0.5, 512)
+    rough := core.brdf_lookup(0.5, 0.9, 512)
+    assert(medium.y < smooth.y && rough.y < medium.y)
+}
+
+@test fn brdf_lookup_matches_the_reference_values() {
+    // Values from an independent Python implementation of the same integrand.
+    smooth := core.brdf_lookup(0.5, 0.1, 1024)
+    assert(near(smooth.x, 0.9682453, 0.002) && near(smooth.y, 0.0315998, 0.002))
+    rough := core.brdf_lookup(0.5, 0.9, 1024)
+    assert(near(rough.x, 0.2695603, 0.002) && near(rough.y, 0.0040413, 0.002))
+    grazing := core.brdf_lookup(0.1, 0.5, 1024)
+    assert(near(grazing.x, 0.1810004, 0.002) && near(grazing.y, 0.0669531, 0.002))
+}
+
+@test fn brdf_lut_is_row_major_with_one_pair_per_texel() {
+    lut := core.brdf_lut(8, 64)
+    assert(lut.len == 8 * 8 * 2)
+    // Texel (size-1, 0) is ndv = 1, roughness = 0.
+    top_right := lut[2 * 7]
+    assert(near(top_right, 1.0, 0.01))
+    // Texel (size-1, size-1) is ndv = 1, roughness = 1: scale drops to about
+    // 0.3 (the Python reference gives 0.3066) instead of the mirror's 1.0.
+    bottom_right := lut[2 * (7 * 8 + 7)]
+    assert(bottom_right > 0.25 && bottom_right < 0.35)
+}

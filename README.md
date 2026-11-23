@@ -8,7 +8,9 @@ bokförs i [docs/dogfood.md](docs/dogfood.md).
 Första milstolpen är ett riktigt Vulkan-fönster: `VK_KHR_swapchain` med
 double-buffrade frames, inte readback och inte en SDL-blit. Ovanpå det sitter en
 scengraf i ECS, en deklarativ rendergraph, en fullskärmshimmel och
-metallic-roughness-PBR med en riktad sol.
+metallic-roughness-PBR med en riktad sol och miljöbelysning: metaller speglar
+en miljökub byggd ur samma himmel, prefiltrad per roughness, med en
+CPU-genererad BRDF-LUT.
 
 ## Förutsättningar
 
@@ -33,9 +35,9 @@ för sig.
 
 | Paket | Ansvar | Beroenden |
 | --- | --- | --- |
-| [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion och multiplikation. Ren Dunder utan OS-åtkomst. | — |
+| [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove. | — |
-| [`packages/storm-vulkan`](packages/storm-vulkan) | Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push-constant-MVP, frame-sync. | — |
+| [`packages/storm-vulkan`](packages/storm-vulkan) | Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push-constant-MVP, frame-sync, skuggor, djupbuffert och IBL-kartor (miljökub, irradians, BRDF-LUT). | `core` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. | — |
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf: `LocalTransform`, förälderlänkar i ECS och djup-först-propagering till `WorldTransform`. | `core`, `ecs` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
@@ -64,6 +66,16 @@ if begun.ok {
 240 byte push constants för två matriser, material, kamera och himmelsljus.
 Ljusmatrisen ligger i en uniform buffer. Storm kontrollerar enhetens
 `maxPushConstantsSize` när den väljer GPU.
+
+Miljöbelysningen byggs en gång efter `open()` med
+`vulkan.build_environment(window, &sun, &zenith, &horizon)`: en
+`R16G16B16A16_SFLOAT`-miljökub (64 × 64 per yta, sex mipnivåer, nivå 0 är
+himlen från origo), en GGX-prefilter per mipnivå, en 16 × 16-irradianskub och
+en 64 × 64 `R32G32_SFLOAT`-BRDF-LUT som beräknas på CPU:n i `storm-core`.
+De tre kartorna binds på mesh-pipelinens descriptor set 0 (binding 2–4) och
+`mesh.frag` räknar ambientet som split-sum: `irradians · kd · albedo / π` plus
+`prefiltrad(reflection, roughness) · (F0 · skala + bias)`. Solens direkta term
+och skuggorna är oförändrade.
 
 `sky` ritar en fullskärmstriangel på långt plan och rekonstruerar en
 världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en

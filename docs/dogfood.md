@@ -148,16 +148,99 @@ lägger fältet där också. Lärdomen är densamma som för fynd 1: räkna padd
 innan ett offset-test skrivs, och låt testet fasta det C gör, inte vad man
 minns.
 
+## Uppföljning: IBL
+
+Miljöbelysningen lade till tre en-gångs-pass (himlen in i en kub, GGX-prefilter
+per mipnivå, cosinus-irradians), en CPU-genererad BRDF-LUT och tre nya
+descriptor-bindings. Fynden är i tur och ordning.
+
+**40. Push constants måste stämma över hela den delade vertexshadern.** De tre
+konvolveringspassen återanvänder miljöpassets vertexshader, som bygger
+ytans riktning ur `right`, `up` och `forward` i push constants. Första
+versionen skickade bara roughness i blocket; basen blev noll, `normalize(0)`
+gav samma riktning för varje pixel och **varje mipnivå blev en enda färg**.
+Symptomet i bilden var att guld- och stålkuben fick identiska speglingar på
+alla tre sidorna och att `textureLod(env, r, 1.0)` såg likadan ut över hela
+himlen. Minsta repro: en vertexshader som läser `push.right` och ett pass som
+trycker ett block med bara `push.roughness`. Åtgärd: `face_basis()` fyller
+basen i varje pass och fragmentshadern läser roughness efter den. Khronos
+valideringslager hade sett det som OOB-read i push constants; utan lager är
+det tyst. Rekommendation: en push-blocklayout per vertexshader, aldrig per
+fragmentshader, och en kommentar i varje shader som listar hela blocket.
+
+**41. En mipview samplas på relativ nivå.** Kedjan binder källan genom en
+`ImageViewCreateInfo` med `baseMipLevel = i`, `levelCount = 1`, men shadern
+läste `textureLod(source, l, i)`. På en view med en nivå är LOD `i` utanför
+intervallet och resultatet är odefinierat; Intel gav ett konstant
+skräpvärde per mipnivå, inte ett fel.
+Minsta repro: bind en view med `levelCount = 1` och sampla på LOD 1.
+Åtgärd: `textureLod(source, l, 0.0)`, alltid. Rekommendation: samma regel som
+för arrayer i Dunder — index relativt till det som är bundet.
+
+**42. Vidarebefordran av `&mut` kräver `&mut`.** En funktion med parametern
+`push: &mut [f32; 24]` som anropar `face_basis(push, face)` kompilerar inte:
+`push` auto-derefereras till `[f32; 24]` och felmeddelandet säger
+`expected &mut [f32; 24], got [f32; 24]`. Kompilatorns not förslår `&mut push`,
+och det fungerar. `&mut *push` är ett syntaxfel (`expected expression`).
+Rekommendation: dokumentera reborrow-formen i språkreferensen; noten räcker
+för att lösa det, men bara om man läser den.
+
+**43. Flytlitteral på vänster sida gör uttrycket f64.** Med `x: f32` är
+`x * 2.0` f32 men `2.0 * x` f64, och `f32(1.0) - y` behövs i stället för
+`(1.0).f32()`, som ger `unknown float method`. Färdighetsbladet beskriver bara
+höger sidan. Minsta repro: `mut a: f32 = 1.0; _ := 2.0 * a` i en funktion som
+förväntar f32. Rekommendation: typa litteralen efter den andra operanden när
+ena sidan redan är f32, eller låt `-`/`*` med en f64-litteral och en f32-variabel
+bli ett fel i stället för en tyst uppgradering.
+
+**44. `perspective()` mappade närplanet till −1.** Testet för
+`cube_projection()` (Vulkan, z i [0, 1]) avslöjade att det befintliga
+`perspective()` fortfarande använde OpenGL-intervallet: `m[10] = −(far+near)/(far−near)`
+ger z = −1 vid `near` och +1 vid `far`. Scenen fungerade ändå eftersom ingenting
+ligger närmare än mittan av frustumet; allt där hade klippts bort. Fixen är
+`m[10] = far/(near−far)` och `m[14] = far·near/(near−far)`, som ger 0 vid
+`near` och 1 vid `far`. x, y och w är oförändrade, så bilden är densamma.
+Rekommendation: testa projektionen mot intervallgränserna, inte bara mot
+formen på matrisen.
+
+**Grafikobservation: format på Intel Iris Plus.** Ett fristående C-prov med
+handdeklarerade Vulkan-strukturar frågade `vkGetPhysicalDeviceFormatProperties`
+för optimal tilning. `R8G8B8A8_UNORM` (37), `B8G8R8A8_UNORM` (44),
+`R16G16B16A16_SFLOAT` (97), `R32_SFLOAT` (100) och `R32G32_SFLOAT` (103) har
+alla `SAMPLED | COLOR_ATTACHMENT | BLEND | FILTER_LINEAR | TRANSFER_SRC |
+TRANSFER_DST` (råord `0x0001dd83`). En kub med sex lager, sju mipnivåer och
+`VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` skapas med `VK_SUCCESS` i format 97.
+IBL använder 97 för miljö- och irradianskuberna (HDR-solskiva) och 103 för
+BRDF-LUT:en. Provet lärde också att `VkPhysicalDeviceProperties` är 824 byte
+på 64-bitars; en kortare struct gav skräpvärden och ett segfault.
+
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 50 tester passerade, varav två nya för
-djupbuffertens clear-value-packning och renderpass-ABI. Scenexemplet
+underpaketen kördes var för sig och alla 57 tester passerade: 50 från tidigare
+(djupbuffertens clear-value-packning och renderpass-ABI bland dem) och sju nya
+i `storm-core` för IBL:n — kubytornas baser mot Vulkans (sc, tc)-axlar,
+projektionens z-intervall, när-/färplane-djup och fyra värden på BRDF-LUT:en
+mot en Python-referens (skala 1, bias 0 vid N·V = 1 och roughness 0; skala
+0.69 och bias 0.025 vid 0.5/0.5; energiförlust med roughness). Scenexemplet
 verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
 står rättvänt i den bilden. Djupbufferten verifierades med tre Captures från
 samma kamera: korrekt sortering, felsortering utan djup (kuberna försvinner)
 och felsortering med djup (identisk med den korrekta bilden, noll pixlar).
+
+IBL verifierades med pixelprober på 2256 × 1504 mot en capture av den
+oförändrade binären (`/tmp/storm-ibl-base.ppm`). Guld (metallic 1, roughness
+0.10): ovansida 225,203,188 → 186,157,142, framsida 221,197,181 → 172,143,128,
+skuggsida 207,190,184 → 140,123,119. Stål (0.28): framsida 222,218,186 →
+167,161,127, sida 212,211,200 → 138,138,126. Golvet (metallic 0.05) flyttade
+sig fyra nivåer (207,210,217 → 203,205,211), himlen och UI:t noll.
+`magick compare -metric AE -fuzz 2%` gav 85 417 pixlar (2.5 % av bilden),
+exakt 99 301; skillnaderna ligger på kubernas sidor, glaset och golvents
+ambient, inte på himlen eller UI:t. `--no-glass` och `--no-shadows` kördes
+utan krasch. Prefilterkedjan kontrollerades med `textureLod` på fasta nivåer:
+nivå 0 har struktur (framsida 100, ovansida 107, golv 146), nivå 4 är
+konvergerad (121,139,162 överallt).
 På ARM64/macOS passerade alla 83 grupper i Dunders självhostsvit, inklusive
 Hundmat och Skrift. Linuxkörningen gav 79 av 81 godkända grupper. DWARF-provet
 passerade separat med LLVM:s `dwarfdump`. HTTP-klientens prov för avbrott under

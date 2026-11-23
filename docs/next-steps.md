@@ -2,7 +2,7 @@
 
 Milstolpe 2 är klar: scenträd, rendergraph, himmel och PBR-material, med
 interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Djupbufferten är också
-klar (avsnitt 0c). Det här är nästa ordning.
+klar (avsnitt 0c) och miljöbelysningen med (avsnitt 0d). Det här är nästa ordning.
 
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
@@ -27,12 +27,34 @@ Himmeln rör inte djupet. Painter's algoritmen är borta ur `main.ddr`: opaque
 ritas i deklarationsordning, bara glaset sorteras bakifrån-fram för blendingens
 skull. Beviset står i [dogfood.md](dogfood.md#uppföljning-djupbufferten).
 
-## 1. Miljöbelysning (IBL)
+## 0d. Klart: miljöbelysning (IBL)
 
-Metallytorna ser platta ut: en metall utan omgivning har bara solen att spegla.
-Nästa steg är en liten miljökub (eller en analytisk himmelmodell i shadern) som
-ger både diffus hemisfär och en speglande term, plus en BRDF-LUT om vi vill göra
-det ordentligt.
+Metallerna speglar nu himlen i stället för att se ut som pastellplast. Tre
+kartor byggs en gång vid start av `ibl.ddr`, alla från samma himmelmodell som
+`sky.frag` ritar (samma sol, zenit och horisont som `main.ddr` skickar in):
+
+- **Miljökub**, 64 × 64 per yta, `R16G16B16A16_SFLOAT`, sex mipnivåer. Nivå 0
+  är himlen renderad från origo med en fullskärmstriangel per yta (`env.vert`
+  återskapar riktningen ur ytans bas, `env.frag` ritar kurvan). Under horisonten
+  finns en markton som är ljusast vid horisonten; det är den som ger metallen
+  en ton skillnad mellan ovansida (himla) och sidor (mark).
+- **Prefiltrad spegel**, nivå *i* är en GGX-importancesamplad konvolution av
+  nivå *i − 1* med roughness *i* / 5 (`prefilter.frag`). `mesh.frag` samplar
+  med `textureLod(env, r, roughness * 5)`, så guld (0.10) får en skarpare
+  spegling än stål (0.28).
+- **Diffus irradians**, 16 × 16 per yta, cosinusviktad konvolution av nivå 0
+  (`irradiance.frag`). Diffus ambient är `irradians * kd * albedo / π`.
+- **BRDF-LUT**, 64 × 64 `R32G32_SFLOAT` med (skala, bias) per (N·V, roughness),
+  beräknad på CPU:n i `storm-core.brdf_lut` (UE4:s `IntegrateBRDF`, 512 sampel
+  per texel) och uppladdad via en staging-buffer. Spegelambient blir
+  `prefiltrad * (F0 * skala + bias)`.
+
+Kartorna binds på mesh-pipelinens descriptor set 0 som binding 2, 3 och 4;
+`shadow.ddr` äger setet och deklarerar bindingarna. Push constants är
+oförändrade (240 byte). Solens direkta term och skugguppslaget är orörda.
+Matematiken (kubytornas baser, projektionen och BRDF-integralen) ligger i
+`storm-core` och har sju tester utan display. Felen på vägen står i
+[dogfood.md](dogfood.md#uppföljning-ibl) (fynd 40–44).
 
 ## 3. Texturpipeline (text och material)
 
@@ -91,5 +113,15 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
 - Vertexbufferten är 4 MiB och mappad permanent; en mesh-ström per draw.
 - Meshpasset kräver 240 byte push constants. Enhetsvalet kontrollerar `maxPushConstantsSize`.
+- Miljökartorna byggs en gång vid start och följer inte solen om den flyttas,
+  och de innehåller bara himlen och en markton, inte scenens geometri: kuberna
+  speglar varandra inte.
+- Miljökuben är 64 × 64 med sex mipnivåer; den skarpaste nivån blurar solskivan
+  till några grader, så solens skarpa höjdpunkt kommer från den analytiska
+  soltermen och inte från miljökuben.
+- Platta kubytor ger en plan spegling per yta (samma reflektionsriktning över
+  hela ytan); en horisontlinje *inom* en yta syns först på krökta ytor.
+- Marktonen under horisonten är en fast gradient (ljusast vid horisonten), inte
+  en rendering av golvet, så golvet syns inte i kuberna.
 - Ingen `vkDestroySurfaceKHR`-anrop: `vkDestroyInstance` städar ytan.
 - Valideringslager aktiveras inte automatiskt.

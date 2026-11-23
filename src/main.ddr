@@ -193,6 +193,14 @@ fn main() -> i32 {
     light_vp := core.multiply(light_projection, light_view)
     mut light_dir_c: [f32; 4] = [sun.x, sun.y, sun.z, core.dot(light_eye, sun)]
     sky := vulkan.sky_params(sun_push, sun_color_push, zenith_push, horizon_push, light_vp.m, light_dir_c)
+    // The environment maps are built once from the same sky the dome draws,
+    // so reflections and irradiance agree with what is visible.
+    environment := vulkan.build_environment(opened.window, &sun_push, &zenith_push, &horizon_push)
+    if !environment.ok {
+        _ := sys.eprint("storm: " + environment.error)
+        vulkan.close(opened.window)
+        return 1
+    }
 
     mut show_glass := !flag("--no-glass")
     mut show_shadows := !flag("--no-shadows")
