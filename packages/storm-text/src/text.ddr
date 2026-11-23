@@ -177,6 +177,17 @@ impl Atlas {
         width
     }
 
+    pub fn pixels(&self) -> &[]u8 { &self.pixels }
+
+    // Owned copy: lets callers hand the coverage data to the GPU layer without
+    // passing a borrow across a module boundary.
+    pub fn copy_pixels(&self) -> []u8 {
+        mut out: []u8 = []
+        out.reserve(self.pixels.len)
+        for i in 0..self.pixels.len { out.push(self.pixels[i]) }
+        out
+    }
+
     pub fn coverage(&self, x: i32, y: i32) -> u8 {
         if x < 0 || y < 0 || x >= self.width || y >= self.height { return 0 }
         self.pixels[y * self.width + x]

@@ -88,6 +88,7 @@ frame-loopen exekverar.
 - **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint
 - **T** – slå av/på glaspane­rna (transparenspasset försvinner ur grafen)
 - **G** – slå av/på skuggor (skuggpasset försvinner ur grafen)
+- **E** – slå av/på filmeffekterna (överlägget)
 - **Höger musknapp + mus** – titta
 - **R** – återställ kameran, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)

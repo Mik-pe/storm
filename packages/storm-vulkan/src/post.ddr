@@ -1,0 +1,147 @@
+capability unsafe, stdio
+
+import std.sys as sys
+import .device as device
+import .layout as vk2
+import .shader as shader
+import .state as state
+
+// Cinematic overlay drawn over the finished scene.
+//
+// The frame renders straight into its target (the swapchain image or the
+// capture image) and this pass paints a fullscreen triangle on top with
+// vignette, grain, scanlines and a cool grade. It needs no scene texture, so
+// the whole thing stays inside the scene render pass.
+
+@c_layout
+struct Stages {
+    vertex: vk2.PipelineShaderStageCreateInfo,
+    fragment: vk2.PipelineShaderStageCreateInfo,
+}
+
+unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
+    mut info: vk2.ShaderModuleCreateInfo = zeroed()
+    info.sType = 16
+    info.codeSize = size
+    info.pCode = words
+    r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
+}
+
+unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
+    vert := shader.overlay_vertex()
+    frag := shader.overlay_fragment()
+    mut vert_module := ptr(0)
+    if !module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module)) { return false }
+    mut frag_module := ptr(0)
+    if !module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module)) { return false }
+    r.postVertShader = vert_module
+    r.postFragShader = frag_module
+
+    mut stages := Stages {
+        vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: 1, module: r.postVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: 16, module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+    }
+
+    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()
+    vertex_input.sType = 19
+
+    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = zeroed()
+    assembly.sType = 20
+    assembly.topology = 3
+
+    mut viewport: vk2.Viewport = zeroed()
+    viewport.width = f32(r.width)
+    viewport.height = f32(r.height)
+    viewport.maxDepth = 1.0
+    mut scissor: vk2.Rect2D = zeroed()
+    scissor.extent.width = r.width
+    scissor.extent.height = r.height
+    mut viewport_state: vk2.PipelineViewportStateCreateInfo = zeroed()
+    viewport_state.sType = 22
+    viewport_state.viewportCount = 1
+    viewport_state.pViewports = addr(&mut viewport)
+    viewport_state.scissorCount = 1
+    viewport_state.pScissors = addr(&mut scissor)
+
+    mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
+    raster.sType = 23
+    raster.polygonMode = 0
+    raster.cullMode = 0
+    raster.frontFace = 1
+    raster.lineWidth = 1.0
+
+    mut multisample: vk2.PipelineMultisampleStateCreateInfo = zeroed()
+    multisample.sType = 24
+    multisample.rasterizationSamples = 1
+
+    mut depth: vk2.PipelineDepthStencilStateCreateInfo = zeroed()
+    depth.sType = 25
+
+    mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
+    blend_attachment.blendEnable = 1
+    blend_attachment.srcColorBlendFactor = 5
+    blend_attachment.dstColorBlendFactor = 6
+    blend_attachment.colorBlendOp = 0
+    blend_attachment.srcAlphaBlendFactor = 5
+    blend_attachment.dstAlphaBlendFactor = 6
+    blend_attachment.alphaBlendOp = 0
+    blend_attachment.colorWriteMask = 15
+
+    mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
+    blend.sType = 26
+    blend.attachmentCount = 1
+    blend.pAttachments = addr(&mut blend_attachment)
+
+    mut push_range: vk2.PushConstantRange = zeroed()
+    push_range.stageFlags = 16          // fragment stage
+    push_range.size = 16
+
+    mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
+    layout_info.sType = 30
+    layout_info.pushConstantRangeCount = 1
+    layout_info.pPushConstantRanges = addr(&mut push_range)
+    if r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout)) != 0 { return false }
+
+    mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
+    info.sType = 28
+    info.stageCount = 2
+    info.pStages = addr(&mut stages)
+    info.pVertexInputState = addr(&mut vertex_input)
+    info.pInputAssemblyState = addr(&mut assembly)
+    info.pViewportState = addr(&mut viewport_state)
+    info.pRasterizationState = addr(&mut raster)
+    info.pMultisampleState = addr(&mut multisample)
+    info.pDepthStencilState = addr(&mut depth)
+    info.pColorBlendState = addr(&mut blend)
+    info.layout = r.postPipelineLayout
+    info.renderPass = r.renderPass
+    info.subpass = 0
+    info.basePipelineIndex = -1
+    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.postPipeline)) != 0 { return false }
+    true
+}
+
+pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    if !create_pipeline(&mut r) {
+        _ := sys.eprint("overlay: pipeline failed")
+        return false
+    }
+    true
+}
+
+// Draw the overlay inside the open scene pass.
+pub unsafe fn draw(r: &mut state.Renderer, time: f32, amount: f32) -> bool {
+    if r.recording == 0 || r.postPipeline == ptr(0) { return false }
+    if amount <= 0.0 { return true }
+    slot := r.current
+    r.api.CmdBindPipeline(r.commands[slot], 0, r.postPipeline)
+    mut push := [f32(r.width), f32(r.height), time, amount]
+    r.api.CmdPushConstants(r.commands[slot], r.postPipelineLayout, 16, 0, 16, addr(&mut push[0]))
+    r.api.CmdDraw(r.commands[slot], 3, 1, 0, 0)
+    true
+}
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.postPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.postPipeline, ptr(0)) }
+    if r.postPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.postPipelineLayout, ptr(0)) }
+}

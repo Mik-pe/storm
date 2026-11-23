@@ -8,10 +8,9 @@ import .state as state
 
 // Headless frame capture.
 //
-// The frame is rendered into a linear colour image with host-visible memory.
-
-@c_layout
-struct DependencyPair { before: vk.SubpassDependency, after: vk.SubpassDependency }
+// The scene renders into the shared offscreen image and the post pass writes
+// the finished frame into this linear, host-visible colour image. The pixels
+// are then read straight out of mapped memory.
 
 unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> bool {
     info := device.image_2d_info(format, width, height, tiling, usage)
@@ -59,62 +58,21 @@ pub fn capture_layout_fits(width: u32, height: u32, layout: &vk.SubresourceLayou
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     if r.width == 0 || r.height == 0 { return false }
     if r.format != 37 && r.format != 43 && r.format != 44 && r.format != 50 { return false }
-    mut off_image := ptr(0)
-    mut off_memory := ptr(0)
-    mut off_size: [u64; 1] = [0]
-    if !make_image(&r, r.format, r.width, r.height, vk.IMAGE_TILING_LINEAR, 17, 6, addr(&mut off_image), addr(&mut off_memory), addr(&mut off_size[0])) {
-        _ := sys.eprint("capture: no offscreen image")
+    mut target := ptr(0)
+    mut target_memory := ptr(0)
+    mut target_size: [u64; 1] = [0]
+    // LINEAR so its memory can be mapped and read straight back.
+    if !make_image(&r, r.format, r.width, r.height, vk.IMAGE_TILING_LINEAR, 17, 6, addr(&mut target), addr(&mut target_memory), addr(&mut target_size[0])) {
+        _ := sys.eprint("capture: no target image")
         return false
     }
-    view := make_view(&r, off_image, r.format)
+    view := make_view(&r, target, r.format)
     if view == ptr(0) { return false }
-
-    mut color: vk.AttachmentDescription = zeroed()
-    color.format = r.format
-    color.samples = 1
-    color.loadOp = 1
-    color.storeOp = 1
-    color.stencilLoadOp = 2
-    color.stencilStoreOp = 1
-    color.initialLayout = 0
-    color.finalLayout = 2
-    mut color_ref: vk.AttachmentReference = zeroed()
-    color_ref.attachment = 0
-    color_ref.layout = 2
-    mut subpass: vk.SubpassDescription = zeroed()
-    subpass.pipelineBindPoint = 0
-    subpass.colorAttachmentCount = 1
-    subpass.pColorAttachments = addr(&color_ref)
-    mut before: vk.SubpassDependency = zeroed()
-    before.srcSubpass = 4294967295
-    before.dstSubpass = 0
-    before.srcStageMask = 1024
-    before.dstStageMask = 1024
-    before.dstAccessMask = 256
-    mut after: vk.SubpassDependency = zeroed()
-    after.srcSubpass = 0
-    after.dstSubpass = 4294967295
-    after.srcStageMask = 1024
-    after.dstStageMask = 4096
-    after.srcAccessMask = 256
-    mut dependencies: DependencyPair = zeroed()
-    dependencies.before = before
-    dependencies.after = after
-    mut pass_info: vk.RenderPassCreateInfo = zeroed()
-    pass_info.sType = 38
-    pass_info.attachmentCount = 1
-    pass_info.pAttachments = addr(&color)
-    pass_info.subpassCount = 1
-    pass_info.pSubpasses = addr(&subpass)
-    pass_info.dependencyCount = 2
-    pass_info.pDependencies = addr(&dependencies)
-    mut pass := r.renderPass
-    _ := pass_info
 
     mut views: [ptr; 1] = [view]
     mut fbi: vk.FramebufferCreateInfo = zeroed()
     fbi.sType = 37
-    fbi.renderPass = pass
+    fbi.renderPass = r.renderPass
     fbi.attachmentCount = 1
     fbi.pAttachments = addr(&views[0])
     fbi.width = r.width
@@ -123,21 +81,17 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     mut framebuffer := ptr(0)
     if r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer)) != 0 { return false }
 
-    // Destination: LINEAR so its memory can be mapped and read.
     mut mapped := ptr(0)
-    if r.api.MapMemory(r.device, off_memory, 0, off_size[0], 0, addr(&mut mapped)) != 0 { return false }
+    if r.api.MapMemory(r.device, target_memory, 0, target_size[0], 0, addr(&mut mapped)) != 0 { return false }
     mut sub: [u32; 3] = [1, 0, 0]
     mut layout: vk.SubresourceLayout = zeroed()
-    r.api.GetImageSubresourceLayout(r.device, off_image, addr(&mut sub[0]), addr(&mut layout))
-    if !capture_layout_fits(r.width, r.height, &layout, off_size[0]) { return false }
+    r.api.GetImageSubresourceLayout(r.device, target, addr(&mut sub[0]), addr(&mut layout))
+    if !capture_layout_fits(r.width, r.height, &layout, target_size[0]) { return false }
 
-    r.offscreenImage = off_image
-    r.offscreenView = view
-    r.offscreenPass = pass
-    r.offscreenFramebuffer = framebuffer
-    r.linearImage = off_image
-    r.linearMemory = off_memory
+    r.linearImage = target
+    r.linearMemory = target_memory
     r.linearMapped = ptr(usize(mapped) + usize(layout.offset))
+    r.captureFramebuffer = framebuffer
     r.captureWidth = r.width
     r.captureHeight = r.height
     r.capturePitch = layout.rowPitch

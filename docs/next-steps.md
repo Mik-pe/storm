@@ -8,6 +8,15 @@ interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Det här är nästa ordn
 Skuggpass med MAX-blending i en R32-bild, transparent pass med egen blend-pipeline
 och en rendergraph som byggs om varje frame utifrån scenens innehåll. Kvar nedan.
 
+## 0b. Textrenderingen
+
+Atlasen packas på CPU och laddas upp via staging-buffer till en OPTIMAL-tilad
+R32_SFLOAT-bild, men samplingen ger noll. Läs tillbaka bilden med
+`vkCmdCopyImageToBuffer` och jämför med CPU-atlasen, och verifiera
+`vkGetPhysicalDeviceFormatProperties` för R32_SFLOAT med SAMPLED + linear
+filtering. Alternativ: rendera atlasen till en bild via ett eget renderpass
+(den vägen är bevisad fungera för skuggkartan).
+
 ## 1. Djupbuffert
 
 Både C-provet och Storms typade bildbeskrivning skapade D16- och D32-bilder

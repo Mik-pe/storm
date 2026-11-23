@@ -1,0 +1,482 @@
+capability unsafe, stdio
+
+import std.sys as sys
+import .device as device
+import .layout as vk2
+import .shader as shader
+import .state as state
+
+// Immediate-mode UI drawing.
+//
+// One dynamic vertex buffer holds solid rectangles and glyph quads. Rectangles
+// use uv.x < 0 and are filled with the vertex colour; glyphs sample the
+// coverage atlas uploaded from the text package.
+
+const FORMAT_R8_UNORM: u32 = 100   // R32_SFLOAT: the format proven to sample here
+const LAYOUT_SHADER_READ: u32 = 5
+const FLOATS_PER_VERTEX: u32 = 8
+const ATLAS_SIZE: u32 = 1024
+
+@extern("c", "memcpy")
+unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
+
+@c_layout
+struct AtlasImage { image: ptr, memory: ptr, mapped: ptr }
+
+unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
+    mut words: [u32; 22] = [0; 22]
+    words[0] = 14
+    words[5] = 1
+    words[6] = FORMAT_R8_UNORM
+    words[7] = ATLAS_SIZE
+    words[8] = ATLAS_SIZE
+    words[9] = 1
+    words[10] = 1
+    words[11] = 1
+    words[12] = 1
+    words[13] = 1          // OPTIMAL: linear-tiled images are not sampleable here
+    words[14] = 6          // VK_IMAGE_USAGE_SAMPLED_BIT | TRANSFER_DST_BIT
+    mut image := ptr(0)
+    if r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image)) != 0 { return false }
+    mut requirements: vk2.MemoryRequirements = zeroed()
+    r.api.GetImageMemoryRequirements(r.device, image, addr(&mut requirements))
+    mut memory := ptr(0)
+    if !device.allocate(&r, &requirements, 6, addr(&mut memory)) { return false }
+    if memory == ptr(0) { return false }
+    if r.api.BindImageMemory(r.device, image, memory, 0) != 0 { return false }
+    mut view_info: vk2.ImageViewCreateInfo = zeroed()
+    view_info.sType = 15
+    view_info.image = image
+    view_info.viewType = 1
+    view_info.format = FORMAT_R8_UNORM
+    view_info.subresourceRange.aspectMask = 1
+    view_info.subresourceRange.levelCount = 1
+    view_info.subresourceRange.layerCount = 1
+    mut view := ptr(0)
+    if r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view)) != 0 { return false }
+
+    mut sampler_info: vk2.SamplerCreateInfo = zeroed()
+    sampler_info.sType = 31
+    sampler_info.magFilter = 0
+    sampler_info.minFilter = 0
+    sampler_info.mipmapMode = 1
+    sampler_info.addressModeU = 2
+    sampler_info.addressModeV = 2
+    sampler_info.addressModeW = 2
+    sampler_info.maxLod = 1.0
+    mut sampler := ptr(0)
+    if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
+
+    mut binding: [u64; 3] = [0; 3]
+    binding[0] = u64(1).shl(32)                 // binding 0, COMBINED_IMAGE_SAMPLER
+    binding[1] = u64(1) + (u64(16).shl(32))     // count 1, stage FRAGMENT
+    mut layout_info: vk2.DescriptorSetLayoutCreateInfo = zeroed()
+    layout_info.sType = 32
+    layout_info.bindingCount = 1
+    layout_info.pBindings = ptr(usize(addr(&mut binding[0])))
+    if r.api.CreateDescriptorSetLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiSetLayout)) != 0 { return false }
+
+    mut pool_size: [u32; 2] = [1, 1]
+    mut pool_info: vk2.DescriptorPoolCreateInfo = zeroed()
+    pool_info.sType = 33
+    pool_info.maxSets = 1
+    pool_info.poolSizeCount = 1
+    pool_info.pPoolSizes = ptr(usize(addr(&mut pool_size[0])))
+    if r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut r.uiPool)) != 0 { return false }
+
+    mut allocate_info: vk2.DescriptorSetAllocateInfo = zeroed()
+    allocate_info.sType = 34
+    allocate_info.descriptorPool = r.uiPool
+    allocate_info.descriptorSetCount = 1
+    allocate_info.pSetLayouts = addr(&mut r.uiSetLayout)
+    if r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut r.uiSet)) != 0 { return false }
+
+    mut image_info: vk2.DescriptorImageInfo = zeroed()
+    image_info.sampler = sampler
+    image_info.imageView = view
+    image_info.imageLayout = LAYOUT_SHADER_READ
+    mut write: vk2.WriteDescriptorSet = zeroed()
+    write.sType = 35
+    write.dstSet = r.uiSet
+    write.dstBinding = 0
+    write.descriptorCount = 1
+    write.descriptorType = 1
+    write.pImageInfo = addr(&mut image_info)
+    r.api.UpdateDescriptorSets(r.device, 1, addr(&mut write), 0, ptr(0))
+
+    r.uiAtlasImage = image
+    r.uiAtlasMemory = memory
+    r.uiAtlasView = view
+    r.uiSampler = sampler
+    true
+}
+
+@c_layout
+struct Stages {
+    vertex: vk2.PipelineShaderStageCreateInfo,
+    fragment: vk2.PipelineShaderStageCreateInfo,
+}
+
+@c_layout
+struct Attributes {
+    position: vk2.VertexInputAttributeDescription,
+    uv: vk2.VertexInputAttributeDescription,
+    color: vk2.VertexInputAttributeDescription,
+}
+
+unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
+    vert := shader.ui_vertex()
+    frag := shader.ui_fragment()
+    mut vert_module := ptr(0)
+    if !module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module)) { return false }
+    mut frag_module := ptr(0)
+    if !module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module)) { return false }
+    r.uiVertShader = vert_module
+    r.uiFragShader = frag_module
+
+    mut stages := Stages {
+        vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: 1, module: r.uiVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: 16, module: r.uiFragShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+    }
+
+    mut binding_desc: vk2.VertexInputBindingDescription = zeroed()
+    binding_desc.binding = 0
+    binding_desc.stride = FLOATS_PER_VERTEX * 4
+    binding_desc.inputRate = 0
+
+    mut attributes := Attributes {
+        position: vk2.VertexInputAttributeDescription { location: 0, binding: 0, format: 109, offset: 0 },
+        uv: vk2.VertexInputAttributeDescription { location: 0, binding: 0, format: 109, offset: 0 },
+        color: vk2.VertexInputAttributeDescription { location: 1, binding: 0, format: 109, offset: 16 },
+    }
+
+    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()
+    vertex_input.sType = 19
+    vertex_input.vertexBindingDescriptionCount = 1
+    vertex_input.pVertexBindingDescriptions = addr(&mut binding_desc)
+    vertex_input.vertexAttributeDescriptionCount = 2
+    vertex_input.pVertexAttributeDescriptions = addr(&mut attributes)
+
+    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = zeroed()
+    assembly.sType = 20
+    assembly.topology = 3
+
+    // A fixed viewport must be supplied: without pViewports the pipeline draws
+    // nothing at all on this driver.
+    mut viewport: vk2.Viewport = zeroed()
+    viewport.width = f32(r.width)
+    viewport.height = f32(r.height)
+    viewport.maxDepth = 1.0
+    mut scissor: vk2.Rect2D = zeroed()
+    scissor.extent.width = r.width
+    scissor.extent.height = r.height
+    mut viewport_state: vk2.PipelineViewportStateCreateInfo = zeroed()
+    viewport_state.sType = 22
+    viewport_state.viewportCount = 1
+    viewport_state.pViewports = addr(&mut viewport)
+    viewport_state.scissorCount = 1
+    viewport_state.pScissors = addr(&mut scissor)
+
+    mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
+    raster.sType = 23
+    raster.polygonMode = 0
+    raster.cullMode = 0
+    raster.frontFace = 1
+    raster.lineWidth = 1.0
+
+    mut multisample: vk2.PipelineMultisampleStateCreateInfo = zeroed()
+    multisample.sType = 24
+    multisample.rasterizationSamples = 1
+
+    mut depth: vk2.PipelineDepthStencilStateCreateInfo = zeroed()
+    depth.sType = 25
+
+    mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
+    blend_attachment.blendEnable = 1
+    blend_attachment.srcColorBlendFactor = 5
+    blend_attachment.dstColorBlendFactor = 6
+    blend_attachment.colorBlendOp = 0
+    blend_attachment.srcAlphaBlendFactor = 5
+    blend_attachment.dstAlphaBlendFactor = 6
+    blend_attachment.alphaBlendOp = 0
+    blend_attachment.colorWriteMask = 15
+
+    mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
+    blend.sType = 26
+    blend.attachmentCount = 1
+    blend.pAttachments = addr(&mut blend_attachment)
+
+    mut push_range: vk2.PushConstantRange = zeroed()
+    push_range.stageFlags = 1          // vertex stage
+    push_range.size = 16
+
+    mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
+    layout_info.sType = 30
+    layout_info.setLayoutCount = 1
+    layout_info.pSetLayouts = addr(&mut r.uiSetLayout)
+    layout_info.pushConstantRangeCount = 1
+    layout_info.pPushConstantRanges = addr(&mut push_range)
+    if r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout)) != 0 { return false }
+
+    mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
+    info.sType = 28
+    info.stageCount = 2
+    info.pStages = addr(&mut stages)
+    info.pVertexInputState = addr(&mut vertex_input)
+    info.pInputAssemblyState = addr(&mut assembly)
+    info.pViewportState = addr(&mut viewport_state)
+    info.pRasterizationState = addr(&mut raster)
+    info.pMultisampleState = addr(&mut multisample)
+    info.pDepthStencilState = addr(&mut depth)
+    info.pColorBlendState = addr(&mut blend)
+    info.layout = r.uiPipelineLayout
+    info.renderPass = r.renderPass
+    info.subpass = 0
+    info.basePipelineIndex = -1
+    if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.uiPipeline)) != 0 { return false }
+
+    true
+}
+
+unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
+    mut info: vk2.ShaderModuleCreateInfo = zeroed()
+    info.sType = 16
+    info.codeSize = size
+    info.pCode = words
+    r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
+}
+
+unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
+    mut info: vk2.BufferCreateInfo = zeroed()
+    info.sType = 12
+    info.size = bytes
+    info.usage = 128
+    info.sharingMode = 0
+    mut handle := ptr(0)
+    if r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle)) != 0 { return false }
+    mut requirements: vk2.MemoryRequirements = zeroed()
+    r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
+    mut memory := ptr(0)
+    if !device.allocate(&r, &requirements, 6, addr(&mut memory)) { return false }
+    if memory == ptr(0) { return false }
+    if r.api.BindBufferMemory(r.device, handle, memory, 0) != 0 { return false }
+    mut mapped := ptr(0)
+    if r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped)) != 0 { return false }
+    r.uiVertex.handle = handle
+    r.uiVertex.memory = memory
+    r.uiVertex.mapped = mapped
+    r.uiVertex.capacity = bytes
+    true
+}
+
+// One-shot barrier on the graphics queue.
+unsafe fn submit_barrier(r: &mut state.Renderer, src_stage: u32, dst_stage: u32, src_access: u32, dst_access: u32, old_layout: u32, new_layout: u32) -> bool {
+    mut alloc: vk2.CommandBufferAllocateInfo = zeroed()
+    alloc.sType = 40
+    alloc.commandPool = r.pool
+    alloc.level = 0
+    alloc.commandBufferCount = 1
+    mut cmd := ptr(0)
+    if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
+    mut begin: vk2.CommandBufferBeginInfo = zeroed()
+    begin.sType = 42
+    begin.flags = 1
+    if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
+    mut barrier: vk2.ImageMemoryBarrier = zeroed()
+    barrier.sType = 45
+    barrier.srcAccessMask = src_access
+    barrier.dstAccessMask = dst_access
+    barrier.oldLayout = old_layout
+    barrier.newLayout = new_layout
+    barrier.srcQueueFamilyIndex = 4294967295
+    barrier.dstQueueFamilyIndex = 4294967295
+    barrier.image = r.uiAtlasImage
+    barrier.subresourceRange.aspectMask = 1
+    barrier.subresourceRange.levelCount = 1
+    barrier.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
+    if r.api.EndCommandBuffer(cmd) != 0 { return false }
+    mut submit: vk2.SubmitInfo = zeroed()
+    submit.sType = 4
+    submit.commandBufferCount = 1
+    submit.pCommandBuffers = addr(&mut cmd)
+    if r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0)) != 0 { return false }
+    _ := r.api.QueueWaitIdle(r.queue)
+    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
+    true
+}
+
+// A fresh image is in VK_IMAGE_LAYOUT_UNDEFINED; sampling it needs an explicit
+// transition to SHADER_READ_ONLY_OPTIMAL.
+unsafe fn transition_atlas(r: &mut state.Renderer) -> bool {
+    mut alloc: vk2.CommandBufferAllocateInfo = zeroed()
+    alloc.sType = 40
+    alloc.commandPool = r.pool
+    alloc.level = 0
+    alloc.commandBufferCount = 1
+    mut cmd := ptr(0)
+    if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
+    mut begin: vk2.CommandBufferBeginInfo = zeroed()
+    begin.sType = 42
+    begin.flags = 1
+    if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
+    mut barrier: vk2.ImageMemoryBarrier = zeroed()
+    barrier.sType = 45
+    barrier.dstAccessMask = 32          // SHADER_READ
+    barrier.oldLayout = 0               // UNDEFINED
+    barrier.newLayout = 5               // SHADER_READ_ONLY_OPTIMAL
+    barrier.srcQueueFamilyIndex = 4294967295
+    barrier.dstQueueFamilyIndex = 4294967295
+    barrier.image = r.uiAtlasImage
+    barrier.subresourceRange.aspectMask = 1
+    barrier.subresourceRange.levelCount = 1
+    barrier.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, 1, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
+    if r.api.EndCommandBuffer(cmd) != 0 { return false }
+    mut submit: vk2.SubmitInfo = zeroed()
+    submit.sType = 4
+    submit.commandBufferCount = 1
+    submit.pCommandBuffers = addr(&mut cmd)
+    if r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0)) != 0 { return false }
+    _ := r.api.QueueWaitIdle(r.queue)
+    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
+    true
+}
+
+pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    if !create_atlas(&mut r) {
+        _ := sys.eprint("ui: no atlas")
+        return false
+    }
+    if !create_pipeline(&mut r) { return false }
+    if !create_buffer(&mut r, 1048576) { return false }
+    true
+}
+
+// Upload the coverage atlas once the glyphs have been packed. The pixels go
+// through a host-visible staging buffer because the atlas itself has to be
+// OPTIMAL tiled to be sampleable on this driver.
+pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32) -> bool {
+    if width <= 0 || height <= 0 || width > i32(ATLAS_SIZE) || height > i32(ATLAS_SIZE) { return false }
+    pixels_count := u64(width) * u64(height)
+    bytes := pixels_count * 4
+    if pixels_count == 0 { return false }
+
+    mut stage_info: vk2.BufferCreateInfo = zeroed()
+    stage_info.sType = 12
+    stage_info.size = bytes
+    stage_info.usage = 64          // TRANSFER_SRC
+    stage_info.sharingMode = 0
+    mut staging := ptr(0)
+    if r.api.CreateBuffer(r.device, addr(&stage_info), ptr(0), addr(&mut staging)) != 0 { return false }
+    mut requirements: vk2.MemoryRequirements = zeroed()
+    r.api.GetBufferMemoryRequirements(r.device, staging, addr(&mut requirements))
+    mut staging_memory := ptr(0)
+    if !device.allocate(&r, &requirements, 6, addr(&mut staging_memory)) { return false }
+    if r.api.BindBufferMemory(r.device, staging, staging_memory, 0) != 0 { return false }
+    mut mapped := ptr(0)
+    if r.api.MapMemory(r.device, staging_memory, 0, bytes, 0, addr(&mut mapped)) != 0 { return false }
+    // Widen the coverage bytes to floats so the atlas matches the shadow map's
+    // format, which this driver samples without trouble. The widening happens in
+    // a local array and is memcpy'd in: store_f32 on a computed pointer does not
+    // reach memory here (same Dunder quirk as the light buffer).
+    mut widened: []f32 = []
+    widened.reserve(pixels.len)
+    for i in 0..pixels.len { widened.push(f32(pixels[i]) / 255.0) }
+    _ := copy_bytes(mapped, ptr(usize(addr(&widened[0]))), usize(bytes))
+
+    mut alloc: vk2.CommandBufferAllocateInfo = zeroed()
+    alloc.sType = 40
+    alloc.commandPool = r.pool
+    alloc.level = 0
+    alloc.commandBufferCount = 1
+    mut cmd := ptr(0)
+    if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
+    mut begin: vk2.CommandBufferBeginInfo = zeroed()
+    begin.sType = 42
+    begin.flags = 1
+    if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
+
+    mut to_transfer: vk2.ImageMemoryBarrier = zeroed()
+    to_transfer.sType = 45
+    to_transfer.dstAccessMask = 4096          // TRANSFER_WRITE
+    to_transfer.oldLayout = 0                 // UNDEFINED
+    to_transfer.newLayout = 3                 // TRANSFER_DST_OPTIMAL
+    to_transfer.srcQueueFamilyIndex = 4294967295
+    to_transfer.dstQueueFamilyIndex = 4294967295
+    to_transfer.image = r.uiAtlasImage
+    to_transfer.subresourceRange.aspectMask = 1
+    to_transfer.subresourceRange.levelCount = 1
+    to_transfer.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, 1, 4096, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_transfer))
+
+    mut copy: vk2.BufferImageCopy = zeroed()
+    copy.imageSubresource.aspectMask = 1
+    copy.imageSubresource.mipLevel = 0
+    copy.imageSubresource.baseArrayLayer = 0
+    copy.imageSubresource.layerCount = 1
+    copy.imageExtent.width = u32(width)
+    copy.imageExtent.height = u32(height)
+    copy.imageExtent.depth = 1
+    r.api.CmdCopyBufferToImage(cmd, staging, r.uiAtlasImage, 3, 1, addr(&mut copy))
+
+    mut to_sample: vk2.ImageMemoryBarrier = zeroed()
+    to_sample.sType = 45
+    to_sample.srcAccessMask = 4096            // TRANSFER_WRITE
+    to_sample.dstAccessMask = 32              // SHADER_READ
+    to_sample.oldLayout = 3
+    to_sample.newLayout = LAYOUT_SHADER_READ
+    to_sample.srcQueueFamilyIndex = 4294967295
+    to_sample.dstQueueFamilyIndex = 4294967295
+    to_sample.image = r.uiAtlasImage
+    to_sample.subresourceRange.aspectMask = 1
+    to_sample.subresourceRange.levelCount = 1
+    to_sample.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, 4096, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_sample))
+
+    if r.api.EndCommandBuffer(cmd) != 0 { return false }
+    mut submit: vk2.SubmitInfo = zeroed()
+    submit.sType = 4
+    submit.commandBufferCount = 1
+    submit.pCommandBuffers = addr(&mut cmd)
+    if r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0)) != 0 { return false }
+    _ := r.api.QueueWaitIdle(r.queue)
+    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
+    _ := r.api.UnmapMemory(r.device, staging_memory)
+    r.api.DestroyBuffer(r.device, staging, ptr(0))
+    r.api.FreeMemory(r.device, staging_memory, ptr(0))
+    true
+}
+
+// Push vertices and draw them. Rectangles set uv.x to -1.
+pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) -> bool {
+    if r.recording == 0 || vertices.len == 0 { return false }
+    bytes := u64(vertices.len) * 4
+    if r.uiCursor + bytes > r.uiVertex.capacity { return false }
+    _ := copy_bytes(ptr(usize(r.uiVertex.mapped) + usize(r.uiCursor)), ptr(usize(addr(&vertices[0]))), usize(bytes))
+    slot := r.current
+    r.api.CmdBindPipeline(r.commands[slot], 0, r.uiPipeline)
+    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.uiPipelineLayout, 0, 1, addr(&r.uiSet), 0, ptr(0))
+    mut push := [screen[0], screen[1], 0.0, 0.0]
+    r.api.CmdPushConstants(r.commands[slot], r.uiPipelineLayout, 1, 0, 16, addr(&mut push[0]))
+    mut offset: u64 = r.uiCursor
+    r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.uiVertex.handle), addr(&mut offset))
+    count := i32(vertices.len) / i32(FLOATS_PER_VERTEX)
+    r.api.CmdDraw(r.commands[slot], u32(count), 1, 0, 0)
+    r.uiCursor = r.uiCursor + bytes
+    true
+}
+
+pub unsafe fn reset(r: &mut state.Renderer) {
+    r.uiCursor = 0
+}
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.uiPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.uiPipeline, ptr(0)) }
+    if r.uiPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.uiPipelineLayout, ptr(0)) }
+    if r.uiSampler != ptr(0) { r.api.DestroySampler(r.device, r.uiSampler, ptr(0)) }
+    if r.uiSetLayout != ptr(0) { r.api.DestroyDescriptorSetLayout(r.device, r.uiSetLayout, ptr(0)) }
+    if r.uiPool != ptr(0) { r.api.DestroyDescriptorPool(r.device, r.uiPool, ptr(0)) }
+    if r.uiAtlasView != ptr(0) { r.api.DestroyImageView(r.device, r.uiAtlasView, ptr(0)) }
+    if r.uiAtlasImage != ptr(0) { r.api.DestroyImage(r.device, r.uiAtlasImage, ptr(0)) }
+}

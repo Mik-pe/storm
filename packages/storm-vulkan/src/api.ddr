@@ -57,6 +57,7 @@ pub struct Api {
     DestroyCommandPool: extern fn(ptr, ptr, ptr),
     DestroyBuffer: extern fn(ptr, ptr, ptr),
     FreeMemory: extern fn(ptr, ptr, ptr),
+    FreeCommandBuffers: extern fn(ptr, ptr, u32, ptr),
     DeviceWaitIdle: extern fn(ptr) -> i32,
     QueueWaitIdle: extern fn(ptr) -> i32,
     DestroyDevice: extern fn(ptr, ptr),
@@ -70,6 +71,7 @@ pub struct Api {
     CmdDraw: extern fn(ptr, u32, u32, u32, u32),
     CmdPushConstants: extern fn(ptr, ptr, u32, u32, u32, ptr),
     CmdPipelineBarrier: extern fn(ptr, u32, u32, u32, u32, ptr, u32, ptr, u32, ptr),
+    CmdCopyBufferToImage: extern fn(ptr, ptr, ptr, u32, u32, ptr),
     GetImageSubresourceLayout: extern fn(ptr, ptr, ptr, ptr),
     QueueSubmit: extern fn(ptr, u32, ptr, ptr) -> i32,
     CreateSampler: extern fn(ptr, ptr, ptr, ptr) -> i32,
@@ -237,6 +239,9 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkDestroyBuffer"))
     if symbol == ptr(0) { return false }
     api.DestroyBuffer = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkFreeCommandBuffers"))
+    if symbol == ptr(0) { return false }
+    api.FreeCommandBuffers = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkFreeMemory"))
     if symbol == ptr(0) { return false }
     api.FreeMemory = ffi_fn(symbol)
@@ -276,6 +281,9 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkCmdPushConstants"))
     if symbol == ptr(0) { return false }
     api.CmdPushConstants = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCmdCopyBufferToImage"))
+    if symbol == ptr(0) { return false }
+    api.CmdCopyBufferToImage = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkCmdPipelineBarrier"))
     if symbol == ptr(0) { return false }
     api.CmdPipelineBarrier = ffi_fn(symbol)

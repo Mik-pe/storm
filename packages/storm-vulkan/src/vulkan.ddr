@@ -1,13 +1,16 @@
-capability unsafe
+capability unsafe, stdio
 
 import std.bytes as b
 import std.dl as dl
+import std.sys as sys
 import .api as api
 import .device as device
 import .headless as headless
 import .layout as vk
 import .pipeline as pipeline
+import .post as post
 import .shadow as shadow
+import .ui as ui
 import .sdl as sdl
 import .state as state
 
@@ -87,6 +90,8 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     if !shadow.setup(&mut r) { return false }
     r.stage = 3
     if !pipeline.setup(&mut r) { return false }
+    if !post.setup(&mut r) { return false }
+    if !ui.setup(&mut r) { return false }
     r.stage = 4
     if !device.setup_frames(&mut r) { return false }
     r.stage = 5
@@ -327,16 +332,11 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
         return BeginResult { ok: false, error: "beginning the command buffer failed", width: 0, height: 0 }
     }
-    mut clear_color: [f32; 4] = [0.02, 0.03, 0.05, 1.0]
+    mut clear_color: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
     mut pass: vk.RenderPassBeginInfo = zeroed()
     pass.sType = 43
-    if r.captureOn == 1 {
-        pass.renderPass = r.offscreenPass
-        pass.framebuffer = r.offscreenFramebuffer
-    } else {
-        pass.renderPass = r.renderPass
-        pass.framebuffer = r.framebuffers[i32(image_index)]
-    }
+    pass.renderPass = r.renderPass
+    pass.framebuffer = if r.captureOn == 1 { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
     pass.renderArea.extent.width = r.width
     pass.renderArea.extent.height = r.height
     pass.clearValueCount = 1
@@ -426,6 +426,24 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     if r.recording == 0 { return draw_error(r.frameIndex, "end without begin") }
     slot := r.current
     r.api.CmdEndRenderPass(r.commands[slot])
+    if r.captureOn != 1 {
+        // The scene pass leaves the image in COLOR_ATTACHMENT_OPTIMAL because
+        // the capture path reads it straight back. Presentation needs its own
+        // layout, so transition explicitly before submitting.
+        mut barrier: vk.ImageMemoryBarrier = zeroed()
+        barrier.sType = 45
+        barrier.srcAccessMask = 256
+        barrier.dstAccessMask = 0
+        barrier.oldLayout = 2
+        barrier.newLayout = 1000001002
+        barrier.srcQueueFamilyIndex = 4294967295
+        barrier.dstQueueFamilyIndex = 4294967295
+        barrier.image = r.images[r.imageIndex]
+        barrier.subresourceRange.aspectMask = 1
+        barrier.subresourceRange.levelCount = 1
+        barrier.subresourceRange.layerCount = 1
+        r.api.CmdPipelineBarrier(r.commands[slot], 1024, 4096, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
+    }
     if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
         r.recording = 0
         return draw_error(r.frameIndex, "ending the command buffer failed")
@@ -563,6 +581,44 @@ pub fn mesh_blended(window: Window, vertices: &[]f32, mvp: &[f32; 16], model: &[
     }
 }
 
+// Paint the cinematic overlay over the finished scene.
+pub fn overlay(window: Window, time: f32, amount: f32) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        if !post.draw(ref_at(address), time, amount) { return draw_error(0, "overlay draw failed") }
+        DrawResult { ok: true, error: "", frames: 0 }
+    }
+}
+
+// Draw UI quads in screen pixels. Rectangles set uv.x to -1.
+pub fn ui_draw(window: Window, vertices: []f32, screen: [f32; 2]) -> DrawResult {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return draw_error(0, "invalid or expired window handle") }
+        if !ui.draw(ref_at(address), vertices, screen) { return draw_error(0, "UI draw failed") }
+        DrawResult { ok: true, error: "", frames: 0 }
+    }
+}
+
+// Reset the UI vertex cursor; called once per frame before building quads.
+pub fn ui_reset(window: Window) {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return }
+        ui.reset(ref_at(address))
+    }
+}
+
+// Upload the packed glyph coverage atlas.
+pub fn ui_atlas(window: Window, pixels: []u8, width: i32, height: i32) -> bool {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return false }
+        return ui.upload_atlas(ref_at(address), pixels, width, height)
+    }
+}
+
 pub fn end(window: Window) -> DrawResult {
     unsafe {
         address := active(ref_at(registry_address()), window)
@@ -592,6 +648,8 @@ pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon:
 // ---- Teardown ----
 
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
+    post.destroy(&mut r)
+    ui.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)
     sdl.close(&mut r.window)

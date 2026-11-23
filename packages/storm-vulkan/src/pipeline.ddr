@@ -24,15 +24,17 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
     color.format = r.format
     color.samples = 1
     color.loadOp = 1
-    color.storeOp = 1
+    // STORE matters now: the post pass samples this image afterwards.
+    color.storeOp = 0
     color.stencilLoadOp = 2
     color.stencilStoreOp = 1
     color.initialLayout = 0
-    color.finalLayout = 1000001002
+    // The target is left ready for presentation: end_frame transitions it.
+    color.finalLayout = 2
     attachments := Attachments { color: color }
     mut color_ref: vk.AttachmentReference = zeroed()
     color_ref.attachment = 0
-    color_ref.layout = 1
+    color_ref.layout = 2
 
     mut subpass: vk.SubpassDescription = zeroed()
     subpass.pipelineBindPoint = 0
@@ -74,7 +76,7 @@ unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
         info.sType = 37
         info.renderPass = r.renderPass
         info.attachmentCount = 1
-        info.pAttachments = addr(&views[0])
+        info.pAttachments = addr(&mut views[0])
         info.width = r.width
         info.height = r.height
         info.layers = 1

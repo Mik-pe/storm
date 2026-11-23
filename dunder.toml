@@ -11,6 +11,7 @@ render = { path = "packages/storm-render" }
 input = { path = "packages/storm-input", capabilities = ["unsafe", "filesystem", "stdio"] }
 vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
 gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }
+ui = { path = "packages/storm-ui", capabilities = ["filesystem", "stdio", "unsafe"] }
 text = { path = "packages/storm-text", capabilities = ["filesystem", "stdio", "unsafe"] }
 
 [examples]

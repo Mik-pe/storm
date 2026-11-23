@@ -16,7 +16,13 @@ import render
 import scene as scenegraph
 import std.parse as parse
 import sys
+import text
+import ui
 import vulkan
+
+const FONT_PATH: string = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
+// Every character the editor draws has to be packed into the atlas.
+const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ åäö ÅÄÖ ²³"
 
 struct Material {
     base: core.Color,
@@ -191,6 +197,22 @@ fn main() -> i32 {
 
     mut show_glass := !flag("--no-glass")
     mut show_shadows := !flag("--no-shadows")
+    mut effects := flag("--effects")
+
+    // --- editor text ---
+    face := text.load_face(FONT_PATH, ui.RASTER_SIZE)
+    if !face.ok {
+        _ := sys.eprint("storm: font missing: " + face.error)
+        vulkan.close(opened.window)
+        return 1
+    }
+    mut atlas := text.Atlas::new(1024, 1024)
+    packed := atlas.add_text(&face, GLYPHS)
+    pixels := atlas.copy_pixels()
+    atlas_size := atlas.size()
+    uploaded := vulkan.ui_atlas(opened.window, pixels, atlas_size, atlas_size)
+    mut canvas := ui.Canvas::new()
+    mut fps: f32 = 0.0
 
     mut frames: i64 = 0
     mut previous := 0.0
@@ -201,6 +223,10 @@ fn main() -> i32 {
         mut dt := if previous == 0.0 { 0.016 } else { frame.time - previous }
         if dt > 0.1 { dt = 0.1 }
         previous = frame.time
+        if dt > 0.0 {
+            instant := f32(1.0 / dt)
+            fps = if fps == 0.0 { instant } else { fps * 0.9 + instant * 0.1 }
+        }
 
         captured := (vulkan.mouse(opened.window).buttons.bit_and(input.MOUSE_RIGHT)) != 0
         camera.update(opened.window, f32(dt), captured)
@@ -211,6 +237,7 @@ fn main() -> i32 {
         }
         if vulkan.key_pressed(opened.window, input.KEY_T) { show_glass = !show_glass }
         if vulkan.key_pressed(opened.window, input.KEY_G) { show_shadows = !show_shadows }
+        if vulkan.key_pressed(opened.window, input.KEY_E) { effects = !effects }
 
         // Animate the orbit: the hub rotates, children follow through the tree.
         graph.set_rotation(hub, graph.local(hub).rotation_y + f32(dt) * 0.35)
@@ -314,6 +341,14 @@ fn main() -> i32 {
             }
         }
 
+        // --- post-process and editor overlay ---
+        _ := vulkan.overlay(opened.window, f32(frame.time), if effects { 1.0 } else { 0.0 })
+        canvas.clear()
+        draw_editor(&mut canvas, &atlas, f32(frame.width), f32(frame.height),
+            fps, frames, order.names.len, items.len, show_glass, show_shadows, effects)
+        quads := canvas.take()
+        _ := vulkan.ui_draw(opened.window, quads, [f32(frame.width), f32(frame.height)])
+
         finished := vulkan.end(opened.window)
         if !finished.ok {
             _ := sys.eprint("storm: " + finished.error)
@@ -335,4 +370,90 @@ fn main() -> i32 {
     vulkan.close(opened.window)
     print("storm frames=" + frames.str())
     0
+}
+
+// --- editor overlay -------------------------------------------------------
+
+// Two decimals without pulling in float formatting.
+fn decimal2(value: f32) -> string {
+    mut scaled := i32(value * 100.0 + 0.5)
+    if scaled < 0 { scaled = 0 }
+    whole := scaled / 100
+    frac := scaled - whole * 100
+    if frac < 10 { whole.str() + ".0" + frac.str() } else { whole.str() + "." + frac.str() }
+}
+
+fn draw_editor(canvas: &mut ui.Canvas, atlas: &text.Atlas, width: f32, height: f32,
+        fps: f32, frames: i64, passes: i32, objects: i32, glass: bool, shadows: bool, effects: bool) {
+    accent := ui.rgb(0.36, 0.86, 0.96)
+    title := ui.rgb(0.96, 0.98, 1.0)
+    dim := ui.rgb(0.52, 0.60, 0.72)
+    body := ui.rgb(0.82, 0.87, 0.93)
+    panel_fill := ui.rgba(0.06, 0.09, 0.13, 0.72)
+    panel_border := ui.rgba(0.36, 0.86, 0.96, 0.32)
+
+    // Top bar.
+    canvas.rect(0.0, 0.0, width, 64.0, &ui.rgba(0.02, 0.03, 0.05, 0.9))
+    canvas.rect(0.0, 64.0, width, 2.0, &ui.rgba(0.36, 0.86, 0.96, 0.5))
+    canvas.text(atlas, "STORM", 26.0, 14.0, 1.0, &title)
+    canvas.text(atlas, "scene editor", 156.0, 24.0, 0.6, &dim)
+    fps_text := i32(fps + 0.5).str() + " fps"
+    canvas.text(atlas, fps_text, width - 30.0 - ui.Canvas::text_width(atlas, fps_text, 0.68), 20.0, 0.68, &accent)
+
+    // Scene graph.
+    px: f32 = 26.0
+    py: f32 = 92.0
+    pw: f32 = 400.0
+    canvas.panel(px, py, pw, 306.0, &panel_fill, &panel_border)
+    canvas.text(atlas, "SCENE GRAPH", px + 18.0, py + 12.0, 0.6, &accent)
+    canvas.rect(px + 18.0, py + 50.0, pw - 36.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
+    canvas.text(atlas, "World", px + 20.0, py + 64.0, 0.6, &body)
+    canvas.text(atlas, "Camera", px + 44.0, py + 104.0, 0.6, &dim)
+    canvas.text(atlas, "Sun", px + 44.0, py + 144.0, 0.6, &dim)
+    canvas.text(atlas, "Hub", px + 44.0, py + 184.0, 0.6, &dim)
+    canvas.text(atlas, "Gold cube", px + 74.0, py + 224.0, 0.6, &body)
+    canvas.text(atlas, "Copper cube", px + 74.0, py + 254.0, 0.6, &dim)
+    canvas.text(atlas, "Steel cube", px + 74.0, py + 284.0, 0.6, &dim)
+
+    // Frame statistics.
+    rx := width - 446.0
+    canvas.panel(rx, py, 420.0, 186.0, &panel_fill, &panel_border)
+    canvas.text(atlas, "FRAME", rx + 18.0, py + 12.0, 0.6, &accent)
+    canvas.rect(rx + 18.0, py + 50.0, 384.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
+    canvas.text(atlas, "fps", rx + 20.0, py + 64.0, 0.58, &dim)
+    canvas.text(atlas, i32(fps + 0.5).str(), rx + 150.0, py + 64.0, 0.58, &body)
+    canvas.text(atlas, "frame", rx + 20.0, py + 100.0, 0.58, &dim)
+    canvas.text(atlas, frames.str(), rx + 150.0, py + 100.0, 0.58, &body)
+    canvas.text(atlas, "passes", rx + 20.0, py + 136.0, 0.58, &dim)
+    canvas.text(atlas, passes.str(), rx + 150.0, py + 136.0, 0.58, &body)
+    canvas.text(atlas, "objects", rx + 220.0, py + 64.0, 0.58, &dim)
+    canvas.text(atlas, objects.str(), rx + 350.0, py + 64.0, 0.58, &body)
+    canvas.text(atlas, "shadow 1024", rx + 220.0, py + 100.0, 0.58, &dim)
+
+    // Material inspector.
+    canvas.panel(rx, py + 206.0, 420.0, 216.0, &panel_fill, &panel_border)
+    canvas.text(atlas, "MATERIAL / GOLD", rx + 18.0, py + 218.0, 0.6, &accent)
+    canvas.rect(rx + 18.0, py + 256.0, 384.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
+    canvas.text(atlas, "metallic", rx + 20.0, py + 270.0, 0.58, &dim)
+    canvas.text(atlas, "1.00", rx + 220.0, py + 270.0, 0.58, &body)
+    canvas.text(atlas, "roughness", rx + 20.0, py + 306.0, 0.58, &dim)
+    canvas.text(atlas, "0.10", rx + 220.0, py + 306.0, 0.58, &body)
+    canvas.text(atlas, "albedo", rx + 20.0, py + 342.0, 0.58, &dim)
+    canvas.text(atlas, "1.00 0.76 0.30", rx + 220.0, py + 342.0, 0.58, &body)
+
+    // Bottom bar with the controls and the live pass toggles.
+    by := height - 92.0
+    canvas.panel(26.0, by, width - 52.0, 66.0, &panel_fill, &panel_border)
+    canvas.text(atlas, "WASD move   Space/Ctrl up-down   Shift sprint   R reset", 46.0, by + 18.0, 0.58, &dim)
+    mut chip_x := width - 470.0
+    for chip in 0..3 {
+        label := if chip == 0 { "glass" } else if chip == 1 { "shadows" } else { "effects" }
+        on := if chip == 0 { glass } else if chip == 1 { shadows } else { effects }
+        chip_width := ui.Canvas::text_width(atlas, label, 0.58) + 26.0
+        fill := if on { ui.rgba(0.10, 0.35, 0.30, 0.85) } else { ui.rgba(0.14, 0.16, 0.20, 0.85) }
+        ink := if on { ui.rgb(0.55, 0.95, 0.75) } else { ui.rgb(0.45, 0.50, 0.58) }
+        canvas.rect(chip_x, by + 16.0, chip_width, 34.0, &fill)
+        canvas.text(atlas, label, chip_x + 13.0, by + 22.0, 0.58, &ink)
+        chip_x = chip_x + chip_width + 10.0
+    }
 }

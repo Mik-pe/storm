@@ -1,0 +1,29 @@
+import ..src.ui as ui
+
+@test fn solid_rect_emits_two_triangles() {
+    mut canvas := ui.Canvas::new()
+    canvas.rect(10.0, 20.0, 100.0, 40.0, &ui.rgb(1.0, 0.0, 0.0))
+    assert(canvas.vertex_count() == 6)
+    vertices := canvas.vertices()
+    assert(vertices[0] == 10.0)
+    assert(vertices[1] == 20.0)
+    assert(vertices[2] == -1.0)
+    assert(vertices[4] == 1.0)
+}
+
+@test fn panel_draws_border_and_fill() {
+    mut canvas := ui.Canvas::new()
+    canvas.panel(0.0, 0.0, 200.0, 100.0, &ui.rgb(0.1, 0.1, 0.1), &ui.rgb(0.2, 0.2, 0.2))
+    assert(canvas.vertex_count() == 12)
+    vertices := canvas.vertices()
+    // The fill starts one pixel in, after the border's two triangles.
+    assert(vertices[48] == 1.0)
+}
+
+@test fn clear_resets_the_canvas() {
+    mut canvas := ui.Canvas::new()
+    canvas.rect(0.0, 0.0, 10.0, 10.0, &ui.white(1.0))
+    assert(!canvas.is_empty())
+    canvas.clear()
+    assert(canvas.is_empty())
+}

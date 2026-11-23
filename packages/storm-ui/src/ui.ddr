@@ -1,0 +1,104 @@
+// Immediate-mode UI geometry for Storm.
+//
+// The canvas emits vertices in screen pixels: position, atlas uv and colour.
+// Solid rectangles mark themselves with uv.x = -1 so the fragment shader can
+// skip the texture lookup.
+
+import text
+
+pub const RASTER_SIZE: f32 = 30.0
+
+pub struct Color {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+}
+
+pub fn rgba(r: f32, g: f32, b: f32, a: f32) -> Color {
+    Color { r: r, g: g, b: b, a: a }
+}
+
+pub fn rgb(r: f32, g: f32, b: f32) -> Color {
+    Color { r: r, g: g, b: b, a: 1.0 }
+}
+
+pub fn white(alpha: f32) -> Color { Color { r: 1.0, g: 1.0, b: 1.0, a: alpha } }
+
+pub struct Canvas {
+    vertices: []f32,
+}
+
+impl Canvas {
+    pub fn new() -> Self {
+        Self { vertices: [] }
+    }
+
+    pub fn clear(&mut self) {
+        self.vertices.clear()
+    }
+
+    pub fn vertices(&self) -> &[]f32 { &self.vertices }
+
+    // Move the geometry out so it can cross the module boundary as a value.
+    pub fn take(&mut self) -> []f32 {
+        mut out: []f32 = []
+        out.reserve(self.vertices.len)
+        for i in 0..self.vertices.len { out.push(self.vertices[i]) }
+        self.vertices.clear()
+        out
+    }
+    pub fn vertex_count(&self) -> i32 { self.vertices.len / 8 }
+    pub fn is_empty(&self) -> bool { self.vertices.len == 0 }
+
+    fn push_vertex(&mut self, x: f32, y: f32, u: f32, v: f32, color: &Color) {
+        self.vertices.push(x)
+        self.vertices.push(y)
+        self.vertices.push(u)
+        self.vertices.push(v)
+        self.vertices.push(color.r)
+        self.vertices.push(color.g)
+        self.vertices.push(color.b)
+        self.vertices.push(color.a)
+    }
+
+    fn quad(&mut self, x: f32, y: f32, w: f32, h: f32, u0: f32, v0: f32, u1: f32, v1: f32, color: &Color) {
+        self.push_vertex(x, y, u0, v0, color)
+        self.push_vertex(x + w, y, u1, v0, color)
+        self.push_vertex(x + w, y + h, u1, v1, color)
+        self.push_vertex(x, y, u0, v0, color)
+        self.push_vertex(x + w, y + h, u1, v1, color)
+        self.push_vertex(x, y + h, u0, v1, color)
+    }
+
+    // A textured quad: the whole atlas when the uv box is (0,0)-(1,1).
+    pub fn image(&mut self, x: f32, y: f32, w: f32, h: f32, u0: f32, v0: f32, u1: f32, v1: f32, color: &Color) {
+        self.quad(x, y, w, h, u0, v0, u1, v1, color)
+    }
+
+    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: &Color) {
+        self.quad(x, y, w, h, -1.0, -1.0, -1.0, -1.0, color)
+    }
+
+    // A filled panel with a one-pixel lighter border.
+    pub fn panel(&mut self, x: f32, y: f32, w: f32, h: f32, fill: &Color, border: &Color) {
+        self.rect(x, y, w, h, border)
+        self.rect(x + 1.0, y + 1.0, w - 2.0, h - 2.0, fill)
+    }
+
+    // Draw a string with its top-left corner at (x, y). `scale` 1.0 is the
+    // size the atlas was rasterized at.
+    pub fn text(&mut self, atlas: &text.Atlas, value: string, x: f32, y: f32, scale: f32, color: &Color) {
+        quads := atlas.layout(value, RASTER_SIZE, 0.0, 0.0)
+        for quad in quads {
+            qx := x + quad.x * scale
+            qy := y + quad.y * scale
+            self.quad(qx, qy, quad.width * scale, quad.height * scale,
+                quad.u0, quad.v0, quad.u1, quad.v1, color)
+        }
+    }
+
+    pub fn text_width(atlas: &text.Atlas, value: string, scale: f32) -> f32 {
+        atlas.measure(value) * scale
+    }
+}

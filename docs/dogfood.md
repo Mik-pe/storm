@@ -48,6 +48,62 @@ Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mi
 - **Skilj talomvandling från läsning av råbitar.** En kontrollerad konvertering ska fortsätta fånga spill. `wire.Reader.read_f32` uttrycker glTF-laddarens avsikt direkt. Vid slumpmässig åtkomst är `bytes.i32_le` användbar, men `bytes.u32_le` returnerar `i64`, medan `wire.Reader.read_u32_le` returnerar `u32`. Den skillnaden är lätt att missa och bör hanteras vid en samordnad API-migrering.
 - **Behåll typerna som skiljer närvaro från innehåll.** `is_ok()` svarar på en ja/nej-fråga och `ok()` ger det eventuella värdet. `find` med `Option` gör byteposition noll entydig. `s[i]` är användbart för byteprotokoll men kräver UTF-8-avkodning för tecken. Explicita grants för transitiva beroenden gör resursåtkomst synlig hos konsumenten.
 
+## Uppföljning: editor-UI, overlay-effekter och textatlasen
+
+**26. `@c_layout` med en fast array av structs.** Att skicka en
+`[VkPipelineShaderStageCreateInfo; 2]` eller
+`[VkVertexInputAttributeDescription; 3]` till Vulkan kraschade
+`vkCreateGraphicsPipelines`. Samma lösning som tidigare: lägg struktarna i en
+`@c_layout`-struct med namngivna fält och skicka adressen till den. Fynd 9 gäller
+alltså fortfarande.
+
+**27. `store_u32`/`store_f32` med framräknad pekaradress.** Skrivningar till
+mappat minne med `store_*(ptr(usize(base) + offset), värde)` ger antingen
+SIGSEGV (ljusbufferten) eller ingen effekt alls (textatlasen). `copy_bytes` mot
+en lokal array fungerar. Använd alltid memcpy-vägen för bulkdata.
+
+**28. `VkPipelineViewportStateCreateInfo` utan `pViewports` ritar ingenting.**
+En pipeline med `viewportCount = 1` men `pViewports = NULL` skapar inga fel, men
+rasteriserar noll fragment. Scenen ritades korrekt eftersom mesh-pipen hade en
+viewport; overlay- och UI-pipelinerna saknade den och var helt osynliga.
+
+**29. `storeOp = DONT_CARE` på en bilaga som läses efteråt.** Scenpasset hade
+`VK_ATTACHMENT_STORE_OP_DONT_CARE` (vilket var rätt när resultatet gick direkt
+till swapchain). När scenen i stället skulle samplas av ett post-pass kastades
+innehållet och texturen blev svart. `STORE` krävs så fort någon läser bilden
+efter passet.
+
+**30. Linjärt tilade bilder går inte att sampla på den här drivrutinen.**
+`vkCreateImage` med `VK_IMAGE_TILING_LINEAR` + `SAMPLED` lyckas, men
+`vkCmdCopyImageToBuffer` kraschar (fynd 21) och `texture()` ger noll. Samma
+innehåll i en optimalt tilad bild fungerar. Slutsatsen för Storm: rendera aldrig
+till en linjär bild som ska samplas; använd staging-buffer +
+`vkCmdCopyBufferToImage` när CPU-data ska upp till en sampelbar bild.
+
+**31. Descriptor set binds per pipeline layout.** Att binda en descriptor en gång
+räcker inte när nästa pipeline har en annan layout; `vkCmdBindDescriptorSets`
+måste upprepas efter `vkCmdBindPipeline`.
+
+**32. Attributformat 103 är `R32G32_SFLOAT`, inte 106.** 106 är
+`R32G32B32_SFLOAT` (tre komponenter). Med 106 på ett vec2-attribut läste
+drivrutinen 12 byte per vertex och hela UI-geometrin blev odefinierad – men
+ingenting kraschade, vilket gjorde felet svårt att se.
+
+**33. Alpha-blending i överlägget beter sig inte som specificerat.** Samma
+blend-state (`SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`) ger korrekt resultat i
+UI-pipen men en nästan additiv blandning i overlay-pipen: en quad med
+`alpha = 1.0` lämnar scenen nästan orörd i stället för att ersätta den.
+Skillnaden mellan pipelinerna är bara shader och push-konstanter. Tills orsaken
+är hittad är effekterna opt-in (`--effects`) och avstängda som standard.
+
+**Öppen fråga: textatlasen.** Glyfatlasen packas korrekt på CPU (95 glyfer,
+14 121 täckta pixlar), staging-bufferten innehåller rätt värden och uppladdningen
+rapporterar framgång, men en quad som samplar hela atlasen blir helt svart. Kvar
+att utreda: om `vkCmdCopyBufferToImage` faktiskt når bilden, eller om
+R32_SFLOAT-vyn behöver `VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT` verifieras per
+format. Nästa steg är att läsa tillbaka bilden med `vkCmdCopyImageToBuffer` till
+en staging-buffer och jämföra med CPU-atlasen.
+
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de åtta underpaketen

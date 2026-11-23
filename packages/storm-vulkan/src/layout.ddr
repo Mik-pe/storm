@@ -506,6 +506,19 @@ pub struct StencilOpState {
 pub struct Extent3D { width: u32, height: u32, depth: u32 }
 
 @c_layout
+pub struct Offset3D { x: i32, y: i32, z: i32 }
+
+@c_layout
+pub struct BufferImageCopy {
+    bufferOffset: u64,
+    bufferRowLength: u32,
+    bufferImageHeight: u32,
+    imageSubresource: ImageSubresourceLayers,
+    imageOffset: Offset3D,
+    imageExtent: Extent3D,
+}
+
+@c_layout
 pub struct ImageMemoryBarrier {
     sType: u32,
     pNext: ptr,

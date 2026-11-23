@@ -1,0 +1,7 @@
+name = "storm-ui"
+version = "0.0.1"
+root = "src/ui.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+text = { path = "../storm-text", capabilities = ["filesystem", "stdio", "unsafe"] }
