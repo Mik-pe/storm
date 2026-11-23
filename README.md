@@ -181,7 +181,21 @@ dunder build                    # bygger src/main.ddr
 dunder run --example scene      # ECS/glTF/text utan fönster
 dunder test                     # rotpaketets tester
 dunder run tools/shaders.ddr    # kompilerar om shaders till src/shader.ddr
+dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
 ```
+
+## Regler
+
+Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
+
+- **Bygget ska ta under 20 sekunder.** `dunder run tools/build-time.ddr`
+  mäter och fallerar annars. En byggnad över budget pushas inte.
+- **Bara `main`.** Inga pull requester, inga reviews, ingen CI. Arbete
+  commit:as på `main` och pushas direkt när `check`, testerna och
+  byggbudgeten är gröna.
+- **Noll död kod.** En varning från kompilatorn är ett fel.
+- **Dunder-brister bokförs** i [docs/dogfood.md](docs/dogfood.md), ett numrerat
+  fynd per brist, medan de är färska.
 
 `tools/shaders.ddr` är ett Dunder-program: det kör `glslangValidator`, läser
 SPIR-V-filen och skriver `packages/storm-vulkan/src/shader.ddr`. Inga

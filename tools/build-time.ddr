@@ -1,0 +1,52 @@
+// Storm build-time gate: builds from scratch and fails when the build takes
+// 20 seconds or more. Run from the repo root before every push:
+//
+//   dunder run tools/build-time.ddr
+//
+// The old binary is removed first so a failed build can never be mistaken
+// for a fast one (a stale binary passes every later check). The time is wall
+// clock around `dunder build`, measured with sys.now_ms(); the budget is
+// BUDGET_MS below and is a repo rule (AGENTS.md), not a target to tune per
+// machine. Exit status: 0 within budget, 1 over, 2 when the build failed.
+capability process, filesystem, stdio
+
+import std.process as process
+import sys
+
+pub const BUDGET_MS: i64 = 20000
+const BINARY: string = "build/x86_64-linux/storm"
+
+// The compiler: `dunder` on PATH, else the install the toolchain's own
+// installer creates. (`process.status` searches PATH itself and reports
+// exit 127 when nothing is found; a shell that relies on ~/.dunder/bin being
+// added interactively would otherwise read as a build failure.)
+fn compiler() -> string {
+    match process.env("HOME") {
+        .Some(home) => {
+            installed := home + "/.dunder/bin/dunder"
+            if sys.metadata(installed).ok && sys.metadata(installed).is_file { return installed }
+            "dunder"
+        },
+        .None => "dunder",
+    }
+}
+
+fn main() -> i32 {
+    // A missing binary is the normal case; an error here only means the
+    // path was a directory or the like, which the build will report anyway.
+    _ := sys.remove_file(BINARY)
+
+    started := sys.now_ms()
+    result := process.status(compiler(), ["build"])
+    elapsed := sys.now_ms() - started
+
+    if !result.ok {
+        _ := sys.eprint("storm: dunder build failed (exit " + result.code.str() + ") after " + elapsed.str() + " ms")
+        return 2
+    }
+
+    verdict := if elapsed < BUDGET_MS { "ok" } else { "OVER BUDGET" }
+    print("storm: build " + elapsed.str() + " ms of " + BUDGET_MS.str() + " ms budget, " + verdict + "\n")
+    if elapsed < BUDGET_MS { return 0 }
+    return 1
+}

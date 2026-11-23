@@ -5,7 +5,6 @@
 // skip the texture lookup.
 
 import text
-import .widgets as widgets
 
 // Glyphs are rasterized at this pixel size. The editor draws them at scales
 // between 0.8 and 1.2, i.e. close to the rasterized size, so the LINEAR
