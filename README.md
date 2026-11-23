@@ -8,6 +8,15 @@ bokförs i [docs/dogfood.md](docs/dogfood.md).
 Första milstolpen är ett riktigt Vulkan-fönster: `VK_KHR_swapchain` med
 double-buffrade frames, inte readback och inte en SDL-blit.
 
+## Förutsättningar
+
+- `dunder` i `PATH` (0.10.0 eller nyare).
+- `dunder-skrift` som **syskonkatalog**: `~/Work/dunder-skrift`. Samma
+  konvention som `dunder-hundmat` använder. `packages/storm-text` har ett
+  `path`-beroende till den.
+- `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …) och `sdl2`
+  för fönstret. `glslang` behövs bara när shaders ändras.
+
 ```sh
 dunder run                      # Vulkan-fönster med tre roterande kuber
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
