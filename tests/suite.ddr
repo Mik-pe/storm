@@ -59,3 +59,119 @@ struct Spin { speed: f32 }
     assert(vertices[3] == 0.0 && vertices[4] == 0.0 && vertices[5] == 1.0)
     assert(vertices[6] == 0.0 && vertices[7] == 1.0)
 }
+
+// --- the application's own logic: arguments and the orb game, no window ---
+
+import ..src.args as args
+import ..src.game as game
+import scene as scenegraph
+
+@test fn arguments_read_a_list_not_a_process() {
+    empty: []string = []
+    assert(args.frame_limit(&empty) == 0)
+    assert(args.flag(&empty, "--effects") == false)
+    assert(args.value(&empty, "--capture") == "")
+    eye := args.eye(&empty)
+    assert(eye.x == 0.0 && eye.y == 2.2 && eye.z == 9.5)
+
+    mut list: []string = ["--frames", "60", "--capture", "a.ppm", "--effects", "--eye", "1.5", "-2", "3.25"]
+    assert(args.frame_limit(&list) == 60)
+    assert(args.flag(&list, "--effects"))
+    assert(!args.flag(&list, "--no-shadows"))
+    assert(args.value(&list, "--capture") == "a.ppm")
+    at := args.eye(&list)
+    assert(at.x == 1.5 && at.y == -2.0 && at.z == 3.25)
+
+    // A non-positive or unparsable frame count, a trailing flag and a short
+    // --eye all fall back to "not given" instead of half a value.
+    mut bad: []string = ["--frames", "0", "--eye", "1", "2"]
+    assert(args.frame_limit(&bad) == 0)
+    assert(args.value(&bad, "--eye") == "1")
+    short := args.eye(&bad)
+    assert(short.x == 0.0 && short.z == 9.5)
+    mut trailing: []string = ["--capture"]
+    assert(args.value(&trailing, "--capture") == "")
+    mut words: []string = ["--frames", "many"]
+    assert(args.frame_limit(&words) == 0)
+}
+
+@test fn a_scene_with_orbs_spawns_counts_and_collects() {
+    mut graph := scenegraph.Graph::new()
+    ground := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(ground, "Ground")
+    game.spawn_orbs(&mut graph)
+    graph.propagate()
+    assert(game.orbs_left(&graph) == game.ORB_COUNT)
+
+    // Nothing else is an orb, however it is named: the mark is the "orb "
+    // prefix, not the three letters (an "orbital station" is not collectable).
+    assert(game.is_orb("orb 3"))
+    assert(!game.is_orb("orbit"))
+    assert(!game.is_orb("orb"))
+    assert(!game.is_orb("Gold cube"))
+    assert(!game.is_orb(""))
+
+    // An eye in the middle of the ring is farther than pickup range from every
+    // orb: the ring's radius is 6.5 and the orbs hang at y = 0.7.
+    centre := core.vec3(0.0, 0.7, 0.0)
+    assert(game.collect_orbs(&mut graph, centre) == 0)
+    assert(game.orbs_left(&graph) == game.ORB_COUNT)
+
+    // Standing on the first orb collects it and only it: its neighbours are a
+    // chord of 2 * 6.5 * sin(pi / 8) = 4.98 away, far beyond the 1.4 radius.
+    first := core.vec3(0.5.cos() * 6.5, 0.7, 0.5.sin() * 6.5)
+    assert(game.collect_orbs(&mut graph, first) == 1)
+    assert(game.orbs_left(&graph) == game.ORB_COUNT - 1)
+    // The ground survives: only orbs are destroyed.
+    assert(graph.is_alive(ground))
+    assert(graph.len() == game.ORB_COUNT)
+    // Walking through every orb's position empties the ring.
+    for i in 0..game.ORB_COUNT {
+        angle := (f32(i) + 0.5) * 6.2831853 / f32(game.ORB_COUNT)
+        _ := game.collect_orbs(&mut graph, core.vec3(angle.cos() * 6.5, 0.7, angle.sin() * 6.5))
+    }
+    assert(game.orbs_left(&graph) == 0)
+    assert(graph.is_alive(ground))
+    // A respawn fills it again with fresh entities.
+    game.spawn_orbs(&mut graph)
+    assert(game.orbs_left(&graph) == game.ORB_COUNT)
+}
+
+@test fn glass_sorts_farthest_first_and_only_glass_is_transparent() {
+    mut graph := scenegraph.Graph::new()
+    far := graph.create_root(core.vec3(0.0, 1.0, -20.0))
+    near := graph.create_root(core.vec3(0.0, 1.0, -2.0))
+    solid := graph.create_root(core.vec3(0.0, 1.0, -10.0))
+    for e in [far, near, solid] { _ := graph.set_shape(e, .Cube) }
+    _ := graph.set_material(far, scenegraph.material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05))
+    _ := graph.set_material(near, scenegraph.material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05))
+    _ := graph.set_material(solid, scenegraph.material(1.0, 0.76, 0.30, 1.0, 1.0, 0.1))
+    graph.propagate()
+    eye := core.vec3(0.0, 2.2, 9.5)
+    mut items := graph.drawables(eye)
+    assert(items.len == 3)
+    assert(game.is_transparent(&items[0].material))
+    assert(!game.is_transparent(&items[2].material))
+    assert(!game.casts_shadow(&items[0]))
+    assert(game.casts_shadow(&items[2]))
+
+    game.sort_back_to_front(&mut items)
+    // Descending distance: far glass, solid, near glass.
+    assert(items[0].entity.index == far.index)
+    assert(items[1].entity.index == solid.index)
+    assert(items[2].entity.index == near.index)
+    assert(items[0].depth > items[1].depth && items[1].depth > items[2].depth)
+
+    // Geometry follows the shape: the mesh's own stream, else the primitive's.
+    _ := graph.set_mesh(solid, [1.0, 2.0, 3.0])
+    reshaped := graph.drawables(eye)
+    cube: []f32 = [9.0]
+    plane: []f32 = [7.0]
+    // drawables() is in creation order: far, near, solid.
+    mesh := game.geometry_of(&reshaped[2], &cube, &plane)
+    assert(mesh.len == 3 && mesh[0] == 1.0)
+    assert(game.geometry_of(&reshaped[0], &cube, &plane)[0] == 9.0)
+    _ := graph.set_shape(far, .Plane)
+    planar := graph.drawables(eye)
+    assert(game.geometry_of(&planar[0], &cube, &plane)[0] == 7.0)
+}

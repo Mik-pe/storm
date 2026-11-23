@@ -1,22 +1,29 @@
 // Storm — a game engine in Dunder.
 //
 // Demo scene: a sunlit sky, a ground plane, three metallic cubes orbiting a
-// parent node and two glass panes. Every frame the render graph is rebuilt from
-// what the scene actually contains, draws are sorted back to front and the
-// transparent pass only exists when something transparent is visible.
+// parent node, two glass panes and a ring of orbs to collect, with an editor
+// over it. Every frame the render graph is rebuilt from what the scene
+// actually contains, draws are sorted back to front and the transparent pass
+// only exists when something transparent is visible.
+//
+// main is the frame executor and nothing else: arguments live in args.ddr,
+// the orb game and the draw classification in game.ddr, both tested without
+// a window in tests/suite.ddr.
 //
 //   dunder run                     interactive
 //   dunder run -- --frames 60      render 60 frames and exit
 //   dunder run -- --capture a.ppm  one headless frame to disk
+//   --eye x y z, --glb file, --no-glass, --no-shadows, --effects, --trace
 capability stdio
 
+import args
 import core
 import ecs
+import game
 import gltf
 import input
 import render
 import scene as scenegraph
-import std.parse as parse
 import sys
 import text
 import ui
@@ -33,162 +40,6 @@ const TITLE_SCALE: f32 = 1.2
 const STATUS_SCALE: f32 = 0.9
 const HEADER_SCALE: f32 = 0.8
 const BODY_SCALE: f32 = 0.8
-
-// --- the playable loop: orbs to collect -----------------------------------
-//
-// Eight emissive cubes stand in a ring around the orbit. Walking into one
-// collects it: the entity is destroyed and the score goes up. When the ring
-// is empty the HUD says so; R rebuilds it together with the camera.
-
-const ORB_COUNT: i32 = 8
-const ORB_RADIUS: f32 = 6.5
-const ORB_PICKUP: f32 = 1.4
-
-fn scene_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> scenegraph.Material {
-    mut m := scenegraph.material(r, g, b, a, metallic, roughness)
-    m.emissive = emissive
-    m
-}
-
-fn spawn_orbs(graph: &mut scenegraph.Graph) {
-    for i in 0..ORB_COUNT {
-        // Half a step off, so no orb starts squarely in front of the camera.
-        angle := (f32(i) + 0.5) * 6.2831853 / f32(ORB_COUNT)
-        position := core.vec3(angle.cos() * ORB_RADIUS, 0.7, angle.sin() * ORB_RADIUS)
-        orb := graph.create_root(position)
-        _ := graph.set_name(orb, "orb " + i.str())
-        _ := graph.set_shape(orb, .Cube)
-        _ := graph.set_scale(orb, core.vec3(0.28, 0.28, 0.28))
-        _ := graph.set_material(orb, scene_material(0.35, 0.95, 0.70, 1.0, 0.0, 0.35, 0.45))
-    }
-}
-
-fn orbs_left(graph: &scenegraph.Graph) -> i32 {
-    // A live orb: a named node (the name is what marks it) with a transform.
-    mut n: i32 = 0
-    // Accessor results go through locals: a `from self` return passed straight
-    // into a generic fails E3003 here (Storm dogfood finding 60).
-    names := graph.names()
-    locals := graph.locals()
-    for row in ecs.join2(names, locals) {
-        if is_orb(names.at(row.a).value) { n = n + 1 }
-    }
-    n
-}
-
-// Destroy every orb within pickup range of the eye; returns how many.
-fn collect_orbs(graph: &mut scenegraph.Graph, eye: core.Vec3) -> i32 {
-    // The query is a snapshot, so collect first and destroy after the loop.
-    mut doomed: []ecs.Entity = []
-    {
-        names := graph.names()
-        locals := graph.locals()
-        for row in ecs.join2(names, locals) {
-            if !is_orb(names.at(row.a).value) { continue }
-            at := locals.at(row.b).position
-            dx := at.x - eye.x
-            dy := at.y - eye.y
-            dz := at.z - eye.z
-            if dx * dx + dy * dy + dz * dz < ORB_PICKUP * ORB_PICKUP { doomed.push(row.entity) }
-        }
-    }
-    mut collected: i32 = 0
-    for entity in doomed {
-        if graph.destroy(entity) { collected = collected + 1 }
-    }
-    collected
-}
-
-// One drawable straight from the scene: world matrix, material and shape.
-// Opaque items rely on the depth buffer; only transparent items are sorted
-// back to front. A surface is transparent when its base colour has alpha.
-fn is_transparent(material: &scenegraph.Material) -> bool { material.base.a < 0.999 }
-
-fn is_plane(drawable: &scenegraph.Drawable) -> bool {
-    match drawable.shape {
-        .Plane => true,
-        .Cube => false,
-        .Mesh => false,
-    }
-}
-
-// The vertex stream a drawable is drawn with: its own when it is a loaded
-// mesh, otherwise the built-in geometry for its shape.
-fn geometry_of(item: &scenegraph.Drawable, cube: &[]f32, plane: &[]f32) -> []f32 {
-    match item.shape {
-        .Mesh => item.vertices.clone(),
-        .Plane => plane.clone(),
-        .Cube => cube.clone(),
-    }
-}
-
-fn is_orb(name: string) -> bool { name.len >= 3 && name[0..3] == "orb" }
-
-fn frame_limit() -> i64 {
-    mut i := 1
-    while i + 1 < sys.arg_count() {
-        if sys.arg(i) == "--frames" {
-            parsed := parse.integer(sys.arg(i + 1))
-            if parsed.ok && parsed.value > 0 { return parsed.value }
-        }
-        i = i + 1
-    }
-    0
-}
-
-// --capture <path> renders one headless frame to a PPM.
-fn capture_path() -> string {
-    mut i := 1
-    while i + 1 < sys.arg_count() {
-        if sys.arg(i) == "--capture" { return sys.arg(i + 1) }
-        i = i + 1
-    }
-    ""
-}
-
-fn trace_enabled() -> bool {
-    mut i := 1
-    while i < sys.arg_count() {
-        if sys.arg(i) == "--trace" { return true }
-        i = i + 1
-    }
-    false
-}
-
-// --eye x y z places the camera at start: for screenshots and for walking
-// the game loop into a known state without a keyboard.
-fn eye_argument() -> core.Vec3 {
-    mut i := 1
-    while i + 3 < sys.arg_count() {
-        if sys.arg(i) == "--eye" {
-            x := parse.Float32::parse(sys.arg(i + 1))
-            y := parse.Float32::parse(sys.arg(i + 2))
-            z := parse.Float32::parse(sys.arg(i + 3))
-            if x.ok && y.ok && z.ok { return core.vec3(x.value, y.value, z.value) }
-        }
-        i = i + 1
-    }
-    core.vec3(0.0, 2.2, 9.5)
-}
-
-fn flag(name: string) -> bool {
-    mut i := 1
-    while i < sys.arg_count() {
-        if sys.arg(i) == name { return true }
-        i = i + 1
-    }
-    false
-}
-
-// The value after a flag, or "" when the flag is absent or last.
-fn value_argument(name: string) -> string {
-    mut i := 1
-    while i + 1 < sys.arg_count() {
-        if sys.arg(i) == name { return sys.arg(i + 1) }
-        i = i + 1
-    }
-    ""
-}
 
 // Loads a .glb into the scene as a node with its own vertex stream, scaled to
 // MODEL_SIZE units on its longest side and resting on y = 0, so any model
@@ -224,22 +75,6 @@ fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Opti
     .Some(node)
 }
 
-// Glass is blended, so it must be painted farthest first. Only the
-// transparent drawables are moved; opaque ones keep the depth buffer's order.
-fn sort_back_to_front(items: &mut []scenegraph.Drawable) {
-    mut i := 1
-    while i < items.len {
-        mut j := i
-        while j > 0 && items[j - 1].depth < items[j].depth {
-            held := items[j - 1].clone()
-            items[j - 1] = items[j].clone()
-            items[j] = held
-            j = j - 1
-        }
-        i = i + 1
-    }
-}
-
 fn draw_item(window: vulkan.Window, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
     camera_position: core.Vec3, sky: &vulkan.Sky, shadows_on: bool) {
     mvp := core.multiply(view_projection, item.model)
@@ -248,7 +83,7 @@ fn draw_item(window: vulkan.Window, vertices: &[]f32, item: &scenegraph.Drawable
     if shadows_on { shadow_flag = 1.0 }
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
     mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
-    if is_transparent(&item.material) {
+    if game.is_transparent(&item.material) {
         drawn := vulkan.mesh_blended(window, vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky)
         if !drawn.ok { _ := sys.eprint("storm: " + drawn.error) }
     } else {
@@ -258,16 +93,17 @@ fn draw_item(window: vulkan.Window, vertices: &[]f32, item: &scenegraph.Drawable
 }
 
 fn main() -> i32 {
-    limit := frame_limit()
+    argv := args.from_process()
+    limit := args.frame_limit(&argv)
     opened := vulkan.open("Storm — Vulkan / Dunder (WASD + right mouse, Esc to quit)", 1280, 800)
     if !opened.ok {
         _ := sys.eprint("storm: " + opened.error)
         return 1
     }
-    if trace_enabled() { vulkan.set_trace(opened.window, true) }
+    if args.flag(&argv, "--trace") { vulkan.set_trace(opened.window, true) }
     print("device=" + vulkan.device_name(opened.window))
 
-    shot := capture_path()
+    shot := args.value(&argv, "--capture")
     mut capturing := false
     if shot.len > 0 {
         if !vulkan.capture_next(opened.window) {
@@ -291,7 +127,7 @@ fn main() -> i32 {
     ground := graph.create_root(core.vec3(0.0, 0.0, 0.0))
     _ := graph.set_name(ground, "Ground")
     _ := graph.set_shape(ground, .Plane)
-    _ := graph.set_material(ground, scene_material(0.20, 0.21, 0.24, 1.0, 0.05, 0.85, 0.0))
+    _ := graph.set_material(ground, scenegraph.emissive_material(0.20, 0.21, 0.24, 1.0, 0.05, 0.85, 0.0))
 
     gold := graph.create_child(hub, core.vec3(2.4, 0.0, 0.0))
     copper := graph.create_child(hub, core.vec3(-1.2, 0.0, 2.1))
@@ -302,9 +138,9 @@ fn main() -> i32 {
     _ := graph.set_shape(gold, .Cube)
     _ := graph.set_shape(copper, .Cube)
     _ := graph.set_shape(steel, .Cube)
-    _ := graph.set_material(gold, scene_material(1.00, 0.76, 0.30, 1.0, 1.0, 0.10, 0.0))
-    _ := graph.set_material(copper, scene_material(0.99, 0.46, 0.28, 1.0, 1.0, 0.20, 0.0))
-    _ := graph.set_material(steel, scene_material(0.80, 0.85, 0.92, 1.0, 1.0, 0.28, 0.0))
+    _ := graph.set_material(gold, scenegraph.emissive_material(1.00, 0.76, 0.30, 1.0, 1.0, 0.10, 0.0))
+    _ := graph.set_material(copper, scenegraph.emissive_material(0.99, 0.46, 0.28, 1.0, 1.0, 0.20, 0.0))
+    _ := graph.set_material(steel, scenegraph.emissive_material(0.80, 0.85, 0.92, 1.0, 1.0, 0.28, 0.0))
     graph.set_rotation(gold, 0.0)
     graph.set_rotation(copper, 2.0944)
     graph.set_rotation(steel, 4.1888)
@@ -318,15 +154,15 @@ fn main() -> i32 {
     _ := graph.set_shape(pane_right, .Cube)
     _ := graph.set_scale(pane_left, core.vec3(1.5, 1.9, 0.05))
     _ := graph.set_scale(pane_right, core.vec3(2.0, 1.3, 0.05))
-    _ := graph.set_material(pane_left, scene_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
-    _ := graph.set_material(pane_right, scene_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
-    spawn_orbs(&mut graph)
-    glb := value_argument("--glb")
+    _ := graph.set_material(pane_left, scenegraph.emissive_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
+    _ := graph.set_material(pane_right, scenegraph.emissive_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
+    game.spawn_orbs(&mut graph)
+    glb := args.value(&argv, "--glb")
     if glb.len > 0 { _ := load_model(&mut graph, glb, core.vec3(5.4, 0.0, 0.8)) }
     graph.propagate()
 
     // --- camera ---
-    mut camera := input.Camera::new(eye_argument())
+    mut camera := input.Camera::new(args.eye(&argv))
     camera.yaw = 0.0
     camera.pitch = -0.16
     camera.fov = 0.85
@@ -355,16 +191,16 @@ fn main() -> i32 {
         return 1
     }
 
-    mut show_glass := !flag("--no-glass")
-    mut show_shadows := !flag("--no-shadows")
-    mut effects := flag("--effects")
+    mut show_glass := !args.flag(&argv, "--no-glass")
+    mut show_shadows := !args.flag(&argv, "--no-shadows")
+    mut effects := args.flag(&argv, "--effects")
     if !show_glass { hide_panes(&mut graph, pane_left, pane_right) }
 
     // --- editor and game state ---
     mut ui_state := widgets.State::new()
     mut selected := gold
     mut score: i32 = 0
-    mut total: i32 = orbs_left(&graph)
+    mut total: i32 = game.orbs_left(&graph)
 
     // --- editor text ---
     face := text.load_face(FONT_PATH, ui.RASTER_SIZE)
@@ -411,9 +247,9 @@ fn main() -> i32 {
             camera = input.Camera::new(core.vec3(0.0, 2.2, 9.5))
             camera.pitch = -0.16
             camera.fov = 0.85
-            spawn_orbs(&mut graph)
+            game.spawn_orbs(&mut graph)
             score = 0
-            total = orbs_left(&graph)
+            total = game.orbs_left(&graph)
         }
         if vulkan.key_pressed(opened.window, input.KEY_T) {
             show_glass = !show_glass
@@ -432,7 +268,7 @@ fn main() -> i32 {
         graph.propagate()
 
         // --- the game: walk into an orb to collect it ---
-        score = score + collect_orbs(&mut graph, camera.position)
+        score = score + game.collect_orbs(&mut graph, camera.position)
 
         aspect := f32(frame.width) / f32(frame.height)
         view_projection := camera.view_projection(aspect)
@@ -440,16 +276,16 @@ fn main() -> i32 {
 
         // --- scene contents for this frame: everything the scene says is drawable ---
         mut items := graph.drawables(camera.position)
-        sort_back_to_front(&mut items)
+        game.sort_back_to_front(&mut items)
 
         // --- the frame graph: declared in Vulkan order, compiled from what the frame contains ---
         // Pass existence is data: a toggled-off pass is not in the schedule, so
         // the executor never reaches it. Shadow is declared first because
         // opaque reads its map; it is recorded in its own render pass.
         mut has_opaque := false
-        for item in items { if !is_transparent(&item.material) { has_opaque = true } }
+        for item in items { if !game.is_transparent(&item.material) { has_opaque = true } }
         mut has_transparent := false
-        for item in items { if is_transparent(&item.material) { has_transparent = true } }
+        for item in items { if game.is_transparent(&item.material) { has_transparent = true } }
         mut schedule := render.Graph::new()
         if show_shadows && has_opaque { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
         _ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
@@ -485,14 +321,9 @@ fn main() -> i32 {
                 // Lives in its own render pass, so the main pass must not be open.
                 _ := vulkan.shadow_begin(opened.window, &sky.light_vp, &sky.light_dir_c)
                 for index in 0..items.len {
-                    if !is_transparent(&items[index].material) {
-                        if is_plane(&items[index]) {
-                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
-                            _ := vulkan.shadow_mesh(opened.window, &stream, &items[index].model.m)
-                        } else {
-                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
-                            _ := vulkan.shadow_mesh(opened.window, &stream, &items[index].model.m)
-                        }
+                    if game.casts_shadow(&items[index]) {
+                        stream := game.geometry_of(&items[index], &cube_vertices, &plane_vertices)
+                        _ := vulkan.shadow_mesh(opened.window, &stream, &items[index].model.m)
                     }
                 }
                 _ := vulkan.shadow_end(opened.window)
@@ -511,20 +342,15 @@ fn main() -> i32 {
                 _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun_push, &zenith_push, &horizon_push)
             } else if kind == render.PassKind.Opaque {
                 for index in 0..items.len {
-                    if !is_transparent(&items[index].material) {
-                        if is_plane(&items[index]) {
-                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
-                            draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, show_shadows)
-                        } else {
-                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
-                            draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, show_shadows)
-                        }
+                    if game.casts_shadow(&items[index]) {
+                        stream := game.geometry_of(&items[index], &cube_vertices, &plane_vertices)
+                        draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, show_shadows)
                     }
                 }
             } else if kind == render.PassKind.Transparent {
                 for index in 0..items.len {
-                    if is_transparent(&items[index].material) {
-                        stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
+                    if game.is_transparent(&items[index].material) {
+                        stream := game.geometry_of(&items[index], &cube_vertices, &plane_vertices)
                         draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, false)
                     }
                 }
@@ -660,7 +486,7 @@ fn draw_editor(canvas: &mut ui.Canvas, atlas: &text.Atlas, ui_state: &mut widget
         depth := tree_depth(graph, entity)
         mut name := graph.name(entity)
         if name.len == 0 { name = "node " + entity.index.str() }
-        if graph.has_material(entity) && is_transparent(graph.material_at(entity)) { name = name + " (glass)" }
+        if graph.has_material(entity) && game.is_transparent(graph.material_at(entity)) { name = name + " (glass)" }
         is_selected := graph.is_alive(selected) && selected.index == entity.index
         if ui_state.row(&mut canvas, atlas, 100 + i, p, px + 10.0, row_y, pw - 20.0, name, depth, is_selected, &t) {
             selected = entity
@@ -674,7 +500,7 @@ fn draw_editor(canvas: &mut ui.Canvas, atlas: &text.Atlas, ui_state: &mut widget
         _ := graph.set_name(fresh, "cube " + fresh.index.str())
         _ := graph.set_shape(fresh, .Cube)
         _ := graph.set_scale(fresh, core.vec3(0.6, 0.6, 0.6))
-        _ := graph.set_material(fresh, scene_material(0.85, 0.40, 0.55, 1.0, 0.3, 0.4, 0.0))
+        _ := graph.set_material(fresh, scenegraph.material(0.85, 0.40, 0.55, 1.0, 0.3, 0.4))
         selected = fresh
     }
     can_delete := nodes.len > 0 && graph.is_alive(selected) && selected.index != nodes[0].index

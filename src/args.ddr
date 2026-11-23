@@ -1,0 +1,62 @@
+// Command-line arguments, read from a list rather than from the process.
+//
+// Everything here is a pure function of `args` (the strings after the program
+// name), so the parsing is testable without spawning a process: `main` copies
+// `sys.arg(1..)` into a `[]string` once and hands that to every reader.
+//
+//   args := arguments.from_process()
+//   limit := arguments.frame_limit(&args)
+//   if arguments.flag(&args, "--no-glass") { … }
+
+import core
+import std.parse as parse
+import sys
+
+// Where the camera starts when --eye is not given.
+fn default_eye() -> core.Vec3 { core.vec3(0.0, 2.2, 9.5) }
+
+// The strings after the program name, in order.
+pub fn from_process() -> []string {
+    mut out: []string = []
+    for i in 1..sys.arg_count() { out.push(sys.arg(i)) }
+    out
+}
+
+// The index of `name` in the list, or -1.
+fn find(args: &[]string, name: string) -> i32 {
+    for i in 0..args.len {
+        if args[i] == name { return i }
+    }
+    -1
+}
+
+// A flag that stands alone: present or absent.
+pub fn flag(args: &[]string, name: string) -> bool { find(args, &name) >= 0 }
+
+// The value after a flag, or "" when the flag is absent or the last word.
+pub fn value(args: &[]string, name: string) -> string {
+    i := find(args, &name)
+    if i < 0 || i + 1 >= args.len { return "" }
+    args[i + 1].clone()
+}
+
+// --frames N: how many frames to render before exiting, 0 for no limit.
+// A missing, trailing or non-positive value means "not given".
+pub fn frame_limit(args: &[]string) -> i64 {
+    given := value(args, "--frames")
+    if given.len == 0 { return 0 }
+    parsed := parse.integer(given)
+    if parsed.ok && parsed.value > 0 { return parsed.value }
+    0
+}
+
+// --eye x y z: where the camera starts. Anything unparsable is the default.
+pub fn eye(args: &[]string) -> core.Vec3 {
+    i := find(args, "--eye")
+    if i < 0 || i + 3 >= args.len { return default_eye() }
+    x := parse.Float32::parse(args[i + 1])
+    y := parse.Float32::parse(args[i + 2])
+    z := parse.Float32::parse(args[i + 3])
+    if x.ok && y.ok && z.ok { return core.vec3(x.value, y.value, z.value) }
+    default_eye()
+}

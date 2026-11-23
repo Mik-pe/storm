@@ -59,6 +59,12 @@ pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -
     Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0 }
 }
 
+// The same surface with an emissive term: what the shader adds on its own,
+// for orbs, lamps and anything that should glow rather than reflect.
+pub fn emissive_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> Material {
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive }
+}
+
 pub struct Drawable {
     entity: ecs.Entity,
     model: core.Mat4,
