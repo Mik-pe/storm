@@ -96,6 +96,8 @@ UI-pipen men en nästan additiv blandning i overlay-pipen: en quad med
 `alpha = 1.0` lämnar scenen nästan orörd i stället för att ersätta den.
 Skillnaden mellan pipelinerna är bara shader och push-konstanter. Tills orsaken
 är hittad är effekterna opt-in (`--effects`) och avstängda som standard.
+**Uppdatering:** orsaken hittades i fynd 40 — det var enum-värdena, inte
+drivrutinen, och båda pipelinerna var felaktiga på samma sätt.
 
 **34. En descriptor-layout som packas för hand måste matcha skrivningen.**
 UI-seten deklarerade `binding[0] = u64(1).shl(32)`, vilket är binding 1 av typen
@@ -148,14 +150,62 @@ lägger fältet där också. Lärdomen är densamma som för fynd 1: räkna padd
 innan ett offset-test skrivs, och låt testet fasta det C gör, inte vad man
 minns.
 
+## Uppföljning: textåtergivningen
+
+**40. Fel `VkBlendFactor` i både UI- och overlay-pipelinen.** Fynd 33:s
+"nästan additiva" överlägg var ett enum-fel, inte drivrutinen. Båda pipelinerna
+satte `srcColorBlendFactor = 5`, `dstColorBlendFactor = 6` (och samma par på
+alfakanalen) i tron att 5 var `SRC_ALPHA` och 6 `ONE_MINUS_SRC_ALPHA`. Enligt
+Khronos är 5 `ONE_MINUS_DST_COLOR` och 6 `SRC_ALPHA`, alltså
+`src * (1 - dst) + dst * src_alpha` — en inverterande blandning. Symptomet var
+en smutsig brun låda runt varje glyf: atlas-quadens 1-pixelsutfyllnad har
+täckning noll, men `(1 - dst)` ger ändå färg. Även toppraden, som ska vara
+nästan svart (`alpha = 0.9`), lyste himmelblå. Orsaken till att det såg ut som
+två olika fel är att mesh-pipelinen (`pipeline.ddr`) redan hade rätt 6/7/1/7;
+endast UI och overlay var fel. Rättelserna sammanfogades i
+`ui.blend_alpha_over` och fasta i ett test (`BLEND_SRC_ALPHA == 6`,
+`BLEND_ONE_MINUS_SRC_ALPHA == 7`). Pixelpunkt `p{46,40}` i luckan mellan S och
+T i "STORM": före `srgb(195,179,148)` (lådan), efter `srgb(72,83,98)` — exakt
+toppradens bakgrund `p{10,50}`. Raden genom glyferna visar nu anti-aliasade
+övergångar (101 → 140 → 170 → 187 → 193) i stället för tvåpixlars hartrapporter.
+
+**41. Närmaste-granne-sampling på en nedskalad atlas.** Samplern använde
+`VK_FILTER_NEAREST` medan glyferna rastrerades vid 30 px och ritades vid
+skala 0.58–0.68, alltså 17–20 px på skärmen. Varje streck blev ojämna
+trappsteg av hela texlar. Atlasen rastreras nu vid `RASTER_SIZE = 22` och
+ritas vid skala 0.8–1.2 (26 px titel, 20 px status, 17.6 px brödtext), och
+samplern använder `VK_FILTER_LINEAR` för både min och mag. Linjär filtrering
+på en atlas med 1 px utfyllnad mellan glyferna kan i princip läcka in en
+granne i kanten på en quad; i captures syns inget sådant vid dessa skalor,
+men det är det första att kontrollera om texten senare ritas mycket mindre
+än rastreringsstorleken.
+
+**42. `VkSamplerMipmapMode` har inget `NONE`.** Uppföljningen av fynd 41
+utgick från en felaktig uppsättning värden (0 NONE, 1 NEAREST, 2 LINEAR) som
+cirkulerar i inofficiella sammanställningar. Khronos definierar bara
+`NEAREST = 0` och `LINEAR = 1`. Samplerns okommenterade `mipmapMode = 1` var
+alltså `LINEAR`, inte `NEAREST` — ofarlig på en atlas med en enda mipnivå,
+men nu står `0` med rätt enum i kommentaren. Lärdom som för fynd 1 och 39:
+hämta enum-värden från specen, inte från minnet, och skriv värdets namn
+bredanför varje siffra.
+
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 50 tester passerade, varav två nya för
-djupbuffertens clear-value-packning och renderpass-ABI. Scenexemplet
-verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
+underpaketen kördes var för sig och alla 52 tester passerade: de 50 som
+fanns sedan djupbufferten (där två fasta clear-value-packning och
+renderpass-ABI), plus två nya som fastar `VkBlendFactor`-värdena (6/7/1/7) och
+`VK_FILTER_LINEAR` för textatlasen. Scenexemplet verifierade ECS och textlayout.
+En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
-står rättvänt i den bilden. Djupbufferten verifierades med tre Captures från
+står rättvänt i den bilden. Textåtergivningen verifierades med parvisa
+captures före/efter (`/tmp/storm-text-base.ppm` och `/tmp/storm-text-cap.ppm`)
+och pixelpunkter i luckan mellan S och T i "STORM" samt i toppradens bakgrund
+(fynd 40): lådorna runt glyferna är borta, fps-etiketten slutar exakt 30 px
+från högerkanten och de tre chipsen har 16/13–14 px utfyllnad på vardera sidan
+om etiketten. En capture med `--effects` visar överlägget som en vanlig
+alpha-over (vignett mörkar hörnen, mitten orörd, inga inverterade områden).
+Djupbufferten verifierades med tre Captures från
 samma kamera: korrekt sortering, felsortering utan djup (kuberna försvinner)
 och felsortering med djup (identisk med den korrekta bilden, noll pixlar).
 På ARM64/macOS passerade alla 83 grupper i Dunders självhostsvit, inklusive

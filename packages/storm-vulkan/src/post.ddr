@@ -4,6 +4,7 @@ import std.sys as sys
 import .layout as vk2
 import .shader as shader
 import .state as state
+import .ui as ui
 
 // Cinematic overlay drawn over the finished scene.
 //
@@ -77,14 +78,9 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     depth.sType = 25
 
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.blendEnable = 1
-    blend_attachment.srcColorBlendFactor = 5
-    blend_attachment.dstColorBlendFactor = 6
-    blend_attachment.colorBlendOp = 0
-    blend_attachment.srcAlphaBlendFactor = 5
-    blend_attachment.dstAlphaBlendFactor = 6
-    blend_attachment.alphaBlendOp = 0
-    blend_attachment.colorWriteMask = 15
+    // The same alpha-over as the UI. With the old 5/6 factors the dark grade
+    // was added on top of the scene instead of covering it (finding 40).
+    ui.blend_alpha_over(&mut blend_attachment)
 
     mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26

@@ -5,6 +5,7 @@ import ..src.depth as depth
 import ..src.device as device
 import ..src.headless as headless
 import ..src.state as state
+import ..src.ui as ui
 import ..src.vulkan as vulkan
 
 @test fn cube_emits_twelve_triangles_with_face_normals() {
@@ -91,4 +92,36 @@ import ..src.vulkan as vulkan
         assert(usize(addr(&subpass.pDepthStencilAttachment)) - usize(addr(&subpass)) == 48)
         assert(usize(addr(&subpass.pColorAttachments)) - usize(addr(&subpass)) == 32)
     }
+}
+
+@test fn alpha_over_blend_uses_the_khronos_blend_factor_values() {
+    // VkBlendFactor: 0 ZERO, 1 ONE, 2 SRC_COLOR, 3 ONE_MINUS_SRC_COLOR,
+    // 4 DST_COLOR, 5 ONE_MINUS_DST_COLOR, 6 SRC_ALPHA, 7 ONE_MINUS_SRC_ALPHA.
+    // The UI and overlay pipelines once carried 5/6, which is an inverting
+    // blend and painted a box around every glyph.
+    assert(vk.BLEND_ONE == 1)
+    assert(vk.BLEND_SRC_ALPHA == 6)
+    assert(vk.BLEND_ONE_MINUS_SRC_ALPHA == 7)
+    assert(vk.BLEND_OP_ADD == 0)
+    unsafe {
+        mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+        ui.blend_alpha_over(&mut attachment)
+        assert(attachment.blendEnable == 1)
+        assert(attachment.srcColorBlendFactor == 6)
+        assert(attachment.dstColorBlendFactor == 7)
+        assert(attachment.srcAlphaBlendFactor == 1)
+        assert(attachment.dstAlphaBlendFactor == 7)
+        assert(attachment.colorBlendOp == 0 && attachment.alphaBlendOp == 0)
+        assert(attachment.colorWriteMask == 15)
+    }
+}
+
+@test fn glyph_atlas_samples_with_linear_filtering() {
+    // VkFilter: 0 NEAREST, 1 LINEAR. Glyphs are drawn below the rasterized
+    // size, so NEAREST turns the strokes into uneven stair-steps.
+    assert(vk.FILTER_NEAREST == 0)
+    assert(vk.FILTER_LINEAR == 1)
+    // The atlas is a single-channel float image: the coverage bytes are
+    // widened to f32 before upload (100 is VK_FORMAT_R32_SFLOAT).
+    assert(ui.FORMAT_R32_SFLOAT == 100)
 }

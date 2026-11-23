@@ -155,8 +155,12 @@ quads := atlas.layout("Storm", 24.0, 32.0, 32.0)
 
 Atlanten är R8 (en coverage-byte per pixel) och packas med hyllor. Varje
 `Quad` har skärmposition, storlek och normaliserade atlas-koordinater.
-Renderaren behöver en texturpipeline (descriptor set, sampler, R8-bild) för att
-rita dem — se [docs/next-steps.md](docs/next-steps.md).
+Renderaren breddar coverage-byten till f32 och laddar upp dem som en
+`R32_SFLOAT`-bild (format 100) som samplas med linjär filtrering. Rita texten
+nära den storlek den rastrerades vid — `ui.RASTER_SIZE` är 22 px och editorn
+använder skalorna 0.8–1.2 — så undviker du både suddiga och taggiga streck.
+Renderaren behöver en texturpipeline (descriptor set, sampler, bild) för att
+rita dem; Storms egen finns i `packages/storm-vulkan/src/ui.ddr`.
 
 ## Bygga
 

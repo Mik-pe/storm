@@ -6,7 +6,11 @@
 
 import text
 
-pub const RASTER_SIZE: f32 = 30.0
+// Glyphs are rasterized at this pixel size. The editor draws them at scales
+// between 0.8 and 1.2, i.e. close to the rasterized size, so the LINEAR
+// filtered atlas neither undersamples strokes nor blurs them. Lower values
+// make the small sizes crisper at the cost of a blockier title.
+pub const RASTER_SIZE: f32 = 22.0
 
 pub struct Color {
     r: f32,
