@@ -149,6 +149,11 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    mot baslinjen inklusive två spec-korrigeringar av layouter (fynd 44).
    `post → ui`-beroendet borta.*
 3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
+   *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och
+   skuggpassens handpackade ord är riktiga C-poster i delade wrappers
+   (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
+   `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
+   `Renderer`-structen (cirka 60 fält) är kvar.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
 5. **Dra `ui.ddr`/`post.ddr` ur backend.** `storm-input` slipper Vulkan.
 6. **Lås skrift-dependency.** README/design: uppdatera.

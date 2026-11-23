@@ -251,7 +251,50 @@ har en array-typ för beroendena och `addr(&mut before)` på två separat
 deklarerade structar inte är en sammanhängande array. Detta är nästa
 strukturella steg (designsteg 3): antingen en `[SubpassDependency; 2]`
 i `@c_layout` eller en packningshjälpare som `binding_word`, så att
-struct och minne inte kan skilja sig åt.
+struct och minne inte kan skilja sig åt. *Löst 2026-11-23:* `shadow.ddr`
+använder nu `vk.Dependencies { before, after }` (en delad wrapper i
+`layout.ddr`), `vk.AttachmentDescription` i stället för nio handpackade
+`u32`:ar, och de kastade structarna och `writes: [u64; 28]` (deklarerad,
+aldrig fylld) är borta. AE = 0.
+
+**53. `zeroed()` vägrar en array av C-poster.** `[vk.SubpassDependency; 2]
+= zeroed()` ger `E5003: zeroed requires a C record`, och felplatsen pekar
+på ett senare uttryck (rad 30 istället för deklarationen). Det är den
+troliga orsaken till att storm-vulkan packade allt för hand: det finns inget
+nollställt array-värde att utgå ifrån. Workaround som fungerar:
+`[blank(), blank()]` (en funktion som returnerar `zeroed()`), eller en
+arrayliteral med samtliga fält. Felet borde säga *"zeroed takes one C
+record, not an array — use `[blank(); N]`"* om språket får det, eller
+acceptera arrayen.
+
+**54. Arrayer av C-poster ÄR sammanhängande (en felalarm, dokumenterat
+för att inte återupprepas).** Under steg 3 mätte jag "stride 32, `size_of
+([Dep; 2]) = 112`" och var nära att skriva om storm-vulkan till
+wrapper-structar *på grund av en kompilatorbugg som inte fanns*: jag hade
+läst två utskriftskolumner fel. Ommätt i isolering och i storm-vulkans
+testsvit: `size_of(Dep) = 28`, `size_of([Dep; 2]) = 56`, stride 28, alla
+fält på C-offsets, med och utan `mut`, i `main` och i funktioner. Både
+`[before, after]` och wrapper-structen är sammanhängande; testet
+`c_record_pairs_and_arrays_are_contiguous` låser båda. Lärdomen är samma
+som fynd 39: en siffra som inte stämmer med förväntat läses en gång till
+på rätta rader innan den får förklara kompilatorn.
+
+**55. `to_bits()` på ett negativt flyttal avslutar programmet tyst.**
+`(-1000.0).to_bits()`, `CLEAR_NEG.to_bits()` (`const CLEAR_NEG: f32 =
+-1000.0`) och `neg.to_bits()` på `mut neg: f32 = -1000.0` avslutar alla
+programmet med exit 101 **utan något meddelande**, i isolering utan
+pekare eller stores: `show(1)` skrivs, sedan dör programmet på
+`show(bits(-1000.0))`. Positiva värde fungerar. Även `u64(neg)` (f32 → u64
+av negativt) dör tyst, exit 107. Det är orsaken till att `shadow.ddr`
+hade clear-värdet som `0xC47A0000C47A0000`-hex (någon hade träffat väggen
+och packat för hand) och till en eftermiddags jakt: felet visade sig som
+"capture: ready" och sedan ingenting. *Storm: `depth.float_bits(value)`
+samlar teckenbiten själv — beloppets `to_bits()` med `0x80000000` eller:at när
+värdet är negativt — låst av
+`float_bits_covers_both_signs`; `depth_clear` och skuggans clear går genom
+den.* *Rekommendation:* negativa flyttal i `to_bits()` ska antingen
+fungera (det är en bit-om-tolkning, inget att panikera för) eller ge ett
+felmeddelande med rad. Tyst exit är det värsta av alternativen.
 
 ## Uppföljning: IBL
 
@@ -322,12 +365,14 @@ på 64-bitars; en kortare struct gav skräpvärden och ett segfault.
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 58 tester passerade: de 50 som
+underpaketen kördes var för sig och alla 60 tester passerade: de 50 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
 pinning-testerna från textåtergivningen är inflyttade i det), och sju nya i
-`storm-core` för IBL:n — kubytornas baser mot Vulkans (sc, tc)-axlar,
+`storm-core` för IBL:n, samt två till i `storm-vulkan`: C-postparet OCH arrayen är
+sammanhängande på C-offsets (fynd 54) och `float_bits` tar båda tecken
+(fynd 55) — kubytornas baser mot Vulkans (sc, tc)-axlar,
 projektionens z-intervall, när-/färplane-djup och fyra värden på BRDF-LUT:en
 mot en Python-referens (skala 1, bias 0 vid N·V = 1 och roughness 0; skala
 0.69 och bias 0.025 vid 0.5/0.5; energiförlust med roughness).

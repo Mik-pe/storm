@@ -3,6 +3,7 @@ capability unsafe, stdio
 import std.sys as sys
 import .device as device
 import .enums as enums
+import .depth as depth
 import .layout as vk
 import .shader as shader
 import .state as state
@@ -14,9 +15,6 @@ import .state as state
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
 const SHADOW_SIZE: u32 = 1024
-// COLOR_ATTACHMENT (render the light-space depth) | SAMPLED (the mesh pass reads it).
-const SHADOW_USAGE: u32 = 20
-const LAYOUT_SHADER_READ: u32 = 5
 const CLEAR_FAR: f32 = 1000.0
 
 @c_layout
@@ -27,7 +25,7 @@ struct AttrPair { position: vk.VertexInputAttributeDescription, normal: vk.Verte
 
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // --- image ---
-    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, SHADOW_USAGE)
+    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.ColorAttachmentSampled))
     mut image := ptr(0)
     if r.api.CreateImage(r.device, addr(&image_create_info), ptr(0), addr(&mut image)) != 0 {
         _ := sys.eprint("shadow: could not create the shadow map")
@@ -128,12 +126,11 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     mut image_info: vk.DescriptorImageInfo = zeroed()
     image_info.sampler = sampler
     image_info.imageView = view
-    image_info.imageLayout = LAYOUT_SHADER_READ
+    image_info.imageLayout = enums.image_layout(.ShaderReadOnlyOptimal)
     mut buffer_info2: vk.DescriptorBufferInfo = zeroed()
     buffer_info2.buffer = light_buffer
     buffer_info2.offset = 0
     buffer_info2.range = 80
-    mut writes: [u64; 28] = [0; 28]
     // Two vkWriteDescriptorSet records (14 words each) laid out contiguously.
     mut write_image: vk.WriteDescriptorSet = zeroed()
     write_image.sType = 35
@@ -149,22 +146,20 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     write_buffer.descriptorCount = 1
     write_buffer.descriptorType = enums.descriptor_type(.UniformBuffer)
     write_buffer.pBufferInfo = addr(&buffer_info2)
-    _ := writes
     // Two separate updates avoid relying on a packed record layout.
     r.api.UpdateDescriptorSets(r.device, 1, addr(&write_image), 0, ptr(0))
     r.api.UpdateDescriptorSets(r.device, 1, addr(&write_buffer), 0, ptr(0))
 
     // --- render pass: one colour attachment, cleared far, ends readable ---
-    mut attachment: [u32; 9] = [0; 9]
-    attachment[0] = 0
-    attachment[1] = enums.format(.R32_SFLOAT)
-    attachment[2] = 1
-    attachment[3] = 1 // CLEAR
-    attachment[4] = 0 // STORE
-    attachment[5] = 2
-    attachment[6] = 1
-    attachment[7] = 0 // UNDEFINED
-    attachment[8] = LAYOUT_SHADER_READ
+    mut attachment: vk.AttachmentDescription = zeroed()
+    attachment.format = enums.format(.R32_SFLOAT)
+    attachment.samples = enums.samples(.Type1)
+    attachment.loadOp = enums.attachment_load_op(.Clear)
+    attachment.storeOp = enums.attachment_store_op(.Store)
+    attachment.stencilLoadOp = enums.attachment_load_op(.DontCare)
+    attachment.stencilStoreOp = enums.attachment_store_op(.DontCare)
+    attachment.initialLayout = enums.image_layout(.Undefined)
+    attachment.finalLayout = enums.image_layout(.ShaderReadOnlyOptimal)
     mut color_ref: vk.AttachmentReference = zeroed()
     color_ref.attachment = 0
     color_ref.layout = enums.image_layout(.ColorAttachmentOptimal)
@@ -172,40 +167,30 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     subpass.pipelineBindPoint = enums.pipeline_bind_point(.Graphics)
     subpass.colorAttachmentCount = 1
     subpass.pColorAttachments = addr(&color_ref)
+    // Two vkSubpassDependency records: a real array, so the struct and the
+    // bytes the driver reads cannot disagree (finding 52).
     mut before: vk.SubpassDependency = zeroed()
-    before.srcSubpass = 4294967295
+    before.srcSubpass = enums.SUBPASS_EXTERNAL
     before.dstSubpass = 0
-    before.srcStageMask = 1024
-    before.dstStageMask = 1024
+    before.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
+    before.dstStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
     before.dstAccessMask = enums.access(.ColorAttachmentWrite)
     mut after: vk.SubpassDependency = zeroed()
     after.srcSubpass = 0
-    after.dstSubpass = 4294967295
-    after.srcStageMask = 1024
-    after.dstStageMask = 128
+    after.dstSubpass = enums.SUBPASS_EXTERNAL
+    after.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
+    after.dstStageMask = enums.pipeline_stage(.FragmentShader)
     after.srcAccessMask = enums.access(.ColorAttachmentWrite)
     after.dstAccessMask = enums.access(.ShaderRead)
-    mut deps: [u64; 16] = [0; 16]
-    // Two vkSubpassDependency records are 2 x 8 u32 words; store them raw so the
-    // driver reads a contiguous array.
-    deps[0] = u64(4294967295) + (u64(0).shl(32))
-    deps[1] = u64(1024) + (u64(1024).shl(32))
-    deps[2] = u64(0) + (u64(256).shl(32))
-    deps[3] = u64(0) + (u64(0).shl(32))
-    deps[4] = u64(0) + (u64(4294967295).shl(32))
-    deps[5] = u64(1024) + (u64(128).shl(32))
-    deps[6] = u64(256) + (u64(32).shl(32))
-    deps[7] = u64(0) + (u64(0).shl(32))
-    _ := before
-    _ := after
+    deps := vk.Dependencies { before: before, after: after }
     mut pass_info: vk.RenderPassCreateInfo = zeroed()
     pass_info.sType = 38
     pass_info.attachmentCount = 1
-    pass_info.pAttachments = addr(&mut attachment[0])
+    pass_info.pAttachments = addr(&attachment)
     pass_info.subpassCount = 1
     pass_info.pSubpasses = addr(&subpass)
     pass_info.dependencyCount = 2
-    pass_info.pDependencies = addr(&mut deps[0])
+    pass_info.pDependencies = addr(&deps)
     mut pass := ptr(0)
     if r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass)) != 0 { return false }
 
@@ -250,13 +235,13 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18
-    stage.stage = 1
+    stage.stage = enums.shader_stage(.Vertex)
     stage.module = vshader
     stage.pName = cstr("main")
     mut stages: StagePair = zeroed()
     stages.vertex = stage
     stages.fragment = stage
-    stages.fragment.stage = 16
+    stages.fragment.stage = enums.shader_stage(.Fragment)
     stages.fragment.module = fshader
 
     mut binding_desc := vk.VertexInputBindingDescription { binding: 0, stride: 24, inputRate: 0 }
@@ -360,7 +345,15 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     if r.recording == 0 || r.shadowPass == ptr(0) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
-    mut clear: [u64; 4] = [0xC47A0000C47A0000, 0xC47A00003F800000, 0, 0]
+    // ClearValue is a union; the shadow pass has only a colour attachment, so
+    // its four float words are the whole value: (-1000, -1000, -1000, 1).
+    // depth.float_bits, not to_bits: a negative float's bits cannot be taken
+    // directly in Dunder (finding 55).
+    mut clear: [u64; 4] = [0; 4]
+    store_u32(addr(&mut clear[0]), depth.float_bits(-CLEAR_FAR))
+    store_u32(ptr(usize(addr(&mut clear[0])) + 4), depth.float_bits(-CLEAR_FAR))
+    store_u32(ptr(usize(addr(&mut clear[0])) + 8), depth.float_bits(-CLEAR_FAR))
+    store_u32(ptr(usize(addr(&mut clear[0])) + 12), depth.float_bits(1.0))
     mut pass: vk.RenderPassBeginInfo = zeroed()
     pass.sType = 43
     pass.renderPass = r.shadowPass
@@ -375,7 +368,7 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     mut push: [f32; 36] = [0.0; 36]
     for i in 0..16 { push[i] = light_vp[i] }
     for i in 0..4 { push[32 + i] = light_dir_c[i] }
-    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, 1, 0, 144, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 0, 144, addr(&push[0]))
     true
 }
 
@@ -391,7 +384,7 @@ pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) 
     r.vertexCursor = offset + bytes
     mut push: [f32; 36] = [0.0; 36]
     for i in 0..16 { push[i] = model[i] }
-    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, 1, 64, 64, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 64, 64, addr(&push[0]))
     r.api.CmdBindVertexBuffers(r.commands[r.current], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdDraw(r.commands[r.current], u32(vertices.len / 6), 1, 0, 0)
     true

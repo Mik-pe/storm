@@ -94,6 +94,57 @@ import ..src.vulkan as vulkan
     }
 }
 
+@test fn float_bits_covers_both_signs() {
+    // Finding 55: a negative float's to_bits() ends the program silently, so
+    // depth.float_bits assembles the sign bit itself. Pin both halves.
+    assert(depth.float_bits(1.0) == 0x3F800000)
+    assert(depth.float_bits(-1.0) == 0xBF800000)
+    assert(depth.float_bits(-1000.0) == 0xC47A0000)
+    assert(depth.float_bits(0.0) == 0)
+    assert(depth.depth_clear(1.0) == 0x3F800000)
+}
+
+@test fn c_record_pairs_and_arrays_are_contiguous() {
+    // The pairs handed to Vulkan (vk.Dependencies, Attachments, ShaderStages,
+    // References, Attributes) are records of records; this pins that the
+    // second element starts right after the first and that a named stage /
+    // external subpass value lands where C puts it. A plain [T; N] of the
+    // same record is contiguous too (measured: size 56, stride 28); the
+    // pairs exist so every module shares one declaration.
+    assert(size_of(vk.SubpassDependency) == 28)
+    assert(size_of(vk.PipelineShaderStageCreateInfo) == 48)
+    assert(size_of(vk.VertexInputAttributeDescription) == 16)
+    assert(size_of(vk.Dependencies) == 56)
+    assert(size_of(vk.Attachments) == 72)
+    assert(size_of(vk.ShaderStages) == 96)
+    assert(size_of(vk.References) == 16)
+    assert(size_of(vk.Attributes) == 32)
+    assert(size_of([vk.SubpassDependency; 2]) == 56)
+    unsafe {
+        mut before: vk.SubpassDependency = zeroed()
+        before.srcSubpass = enums.SUBPASS_EXTERNAL
+        before.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
+        mut after: vk.SubpassDependency = zeroed()
+        after.dstSubpass = enums.SUBPASS_EXTERNAL
+        after.dstStageMask = enums.pipeline_stage(.FragmentShader)
+        after.dstAccessMask = enums.access(.ShaderRead)
+        deps := vk.Dependencies { before: before, after: after }
+        base := usize(addr(&deps))
+        assert(usize(addr(&deps.after)) - base == 28)
+        // after = { srcSubpass@28, dstSubpass@32, srcStageMask@36, dstStageMask@40,
+        //            srcAccessMask@44, dstAccessMask@48, flags@52 } exactly as C.
+        assert(load_u32(ptr(base)) == 4294967295)
+        assert(load_u32(ptr(base + 8)) == 1024)
+        assert(load_u32(ptr(base + 28)) == 0)
+        assert(load_u32(ptr(base + 32)) == 4294967295)
+        assert(load_u32(ptr(base + 40)) == 128)
+        assert(load_u32(ptr(base + 48)) == 32)
+        array := [before, after]
+        assert(usize(addr(&array[1])) - usize(addr(&array[0])) == 28)
+        assert(load_u32(ptr(usize(addr(&array[0])) + 40)) == 128)
+    }
+}
+
 @test fn vk_enum_values_match_the_khronos_tables() {
     // The tables as Khronos prints them. A recited table once came out in the
     // wrong order and shipped two pipelines blending with the inverse factors;

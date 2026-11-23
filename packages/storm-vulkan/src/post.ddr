@@ -13,12 +13,6 @@ import .state as state
 // vignette, grain, scanlines and a cool grade. It needs no scene texture, so
 // the whole thing stays inside the scene render pass.
 
-@c_layout
-struct Stages {
-    vertex: vk2.PipelineShaderStageCreateInfo,
-    fragment: vk2.PipelineShaderStageCreateInfo,
-}
-
 unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
     mut info: vk2.ShaderModuleCreateInfo = zeroed()
     info.sType = 16
@@ -37,9 +31,9 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     r.postVertShader = vert_module
     r.postFragShader = frag_module
 
-    mut stages := Stages {
-        vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: 1, module: r.postVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
-        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: 16, module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+    stages := vk2.ShaderStages {
+        vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Vertex), module: r.postVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Fragment), module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
     }
 
     mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()
@@ -100,7 +94,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
     info.sType = 28
     info.stageCount = 2
-    info.pStages = addr(&mut stages)
+    info.pStages = addr(&stages)
     info.pVertexInputState = addr(&mut vertex_input)
     info.pInputAssemblyState = addr(&mut assembly)
     info.pViewportState = addr(&mut viewport_state)
@@ -131,7 +125,7 @@ pub unsafe fn draw(r: &mut state.Renderer, time: f32, amount: f32) -> bool {
     slot := r.current
     r.api.CmdBindPipeline(r.commands[slot], 0, r.postPipeline)
     mut push := [f32(r.width), f32(r.height), time, amount]
-    r.api.CmdPushConstants(r.commands[slot], r.postPipelineLayout, 16, 0, 16, addr(&mut push[0]))
+    r.api.CmdPushConstants(r.commands[slot], r.postPipelineLayout, enums.shader_stage(.Fragment), 0, 16, addr(&mut push[0]))
     r.api.CmdDraw(r.commands[slot], 3, 1, 0, 0)
     true
 }

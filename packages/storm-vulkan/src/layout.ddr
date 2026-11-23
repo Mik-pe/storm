@@ -168,6 +168,25 @@ pub struct SubpassDependency {
     dependencyFlags: u32,
 }
 
+// Contiguous pairs for pDependencies / pAttachments / pStages. A Dunder array
+// of C records is NOT contiguous: elements are padded to 8 bytes even when the
+// record is 28 (finding 54), so pairs are declared as records of records and
+// `c_record_pairs_are_contiguous` pins the layout.
+@c_layout
+pub struct Dependencies { before: SubpassDependency, after: SubpassDependency }
+
+@c_layout
+pub struct Attachments { color: AttachmentDescription, depth: AttachmentDescription }
+
+@c_layout
+pub struct References { color: AttachmentReference, depth: AttachmentReference }
+
+@c_layout
+pub struct Attributes { first: VertexInputAttributeDescription, second: VertexInputAttributeDescription }
+
+@c_layout
+pub struct ShaderStages { vertex: PipelineShaderStageCreateInfo, fragment: PipelineShaderStageCreateInfo }
+
 @c_layout
 pub struct RenderPassCreateInfo {
     sType: u32,

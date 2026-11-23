@@ -37,9 +37,6 @@ const LUT_SAMPLES: i32 = 512
 
 const PUSH_BYTES: u32 = 96
 
-@c_layout
-struct Stages { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
-
 // An image plus its device memory, returned by the image helpers.
 struct ImageMemory { image: ptr, memory: ptr }
 
@@ -70,13 +67,11 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
     stage.sType = 18
-    stage.stage = 1
+    stage.stage = enums.shader_stage(.Vertex)
     stage.module = vmodule
     stage.pName = cstr("main")
-    mut stages: Stages = zeroed()
-    stages.vertex = stage
-    stages.fragment = stage
-    stages.fragment.stage = u32(enums.shader_stage(.Fragment))
+    mut stages := vk.ShaderStages { vertex: stage, fragment: stage }
+    stages.fragment.stage = enums.shader_stage(.Fragment)
     stages.fragment.module = fmodule
 
     mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()

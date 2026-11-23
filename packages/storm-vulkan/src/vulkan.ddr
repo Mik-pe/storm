@@ -398,7 +398,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
     for i in 0..4 { push[20 + i] = zenith[i] }
     for i in 0..4 { push[24 + i] = horizon[i] }
     r.api.CmdBindPipeline(r.commands[slot], 0, r.skyPipeline)
-    r.api.CmdPushConstants(r.commands[slot], r.skyPipelineLayout, 17, 0, 112, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[slot], r.skyPipelineLayout, enums.shader_stage(.VertexFragment), 0, 112, addr(&push[0]))
     r.api.CmdDraw(r.commands[slot], 3, 1, 0, 0)
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }
@@ -438,7 +438,7 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
         r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
     }
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
-    r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 17, 0, state.MESH_PUSH_BYTES, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, enums.shader_stage(.VertexFragment), 0, state.MESH_PUSH_BYTES, addr(&push[0]))
     r.api.CmdDraw(r.commands[slot], u32(vertices.len / 6), 1, 0, 0)
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }

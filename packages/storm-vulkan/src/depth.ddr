@@ -11,19 +11,27 @@ import .state as state
 // the second attachment of the main render pass and is cleared to 1.0 every
 // frame together with the colour attachment.
 
-const USAGE_DEPTH: u32 = 32 // VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-const ASPECT_DEPTH: u32 = 2 // VK_IMAGE_ASPECT_DEPTH_BIT
-
 // Packed VkClearValue for a depth/stencil attachment: depth in word 0 as an
 // f32 bit pattern, stencil in word 1. One VkClearValue is 16 bytes, so this
 // is the second half of a colour+depth clear pair.
+// IEEE-754 bits of an f32, for any sign. `to_bits()` on a negative float
+// ends the program silently (Dunder finding 55), so negatives are assembled
+// from the magnitude and the sign bit.
+pub fn float_bits(value: f32) -> u32 {
+    if value < 0.0 {
+        u32((f32(0.0) - value).to_bits()).bit_or(0x80000000)
+    } else {
+        u32(value.to_bits())
+    }
+}
+
 pub fn depth_clear(depth: f32) -> u64 {
-    u64(u32(depth.to_bits())) + (0).shl(32)
+    u64(float_bits(depth))
 }
 
 pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     if width == 0 || height == 0 { return false }
-    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, USAGE_DEPTH)
+    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.DepthStencilAttachment))
     mut image := ptr(0)
     if r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image)) != 0 {
         return false
@@ -49,7 +57,7 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     view_info.image = image
     view_info.viewType = enums.image_view_type(.Type2D)
     view_info.format = enums.format(.D32_SFLOAT)
-    view_info.subresourceRange.aspectMask = ASPECT_DEPTH
+    view_info.subresourceRange.aspectMask = enums.image_aspect(.Depth)
     view_info.subresourceRange.levelCount = 1
     view_info.subresourceRange.layerCount = 1
     mut view := ptr(0)
