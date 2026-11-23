@@ -12,6 +12,7 @@ capability stdio
 
 import core
 import ecs
+import gltf
 import input
 import render
 import scene as scenegraph
@@ -96,6 +97,17 @@ fn is_plane(drawable: &scenegraph.Drawable) -> bool {
     match drawable.shape {
         .Plane => true,
         .Cube => false,
+        .Mesh => false,
+    }
+}
+
+// The vertex stream a drawable is drawn with: its own when it is a loaded
+// mesh, otherwise the built-in geometry for its shape.
+fn geometry_of(item: &scenegraph.Drawable, cube: &[]f32, plane: &[]f32) -> []f32 {
+    match item.shape {
+        .Mesh => item.vertices.clone(),
+        .Plane => plane.clone(),
+        .Cube => cube.clone(),
     }
 }
 
@@ -155,6 +167,50 @@ fn flag(name: string) -> bool {
         i = i + 1
     }
     false
+}
+
+// The value after a flag, or "" when the flag is absent or last.
+fn value_argument(name: string) -> string {
+    mut i := 1
+    while i + 1 < sys.arg_count() {
+        if sys.arg(i) == name { return sys.arg(i + 1) }
+        i = i + 1
+    }
+    ""
+}
+
+// Loads a .glb into the scene as a node with its own vertex stream, scaled to
+// MODEL_SIZE units on its longest side and resting on y = 0, so any model
+// lands in view whatever units it was authored in.
+const MODEL_SIZE: f32 = 2.4
+fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Option<ecs.Entity> {
+    document := gltf.load(path)
+    mesh := gltf.load_mesh(&document)
+    if !mesh.ok {
+        _ := sys.eprint("storm: " + path + ": " + mesh.error + "\n")
+        return .None
+    }
+    mut lo: [f32; 3] = [mesh.positions[0], mesh.positions[1], mesh.positions[2]]
+    mut hi: [f32; 3] = [mesh.positions[0], mesh.positions[1], mesh.positions[2]]
+    for i in 0..mesh.vertex_count {
+        for axis in 0..3 {
+            v := mesh.positions[i * 3 + axis]
+            if v < lo[axis] { lo[axis] = v }
+            if v > hi[axis] { hi[axis] = v }
+        }
+    }
+    mut extent: f32 = hi[0] - lo[0]
+    if hi[1] - lo[1] > extent { extent = hi[1] - lo[1] }
+    if hi[2] - lo[2] > extent { extent = hi[2] - lo[2] }
+    if extent <= 0.0 { extent = 1.0 }
+    scale := MODEL_SIZE / extent
+    node := graph.create_root(core.vec3(at.x - (lo[0] + hi[0]) * 0.5 * scale, at.y - lo[1] * scale, at.z - (lo[2] + hi[2]) * 0.5 * scale))
+    _ := graph.set_name(node, "model")
+    _ := graph.set_scale(node, core.vec3(scale, scale, scale))
+    _ := graph.set_material(node, scenegraph.material(0.82, 0.84, 0.88, 1.0, 0.6, 0.35))
+    _ := graph.set_mesh(node, gltf.interleave(&mesh))
+    _ := sys.eprint("storm: " + path + ": " + mesh.vertex_count.str() + " vertices, scale " + scale.str() + "\n")
+    .Some(node)
 }
 
 // Glass is blended, so it must be painted farthest first. Only the
@@ -254,6 +310,8 @@ fn main() -> i32 {
     _ := graph.set_material(pane_left, scene_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
     _ := graph.set_material(pane_right, scene_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
     spawn_orbs(&mut graph)
+    glb := value_argument("--glb")
+    if glb.len > 0 { _ := load_model(&mut graph, glb, core.vec3(5.4, 0.0, 0.8)) }
     graph.propagate()
 
     // --- camera ---
@@ -417,9 +475,11 @@ fn main() -> i32 {
                 for index in 0..items.len {
                     if !is_transparent(&items[index].material) {
                         if is_plane(&items[index]) {
-                            _ := vulkan.shadow_mesh(opened.window, &plane_vertices, &items[index].model.m)
+                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
+                            _ := vulkan.shadow_mesh(opened.window, &stream, &items[index].model.m)
                         } else {
-                            _ := vulkan.shadow_mesh(opened.window, &cube_vertices, &items[index].model.m)
+                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
+                            _ := vulkan.shadow_mesh(opened.window, &stream, &items[index].model.m)
                         }
                     }
                 }
@@ -441,16 +501,19 @@ fn main() -> i32 {
                 for index in 0..items.len {
                     if !is_transparent(&items[index].material) {
                         if is_plane(&items[index]) {
-                            draw_item(opened.window, &plane_vertices, items[index], view_projection, camera.position, &sky, show_shadows)
+                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
+                            draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, show_shadows)
                         } else {
-                            draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, show_shadows)
+                            stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
+                            draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, show_shadows)
                         }
                     }
                 }
             } else if kind == render.PassKind.Transparent {
                 for index in 0..items.len {
                     if is_transparent(&items[index].material) {
-                        draw_item(opened.window, &cube_vertices, items[index], view_projection, camera.position, &sky, false)
+                        stream := geometry_of(items[index], &cube_vertices, &plane_vertices)
+                        draw_item(opened.window, &stream, items[index], view_projection, camera.position, &sky, false)
                     }
                 }
             } else if kind == render.PassKind.Overlay {

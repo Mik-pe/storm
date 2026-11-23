@@ -51,6 +51,13 @@ fn read_u32(data: &[]u8, offset: i32) -> u32 {
     u32(bytes.u32_le(data, offset))
 }
 
+// GLB chunk types are the four bytes b"JSON" and b"BIN\0" read little-endian.
+// This constant was once 1313821723 (b"\x1bTON"), and the test fixture was
+// built with the same wrong number, so every real .glb was rejected as "neither
+// GLB nor JSON" while the tests stayed green.
+pub const JSON_CHUNK: u32 = 1313821514
+pub const BIN_CHUNK: u32 = 5130562
+
 // Split a .glb into its JSON and BIN chunks. Returns .None for non-GLB data.
 fn glb_chunks(data: &[]u8) -> Option<GlbChunk> {
     if data.len < 12 { return .None }
@@ -63,7 +70,7 @@ fn glb_chunks(data: &[]u8) -> Option<GlbChunk> {
         kind := read_u32(data, offset + 4)
         start := offset + 8
         if start + length > data.len { return .None }
-        if kind == 1313821723 { json_chunk = GlbChunk { kind: kind, start: start, length: length } }
+        if kind == JSON_CHUNK { json_chunk = GlbChunk { kind: kind, start: start, length: length } }
         // Chunks are padded to four-byte boundaries.
         offset = start + length
         if offset % 4 != 0 { offset = offset + (4 - offset % 4) }
@@ -80,7 +87,7 @@ fn glb_bin(data: &[]u8) -> Option<GlbChunk> {
         kind := read_u32(data, offset + 4)
         start := offset + 8
         if start + length > data.len { return .None }
-        if kind == 5130562 { return .Some(GlbChunk { kind: kind, start: start, length: length }) }
+        if kind == BIN_CHUNK { return .Some(GlbChunk { kind: kind, start: start, length: length }) }
         offset = start + length
         if offset % 4 != 0 { offset = offset + (4 - offset % 4) }
     }
@@ -136,12 +143,12 @@ pub fn load_bytes(data: &[]u8) -> Document {
 // ---- Accessors ----
 
 fn component_size(component_type: i32) -> i32 {
-    if component_type == 5120 { return 1 }  // BYTE
-    if component_type == 5121 { return 1 }  // UNSIGNED_BYTE
-    if component_type == 5122 { return 2 }  // SHORT
-    if component_type == 5123 { return 2 }  // UNSIGNED_SHORT
-    if component_type == 5125 { return 4 }  // UNSIGNED_INT
-    if component_type == 5126 { return 4 }  // FLOAT
+    if component_type == 5120 { return 1 } // BYTE
+    if component_type == 5121 { return 1 } // UNSIGNED_BYTE
+    if component_type == 5122 { return 2 } // SHORT
+    if component_type == 5123 { return 2 } // UNSIGNED_SHORT
+    if component_type == 5125 { return 4 } // UNSIGNED_INT
+    if component_type == 5126 { return 4 } // FLOAT
     0
 }
 
@@ -333,11 +340,17 @@ pub fn load_mesh(doc: &Document) -> Mesh {
     }
 }
 
-// Interleave positions/normals into Storm's [x,y,z,nx,ny,nz] f32 stream.
+// Expand the mesh through its index buffer into Storm's unindexed
+// [x,y,z,nx,ny,nz] f32 stream, one vertex per index. A glTF index buffer is
+// what ties the triangles together; ignoring it draws every triangle from
+// consecutive vertices, which turns any indexed model (Khronos's Damaged
+// Helmet, the Fox) into a cloud of shards.
 pub fn interleave(mesh: &Mesh) -> []f32 {
     mut out: []f32 = []
-    out.reserve(mesh.vertex_count * 6)
-    for i in 0..mesh.vertex_count {
+    out.reserve(mesh.index_count * 6)
+    for k in 0..mesh.index_count {
+        i := mesh.indices[k]
+        if i < 0 || i >= mesh.vertex_count { continue }
         out.push(mesh.positions[i * 3])
         out.push(mesh.positions[i * 3 + 1])
         out.push(mesh.positions[i * 3 + 2])

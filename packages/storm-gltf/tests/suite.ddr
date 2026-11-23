@@ -28,10 +28,10 @@ fn build_triangle_glb() -> []u8 {
     out.push(u8(2)); out.push(u8(0)); out.push(u8(0)); out.push(u8(0))
     append_u32(&mut out, u32(total))
     append_u32(&mut out, u32(json_bytes.len))
-    append_u32(&mut out, u32(1313821723))
+    append_u32(&mut out, gltf.JSON_CHUNK)
     for b in json_bytes { out.push(b) }
     append_u32(&mut out, u32(bin_bytes.len))
-    append_u32(&mut out, u32(5130562))
+    append_u32(&mut out, gltf.BIN_CHUNK)
     for b in bin_bytes { out.push(b) }
     out
 }
@@ -79,4 +79,30 @@ fn append_u32(out: &mut []u8, value: u32) {
     doc := gltf.load("/nonexistent/model.glb")
     assert(!doc.ok)
     assert(doc.error.len > 0)
+}
+
+// A real file, from outside this repo: Khronos's Box.glb sample (24 vertices,
+// 36 indices). The synthetic GLB above was built with the same wrong chunk
+// constant as the parser, so only a file written by someone else proves the
+// header is read the way the world writes it.
+@test fn reads_a_khronos_sample_box() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(doc.ok)
+    assert(doc.has_bin)
+    mesh := gltf.load_mesh(&doc)
+    assert(mesh.ok)
+    assert(mesh.vertex_count == 24)
+    assert(mesh.index_count == 36)
+    assert(mesh.normals.len == 72)
+    // Unit box: every coordinate is -0.5 or 0.5.
+    for i in 0..mesh.positions.len {
+        v := mesh.positions[i]
+        assert(v == -0.5 || v == 0.5)
+    }
+    // Expanded through the 36 indices, not the 24 vertices.
+    stream := gltf.interleave(&mesh)
+    assert(stream.len == 36 * 6)
+    assert(stream[0] == mesh.positions[mesh.indices[0] * 3])
+    assert(stream[3] == mesh.normals[mesh.indices[0] * 3])
+    assert(stream[6] == mesh.positions[mesh.indices[1] * 3])
 }

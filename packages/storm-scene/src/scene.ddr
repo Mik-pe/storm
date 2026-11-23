@@ -31,9 +31,16 @@ pub struct WorldTransform { matrix: core.Mat4 }
 
 pub struct Name { value: string }
 
-pub enum Shape { Cube = 0, Plane = 1 }
+pub enum Shape { Cube = 0, Plane = 1, Mesh = 2 }
 
-pub struct Mesh { shape: Shape }
+// What a node is drawn as. Cube and Plane are built-in; Mesh carries the
+// vertex stream itself ([x,y,z,nx,ny,nz] per vertex, what gltf.interleave
+// produces and what the renderer consumes), so a loaded model needs no
+// renderer-side geometry table.
+pub struct Mesh {
+    shape: Shape,
+    vertices: []f32,
+}
 
 pub enum MaterialField { BaseR = 0, BaseG = 1, BaseB = 2, BaseA = 3, Metallic = 4, Roughness = 5, Emissive = 6 }
 
@@ -57,6 +64,8 @@ pub struct Drawable {
     model: core.Mat4,
     material: Material,
     shape: Shape,
+    // Only for Shape.Mesh; empty otherwise.
+    vertices: []f32,
     // Squared distance from the eye to the model origin, for sorting glass.
     depth: f32,
 }
@@ -153,7 +162,19 @@ impl Graph {
             self.meshes.get_mut(entity).shape = shape
             return true
         }
-        self.meshes.insert(entity, Mesh { shape: shape }) >= 0
+        self.meshes.insert(entity, Mesh { shape: shape, vertices: [] }) >= 0
+    }
+
+    // Attach loaded geometry; the node becomes Shape.Mesh.
+    pub fn set_mesh(&mut self, entity: ecs.Entity, move vertices: []f32) -> bool {
+        if !self.allocator.is_alive(entity) { return false }
+        _ := self.meshes.insert(entity, Mesh { shape: .Mesh, vertices: vertices })
+        true
+    }
+
+    pub fn vertices(&self, entity: ecs.Entity) -> []f32 {
+        if !self.meshes.contains(entity) { return [] }
+        self.meshes.get(entity).vertices.clone()
     }
 
     pub fn shape(&self, entity: ecs.Entity) -> Option<Shape> {
@@ -316,6 +337,7 @@ impl Graph {
                 model: model,
                 material: mat,
                 shape: self.meshes.get(entity).shape,
+                vertices: self.meshes.get(entity).vertices.clone(),
                 depth: dx * dx + dy * dy + dz * dz,
             })
         }

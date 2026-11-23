@@ -133,3 +133,25 @@ import core
     assert(g.drawables(core.vec3(0.0, 0.0, 0.0)).len == 0)
     assert(g.nodes().len == 0)
 }
+
+@test fn a_loaded_mesh_is_a_component_that_drawables_carry() {
+    mut g := scene.Graph::new()
+    node := g.create_root(core.vec3(1.0, 2.0, 3.0))
+    assert(g.set_mesh(node, [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]))
+    assert(match g.shape(node) { .Some(.Mesh) => true, _ => false })
+    assert(g.vertices(node).len == 12)
+    g.propagate()
+    list := g.drawables(core.vec3(0.0, 0.0, 0.0))
+    assert(list.len == 1)
+    assert(match list[0].shape { .Mesh => true, _ => false })
+    assert(list[0].vertices.len == 12)
+    assert(list[0].vertices[4] == 1.0)
+    // Built-in shapes carry no stream.
+    cube := g.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := g.set_shape(cube, .Cube)
+    g.propagate()
+    cubes := g.drawables(core.vec3(0.0, 0.0, 0.0))
+    assert(cubes[1].vertices.len == 0)
+    assert(g.destroy(node))
+    assert(g.vertices(node).len == 0)
+}
