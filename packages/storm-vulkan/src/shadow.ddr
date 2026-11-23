@@ -20,9 +20,6 @@ const CLEAR_FAR: f32 = 1000.0
 @c_layout
 struct StagePair { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
 
-@c_layout
-struct AttrPair { position: vk.VertexInputAttributeDescription, normal: vk.VertexInputAttributeDescription }
-
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // --- image ---
     image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.ColorAttachmentSampled))
@@ -259,16 +256,17 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     stages.fragment.stage = enums.shader_stage(.Fragment)
     stages.fragment.module = fshader
 
-    mut binding_desc := vk.VertexInputBindingDescription { binding: 0, stride: 24, inputRate: 0 }
-    mut attributes: AttrPair = zeroed()
-    attributes.position = vk.VertexInputAttributeDescription { location: 0, binding: 0, format: 106, offset: 0 }
-    attributes.normal = vk.VertexInputAttributeDescription { location: 1, binding: 0, format: 106, offset: 12 }
+    // Same vertex layout as the mesh pipeline, from the same record: the
+    // shadow shader reads only position, but the pipeline must declare the
+    // whole 32-byte stream or the stride is wrong.
+    mut vertex_input := vk.vertex_input()
+    enums.apply_vertex_input(&mut vertex_input)
     mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
     input.sType = 19
     input.vertexBindingDescriptionCount = 1
-    input.pVertexBindingDescriptions = addr(&binding_desc)
-    input.vertexAttributeDescriptionCount = 2
-    input.pVertexAttributeDescriptions = addr(&attributes)
+    input.pVertexBindingDescriptions = addr(&vertex_input.binding)
+    input.vertexAttributeDescriptionCount = 3
+    input.pVertexAttributeDescriptions = addr(&vertex_input.attributes)
 
     mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
     assembly.sType = 20
@@ -390,7 +388,7 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
 
 pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) -> bool {
     if r.recording == 0 { return false }
-    if vertices.len % 6 != 0 { return false }
+    if vertices.len % vk.VERTEX_FLOATS != 0 { return false }
     bytes := u64(vertices.len * 4)
     offset := r.vertexCursor
     if offset + bytes > r.vertex.capacity { return false }
@@ -402,7 +400,7 @@ pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) 
     for i in 0..16 { push[i] = model[i] }
     r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 64, 64, addr(&push[0]))
     r.api.CmdBindVertexBuffers(r.commands[r.current], 0, 1, addr(&r.vertex.handle), addr(&offset))
-    r.api.CmdDraw(r.commands[r.current], u32(vertices.len / 6), 1, 0, 0)
+    r.api.CmdDraw(r.commands[r.current], u32(vertices.len / vk.VERTEX_FLOATS), 1, 0, 0)
     true
 }
 

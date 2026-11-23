@@ -413,7 +413,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
     base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &Sky, blended: bool) -> DrawResult {
     if r.recording == 0 { return draw_error(r.frameIndex, "mesh drawn outside begin/end") }
-    if vertices.len % 6 != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz] triples") }
+    if vertices.len % vk.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
     }
@@ -446,7 +446,7 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     }
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, enums.shader_stage(.VertexFragment), 0, state.MESH_PUSH_BYTES, addr(&push[0]))
-    r.api.CmdDraw(r.commands[slot], u32(vertices.len / 6), 1, 0, 0)
+    r.api.CmdDraw(r.commands[slot], u32(vertices.len / vk.VERTEX_FLOATS), 1, 0, 0)
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }
 
@@ -709,50 +709,78 @@ pub fn close(window: Window) {
     unsafe { close_window(ref_at(registry_address()), window) }
 }
 
-// ---- Geometry helpers: interleaved [x, y, z, nx, ny, nz] ----
+// ---- Geometry helpers: the mesh vertex stream, [x, y, z, nx, ny, nz, u, v] ----
 
-pub fn vertex(vertices: &mut []f32, x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32) {
-    vertices.push(x)
-    vertices.push(y)
-    vertices.push(z)
-    vertices.push(nx)
-    vertices.push(ny)
-    vertices.push(nz)
+// One vertex of the stream the mesh pipelines read. `push_vertex` writes it
+// as vk.VERTEX_FLOATS floats in the order layout.vertex_input() declares.
+pub struct Vertex {
+    x: f32, y: f32, z: f32,
+    nx: f32, ny: f32, nz: f32,
+    u: f32, v: f32,
 }
 
-pub fn triangle(vertices: &mut []f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32,
-    cx: f32, cy: f32, cz: f32, nx: f32, ny: f32, nz: f32) {
-    vertex(&mut vertices, ax, ay, az, nx, ny, nz)
-    vertex(&mut vertices, bx, by, bz, nx, ny, nz)
-    vertex(&mut vertices, cx, cy, cz, nx, ny, nz)
+pub fn vertex(x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32, u: f32, v: f32) -> Vertex {
+    Vertex { x: x, y: y, z: z, nx: nx, ny: ny, nz: nz, u: u, v: v }
+}
+
+// A vertex of a face with a shared normal and a uv from the face's position:
+// u runs along `u_axis`, v along `v_axis`, both from the face's origin.
+pub fn push_vertex(vertices: &mut []f32, p: Vertex) {
+    vertices.push(p.x)
+    vertices.push(p.y)
+    vertices.push(p.z)
+    vertices.push(p.nx)
+    vertices.push(p.ny)
+    vertices.push(p.nz)
+    vertices.push(p.u)
+    vertices.push(p.v)
+}
+
+pub fn push_triangle(vertices: &mut []f32, a: Vertex, b: Vertex, c: Vertex) {
+    push_vertex(&mut vertices, a)
+    push_vertex(&mut vertices, b)
+    push_vertex(&mut vertices, c)
+}
+
+// Two triangles a-b-c and a-c-d over a face whose corners in order are
+// a (bottom-left), b (bottom-right), c (top-right), d (top-left) as seen
+// from outside. uv follows the glTF/Vulkan convention: (0,0) is the image's
+// top-left, so the bottom edge carries v = 1 and the image stands upright.
+pub fn push_quad(vertices: &mut []f32, a: Vertex, b: Vertex, c: Vertex, d: Vertex) {
+    push_triangle(&mut vertices, a, b, c)
+    push_triangle(&mut vertices, a, c, d)
 }
 
 // Axis-aligned box centred at the origin. 36 vertices, flat normals per face.
+// Each face carries uv (0,0)..(1,1); the box is the texture test surface.
 pub fn cube(vertices: &mut []f32, half: f32) {
-    // +Z
-    triangle(&mut vertices, -half, -half, half, half, -half, half, half, half, half, 0.0, 0.0, 1.0)
-    triangle(&mut vertices, -half, -half, half, half, half, half, -half, half, half, 0.0, 0.0, 1.0)
-    // -Z
-    triangle(&mut vertices, half, -half, -half, -half, -half, -half, -half, half, -half, 0.0, 0.0, -1.0)
-    triangle(&mut vertices, half, -half, -half, -half, half, -half, half, half, -half, 0.0, 0.0, -1.0)
-    // -X
-    triangle(&mut vertices, -half, -half, -half, -half, -half, half, -half, half, half, -1.0, 0.0, 0.0)
-    triangle(&mut vertices, -half, -half, -half, -half, half, half, -half, half, -half, -1.0, 0.0, 0.0)
-    // +X
-    triangle(&mut vertices, half, -half, half, half, -half, -half, half, half, -half, 1.0, 0.0, 0.0)
-    triangle(&mut vertices, half, -half, half, half, half, -half, half, half, half, 1.0, 0.0, 0.0)
-    // +Y
-    triangle(&mut vertices, -half, half, half, half, half, half, half, half, -half, 0.0, 1.0, 0.0)
-    triangle(&mut vertices, -half, half, half, half, half, -half, -half, half, -half, 0.0, 1.0, 0.0)
-    // -Y
-    triangle(&mut vertices, -half, -half, -half, half, -half, -half, half, -half, half, 0.0, -1.0, 0.0)
-    triangle(&mut vertices, -half, -half, -half, half, -half, half, -half, -half, half, 0.0, -1.0, 0.0)
+    // +Z: bottom-left is (-h, -h), u along +x, v along +y.
+    push_quad(&mut vertices, vertex(-half, -half, half, 0.0, 0.0, 1.0, 0.0, 1.0), vertex(half, -half, half, 0.0, 0.0, 1.0, 1.0, 1.0),
+        vertex(half, half, half, 0.0, 0.0, 1.0, 1.0, 0.0), vertex(-half, half, half, 0.0, 0.0, 1.0, 0.0, 0.0))
+    // -Z: seen from -Z, bottom-left is (h, -h) and u runs along -x.
+    push_quad(&mut vertices, vertex(half, -half, -half, 0.0, 0.0, -1.0, 0.0, 1.0), vertex(-half, -half, -half, 0.0, 0.0, -1.0, 1.0, 1.0),
+        vertex(-half, half, -half, 0.0, 0.0, -1.0, 1.0, 0.0), vertex(half, half, -half, 0.0, 0.0, -1.0, 0.0, 0.0))
+    // -X: seen from -X, bottom-left is (-h, -h) in (z, y) and u runs along +z.
+    push_quad(&mut vertices, vertex(-half, -half, -half, -1.0, 0.0, 0.0, 0.0, 1.0), vertex(-half, -half, half, -1.0, 0.0, 0.0, 1.0, 1.0),
+        vertex(-half, half, half, -1.0, 0.0, 0.0, 1.0, 0.0), vertex(-half, half, -half, -1.0, 0.0, 0.0, 0.0, 0.0))
+    // +X: seen from +X, bottom-left is (h, -h, h) and u runs along -z.
+    push_quad(&mut vertices, vertex(half, -half, half, 1.0, 0.0, 0.0, 0.0, 1.0), vertex(half, -half, -half, 1.0, 0.0, 0.0, 1.0, 1.0),
+        vertex(half, half, -half, 1.0, 0.0, 0.0, 1.0, 0.0), vertex(half, half, half, 1.0, 0.0, 0.0, 0.0, 0.0))
+    // +Y: seen from above with -z up, bottom-left is (-h, h, h) and u along +x.
+    push_quad(&mut vertices, vertex(-half, half, half, 0.0, 1.0, 0.0, 0.0, 1.0), vertex(half, half, half, 0.0, 1.0, 0.0, 1.0, 1.0),
+        vertex(half, half, -half, 0.0, 1.0, 0.0, 1.0, 0.0), vertex(-half, half, -half, 0.0, 1.0, 0.0, 0.0, 0.0))
+    // -Y: seen from below with +z up, bottom-left is (-h, -h, -h) and u along +x.
+    push_quad(&mut vertices, vertex(-half, -half, -half, 0.0, -1.0, 0.0, 0.0, 1.0), vertex(half, -half, -half, 0.0, -1.0, 0.0, 1.0, 1.0),
+        vertex(half, -half, half, 0.0, -1.0, 0.0, 1.0, 0.0), vertex(-half, -half, half, 0.0, -1.0, 0.0, 0.0, 0.0))
 }
 
-// Ground plane in XZ at y = 0, normal +Y.
+// Ground plane in XZ at y = 0, normal +Y, uv a function of position:
+// u = (x + extent) / 2 extent along x, v = (z + extent) / 2 extent along z.
+// Wound so the upward face survives back-face culling under the mesh
+// pipeline's front face; the two triangles share the corner-to-corner
+// diagonal as before.
 pub fn plane(vertices: &mut []f32, extent: f32) {
-    // Wound so the upward face survives back-face culling under the mesh
-    // pipeline's clockwise front face.
-    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, extent, extent, 0.0, -extent, 0.0, 1.0, 0.0)
-    triangle(&mut vertices, -extent, 0.0, -extent, -extent, 0.0, extent, extent, 0.0, extent, 0.0, 1.0, 0.0)
+    e := extent
+    push_triangle(&mut vertices, vertex(-e, 0.0, -e, 0.0, 1.0, 0.0, 0.0, 0.0), vertex(e, 0.0, e, 0.0, 1.0, 0.0, 1.0, 1.0), vertex(e, 0.0, -e, 0.0, 1.0, 0.0, 1.0, 0.0))
+    push_triangle(&mut vertices, vertex(-e, 0.0, -e, 0.0, 1.0, 0.0, 0.0, 0.0), vertex(-e, 0.0, e, 0.0, 1.0, 0.0, 0.0, 1.0), vertex(e, 0.0, e, 0.0, 1.0, 0.0, 1.0, 1.0))
 }

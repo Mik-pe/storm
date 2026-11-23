@@ -34,7 +34,7 @@ pub struct Name { value: string }
 pub enum Shape { Cube = 0, Plane = 1, Mesh = 2 }
 
 // What a node is drawn as. Cube and Plane are built-in; Mesh carries the
-// vertex stream itself ([x,y,z,nx,ny,nz] per vertex, what gltf.interleave
+// vertex stream itself ([x,y,z,nx,ny,nz,u,v] per vertex, what gltf.interleave
 // produces and what the renderer consumes), so a loaded model needs no
 // renderer-side geometry table.
 pub struct Mesh {

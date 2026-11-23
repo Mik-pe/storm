@@ -41,6 +41,7 @@ layout(location = 5) in vec4 sky_sun;
 layout(location = 6) in vec4 sky_sun_color;
 layout(location = 7) in vec4 sky_zenith;
 layout(location = 8) in vec4 sky_horizon;
+layout(location = 9) in vec2 vertex_uv;
 
 layout(location = 0) out vec4 out_color;
 

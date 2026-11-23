@@ -8,13 +8,19 @@ import ..src.headless as headless
 import ..src.state as state
 import ..src.vulkan as vulkan
 
-@test fn cube_emits_twelve_triangles_with_face_normals() {
+@test fn cube_emits_twelve_triangles_with_face_normals_and_uvs() {
     mut v: []f32 = []
     vulkan.cube(&mut v, 0.5)
-    assert(v.len == 36 * 6)
-    // First triangle is the +Z face: normal (0,0,1) and z = +0.5.
+    assert(v.len == 36 * 8)
+    assert(v.len % vk.VERTEX_FLOATS == 0)
+    assert(vk.VERTEX_BYTES == u32(vk.VERTEX_FLOATS * 4))
+    // First vertex is the +Z face's bottom-left corner: normal (0,0,1),
+    // z = +0.5, and uv (0,1): v = 0 is the image's top edge (glTF convention).
     assert(v[3] == 0.0 && v[4] == 0.0 && v[5] == 1.0)
     assert(v[2] == 0.5)
+    assert(v[6] == 0.0 && v[7] == 1.0)
+    // Second vertex is the bottom-right corner: u runs along +x.
+    assert(v[8] == 0.5 && v[9] == -0.5 && v[14] == 1.0 && v[15] == 1.0)
     // Count normals pointing along each axis.
     mut plus_z := 0
     mut minus_y := 0
@@ -22,7 +28,9 @@ import ..src.vulkan as vulkan
     while i < v.len {
         if v[i + 5] == 1.0 { plus_z = plus_z + 1 }
         if v[i + 4] == -1.0 { minus_y = minus_y + 1 }
-        i = i + 6
+        // Every uv is inside the unit square: a face maps the whole image once.
+        assert(v[i + 6] >= 0.0 && v[i + 6] <= 1.0 && v[i + 7] >= 0.0 && v[i + 7] <= 1.0)
+        i = i + vk.VERTEX_FLOATS
     }
     assert(plus_z == 6 && minus_y == 6)
 }
@@ -30,17 +38,61 @@ import ..src.vulkan as vulkan
 @test fn plane_is_two_upward_triangles() {
     mut v: []f32 = []
     vulkan.plane(&mut v, 4.0)
-    assert(v.len == 6 * 6)
-    assert(v[4] == 1.0 && v[10] == 1.0 && v[16] == 1.0)
+    assert(v.len == 6 * 8)
+    assert(v[4] == 1.0 && v[12] == 1.0 && v[20] == 1.0)
+    // uv is a function of position: u = (x + e) / 2e, v = (z + e) / 2e.
+    // First vertex (-4, 0, -4) is (0,0); the far corner (4, 0, 4) is (1,1).
+    assert(v[0] == -4.0 && v[2] == -4.0 && v[6] == 0.0 && v[7] == 0.0)
+    assert(v[8] == 4.0 && v[10] == 4.0 && v[14] == 1.0 && v[15] == 1.0)
+    assert(v[16] == 4.0 && v[18] == -4.0 && v[22] == 1.0 && v[23] == 0.0)
 }
 
-@test fn triangle_and_vertex_helpers_agree() {
+@test fn vertex_and_triangle_helpers_agree() {
     mut v: []f32 = []
-    vulkan.vertex(&mut v, 1.0, 2.0, 3.0, 0.0, 1.0, 0.0)
-    assert(v.len == 6 && v[0] == 1.0 && v[5] == 0.0)
+    vulkan.push_vertex(&mut v, vulkan.vertex(1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 0.25, 0.75))
+    assert(v.len == vk.VERTEX_FLOATS)
+    assert(v[0] == 1.0 && v[5] == 0.0 && v[6] == 0.25 && v[7] == 0.75)
     v.clear()
-    vulkan.triangle(&mut v, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-    assert(v.len == 18)
+    a := vulkan.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    b := vulkan.vertex(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0)
+    c := vulkan.vertex(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    vulkan.push_triangle(&mut v, a, b, c)
+    assert(v.len == 3 * vk.VERTEX_FLOATS)
+    // The stream is the vertex fields in the order layout.vertex_input() declares:
+    // b.x lands at float 8, c.z at float 18, and b's u = 1 at float 14.
+    assert(v[0] == 0.0 && v[3] == 0.0 && v[6] == 0.0)
+    assert(v[8] == 1.0 && v[13] == 0.0 && v[14] == 1.0)
+    assert(v[18] == 1.0 && v[23] == 1.0)
+}
+
+@test fn vertex_input_declares_the_whole_stream() {
+    // The one layout both mesh pipelines declare: one binding, three
+    // attributes, and the binding's stride covers all of them.
+    unsafe {
+        mut input := vk.vertex_input()
+        enums.apply_vertex_input(&mut input)
+        assert(input.binding.stride == vk.VERTEX_BYTES)
+        assert(input.binding.inputRate == 0)
+        assert(size_of(vk.VertexAttributes) == 48)
+        assert(size_of(vk.VertexInput) == 60)
+        a := input.attributes.position
+        b := input.attributes.normal
+        c := input.attributes.uv
+        assert(a.location == 0 && a.offset == 0 && a.format == 106)
+        assert(b.location == 1 && b.offset == 12 && b.format == 106)
+        assert(c.location == 2 && c.offset == 24 && c.format == 103)
+        assert(a.binding == 0 && b.binding == 0 && c.binding == 0)
+        // Inside the record the three descriptions sit back to back, 16 bytes
+        // apart, and the words are C's: [location, binding, format, offset].
+        base := usize(addr(&input.attributes))
+        assert(usize(addr(&input.attributes.normal)) - base == 16)
+        assert(usize(addr(&input.attributes.uv)) - base == 32)
+        assert(usize(addr(&input.attributes)) - usize(addr(&input.binding)) == 12)
+        assert(load_u32(ptr(base + 4 * 4)) == 1)
+        assert(load_u32(ptr(base + 8 * 4)) == 2)
+        assert(load_u32(ptr(base + 8 * 4 + 8)) == 103)
+        assert(load_u32(ptr(base + 8 * 4 + 12)) == 24)
+    }
 }
 
 @test fn barrier_struct_matches_the_c_abi() {
