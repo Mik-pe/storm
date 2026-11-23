@@ -14,6 +14,7 @@
 capability filesystem
 
 import skrift.font as skrift
+import sys
 
 pub struct Glyph {
     codepoint: i32,
@@ -194,6 +195,25 @@ impl Atlas {
     }
 }
 
+// A font to draw with: `preferred` when it exists, else the first monospace
+// font the platform ships. Every candidate is monospace, so the editor's
+// columns line up whichever one is found. "" when there is none, and an
+// empty `preferred` is simply skipped.
+pub fn find_font(preferred: string) -> string {
+    candidates := [preferred.clone(),
+        "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
+        "/System/Library/Fonts/SFNSMono.ttf"]
+    for path in candidates {
+        if path.len == 0 { continue }
+        info := sys.metadata(path)
+        if info.ok && info.is_file { return path.clone() }
+    }
+    ""
+}
+
 // Load a font face and select a pixel size. Returns a face with ok=false when
 // the file cannot be read or parsed.
 pub fn load_face(path: string, pixel_size: f32) -> skrift.Face {
@@ -201,3 +221,6 @@ pub fn load_face(path: string, pixel_size: f32) -> skrift.Face {
     if face.ok { face.set_pixel_size(f64(pixel_size)) }
     face
 }
+
+// The platform's font at a pixel size.
+pub fn load_font(pixel_size: f32) -> skrift.Face { load_face(find_font(""), pixel_size) }

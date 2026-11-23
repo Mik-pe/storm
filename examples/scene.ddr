@@ -60,7 +60,7 @@ fn main() -> i32 {
     print("ecs: entities=" + allocator.len().str() + " rotation=" + transforms.get(entity).rotation.str())
 
     // Text: build an atlas for a status line and lay it out.
-    face := text.load_face("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf", 24.0)
+    face := text.load_font(24.0)
     if face.ok {
         mut atlas := text.Atlas::new(1024, 256)
         status := "Storm " + mesh.vertex_count.str() + " vertices"

@@ -12,6 +12,7 @@
 //   dunder run                     interactive
 //   dunder run -- --frames 60      render 60 frames and exit
 //   dunder run -- --capture a.ppm  one headless frame to disk
+//   dunder run -- --font f.ttf     draw the editor with that font
 capability stdio
 
 import core
@@ -28,7 +29,6 @@ import ui
 import ui.widgets as widgets
 
 // Every character the editor draws has to be packed into the atlas.
-const FONT_PATH: string = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"
 const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ åäö ÅÄÖ ²³"
 // Text scales relative to ui.RASTER_SIZE: 26 px title, 20 px status, 18 px
 // section headers and 17.6 px body text. All are close to the rasterized size
@@ -374,8 +374,12 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     mut score: i32 = 0
     mut total: i32 = orbs_left(&graph)
 
-    // --- editor text ---
-    face := text.load_face(FONT_PATH, ui.RASTER_SIZE)
+    // --- editor text: --font <path>, else the platform's own monospace font ---
+    font := text.find_font(value_argument("--font"))
+    if font.len == 0 {
+        return stop(window, "no monospace font found; pass --font <path>")
+    }
+    face := text.load_face(font, ui.RASTER_SIZE)
     if !face.ok {
         return stop(window, "font missing: " + face.error)
     }
