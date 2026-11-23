@@ -2,8 +2,8 @@ capability unsafe, stdio
 
 import std.bytes as b
 import std.dl as dl
-import std.sys as sys
 import .api as api
+import .depth as depth
 import .device as device
 import .headless as headless
 import .layout as vk
@@ -92,6 +92,8 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     if !pipeline.setup(&mut r) { return false }
     if !post.setup(&mut r) { return false }
     if !ui.setup(&mut r) { return false }
+    r.stage = 17
+    if !depth.create(&mut r, r.width, r.height) { return false }
     r.stage = 4
     if !device.setup_frames(&mut r) { return false }
     r.stage = 5
@@ -226,8 +228,10 @@ pub fn poll(window: Window) -> Frame {
     unsafe {
         address := active(ref_at(registry_address()), window)
         if address == ptr(0) {
-            return Frame { closed: true, width: 0, height: 0, scale: 0.0, time: 0.0,
-                pointer_x: 0.0, pointer_y: 0.0, pointer_down: false, key: -1, resized: false }
+            return Frame {
+                closed: true, width: 0, height: 0, scale: 0.0, time: 0.0,
+                pointer_x: 0.0, pointer_y: 0.0, pointer_down: false, key: -1, resized: false
+            }
         }
         return next_frame(ref_at(address))
     }
@@ -293,6 +297,7 @@ fn stage_name(r: &state.Renderer) -> string {
     if stage == 14 { return "logical device" }
     if stage == 15 { return "surface format" }
     if stage == 16 { return "swapchain" }
+    if stage == 17 { return "depth buffer" }
     if stage == 3 { return "pipeline" }
     if stage == 21 { return "render pass" }
     if stage == 22 { return "mesh pipeline" }
@@ -339,13 +344,15 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     pass.framebuffer = if r.captureOn == 1 { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
     pass.renderArea.extent.width = r.width
     pass.renderArea.extent.height = r.height
-    pass.clearValueCount = 1
+    pass.clearValueCount = 2
+    // ClearValue is a union: colour attachment first (four float words), then
+    // the depth/stencil pair (depth f32 bits, stencil u32).
     mut clears: [u64; 4] = [0; 4]
-    // ClearValue is a union: color floats at word 0..3, depth+stencil at word 0..1.
     store_u32(addr(&mut clears[0]), u32(clear_color[0].to_bits()))
     store_u32(ptr(usize(addr(&mut clears[0])) + 4), u32(clear_color[1].to_bits()))
     store_u32(ptr(usize(addr(&mut clears[0])) + 8), u32(clear_color[2].to_bits()))
     store_u32(ptr(usize(addr(&mut clears[0])) + 12), u32(clear_color[3].to_bits()))
+    clears[2] = depth.depth_clear(1.0)
     pass.pClearValues = addr(&mut clears[0])
     r.imageIndex = i32(image_index)
     r.pendingPass = pass
@@ -498,8 +505,10 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
 unsafe fn recreate(r: &mut state.Renderer) -> bool {
     _ := r.api.DeviceWaitIdle(r.device)
     pipeline.destroy_framebuffers(&mut r)
+    depth.destroy(&mut r)
     device.destroy_swapchain(&mut r)
     if !device.setup_swapchain_only(&mut r) { return false }
+    if !depth.create(&mut r, r.width, r.height) { return false }
     pipeline.setup_frames_only(&mut r)
 }
 
@@ -631,18 +640,20 @@ pub fn end(window: Window) -> DrawResult {
 // struct means the dome you see and the light the surfaces receive cannot drift
 // apart.
 pub struct Sky {
-    sun: [f32; 4],        // xyz towards the sun, w = intensity
+    sun: [f32; 4], // xyz towards the sun, w = intensity
     sun_color: [f32; 4],
     zenith: [f32; 4],
     horizon: [f32; 4],
-    light_vp: [f32; 16],  // sun view-projection for the shadow lookup
-    light_dir_c: [f32; 4],// xyz towards the sun, w = dot(light_origin, dir)
+    light_vp: [f32; 16], // sun view-projection for the shadow lookup
+    light_dir_c: [f32; 4], // xyz towards the sun, w = dot(light_origin, dir)
 }
 
 pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon: [f32; 4],
     light_vp: [f32; 16], light_dir_c: [f32; 4]) -> Sky {
-    Sky { sun: sun.clone(), sun_color: sun_color.clone(), zenith: zenith.clone(), horizon: horizon.clone(),
-          light_vp: light_vp.clone(), light_dir_c: light_dir_c.clone() }
+    Sky {
+        sun: sun.clone(), sun_color: sun_color.clone(), zenith: zenith.clone(), horizon: horizon.clone(),
+        light_vp: light_vp.clone(), light_dir_c: light_dir_c.clone()
+    }
 }
 
 // ---- Teardown ----
@@ -650,6 +661,7 @@ pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon:
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     post.destroy(&mut r)
     ui.destroy(&mut r)
+    depth.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)
     sdl.close(&mut r.window)

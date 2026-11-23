@@ -44,6 +44,7 @@ för sig.
 
 `packages/storm-vulkan` är medvetet fritt från ECS- och speltillstånd: det tar
 en `[]f32`-vertexström och en `[f32; 16]`-matris. Motorn kopplar ihop dem.
+Renderpasset har en `D32_SFLOAT`-djupbilaga som återskapas med swapchainen.
 
 ## Vulkan-fönstret
 
@@ -82,6 +83,10 @@ order := graph.build()
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
 är tie-breaker och cykler kan inte uppstå. `build()` returnerar namnordningen som
 frame-loopen exekverar.
+
+Huvudpasset har en djupbilaga (`D32_SFLOAT`), så opaque geometri behöver ingen
+sortering: mesh-pipelinen testar och skriver djup, glaspipelinen testar men
+skriver inte. Bara glaset sorteras bakifrån-fram, för blendingens skull.
 
 ### Styrning
 

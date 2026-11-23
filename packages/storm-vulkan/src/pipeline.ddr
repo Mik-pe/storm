@@ -4,12 +4,16 @@ import .layout as vk
 import .shader as shader
 import .state as state
 
-
 @c_layout
 struct Dependencies { before: vk.SubpassDependency, after: vk.SubpassDependency }
 
+// Two attachments, laid out contiguously the way pAttachments expects.
 @c_layout
-struct Attachments { color: vk.AttachmentDescription }
+struct Attachments { color: vk.AttachmentDescription, depth: vk.AttachmentDescription }
+
+// Colour reference followed by the depth/stencil reference.
+@c_layout
+struct References { color: vk.AttachmentReference, depth: vk.AttachmentReference }
 
 @c_layout
 struct Stages { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
@@ -18,8 +22,6 @@ struct Stages { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineS
 struct Attributes { position: vk.VertexInputAttributeDescription, normal: vk.VertexInputAttributeDescription }
 
 unsafe fn targets(r: &mut state.Renderer) -> bool {
-    // One colour attachment. Depth is not wired yet: see docs/dogfood.md for the
-    // vkCreateImage result this driver returned for depth formats.
     mut color: vk.AttachmentDescription = zeroed()
     color.format = r.format
     color.samples = 1
@@ -31,23 +33,37 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
     color.initialLayout = 0
     // The target is left ready for presentation: end_frame transitions it.
     color.finalLayout = 2
-    attachments := Attachments { color: color }
+    mut depth: vk.AttachmentDescription = zeroed()
+    depth.format = 126 // D32_SFLOAT
+    depth.samples = 1
+    depth.loadOp = 1 // CLEAR
+    depth.storeOp = 1 // DONT_CARE: nothing reads it after the pass
+    depth.stencilLoadOp = 2
+    depth.stencilStoreOp = 1
+    depth.initialLayout = 0 // UNDEFINED: cleared anyway
+    depth.finalLayout = 2 // DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+    attachments := Attachments { color: color, depth: depth }
     mut color_ref: vk.AttachmentReference = zeroed()
     color_ref.attachment = 0
     color_ref.layout = 2
+    mut depth_ref: vk.AttachmentReference = zeroed()
+    depth_ref.attachment = 1
+    depth_ref.layout = 2
+    refs := References { color: color_ref, depth: depth_ref }
 
     mut subpass: vk.SubpassDescription = zeroed()
     subpass.pipelineBindPoint = 0
     subpass.colorAttachmentCount = 1
-    subpass.pColorAttachments = addr(&color_ref)
+    subpass.pColorAttachments = addr(&refs.color)
+    subpass.pDepthStencilAttachment = addr(&refs.depth)
 
     mut before: vk.SubpassDependency = zeroed()
     before.srcSubpass = 4294967295
     before.dstSubpass = 0
-    before.srcStageMask = 1024
-    before.dstStageMask = 1024
+    before.srcStageMask = 1024 // COLOR_ATTACHMENT_OUTPUT
+    before.dstStageMask = 1024.bit_or(256) // + EARLY_FRAGMENT_TESTS
     before.srcAccessMask = 0
-    before.dstAccessMask = 256
+    before.dstAccessMask = 256.bit_or(1024) // COLOR_WRITE + DEPTH_WRITE
     mut after: vk.SubpassDependency = zeroed()
     after.srcSubpass = 0
     after.dstSubpass = 4294967295
@@ -59,7 +75,7 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
 
     mut pass: vk.RenderPassCreateInfo = zeroed()
     pass.sType = 38
-    pass.attachmentCount = 1
+    pass.attachmentCount = 2
     pass.pAttachments = addr(&attachments.color)
     pass.subpassCount = 1
     pass.pSubpasses = addr(&subpass)
@@ -71,11 +87,11 @@ unsafe fn targets(r: &mut state.Renderer) -> bool {
 
 unsafe fn framebuffers(r: &mut state.Renderer) -> bool {
     for i in 0..r.imageCount {
-        mut views: [ptr; 1] = [r.views[i]]
+        mut views: [ptr; 2] = [r.views[i], r.depthView]
         mut info: vk.FramebufferCreateInfo = zeroed()
         info.sType = 37
         info.renderPass = r.renderPass
-        info.attachmentCount = 1
+        info.attachmentCount = 2
         info.pAttachments = addr(&mut views[0])
         info.width = r.width
         info.height = r.height
@@ -175,9 +191,10 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
 
     mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
     depth_state.sType = 25
-    depth_state.depthTestEnable = 0
-    depth_state.depthWriteEnable = 0
-    depth_state.depthCompareOp = 1
+    // Opaque geometry: closer fragments win and write their depth.
+    depth_state.depthTestEnable = 1
+    depth_state.depthWriteEnable = 1
+    depth_state.depthCompareOp = 1 // LESS
 
     mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
     blend_attachment.colorWriteMask = 15
@@ -203,12 +220,15 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline)) != 0 { return false }
     // Same pipeline with alpha blending for the transparent pass.
     blend_attachment.blendEnable = 1
-    blend_attachment.srcColorBlendFactor = 6    // SRC_ALPHA
-    blend_attachment.dstColorBlendFactor = 7    // ONE_MINUS_SRC_ALPHA
+    blend_attachment.srcColorBlendFactor = 6 // SRC_ALPHA
+    blend_attachment.dstColorBlendFactor = 7 // ONE_MINUS_SRC_ALPHA
     blend_attachment.colorBlendOp = 0
-    blend_attachment.srcAlphaBlendFactor = 1    // ONE
+    blend_attachment.srcAlphaBlendFactor = 1 // ONE
     blend_attachment.dstAlphaBlendFactor = 7
     blend_attachment.alphaBlendOp = 0
+    // Glass is sorted back to front and must not hide geometry behind it:
+    // test against the depth buffer, but never write to it.
+    depth_state.depthWriteEnable = 0
     if r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.transparentPipeline)) != 0 { return false }
     true
 }

@@ -81,6 +81,10 @@ pub struct Renderer {
     skyVertexShader: ptr,
     skyFragmentShader: ptr,
     framebuffers: [ptr; 8],
+    // Depth attachment, recreated together with the swapchain.
+    depthImage: ptr,
+    depthMemory: ptr,
+    depthView: ptr,
     shadowImage: ptr,
     shadowMemory: ptr,
     shadowView: ptr,

@@ -1,7 +1,8 @@
 # Nästa steg
 
 Milstolpe 2 är klar: scenträd, rendergraph, himmel och PBR-material, med
-interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Det här är nästa ordning.
+interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Djupbufferten är också
+klar (avsnitt 0c). Det här är nästa ordning.
 
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
@@ -16,17 +17,17 @@ Textatlasen samplar: UI-vertexen matar `vec4(x, y, u, v)` på location 0 och
 Felen och deras orsaker står i [dogfood.md](dogfood.md#uppföljning-editor-ui-overlay-effekter-och-textatlasen)
 (fynd 34–36).
 
-## 1. Djupbuffert
+## 0c. Klart: djupbufferten
 
-Både C-provet och Storms typade bildbeskrivning skapade D16- och D32-bilder
-på samma Intel-GPU. Skuggbilden använder nu optimal tiling.
-Se [grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy).
+Renderpasset har två bilagor: färg och en `D32_SFLOAT`-djupbild (OPTIMAL,
+`DEPTH_STENCIL_ATTACHMENT`), som rensas till 1.0 varje frame och återskapas med
+swapchainen. Mesh-pipelinen kör `depthTestEnable`/`depthWriteEnable` med `LESS`;
+glaspipelinen testar men skriver inte, så glas döljer inte geometrin bakom sig.
+Himmeln rör inte djupet. Painter's algoritmen är borta ur `main.ddr`: opaque
+ritas i deklarationsordning, bara glaset sorteras bakifrån-fram för blendingens
+skull. Beviset står i [dogfood.md](dogfood.md#uppföljning-djupbufferten).
 
-Nästa motorändring är två bilagor i renderpasset, `VkPipelineDepthStencilStateCreateInfo`
-med `depthTestEnable`/`depthWriteEnable`, djup-clear och en `D32_SFLOAT`-bild
-som återskapas med swapchainen.
-
-## 2. Miljöbelysning (IBL)
+## 1. Miljöbelysning (IBL)
 
 Metallytorna ser platta ut: en metall utan omgivning har bara solen att spegla.
 Nästa steg är en liten miljökub (eller en analytisk himmelmodell i shadern) som
@@ -84,8 +85,8 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
 
 ## Kända begränsningar i dag
 
-- Ingen djupbuffert (se ovan); överlappande geometri sorteras efter
-  deklarationsordning.
+- Djupbuffert finns men inget reverserar det: glaset skriver inte djup, så två
+  glaspaneler som överlappar varandra blandas i sorteringsordning, inte per pixel.
 - En swapchain i taget per process (`Registry.active`).
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
 - Vertexbufferten är 4 MiB och mappad permanent; en mesh-ström per draw.

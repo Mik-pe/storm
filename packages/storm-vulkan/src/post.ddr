@@ -1,7 +1,6 @@
 capability unsafe, stdio
 
 import std.sys as sys
-import .device as device
 import .layout as vk2
 import .shader as shader
 import .state as state
@@ -93,7 +92,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     blend.pAttachments = addr(&mut blend_attachment)
 
     mut push_range: vk2.PushConstantRange = zeroed()
-    push_range.stageFlags = 16          // fragment stage
+    push_range.stageFlags = 16 // fragment stage
     push_range.size = 16
 
     mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()

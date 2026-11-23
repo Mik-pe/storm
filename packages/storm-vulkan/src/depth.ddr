@@ -1,0 +1,74 @@
+capability unsafe
+
+import .device as device
+import .layout as vk
+import .state as state
+
+// Depth buffer.
+//
+// One D32_SFLOAT image, OPTIMAL tiled, recreated with the swapchain. It is
+// the second attachment of the main render pass and is cleared to 1.0 every
+// frame together with the colour attachment.
+
+const DEPTH_FORMAT: u32 = 126 // VK_FORMAT_D32_SFLOAT
+const USAGE_DEPTH: u32 = 32 // VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+const ASPECT_DEPTH: u32 = 2 // VK_IMAGE_ASPECT_DEPTH_BIT
+
+// Packed VkClearValue for a depth/stencil attachment: depth in word 0 as an
+// f32 bit pattern, stencil in word 1. One VkClearValue is 16 bytes, so this
+// is the second half of a colour+depth clear pair.
+pub fn depth_clear(depth: f32) -> u64 {
+    u64(u32(depth.to_bits())) + (0).shl(32)
+}
+
+pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
+    if width == 0 || height == 0 { return false }
+    info := device.image_2d_info(DEPTH_FORMAT, width, height, vk.IMAGE_TILING_OPTIMAL, USAGE_DEPTH)
+    mut image := ptr(0)
+    if r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image)) != 0 {
+        return false
+    }
+    mut req: [u64; 3] = [0; 3]
+    r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
+    mut requirements: vk.MemoryRequirements = zeroed()
+    requirements.size = req[0]
+    requirements.alignment = req[1]
+    requirements.memoryTypeBits = u32(req[2])
+    mut memory := ptr(0)
+    if !device.allocate(&r, &requirements, 0, addr(&mut memory)) {
+        r.api.DestroyImage(r.device, image, ptr(0))
+        return false
+    }
+    if r.api.BindImageMemory(r.device, image, memory, 0) != 0 {
+        r.api.FreeMemory(r.device, memory, ptr(0))
+        r.api.DestroyImage(r.device, image, ptr(0))
+        return false
+    }
+    mut view_info: vk.ImageViewCreateInfo = zeroed()
+    view_info.sType = 15
+    view_info.image = image
+    view_info.viewType = 1
+    view_info.format = DEPTH_FORMAT
+    view_info.subresourceRange.aspectMask = ASPECT_DEPTH
+    view_info.subresourceRange.levelCount = 1
+    view_info.subresourceRange.layerCount = 1
+    mut view := ptr(0)
+    if r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view)) != 0 {
+        r.api.FreeMemory(r.device, memory, ptr(0))
+        r.api.DestroyImage(r.device, image, ptr(0))
+        return false
+    }
+    r.depthImage = image
+    r.depthMemory = memory
+    r.depthView = view
+    true
+}
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.depthView != ptr(0) { r.api.DestroyImageView(r.device, r.depthView, ptr(0)) }
+    if r.depthImage != ptr(0) { r.api.DestroyImage(r.device, r.depthImage, ptr(0)) }
+    if r.depthMemory != ptr(0) { r.api.FreeMemory(r.device, r.depthMemory, ptr(0)) }
+    r.depthView = ptr(0)
+    r.depthImage = ptr(0)
+    r.depthMemory = ptr(0)
+}

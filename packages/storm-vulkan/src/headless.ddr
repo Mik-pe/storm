@@ -69,11 +69,11 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     view := make_view(&r, target, r.format)
     if view == ptr(0) { return false }
 
-    mut views: [ptr; 1] = [view]
+    mut views: [ptr; 2] = [view, r.depthView]
     mut fbi: vk.FramebufferCreateInfo = zeroed()
     fbi.sType = 37
     fbi.renderPass = r.renderPass
-    fbi.attachmentCount = 1
+    fbi.attachmentCount = 2
     fbi.pAttachments = addr(&views[0])
     fbi.width = r.width
     fbi.height = r.height

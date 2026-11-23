@@ -1,7 +1,8 @@
 # Vad Storm hittade i Dunder
 
 Granskat 2026-11-23. Utgångspunkten var Storm `fdd9cc6` och Dunder
-`62e1530`. Punkterna 1–22 kommer från den ursprungliga rapporten och 23–25 från Storm `14bd30c`.
+`62e1530`. Punkterna 1–22 kommer från den ursprungliga rapporten, 23–25 från Storm `14bd30c`,
+26–36 från `9452ba3` och 37–39 från djupbufferten.
 Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mik-pe/dunder/commit/9b6dcd2e441c0fb88cb211347e2955d6716546df).
 
 ## Språk och standardbibliotek
@@ -123,13 +124,40 @@ mot en känd kant innan slutsatser dras om textur eller blending.
 och laddades upp korrekt hela tiden. Editor-UI:t visar läsbar text i
 `--capture`-bilden, och kontrollraden ligger längst ner där den ska.
 
+## Uppföljning: djupbufferten
+
+**37. `D32_SFLOAT` skapas via Storms egen bindning.** Fynd 19 och 23 lämnade
+orsaken till de historiska `vkCreateImage`-felen öppen. Med den typade
+`device.image_2d_info` (fynd 23) och `format = 126`, OPTIMAL tiling och usage
+`DEPTH_STENCIL_ATTACHMENT` (32) skapas en 2256 × 1504 djupbild på Intel Iris Plus
+utan anmärkning. Bindningen och drivrutinen är alltså rätt; det som fattades var
+arbetet i Storm, inte i Dunder. Djupet delar swapchainens storlek och återskapas
+tillsammans med den.
+
+**38. Painter's algoritmen var inte ett djup-test.** Som kontroll byggdes gamla
+binären med sorteringsjämförelsen vänd: golvet (närmast origo) ritades sist och
+målade över alla tre kuberna — kvar på bilden var bara deras skuggor. Samma
+felaktiga ordning med djupbuffert gav **noll** pixlar skillnad mot den korrekt
+sorterade bilden. Renderordning spelar inte längre någon roll för opaque
+geometri; sorteringen finns kvar enbart för glas, som blandas.
+
+**39. ABI-testet som hade fel, inte strukturen.** Ett nytt test fasta
+`pDepthStencilAttachment` till offset 40 i `VkSubpassDescription` och föll med
+`left = 48`. Efter två `u32`-trippel med padding och tre pekare är 48 rätt; C
+lägger fältet där också. Lärdomen är densamma som för fynd 1: räkna paddingen
+innan ett offset-test skrivs, och låt testet fasta det C gör, inte vad man
+minns.
+
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 48 tester passerade. Scenexemplet
+underpaketen kördes var för sig och alla 50 tester passerade, varav två nya för
+djupbuffertens clear-value-packning och renderpass-ABI. Scenexemplet
 verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
-står rättvänt i den bilden.
+står rättvänt i den bilden. Djupbufferten verifierades med tre Captures från
+samma kamera: korrekt sortering, felsortering utan djup (kuberna försvinner)
+och felsortering med djup (identisk med den korrekta bilden, noll pixlar).
 På ARM64/macOS passerade alla 83 grupper i Dunders självhostsvit, inklusive
 Hundmat och Skrift. Linuxkörningen gav 79 av 81 godkända grupper. DWARF-provet
 passerade separat med LLVM:s `dwarfdump`. HTTP-klientens prov för avbrott under

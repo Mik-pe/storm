@@ -1,6 +1,7 @@
 capability unsafe
 
 import ..src.layout as vk
+import ..src.depth as depth
 import ..src.device as device
 import ..src.headless as headless
 import ..src.state as state
@@ -68,4 +69,26 @@ import ..src.vulkan as vulkan
     assert(!headless.capture_layout_fits(4, 1, &layout, 15))
     layout.rowPitch = 15
     assert(!headless.capture_layout_fits(4, 1, &layout, 288))
+}
+
+@test fn depth_clear_packs_the_depth_stencil_union() {
+    // 1.0f32 = 0x3F800000, stencil 0 in the high word.
+    assert(depth.depth_clear(1.0) == u64(0x3F800000))
+    assert(depth.depth_clear(0.5) == u64(0x3F000000))
+    // Stencil is always zero in the high 32 bits.
+    assert(depth.depth_clear(1.0).shr(32) == 0)
+}
+
+@test fn render_pass_structs_match_the_c_abi() {
+    // Two attachments side by side must read as one contiguous array.
+    assert(size_of(vk.AttachmentDescription) == 36)
+    assert(size_of(vk.AttachmentReference) == 8)
+    assert(size_of(vk.SubpassDescription) == 72)
+    // pDepthStencilAttachment sits after two u32+padding pairs and the two
+    // colour pointers: 48 bytes in. C puts it there too.
+    unsafe {
+        mut subpass: vk.SubpassDescription = zeroed()
+        assert(usize(addr(&subpass.pDepthStencilAttachment)) - usize(addr(&subpass)) == 48)
+        assert(usize(addr(&subpass.pColorAttachments)) - usize(addr(&subpass)) == 32)
+    }
 }

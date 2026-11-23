@@ -31,9 +31,8 @@ struct Material {
     emissive: f32,
 }
 
-// One drawable: transform, material and which geometry to use. Sorted back to
-// front every frame, which stands in for the depth buffer this driver refuses
-// to create.
+// One drawable: transform, material and which geometry to use. Opaque items
+// rely on the depth buffer; only transparent items are sorted back to front.
 struct Item {
     model: core.Mat4,
     material: Material,
@@ -83,7 +82,7 @@ fn flag(name: string) -> bool {
 }
 
 // Squared distance from the eye to the model origin. Monotonic in distance, so
-// it is enough to sort by and avoids a square root per item.
+// it is enough to sort glass by and avoids a square root per pane.
 fn depth_of(model: &core.Mat4, eye: core.Vec3) -> f32 {
     dx := model.m[12] - eye.x
     dy := model.m[13] - eye.y
@@ -91,8 +90,8 @@ fn depth_of(model: &core.Mat4, eye: core.Vec3) -> f32 {
     dx * dx + dy * dy + dz * dz
 }
 
-// Painter's algorithm: farthest first. Insertion sort is allocation-free and the
-// item list is tiny.
+// Glass is blended, so it must be painted farthest first. Insertion sort is
+// allocation-free and the pane list is tiny.
 fn sort_back_to_front(items: &mut []Item) {
     mut i := 1
     while i < items.len {
@@ -257,15 +256,15 @@ fn main() -> i32 {
 
         // --- scene contents for this frame ---
         mut items: []Item = []
-        // The floor is a huge plane centred on the origin, so its origin distance is
-        // meaningless; it must always be painted first.
-        items.push(Item { model: core.identity(), material: floor_material, transparent: false, plane: true, depth: 1.0e9 })
+        // Opaque geometry in declaration order: the depth buffer resolves
+        // overlaps, so the floor no longer has to be painted first.
+        items.push(Item { model: core.identity(), material: floor_material, transparent: false, plane: true, depth: 0.0 })
         gold_model := graph.world(gold).matrix.clone()
         copper_model := graph.world(copper).matrix.clone()
         steel_model := graph.world(steel).matrix.clone()
-        items.push(Item { model: gold_model.clone(), material: gold_material, transparent: false, plane: false, depth: depth_of(&gold_model, camera.position) })
-        items.push(Item { model: copper_model.clone(), material: copper_material, transparent: false, plane: false, depth: depth_of(&copper_model, camera.position) })
-        items.push(Item { model: steel_model.clone(), material: steel_material, transparent: false, plane: false, depth: depth_of(&steel_model, camera.position) })
+        items.push(Item { model: gold_model.clone(), material: gold_material, transparent: false, plane: false, depth: 0.0 })
+        items.push(Item { model: copper_model.clone(), material: copper_material, transparent: false, plane: false, depth: 0.0 })
+        items.push(Item { model: steel_model.clone(), material: steel_material, transparent: false, plane: false, depth: 0.0 })
         if show_glass {
             items.push(Item { model: pane_left.clone(), material: glass_material, transparent: true, plane: false, depth: depth_of(&pane_left, camera.position) })
             items.push(Item { model: pane_right.clone(), material: glass_material, transparent: true, plane: false, depth: depth_of(&pane_right, camera.position) })
@@ -278,15 +277,15 @@ fn main() -> i32 {
         mut use_shadows := show_shadows && has_opaque
         mut schedule := render.Graph::new()
         if use_shadows { _ := schedule.add_pass("shadow", ["shadow_map"], []) }
-        _ := schedule.add_pass("sky", ["color"], [])
+        _ := schedule.add_pass("sky", ["color", "depth"], [])
         if use_shadows {
-            _ := schedule.add_pass("opaque", ["color"], ["color", "shadow_map"])
+            _ := schedule.add_pass("opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
         } else {
-            _ := schedule.add_pass("opaque", ["color"], ["color"])
+            _ := schedule.add_pass("opaque", ["color", "depth"], ["color", "depth"])
         }
         mut has_transparent := false
         for item in items { if item.transparent { has_transparent = true } }
-        if has_transparent { _ := schedule.add_pass("transparent", ["color"], ["color"]) }
+        if has_transparent { _ := schedule.add_pass("transparent", ["color"], ["color", "depth"]) }
         order := schedule.build()
         if !order.ok {
             _ := sys.eprint("storm: " + order.error)
@@ -392,7 +391,7 @@ fn decimal2(value: f32) -> string {
 }
 
 fn draw_editor(canvas: &mut ui.Canvas, atlas: &text.Atlas, width: f32, height: f32,
-        fps: f32, frames: i64, passes: i32, objects: i32, glass: bool, shadows: bool, effects: bool) {
+    fps: f32, frames: i64, passes: i32, objects: i32, glass: bool, shadows: bool, effects: bool) {
     accent := ui.rgb(0.36, 0.86, 0.96)
     title := ui.rgb(0.96, 0.98, 1.0)
     dim := ui.rgb(0.52, 0.60, 0.72)
