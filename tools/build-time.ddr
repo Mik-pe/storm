@@ -14,7 +14,13 @@ import std.process as process
 import sys
 
 pub const BUDGET_MS: i64 = 20000
-const BINARY: string = "build/x86_64-linux/storm"
+
+// The binary `dunder build` writes for the host, where dunder.toml puts it.
+fn binary() -> string {
+    if target_is("macos") { return "build/arm64-macos/storm" }
+    if target_is("arm64") { return "build/arm64-linux/storm" }
+    "build/x86_64-linux/storm"
+}
 
 // The compiler: `dunder` on PATH, else the install the toolchain's own
 // installer creates. (`process.status` searches PATH itself and reports
@@ -34,13 +40,15 @@ fn compiler() -> string {
 fn main() -> i32 {
     // A missing binary is the normal case; an error here only means the
     // path was a directory or the like, which the build will report anyway.
-    _ := sys.remove_file(BINARY)
+    _ := sys.remove_file(binary())
 
     started := sys.now_ms()
     result := process.status(compiler(), ["build"])
     elapsed := sys.now_ms() - started
 
-    if !result.ok {
+    // Both halves matter: a compiler that never started, and one that
+    // started and said no. A failed build is fast, and must not read as one.
+    if !result.ok || result.code != 0 {
         _ := sys.eprint("storm: dunder build failed (exit " + result.code.str() + ") after " + elapsed.str() + " ms")
         return 2
     }
