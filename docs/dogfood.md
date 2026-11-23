@@ -358,14 +358,87 @@ för optimal tilning. `R8G8B8A8_UNORM` (37), `B8G8R8A8_UNORM` (44),
 alla `SAMPLED | COLOR_ATTACHMENT | BLEND | FILTER_LINEAR | TRANSFER_SRC |
 TRANSFER_DST` (råord `0x0001dd83`). En kub med sex lager, sju mipnivåer och
 `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` skapas med `VK_SUCCESS` i format 97.
-IBL använder 97 för miljö- och irradianskuberna (HDR-solskiva) och 103 för
+IBL använder 97 för miljö- och irradianskubena (HDR-solskiva) och 103 för
 BRDF-LUT:en. Provet lärde också att `VkPhysicalDeviceProperties` är 824 byte
 på 64-bitars; en kortare struct gav skräpvärden och ett segfault.
+
+## Uppföljning: render-grafen, editorn och glTF
+
+*"Färdigställ editorn … render graph som fungerar … allt i Dunder."* Tre
+timmar som gav fyra fynd, varav två var buggar som testerna inte såg.
+
+**56. Byggtiden är Dunders, inte Storms.** Fem sekunder för 481 rader main
+plus tio paket. Utan imports: 0,027 s. `shader.ddr` (12 768 rader, ett
+SPIR-V-ord per rad) kostar 0,7 s; fyra ord per rad sparade **ingenting**
+(4,98 s) — det är antalet element som typas, inte raderna. Ett paket med
+`capability filesystem` kostar ~1 s även om det är 141 rader, för
+stdlib-modulerna (`std.sys`, `std.dl`) kompileras med. Ett paket som bara
+importeras utan att main når dess funktioner kostar 0,08 s — kompilatorn är
+lat på **funktionsnivå**, så en paketvis mätning underskattar. Profilen:
+Vulkan-lagret ~1,5 s, text ~0,7, stdlib ~0,5, resten ~2. *Rekommendation:*
+inkrementell cache per paket skulle göra hela frågan ointressant (5 → <1 s
+vid oförändrade paket). Ordning på paket i `dunder.toml` spelar ingen roll.
+
+**57. `ERROR_OUT_OF_DATE_KHR` var −1000001003 — ett värde som inte finns.**
+Rätt är −1000001004 (Khronos `VkResult`); 1000001003 är `SUBOPTIMAL_KHR`.
+Konstanten användes på två ställen, så *resize-grenen kunde aldrig triggas*:
+ett omdraget fönster föll igenom som "acquiring a swapchain image failed"
+och fungerade ändå bara tack vare en separat `resized`-flagga; en suboptimal
+present (bilden **visades**) rapporterades som fel. `lastResult: i32` fanns i
+`Renderer`, deklarerat och aldrig skriven — någon hade börjat och gett upp.
+Nu: `enums.VkResult` (Dunder-enum med Khronos värden, låst av test mot
+referenssidan), `result_name`, och **81 Vulkan-anrop** binder sin kod före
+testet (`code := r.api.X(...)`; `if code != 0 { return device.fail(&mut r,
+code) }`) så `stage_name` kan säga *"pipeline (VK_ERROR_OUT_OF_DEVICE_MEMORY)"*.
+En första draft skrev `fail(r, r.api.X(...))` i argumentet — **anropet körs
+två gånger**, skapar två buffertar och läcker en. Skriptet som gjorde
+omskrivningen är slängt; mönstret är nu i commit-historiken. Enum-cast av ett
+okänt värde (`VkResult(code)`) **panikerar tyst, exit 108** (fynd 55:s
+familj) — därför matchar `result_name` heltal.
+
+**58. Payload-enum och C-enum är olika sorter.** `Shape.Mesh(i32)` går bra
+att matcha (`i` är storable), men `i32(Shape.Cube)` på en enum med payload är
+E3099 "integer conversion requires an integer". En enum är antingen
+i32-backad eller bär data, aldrig båda. *Storm:* `Shape { Cube, Plane, Mesh }`
++ separat `Mesh { vertices: []f32 }`-komponent.
+
+**59. glTF-parsern avvisade varje fil någon annan skrivit.** JSON-chunk-typen
+jämfördes med 1313821723 = `b"\x1bTON"`; "JSON" är 1313821514. Testsviten
+var grön: **fixturen i testet byggdes med samma felaktiga tal**, så den
+bevisade bara att parsern var överens med sig själv. Sedan visade sig
+`interleave` strunta i indexbufferten — Khronos Damaged Helmet (14 556
+verticer, 46 000+ index) blev ett virrvarr av skärvor, Fox likaså. Nu:
+Khronos `Box.glb` (1 664 byte) är fixtur och läses (24 verticer, 36 index,
+alla koordinater ±0.5), `interleave` expanderar genom indexen, `--glb`
+laddar en modell in i scenen (autoskalad till 2,4 enheter, stående på
+marken) och den renderas med IBL och skugga. *Lärdom:* en fixtur som koden
+själv producerat är inget bevis; ett test mot **en fil utifrån** är det.
+
+**Om render-grafen.** Den var dekorativ: `main.ddr` byggde den, sorterade
+den och körde sedan skuggpasset före loopen och matchade namn inuti loopen.
+Nu är varje pass en `PassKind`-variant i schemaläggaren, loopen kör
+`compiled.steps` i grafens ordning, skuggpasset är ett pass bland de andra,
+och huvudrenderpasset öppnas lat av exekutorn vid första passet som inte har
+ett eget. Togglen tas bort som pass, inte som flagga inuti ett pass. Skillnaden
+mot HEAD var **9×15 pixlar**: siffran "passes" i HUD:en, som nu är sann (6).
+
+**Om editorn.** Den var en statisk HUD med hårdkodade ord ("Gold cube",
+"1.00 0.76 0.30"). Scenen bodde i en `[]Item` i main. Nu: `Name`, `Shape`,
+`Mesh`, `Material` och en olikformig skala är komponenter i `storm-scene`,
+`drawables()` är vad renderaren konsumerar, `storm-ui` har displayfria
+widgets (`button`, `slider`, `row` med `Pointer` och hot/active-id; nio
+tester utan fönster), trädet listar `nodes()` med indentering efter djup,
+ett klick väljer, slidrarna skriver rakt in i ECS:t via `MaterialField` /
+`TransformField` (en `Option` kan inte bära `&mut` i Dunder — E3099 — så
+fält-id:n är gränssnittet). Spelloopen: åtta emissiva orber i en ring, går
+man in i en förstörs den och HUD:en räknar; `--eye x y z` startar kameran
+var som helst, vilket är hur capture-körningen bevisar plockningen (orbs 7/8,
+objects 13) utan tangentbord.
 
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 60 tester passerade: de 50 som
+underpaketen kördes var för sig och alla 73 tester passerade: de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
@@ -376,6 +449,14 @@ sammanhängande på C-offsets (fynd 54) och `float_bits` tar båda tecken
 projektionens z-intervall, när-/färplane-djup och fyra värden på BRDF-LUT:en
 mot en Python-referens (skala 1, bias 0 vid N·V = 1 och roughness 0; skala
 0.69 och bias 0.025 vid 0.5/0.5; energiförlust med roughness).
+De tretton nya: två i `storm-render` (skuggpasset deklarerat före opaque
+köras först och en avstängd skugga inte tar opaque-passet med sig; en senare
+skrivare räknas inte), fyra i `storm-scene` (namn/form/material som
+komponenter, neutralgrå åt materiallösa, hierarkins world-matriser i
+`drawables`, en laddad mesh som komponent med sin vertexström), fyra i
+`storm-ui` (träffyta, knappens kant, sliderns drag och klämma, radval), ett i
+`storm-vulkan` (alla `VkResult`-koder mot Khronos) och ett i `storm-gltf`
+(Khronos `Box.glb`: 24 verticer, 36 index, expanderad ström).
 Scenexemplet verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
 står rättvänt i den bilden. Textåtergivningen verifierades med parvisa

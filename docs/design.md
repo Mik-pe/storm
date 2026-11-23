@@ -155,8 +155,26 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
    `Renderer`-structen (cirka 60 fält) är kvar.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
+   *Status: första halvan klar 2026-11-23 — `VkResult` är en Dunder-enum med
+   Khronos-värden, 81 Vulkan-anrop binder sin kod och `stage_name` säger vad
+   Vulkan svarade (fynd 57: OUT_OF_DATE hade ett värde som inte finns);
+   `r.stage = N` som stegmarkör är kvar.*
 5. **Dra `ui.ddr`/`post.ddr` ur backend.** `storm-input` slipper Vulkan.
 6. **Lås skrift-dependency.** README/design: uppdatera.
+
+## 5b. Editorn och scenen, som den står efter 0e
+
+Scenen bor i ECS:et (`storm-scene`: `LocalTransform` med olikformig skala,
+`Name`, `Mesh { shape, vertices }`, `Material`); `drawables()` är det enda
+renderaren konsumerar. Render-grafen (`storm-render`) äger passordningen och
+-existensen; `main.ddr` är exekutorn som mappar `PassKind` → Vulkan-anrop och
+öppnar huvudpasset lat. Editorn är immediate-mode ovanpå `storm-ui`-widgets
+(`Pointer`, hot/active-id), skriver i ECS via fält-id:n (`MaterialField`,
+`TransformField`) eftersom en `Option` inte kan bära `&mut` (E3099). En
+laddad glTF-modell är en `Mesh`-komponent med egen vertexström — renderaren
+var redan generisk (`mesh(window, vertices, …)`), det var bara main som höll
+på Cube/Plane. Kvar här: texturer (tangent 3), 3D-markering av vald nod,
+ECS-queries (join över pooler) så system inte loopar entiteter för hand.
 
 
 ## 6. Öppna frågor

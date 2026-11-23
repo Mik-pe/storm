@@ -2,7 +2,8 @@
 
 Milstolpe 2 är klar: scenträd, rendergraph, himmel och PBR-material, med
 interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Djupbufferten är också
-klar (avsnitt 0c) och miljöbelysningen med (avsnitt 0d). Det här är nästa ordning.
+klar (avsnitt 0c), miljöbelysningen med (avsnitt 0d), och editorn, grafen
+som faktiskt styr och glTF-laddning (avsnitt 0e). Det här är nästa ordning.
 
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
@@ -74,9 +75,21 @@ Matematiken (kubytornas baser, projektionen och BRDF-integralen) ligger i
 samma vertexformat men sampler. Samma maskineri ger material- och
 normalmappar från glTF.
 
+## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning
+
+Render-grafen äger nu ordningen (`PassKind`, `Compiled.steps`), skuggpasset är
+ett pass bland de andra och huvudpasset öppnas lat; editorn listar ECS:et,
+väljer, och skriver material/transform via sliders; åtta orber att plocka
+med poäng i HUD:en; `--glb` laddar en modell (autoskalad) in i scenen, och
+parsern läser riktiga filer (fynd 59). Kvar: texturer (avsnitt 3), resten av
+glTF (nodes/materials/scenes nedan), typade Vulkan-handles (design.md steg 1),
+ECS-queries över flera pooler, sub-5-s-bygge (fynd 56: det är Dunders
+kompilator).
+
 ## 4. glTF-scener
 
-Laddaren läser geometri. Nästa steg är `nodes` (TRS/matris), `scenes`,
+Laddaren läser geometri (och indexbufferten) och en modell kan laddas in som
+scennod med `--glb`. Nästa steg är `nodes` (TRS/matris), `scenes`,
 `materials` (`pbrMetallicRoughness`), `textures`/`images` och att bygga
 scengrafen direkt från filen i stället för att koda den i `main.ddr`.
 
