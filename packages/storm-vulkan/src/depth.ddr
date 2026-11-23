@@ -1,6 +1,7 @@
 capability unsafe
 
 import .device as device
+import .enums as enums
 import .layout as vk
 import .state as state
 
@@ -10,7 +11,6 @@ import .state as state
 // the second attachment of the main render pass and is cleared to 1.0 every
 // frame together with the colour attachment.
 
-const DEPTH_FORMAT: u32 = 126 // VK_FORMAT_D32_SFLOAT
 const USAGE_DEPTH: u32 = 32 // VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
 const ASPECT_DEPTH: u32 = 2 // VK_IMAGE_ASPECT_DEPTH_BIT
 
@@ -23,7 +23,7 @@ pub fn depth_clear(depth: f32) -> u64 {
 
 pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     if width == 0 || height == 0 { return false }
-    info := device.image_2d_info(DEPTH_FORMAT, width, height, vk.IMAGE_TILING_OPTIMAL, USAGE_DEPTH)
+    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, USAGE_DEPTH)
     mut image := ptr(0)
     if r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image)) != 0 {
         return false
@@ -47,8 +47,8 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> bool {
     mut view_info: vk.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
     view_info.image = image
-    view_info.viewType = 1
-    view_info.format = DEPTH_FORMAT
+    view_info.viewType = enums.image_view_type(.Type2D)
+    view_info.format = enums.format(.D32_SFLOAT)
     view_info.subresourceRange.aspectMask = ASPECT_DEPTH
     view_info.subresourceRange.levelCount = 1
     view_info.subresourceRange.layerCount = 1

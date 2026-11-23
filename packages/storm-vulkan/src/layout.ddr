@@ -453,18 +453,6 @@ pub struct FenceCreateInfo { sType: u32, pNext: ptr, flags: u32 }
 pub const IMAGE_TILING_OPTIMAL: u32 = 0
 pub const IMAGE_TILING_LINEAR: u32 = 1
 
-// VkBlendFactor, for the alpha-over pipelines (UI and overlay):
-// out = src * SRC_ALPHA + dst * ONE_MINUS_SRC_ALPHA.
-pub const BLEND_ONE: u32 = 1
-pub const BLEND_SRC_ALPHA: u32 = 6
-pub const BLEND_ONE_MINUS_SRC_ALPHA: u32 = 7
-// VkBlendOp
-pub const BLEND_OP_ADD: u32 = 0
-// VkFilter: the glyph atlas is drawn smaller than it was rasterized, so it
-// needs LINEAR filtering to avoid jagged strokes.
-pub const FILTER_NEAREST: u32 = 0
-pub const FILTER_LINEAR: u32 = 1
-
 @c_layout
 pub struct ImageCreateInfo {
     sType: u32,
@@ -543,7 +531,6 @@ pub struct ImageMemoryBarrier {
     image: ptr,
     subresourceRange: ImageSubresourceRange,
 }
-
 
 // --- descriptors and samplers (for the shadow map) ---
 

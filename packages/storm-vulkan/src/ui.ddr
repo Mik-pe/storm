@@ -2,6 +2,7 @@ capability unsafe, stdio
 
 import std.sys as sys
 import .device as device
+import .enums as enums
 import .layout as vk2
 import .shader as shader
 import .state as state
@@ -14,8 +15,7 @@ import .state as state
 
 // The coverage bytes are widened to f32 before upload, so the atlas is a
 // single-channel float image (finding 30: linear-tiled R8 did not sample here).
-pub const FORMAT_R32_SFLOAT: u32 = 100
-const LAYOUT_SHADER_READ: u32 = 5
+
 const FLOATS_PER_VERTEX: u32 = 8
 const ATLAS_SIZE: u32 = 1024
 
@@ -24,17 +24,6 @@ const ATLAS_SIZE: u32 = 1024
 // untouched. The earlier 5/6 pair was ONE_MINUS_DST_COLOR / SRC_ALPHA, which
 // inverts whatever is underneath and painted a box around every glyph (dogfood
 // finding 40).
-pub unsafe fn blend_alpha_over(attachment: &mut vk2.PipelineColorBlendAttachmentState) {
-    attachment.blendEnable = 1
-    attachment.srcColorBlendFactor = vk2.BLEND_SRC_ALPHA
-    attachment.dstColorBlendFactor = vk2.BLEND_ONE_MINUS_SRC_ALPHA
-    attachment.colorBlendOp = vk2.BLEND_OP_ADD
-    attachment.srcAlphaBlendFactor = vk2.BLEND_ONE
-    attachment.dstAlphaBlendFactor = vk2.BLEND_ONE_MINUS_SRC_ALPHA
-    attachment.alphaBlendOp = vk2.BLEND_OP_ADD
-    attachment.colorWriteMask = 15
-}
-
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
@@ -45,15 +34,15 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     mut words: [u32; 22] = [0; 22]
     words[0] = 14
     words[5] = 1
-    words[6] = FORMAT_R32_SFLOAT
+    words[6] = enums.format(.R32_SFLOAT)
     words[7] = ATLAS_SIZE
     words[8] = ATLAS_SIZE
     words[9] = 1
     words[10] = 1
     words[11] = 1
     words[12] = 1
-    words[13] = 1          // OPTIMAL: linear-tiled images are not sampleable here
-    words[14] = 6          // VK_IMAGE_USAGE_SAMPLED_BIT | TRANSFER_DST_BIT
+    words[13] = 1 // OPTIMAL: linear-tiled images are not sampleable here
+    words[14] = 6 // VK_IMAGE_USAGE_SAMPLED_BIT | TRANSFER_DST_BIT
     mut image := ptr(0)
     if r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image)) != 0 { return false }
     mut requirements: vk2.MemoryRequirements = zeroed()
@@ -65,9 +54,9 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     mut view_info: vk2.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
     view_info.image = image
-    view_info.viewType = 1
-    view_info.format = FORMAT_R32_SFLOAT
-    view_info.subresourceRange.aspectMask = 1
+    view_info.viewType = enums.image_view_type(.Type2D)
+    view_info.format = enums.format(.R32_SFLOAT)
+    view_info.subresourceRange.aspectMask = enums.image_aspect(.Color)
     view_info.subresourceRange.levelCount = 1
     view_info.subresourceRange.layerCount = 1
     mut view := ptr(0)
@@ -77,19 +66,19 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     sampler_info.sType = 31
     // Glyph quads are drawn at roughly 0.8 of the rasterized size, so the
     // lookup lands between texels: LINEAR filtering keeps the strokes smooth.
-    sampler_info.magFilter = vk2.FILTER_LINEAR
-    sampler_info.minFilter = vk2.FILTER_LINEAR
-    sampler_info.mipmapMode = 0        // VK_SAMPLER_MIPMAP_MODE_NEAREST (single level)
-    sampler_info.addressModeU = 2      // CLAMP_TO_EDGE
-    sampler_info.addressModeV = 2      // CLAMP_TO_EDGE
-    sampler_info.addressModeW = 2      // CLAMP_TO_EDGE
+    sampler_info.magFilter = enums.filter(.Linear)
+    sampler_info.minFilter = enums.filter(.Linear)
+    sampler_info.mipmapMode = enums.sampler_mipmap_mode(.Nearest) // single level
+    sampler_info.addressModeU = enums.sampler_address_mode(.ClampToEdge)
+    sampler_info.addressModeV = enums.sampler_address_mode(.ClampToEdge)
+    sampler_info.addressModeW = enums.sampler_address_mode(.ClampToEdge)
     sampler_info.maxLod = 1.0
     mut sampler := ptr(0)
     if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
 
     mut binding: [u64; 3] = [0; 3]
-    binding[0] = u64(0) + (u64(1).shl(32))      // binding 0, COMBINED_IMAGE_SAMPLER
-    binding[1] = u64(1) + (u64(16).shl(32))     // count 1, stage FRAGMENT
+    binding[0] = u64(0) + (u64(1).shl(32)) // binding 0, COMBINED_IMAGE_SAMPLER
+    binding[1] = u64(1) + (u64(16).shl(32)) // count 1, stage FRAGMENT
     mut layout_info: vk2.DescriptorSetLayoutCreateInfo = zeroed()
     layout_info.sType = 32
     layout_info.bindingCount = 1
@@ -114,13 +103,13 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> bool {
     mut image_info: vk2.DescriptorImageInfo = zeroed()
     image_info.sampler = sampler
     image_info.imageView = view
-    image_info.imageLayout = LAYOUT_SHADER_READ
+    image_info.imageLayout = enums.image_layout(.ShaderReadOnlyOptimal)
     mut write: vk2.WriteDescriptorSet = zeroed()
     write.sType = 35
     write.dstSet = r.uiSet
     write.dstBinding = 0
     write.descriptorCount = 1
-    write.descriptorType = 1
+    write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     write.pImageInfo = addr(&mut image_info)
     r.api.UpdateDescriptorSets(r.device, 1, addr(&mut write), 0, ptr(0))
 
@@ -178,7 +167,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
 
     mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = zeroed()
     assembly.sType = 20
-    assembly.topology = 3
+    assembly.topology = enums.primitive_topology(.TriangleList)
 
     // A fixed viewport must be supplied: without pViewports the pipeline draws
     // nothing at all on this driver.
@@ -198,9 +187,9 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
 
     mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
-    raster.polygonMode = 0
-    raster.cullMode = 0
-    raster.frontFace = 1
+    raster.polygonMode = enums.polygon_mode(.Fill)
+    raster.cullMode = enums.cull_mode(.None)
+    raster.frontFace = enums.front_face(.Clockwise)
     raster.lineWidth = 1.0
 
     mut multisample: vk2.PipelineMultisampleStateCreateInfo = zeroed()
@@ -211,7 +200,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     depth.sType = 25
 
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
-    blend_alpha_over(&mut blend_attachment)
+    enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
 
     mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26
@@ -219,7 +208,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     blend.pAttachments = addr(&mut blend_attachment)
 
     mut push_range: vk2.PushConstantRange = zeroed()
-    push_range.stageFlags = 1          // vertex stage
+    push_range.stageFlags = enums.shader_stage(.Vertex)
     push_range.size = 16
 
     mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
@@ -262,8 +251,8 @@ unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
     mut info: vk2.BufferCreateInfo = zeroed()
     info.sType = 12
     info.size = bytes
-    info.usage = 128
-    info.sharingMode = 0
+    info.usage = enums.buffer_usage(.VertexBuffer)
+    info.sharingMode = enums.sharing_mode(.Exclusive)
     mut handle := ptr(0)
     if r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle)) != 0 { return false }
     mut requirements: vk2.MemoryRequirements = zeroed()
@@ -292,7 +281,7 @@ unsafe fn submit_barrier(r: &mut state.Renderer, src_stage: u32, dst_stage: u32,
     if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
     mut begin: vk2.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
-    begin.flags = 1
+    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
     mut barrier: vk2.ImageMemoryBarrier = zeroed()
     barrier.sType = 45
@@ -303,7 +292,7 @@ unsafe fn submit_barrier(r: &mut state.Renderer, src_stage: u32, dst_stage: u32,
     barrier.srcQueueFamilyIndex = 4294967295
     barrier.dstQueueFamilyIndex = 4294967295
     barrier.image = r.uiAtlasImage
-    barrier.subresourceRange.aspectMask = 1
+    barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
     barrier.subresourceRange.levelCount = 1
     barrier.subresourceRange.layerCount = 1
     r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
@@ -330,17 +319,17 @@ unsafe fn transition_atlas(r: &mut state.Renderer) -> bool {
     if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
     mut begin: vk2.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
-    begin.flags = 1
+    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
     mut barrier: vk2.ImageMemoryBarrier = zeroed()
     barrier.sType = 45
-    barrier.dstAccessMask = 32          // SHADER_READ
-    barrier.oldLayout = 0               // UNDEFINED
-    barrier.newLayout = 5               // SHADER_READ_ONLY_OPTIMAL
+    barrier.dstAccessMask = enums.access(.ShaderRead)
+    barrier.oldLayout = enums.image_layout(.Undefined)
+    barrier.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
     barrier.srcQueueFamilyIndex = 4294967295
     barrier.dstQueueFamilyIndex = 4294967295
     barrier.image = r.uiAtlasImage
-    barrier.subresourceRange.aspectMask = 1
+    barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
     barrier.subresourceRange.levelCount = 1
     barrier.subresourceRange.layerCount = 1
     r.api.CmdPipelineBarrier(cmd, 1, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
@@ -380,8 +369,8 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     mut stage_info: vk2.BufferCreateInfo = zeroed()
     stage_info.sType = 12
     stage_info.size = bytes
-    stage_info.usage = 64          // TRANSFER_SRC
-    stage_info.sharingMode = 0
+    stage_info.usage = enums.buffer_usage(.TransferSrc)
+    stage_info.sharingMode = enums.sharing_mode(.Exclusive)
     mut staging := ptr(0)
     if r.api.CreateBuffer(r.device, addr(&stage_info), ptr(0), addr(&mut staging)) != 0 { return false }
     mut requirements: vk2.MemoryRequirements = zeroed()
@@ -409,24 +398,24 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     if r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd)) != 0 { return false }
     mut begin: vk2.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
-    begin.flags = 1
+    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(cmd, addr(&begin)) != 0 { return false }
 
     mut to_transfer: vk2.ImageMemoryBarrier = zeroed()
     to_transfer.sType = 45
-    to_transfer.dstAccessMask = 4096          // TRANSFER_WRITE
-    to_transfer.oldLayout = 0                 // UNDEFINED
-    to_transfer.newLayout = 3                 // TRANSFER_DST_OPTIMAL
+    to_transfer.dstAccessMask = enums.access(.TransferWrite)
+    to_transfer.oldLayout = enums.image_layout(.Undefined)
+    to_transfer.newLayout = enums.image_layout(.TransferDstOptimal)
     to_transfer.srcQueueFamilyIndex = 4294967295
     to_transfer.dstQueueFamilyIndex = 4294967295
     to_transfer.image = r.uiAtlasImage
-    to_transfer.subresourceRange.aspectMask = 1
+    to_transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_transfer.subresourceRange.levelCount = 1
     to_transfer.subresourceRange.layerCount = 1
     r.api.CmdPipelineBarrier(cmd, 1, 4096, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_transfer))
 
     mut copy: vk2.BufferImageCopy = zeroed()
-    copy.imageSubresource.aspectMask = 1
+    copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
     copy.imageSubresource.mipLevel = 0
     copy.imageSubresource.baseArrayLayer = 0
     copy.imageSubresource.layerCount = 1
@@ -437,14 +426,14 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
 
     mut to_sample: vk2.ImageMemoryBarrier = zeroed()
     to_sample.sType = 45
-    to_sample.srcAccessMask = 4096            // TRANSFER_WRITE
-    to_sample.dstAccessMask = 32              // SHADER_READ
-    to_sample.oldLayout = 3
-    to_sample.newLayout = LAYOUT_SHADER_READ
+    to_sample.srcAccessMask = enums.access(.TransferWrite)
+    to_sample.dstAccessMask = enums.access(.ShaderRead)
+    to_sample.oldLayout = enums.image_layout(.TransferDstOptimal)
+    to_sample.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
     to_sample.srcQueueFamilyIndex = 4294967295
     to_sample.dstQueueFamilyIndex = 4294967295
     to_sample.image = r.uiAtlasImage
-    to_sample.subresourceRange.aspectMask = 1
+    to_sample.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_sample.subresourceRange.levelCount = 1
     to_sample.subresourceRange.layerCount = 1
     r.api.CmdPipelineBarrier(cmd, 4096, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_sample))

@@ -1,0 +1,266 @@
+// Vk enums as Dunder enums, with the only converters to C integers in the
+// package. A @c_layout record keeps its u32 field; the caller writes
+// `attachment.srcColorBlendFactor = enums.blend_factor(.SrcAlpha)` and there is
+// no way to spell ONE_MINUS_DST_COLOR by mistake. Values are the Khronos ones
+// (docs.vulkan.org/refpages), read, not recited.
+//
+// Flag-like enums (ShaderStage, ImageUsage, BufferUsage) carry the combined
+// variants Storm needs as named values instead of bit operations.
+
+capability unsafe
+
+import .layout as layout
+
+pub enum BlendFactor {
+    Zero = 0, One = 1, SrcColor = 2, OneMinusSrcColor = 3, DstColor = 4, OneMinusDstColor = 5,
+    SrcAlpha = 6, OneMinusSrcAlpha = 7, DstAlpha = 8, OneMinusDstAlpha = 9,
+}
+
+pub fn blend_factor(v: BlendFactor) -> u32 { u32(i32(v)) }
+
+pub enum BlendOp {
+    Add = 0, Subtract = 1, ReverseSubtract = 2, Min = 3,
+    Max = 4, // keep the surface closest to the sun
+}
+
+pub fn blend_op(v: BlendOp) -> u32 { u32(i32(v)) }
+
+pub enum Filter {
+    Nearest = 0, Linear = 1,
+}
+
+pub fn filter(v: Filter) -> u32 { u32(i32(v)) }
+
+pub enum SamplerMipmapMode {
+    Nearest = 0, Linear = 1,
+}
+
+pub fn sampler_mipmap_mode(v: SamplerMipmapMode) -> u32 { u32(i32(v)) }
+
+pub enum SamplerAddressMode {
+    Repeat = 0, MirroredRepeat = 1, ClampToEdge = 2, ClampToBorder = 3,
+}
+
+pub fn sampler_address_mode(v: SamplerAddressMode) -> u32 { u32(i32(v)) }
+
+pub enum PrimitiveTopology {
+    PointList = 0, LineList = 1, LineStrip = 2, TriangleList = 3, TriangleStrip = 4,
+    TriangleFan = 5,
+}
+
+pub fn primitive_topology(v: PrimitiveTopology) -> u32 { u32(i32(v)) }
+
+pub enum PolygonMode {
+    Fill = 0, Line = 1, Point = 2,
+}
+
+pub fn polygon_mode(v: PolygonMode) -> u32 { u32(i32(v)) }
+
+pub enum CullMode {
+    None = 0, Front = 1, Back = 2, FrontAndBack = 3,
+}
+
+pub fn cull_mode(v: CullMode) -> u32 { u32(i32(v)) }
+
+pub enum FrontFace {
+    CounterClockwise = 0, Clockwise = 1,
+}
+
+pub fn front_face(v: FrontFace) -> u32 { u32(i32(v)) }
+
+pub enum CompareOp {
+    Never = 0, Less = 1, Equal = 2, LessOrEqual = 3, Greater = 4, NotEqual = 5,
+    GreaterOrEqual = 6, Always = 7,
+}
+
+pub fn compare_op(v: CompareOp) -> u32 { u32(i32(v)) }
+
+pub enum ImageViewType {
+    Type1D = 0, Type2D = 1, Type3D = 2, Cube = 3, Type1DArray = 4, Type2DArray = 5,
+    CubeArray = 6,
+}
+
+pub fn image_view_type(v: ImageViewType) -> u32 { u32(i32(v)) }
+
+pub enum ImageAspect {
+    Color = 1, Depth = 2, Stencil = 4,
+}
+
+pub fn image_aspect(v: ImageAspect) -> u32 { u32(i32(v)) }
+
+pub enum ImageLayout {
+    Undefined = 0, General = 1, ColorAttachmentOptimal = 2, DepthStencilAttachmentOptimal = 3,
+    DepthStencilReadOnlyOptimal = 4, ShaderReadOnlyOptimal = 5, TransferSrcOptimal = 6,
+    TransferDstOptimal = 7,
+}
+
+pub fn image_layout(v: ImageLayout) -> u32 { u32(i32(v)) }
+
+pub enum AttachmentLoadOp {
+    Load = 0, Clear = 1, DontCare = 2,
+}
+
+pub fn attachment_load_op(v: AttachmentLoadOp) -> u32 { u32(i32(v)) }
+
+pub enum AttachmentStoreOp {
+    Store = 0, DontCare = 1,
+}
+
+pub fn attachment_store_op(v: AttachmentStoreOp) -> u32 { u32(i32(v)) }
+
+pub enum PipelineBindPoint {
+    Graphics = 0, Compute = 1,
+}
+
+pub fn pipeline_bind_point(v: PipelineBindPoint) -> u32 { u32(i32(v)) }
+
+pub enum DescriptorType {
+    Sampler = 0, CombinedImageSampler = 1, SampledImage = 2, StorageImage = 3,
+    UniformTexelBuffer = 4, StorageTexelBuffer = 5, UniformBuffer = 6, StorageBuffer = 7,
+}
+
+pub fn descriptor_type(v: DescriptorType) -> u32 { u32(i32(v)) }
+
+pub enum SharingMode {
+    Exclusive = 0, Concurrent = 1,
+}
+
+pub fn sharing_mode(v: SharingMode) -> u32 { u32(i32(v)) }
+
+pub enum ImageTiling {
+    Optimal = 0, Linear = 1,
+}
+
+pub fn image_tiling(v: ImageTiling) -> u32 { u32(i32(v)) }
+
+pub enum CommandBufferUsage {
+    OneTimeSubmit = 1,
+}
+
+pub fn command_buffer_usage(v: CommandBufferUsage) -> u32 { u32(i32(v)) }
+
+pub enum ShaderStage {
+    Vertex = 1, Fragment = 16, VertexFragment = 17, // VERTEX | FRAGMENT
+}
+
+pub fn shader_stage(v: ShaderStage) -> u32 { u32(i32(v)) }
+
+pub enum ImageUsage {
+    TransferSrc = 1, TransferDst = 2, Sampled = 4, ColorAttachment = 16,
+    DepthStencilAttachment = 32,
+}
+
+pub fn image_usage(v: ImageUsage) -> u32 { u32(i32(v)) }
+
+pub enum BufferUsage {
+    TransferSrc = 1, TransferDst = 2, UniformBuffer = 16, VertexBuffer = 128,
+}
+
+pub fn buffer_usage(v: BufferUsage) -> u32 { u32(i32(v)) }
+
+pub enum ImageCreate {
+    CubeCompatible = 4,
+}
+
+pub fn image_create(v: ImageCreate) -> u32 { u32(i32(v)) }
+
+pub enum DescriptorPool {
+    FreeDescriptorSet = 2,
+}
+
+pub fn descriptor_pool(v: DescriptorPool) -> u32 { u32(i32(v)) }
+
+pub enum Fence {
+    Signaled = 1,
+}
+
+pub fn fence(v: Fence) -> u32 { u32(i32(v)) }
+
+pub enum ColorComponent {
+    RGBA = 15, // R | G | B | A
+}
+
+pub fn color_component(v: ColorComponent) -> u32 { u32(i32(v)) }
+
+pub enum Samples {
+    Type1 = 1,
+}
+
+pub fn samples(v: Samples) -> u32 { u32(i32(v)) }
+
+pub enum Format {
+    Undefined = 0, R8G8B8A8_UNORM = 37, R8G8B8A8_SRGB = 43, R16G16_SFLOAT = 83, R16G16B16A16_SFLOAT = 97,
+    R32_SFLOAT = 100, R32G32_SFLOAT = 103, B8G8R8A8_UNORM = 44, B8G8R8A8_SRGB = 50,
+    D32_SFLOAT = 126,
+}
+
+pub fn format(v: Format) -> u32 { u32(i32(v)) }
+
+// Extension enum values Storm compares against, as named constants (they are
+// not ordinal enums with a Dunder type of their own).
+pub const IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002
+pub const ERROR_OUT_OF_DATE_KHR: i32 = -1000001003
+pub const SUCCESS: i32 = 0
+
+pub enum Access {
+    None = 0, IndirectCommandRead = 1, IndexRead = 2, VertexAttributeRead = 4, UniformRead = 8,
+    InputAttachmentRead = 16, ShaderRead = 32, ShaderWrite = 64, ColorAttachmentRead = 128,
+    ColorAttachmentWrite = 256, DepthStencilAttachmentRead = 512, DepthStencilAttachmentWrite = 1024,
+    TransferRead = 2048, TransferWrite = 4096, HostRead = 8192, HostWrite = 16384,
+    MemoryRead = 32768, MemoryWrite = 65536,
+    // Combined masks Storm's barriers use.
+    ColorDepthWrite = 1280, // COLOR_ATTACHMENT_WRITE | DEPTH_STENCIL_ATTACHMENT_WRITE
+}
+
+pub fn access(v: Access) -> u32 { u32(i32(v)) }
+
+// Formats the headless reader can unpack into PPM (8-bit RGBA/BGRA, UNORM or
+// SRGB). Anything else is refused before a byte is read.
+pub fn format_has_bytes(value: u32) -> bool {
+    value == format(.R8G8B8A8_UNORM) || value == format(.R8G8B8A8_SRGB) ||
+    value == format(.B8G8R8A8_UNORM) || value == format(.B8G8R8A8_SRGB)
+}
+
+// True for the BGRA swapchain formats, where red and blue sit swapped.
+pub fn format_is_bgra(value: u32) -> bool {
+    value == format(.B8G8R8A8_UNORM) || value == format(.B8G8R8A8_SRGB)
+}
+
+// A blend state as a value. Pipelines pick one of the named blends below
+// instead of assigning five integers; apply_blend is the only writer of the
+// C record's blend fields.
+pub struct Blend {
+    color_op: BlendOp,
+    src_color: BlendFactor,
+    dst_color: BlendFactor,
+    src_alpha: BlendFactor,
+    dst_alpha: BlendFactor,
+}
+
+// Dunder `const` cannot hold a struct (E3007, even one of plain u32), so the
+// named blends are functions returning the value.
+pub fn alpha_over() -> Blend {
+    Blend {
+        color_op: .Add, src_color: .SrcAlpha, dst_color: .OneMinusSrcAlpha,
+        src_alpha: .One, dst_alpha: .OneMinusSrcAlpha,
+    }
+}
+
+// Shadow map: keep whichever fragment is closest to the light.
+pub fn shadow_max() -> Blend {
+    Blend {
+        color_op: .Max, src_color: .One, dst_color: .One,
+        src_alpha: .One, dst_alpha: .One,
+    }
+}
+
+pub unsafe fn apply_blend(attachment: &mut layout.PipelineColorBlendAttachmentState, blend: &Blend) {
+    attachment.blendEnable = 1
+    attachment.srcColorBlendFactor = blend_factor(blend.src_color)
+    attachment.dstColorBlendFactor = blend_factor(blend.dst_color)
+    attachment.colorBlendOp = blend_op(blend.color_op)
+    attachment.srcAlphaBlendFactor = blend_factor(blend.src_alpha)
+    attachment.dstAlphaBlendFactor = blend_factor(blend.dst_alpha)
+    attachment.alphaBlendOp = blend_op(blend.color_op)
+    attachment.colorWriteMask = color_component(.RGBA)
+}

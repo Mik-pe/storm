@@ -3,6 +3,7 @@ capability unsafe, filesystem, stdio
 import std.bytes as b
 import std.sys as sys
 import .device as device
+import .enums as enums
 import .layout as vk
 import .state as state
 
@@ -37,9 +38,9 @@ unsafe fn make_view(r: &state.Renderer, image: ptr, format: u32) -> ptr {
     mut view: vk.ImageViewCreateInfo = zeroed()
     view.sType = 15
     view.image = image
-    view.viewType = 1
+    view.viewType = enums.image_view_type(.Type2D)
     view.format = format
-    view.subresourceRange.aspectMask = 1
+    view.subresourceRange.aspectMask = enums.image_aspect(.Color)
     view.subresourceRange.levelCount = 1
     view.subresourceRange.layerCount = 1
     mut handle := ptr(0)
@@ -57,7 +58,7 @@ pub fn capture_layout_fits(width: u32, height: u32, layout: &vk.SubresourceLayou
 
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     if r.width == 0 || r.height == 0 { return false }
-    if r.format != 37 && r.format != 43 && r.format != 44 && r.format != 50 { return false }
+    if !enums.format_has_bytes(r.format) { return false }
     mut target := ptr(0)
     mut target_memory := ptr(0)
     mut target_size: [u64; 1] = [0]
@@ -105,7 +106,7 @@ pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
     width := i32(r.captureWidth)
     height := i32(r.captureHeight)
     pitch := usize(r.capturePitch)
-    red := if r.format == 44 || r.format == 50 { usize(2) } else { usize(0) }
+    red := if enums.format_is_bgra(r.format) { usize(2) } else { usize(0) }
     blue := usize(2) - red
     mut out: []u8 = []
     b.append_utf8(&mut out, "P6\n" + width.str() + " " + height.str() + "\n255\n")

@@ -189,13 +189,56 @@ men nu står `0` med rätt enum i kommentaren. Lärdom som för fynd 1 och 39:
 hämta enum-värden från specen, inte från minnet, och skriv värdets namn
 bredanför varje siffra.
 
+## Uppföljning: enum vid FFI-gränsen
+
+Efter fynd 40 ersattes alla råa Vk-enum-heltal i storm-vulkans structfält
+(135 stycken i åtta moduler) med Dunder-enums i en ny modul `enums.ddr`
+och konverterare (`enums.blend_factor(.SrcAlpha)`) som de enda platserna
+där heltalen skrivs. Blendtillstånd blev ett värde: `apply_blend(&mut
+attachment, &enums.alpha_over())`. Capturen före/efter är pixelidentisk
+(AE = 0), inklusive `--effects`.
+
+**43. `const` kan inte hålla en struct — och diagnoserna säger det inte.**
+`pub const ALPHA_OVER: Blend = Blend { src_color: .SrcAlpha, … }` ger
+`error[E3007]: unsupported constant type '__dunder_module_1'`. Med ett
+suffix på varje variant samma sak; en kontroll med en struct av enbart
+`u32` ger `__dunder_module_0`. Det är alltså structen som helhet som inte
+är en konstant typ, inte enum-fälten, men meddelandet pekar på en
+internt namngiven modul i stället för att säga "struct literals are not
+allowed in const". *Workaround:* en funktion som returnerar värdet
+(`pub fn alpha_over() -> Blend`). *Rekommendation:* antingen tillåt
+structliteraler med konstanta fält i `const`, eller ge E3007 ett
+meddelande som namner typen (`Blend`) och säger att `const` bara tar
+skalärer.
+
+**44. Två layoutkommentarer som ljög, och en drivrutin som tolererade det.**
+Djupbilagans `finalLayout` och subpassreferensen var `2` med kommentaren
+`DEPTH_STENCIL_ATTACHMENT_OPTIMAL` (3), och atlasens
+`vkCmdCopyBufferToImage`-övergång gick till `3` med kommentaren
+`TRANSFER_DST_OPTIMAL` (7). Båda fungerade på Intel Iris Plus, som
+uppenbarligen accepterar layouterna likgiltigt vid dessa övergångar.
+Med enums blev `enums.image_layout(.TransferDstOptimal)` och
+`.DepthStencilAttachmentOptimal` de enda stavningarna, captures är
+fortfarande AE = 0, och testet `vk_enum_values_match_the_khronos_tables`
+låser varje värde mot specen. Det är samma princip som fynd 1, 39 och 42:
+en siffra med en kommentar är en försäran utan vittne.
+
+**45. `||` i början av en fortsättningsrad delar uttrycket i två statements.**
+`a == x || b == y\n    || c == z` gav `E2006 unused value` på sista raden i
+stället för ett syntaxfel; operatoren måste stå på raden som avslutas.
+*Workaround:* `||` i slutet av varje rad. *Rekommendation:* antingen
+tillåt ledande operatorer (vanligt i C-stil) eller rapportera den
+avbrutna raden som ett uttrycksfel.
+
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 52 tester passerade: de 50 som
+underpaketen kördes var för sig och alla 51 tester passerade: de 50 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
-renderpass-ABI), plus två nya som fastar `VkBlendFactor`-värdena (6/7/1/7) och
-`VK_FILTER_LINEAR` för textatlasen. Scenexemplet verifierade ECS och textlayout.
+renderpass-ABI), plus ett nytt som låser samtliga Vk-enum-värden Storm
+använder mot Khronos tabeller och `apply_blend` för alpha-over och
+skuggmax. De två äldre pinning-testerna från textåtergivningen togs bort
+i samma sväng, de är helt täckta av det nya. Scenexemplet verifierade ECS och textlayout.
 En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
 står rättvänt i den bilden. Textåtergivningen verifierades med parvisa

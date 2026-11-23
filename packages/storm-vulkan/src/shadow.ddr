@@ -2,6 +2,7 @@ capability unsafe, stdio
 
 import std.sys as sys
 import .device as device
+import .enums as enums
 import .layout as vk
 import .shader as shader
 import .state as state
@@ -13,7 +14,8 @@ import .state as state
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
 const SHADOW_SIZE: u32 = 1024
-const FORMAT_R32_SFLOAT: u32 = 100
+// COLOR_ATTACHMENT (render the light-space depth) | SAMPLED (the mesh pass reads it).
+const SHADOW_USAGE: u32 = 20
 const LAYOUT_SHADER_READ: u32 = 5
 const CLEAR_FAR: f32 = 1000.0
 
@@ -25,7 +27,7 @@ struct AttrPair { position: vk.VertexInputAttributeDescription, normal: vk.Verte
 
 pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // --- image ---
-    image_create_info := device.image_2d_info(FORMAT_R32_SFLOAT, SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, 20)
+    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, SHADOW_USAGE)
     mut image := ptr(0)
     if r.api.CreateImage(r.device, addr(&image_create_info), ptr(0), addr(&mut image)) != 0 {
         _ := sys.eprint("shadow: could not create the shadow map")
@@ -44,9 +46,9 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     mut view_info: vk.ImageViewCreateInfo = zeroed()
     view_info.sType = 15
     view_info.image = image
-    view_info.viewType = 1
-    view_info.format = FORMAT_R32_SFLOAT
-    view_info.subresourceRange.aspectMask = 1
+    view_info.viewType = enums.image_view_type(.Type2D)
+    view_info.format = enums.format(.R32_SFLOAT)
+    view_info.subresourceRange.aspectMask = enums.image_aspect(.Color)
     view_info.subresourceRange.levelCount = 1
     view_info.subresourceRange.layerCount = 1
     mut view := ptr(0)
@@ -55,12 +57,12 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // --- sampler ---
     mut sampler_info: vk.SamplerCreateInfo = zeroed()
     sampler_info.sType = 31
-    sampler_info.magFilter = 0
-    sampler_info.minFilter = 0
-    sampler_info.mipmapMode = 0
-    sampler_info.addressModeU = 2
-    sampler_info.addressModeV = 2
-    sampler_info.addressModeW = 2
+    sampler_info.magFilter = enums.filter(.Nearest)
+    sampler_info.minFilter = enums.filter(.Nearest)
+    sampler_info.mipmapMode = enums.sampler_mipmap_mode(.Nearest)
+    sampler_info.addressModeU = enums.sampler_address_mode(.ClampToEdge)
+    sampler_info.addressModeV = enums.sampler_address_mode(.ClampToEdge)
+    sampler_info.addressModeW = enums.sampler_address_mode(.ClampToEdge)
     sampler_info.maxLod = 0.0
     mut sampler := ptr(0)
     if r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler)) != 0 { return false }
@@ -69,8 +71,8 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     mut buffer_info: vk.BufferCreateInfo = zeroed()
     buffer_info.sType = 12
     buffer_info.size = 80
-    buffer_info.usage = 64      // UNIFORM_BUFFER
-    buffer_info.sharingMode = 0
+    buffer_info.usage = enums.buffer_usage(.UniformBuffer)
+    buffer_info.sharingMode = enums.sharing_mode(.Exclusive)
     mut light_buffer := ptr(0)
     if r.api.CreateBuffer(r.device, addr(&buffer_info), ptr(0), addr(&mut light_buffer)) != 0 { return false }
     mut breq: vk.MemoryRequirements = zeroed()
@@ -85,11 +87,11 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // Two vkDescriptorSetLayoutBinding records of 24 bytes each: six u64 words.
     // word0/3 = binding | type, word1/4 = count | stages, word2/5 = immutable samplers.
     mut bindings: [u64; 6] = [0; 6]
-    bindings[0] = u64(0) + (u64(1) .shl(32))    // binding 0, COMBINED_IMAGE_SAMPLER
-    bindings[1] = u64(1) + (u64(16) .shl(32))   // count 1, stage FRAGMENT
+    bindings[0] = u64(0) + (u64(1).shl(32)) // binding 0, COMBINED_IMAGE_SAMPLER
+    bindings[1] = u64(1) + (u64(16).shl(32)) // count 1, stage FRAGMENT
     bindings[2] = 0
-    bindings[3] = u64(1) + (u64(6) .shl(32))    // binding 1, UNIFORM_BUFFER
-    bindings[4] = u64(1) + (u64(17) .shl(32))   // count 1, stages VERTEX | FRAGMENT
+    bindings[3] = u64(1) + (u64(6).shl(32)) // binding 1, UNIFORM_BUFFER
+    bindings[4] = u64(1) + (u64(17).shl(32)) // count 1, stages VERTEX | FRAGMENT
     bindings[5] = 0
     mut layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
     layout_info.sType = 32
@@ -130,14 +132,14 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     write_image.dstSet = set
     write_image.dstBinding = 0
     write_image.descriptorCount = 1
-    write_image.descriptorType = 1
+    write_image.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     write_image.pImageInfo = addr(&image_info)
     mut write_buffer: vk.WriteDescriptorSet = zeroed()
     write_buffer.sType = 35
     write_buffer.dstSet = set
     write_buffer.dstBinding = 1
     write_buffer.descriptorCount = 1
-    write_buffer.descriptorType = 6
+    write_buffer.descriptorType = enums.descriptor_type(.UniformBuffer)
     write_buffer.pBufferInfo = addr(&buffer_info2)
     _ := writes
     // Two separate updates avoid relying on a packed record layout.
@@ -147,19 +149,19 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     // --- render pass: one colour attachment, cleared far, ends readable ---
     mut attachment: [u32; 9] = [0; 9]
     attachment[0] = 0
-    attachment[1] = FORMAT_R32_SFLOAT
+    attachment[1] = enums.format(.R32_SFLOAT)
     attachment[2] = 1
-    attachment[3] = 1     // CLEAR
-    attachment[4] = 0     // STORE
+    attachment[3] = 1 // CLEAR
+    attachment[4] = 0 // STORE
     attachment[5] = 2
     attachment[6] = 1
-    attachment[7] = 0     // UNDEFINED
+    attachment[7] = 0 // UNDEFINED
     attachment[8] = LAYOUT_SHADER_READ
     mut color_ref: vk.AttachmentReference = zeroed()
     color_ref.attachment = 0
-    color_ref.layout = 2
+    color_ref.layout = enums.image_layout(.ColorAttachmentOptimal)
     mut subpass: vk.SubpassDescription = zeroed()
-    subpass.pipelineBindPoint = 0
+    subpass.pipelineBindPoint = enums.pipeline_bind_point(.Graphics)
     subpass.colorAttachmentCount = 1
     subpass.pColorAttachments = addr(&color_ref)
     mut before: vk.SubpassDependency = zeroed()
@@ -167,25 +169,25 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     before.dstSubpass = 0
     before.srcStageMask = 1024
     before.dstStageMask = 1024
-    before.dstAccessMask = 256
+    before.dstAccessMask = enums.access(.ColorAttachmentWrite)
     mut after: vk.SubpassDependency = zeroed()
     after.srcSubpass = 0
     after.dstSubpass = 4294967295
     after.srcStageMask = 1024
     after.dstStageMask = 128
-    after.srcAccessMask = 256
-    after.dstAccessMask = 32
+    after.srcAccessMask = enums.access(.ColorAttachmentWrite)
+    after.dstAccessMask = enums.access(.ShaderRead)
     mut deps: [u64; 16] = [0; 16]
     // Two vkSubpassDependency records are 2 x 8 u32 words; store them raw so the
     // driver reads a contiguous array.
-    deps[0] = u64(4294967295) + (u64(0) .shl(32))
-    deps[1] = u64(1024) + (u64(1024) .shl(32))
-    deps[2] = u64(0) + (u64(256) .shl(32))
-    deps[3] = u64(0) + (u64(0) .shl(32))
-    deps[4] = u64(0) + (u64(4294967295) .shl(32))
-    deps[5] = u64(1024) + (u64(128) .shl(32))
-    deps[6] = u64(256) + (u64(32) .shl(32))
-    deps[7] = u64(0) + (u64(0) .shl(32))
+    deps[0] = u64(4294967295) + (u64(0).shl(32))
+    deps[1] = u64(1024) + (u64(1024).shl(32))
+    deps[2] = u64(0) + (u64(256).shl(32))
+    deps[3] = u64(0) + (u64(0).shl(32))
+    deps[4] = u64(0) + (u64(4294967295).shl(32))
+    deps[5] = u64(1024) + (u64(128).shl(32))
+    deps[6] = u64(256) + (u64(32).shl(32))
+    deps[7] = u64(0) + (u64(0).shl(32))
     _ := before
     _ := after
     mut pass_info: vk.RenderPassCreateInfo = zeroed()
@@ -229,7 +231,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
 
     // light_vp(64) + model(64) + light_dir_c(16) = 144 bytes.
     mut push_range: vk.PushConstantRange = zeroed()
-    push_range.stageFlags = 17
+    push_range.stageFlags = enums.shader_stage(.VertexFragment)
     push_range.size = 144
     mut layout_info2: vk.PipelineLayoutCreateInfo = zeroed()
     layout_info2.sType = 30
@@ -262,7 +264,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
 
     mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
     assembly.sType = 20
-    assembly.topology = 3
+    assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut viewport: vk.Viewport = zeroed()
     viewport.width = f32(SHADOW_SIZE)
@@ -280,9 +282,9 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
 
     mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
-    raster.polygonMode = 0
-    raster.cullMode = 2
-    raster.frontFace = 0
+    raster.polygonMode = enums.polygon_mode(.Fill)
+    raster.cullMode = enums.cull_mode(.Back)
+    raster.frontFace = enums.front_face(.CounterClockwise)
     raster.lineWidth = 1.0
 
     mut multisample: vk.PipelineMultisampleStateCreateInfo = zeroed()
@@ -293,14 +295,8 @@ pub unsafe fn setup(r: &mut state.Renderer) -> bool {
     depth_state.sType = 25
 
     mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.blendEnable = 1
-    blend_attachment.srcColorBlendFactor = 1   // ONE
-    blend_attachment.dstColorBlendFactor = 1   // ONE
-    blend_attachment.colorBlendOp = 4          // MAX: keep the surface closest to the sun
-    blend_attachment.srcAlphaBlendFactor = 1
-    blend_attachment.dstAlphaBlendFactor = 1
-    blend_attachment.alphaBlendOp = 4
-    blend_attachment.colorWriteMask = 15
+    // MAX keeps the surface closest to the sun in every texel.
+    enums.apply_blend(&mut blend_attachment, &enums.shadow_max())
     mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26
     blend.attachmentCount = 1

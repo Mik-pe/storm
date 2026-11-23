@@ -1,10 +1,10 @@
 capability unsafe, stdio
 
 import std.sys as sys
+import .enums as enums
 import .layout as vk2
 import .shader as shader
 import .state as state
-import .ui as ui
 
 // Cinematic overlay drawn over the finished scene.
 //
@@ -47,7 +47,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
 
     mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = zeroed()
     assembly.sType = 20
-    assembly.topology = 3
+    assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut viewport: vk2.Viewport = zeroed()
     viewport.width = f32(r.width)
@@ -65,9 +65,9 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
 
     mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
-    raster.polygonMode = 0
-    raster.cullMode = 0
-    raster.frontFace = 1
+    raster.polygonMode = enums.polygon_mode(.Fill)
+    raster.cullMode = enums.cull_mode(.None)
+    raster.frontFace = enums.front_face(.Clockwise)
     raster.lineWidth = 1.0
 
     mut multisample: vk2.PipelineMultisampleStateCreateInfo = zeroed()
@@ -80,7 +80,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
     // The same alpha-over as the UI. With the old 5/6 factors the dark grade
     // was added on top of the scene instead of covering it (finding 40).
-    ui.blend_alpha_over(&mut blend_attachment)
+    enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
 
     mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26
@@ -88,7 +88,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     blend.pAttachments = addr(&mut blend_attachment)
 
     mut push_range: vk2.PushConstantRange = zeroed()
-    push_range.stageFlags = 16 // fragment stage
+    push_range.stageFlags = enums.shader_stage(.Fragment)
     push_range.size = 16
 
     mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()

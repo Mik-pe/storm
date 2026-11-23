@@ -5,6 +5,7 @@ import std.dl as dl
 import .api as api
 import .depth as depth
 import .device as device
+import .enums as enums
 import .headless as headless
 import .layout as vk
 import .pipeline as pipeline
@@ -322,7 +323,7 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     mut image_index: u32 = 0
     acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
         r.image_available[slot], ptr(0), addr(&mut image_index))
-    if acquired == 1000001003 {
+    if acquired == enums.ERROR_OUT_OF_DATE_KHR {
         if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date", width: 0, height: 0 } }
         return BeginResult { ok: false, error: "swapchain recreated; retry the frame", width: 0, height: 0 }
     }
@@ -333,7 +334,7 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     r.vertexCursor = 0
     mut begin: vk.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
-    begin.flags = 1
+    begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
         return BeginResult { ok: false, error: "beginning the command buffer failed", width: 0, height: 0 }
     }
@@ -439,14 +440,14 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
         // layout, so transition explicitly before submitting.
         mut barrier: vk.ImageMemoryBarrier = zeroed()
         barrier.sType = 45
-        barrier.srcAccessMask = 256
-        barrier.dstAccessMask = 0
-        barrier.oldLayout = 2
-        barrier.newLayout = 1000001002
+        barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
+        barrier.dstAccessMask = enums.access(.None)
+        barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
+        barrier.newLayout = enums.IMAGE_LAYOUT_PRESENT_SRC_KHR
         barrier.srcQueueFamilyIndex = 4294967295
         barrier.dstQueueFamilyIndex = 4294967295
         barrier.image = r.images[r.imageIndex]
-        barrier.subresourceRange.aspectMask = 1
+        barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
         barrier.subresourceRange.levelCount = 1
         barrier.subresourceRange.layerCount = 1
         r.api.CmdPipelineBarrier(r.commands[slot], 1024, 4096, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
@@ -491,7 +492,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     presented := r.api.QueuePresentKHR(r.queue, addr(&present))
     trace_step(&r, "presented " + presented.str())
     r.recording = 0
-    if presented == 1000001003 {
+    if presented == enums.ERROR_OUT_OF_DATE_KHR {
         if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date") }
     } else if presented != 0 {
         return draw_error(r.frameIndex, "presenting failed")

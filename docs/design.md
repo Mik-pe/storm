@@ -87,7 +87,7 @@ pub fn blend_factor(f: BlendFactor) -> u32 { u32(i32(f)) }
 ```
 
 ```dunder
-// storm-gfx: en Dunder-struct (inte @c_layout) med enum-typade fält.
+// storm-vk: en Dunder-struct (inte @c_layout) med enum-typade fält.
 pub struct Blend {
     color_op: BlendOp,          // Add = 0, inte "0"
     src_color: BlendFactor,     // BlendFactor i fältet, inte u32
@@ -96,17 +96,23 @@ pub struct Blend {
     dst_alpha: BlendFactor,
 }
 
-// Alpha-over är DATA, inte fem heltal man kan slå fel på.
-pub const ALPHA_OVER: Blend = Blend {
-    color_op: .Add, src_color: .SrcAlpha, dst_color: .OneMinusSrcAlpha,
-    src_alpha: .One, dst_alpha: .OneMinusSrcAlpha,
+// Dunder `const` kan inte hålla en struct (E3007, dogfood fynd 43), så
+// alpha-over är en funktion som returnerar värdet.
+pub fn alpha_over() -> Blend {
+    Blend {
+        color_op: .Add, src_color: .SrcAlpha, dst_color: .OneMinusSrcAlpha,
+        src_alpha: .One, dst_alpha: .OneMinusSrcAlpha,
+    }
 }
+
+// Den enda skrivaren av C-recordets blend-fält.
+pub unsafe fn apply_blend(attachment: &mut PipelineColorBlendAttachmentState, blend: &Blend)
 ```
 
-Endast `storm-gfx::pipeline::build` rör `@c_layout`-structarna. Där
+Endast `apply_blend` rör `@c_layout`-structens blend-fält. Där
 översätts varje enum-fält till ett Vk-heltal via `blend_factor()` o.s.v.
-(konverterarna bor i `storm-vk`). Finns det ingen konverterare kan fältet
-inte fyllas i — kompilatorn säger ifrån.
+(konverterarna bor i `enums.ddr`). Finns det ingen konverterare kan fältet
+inte fyllas i — kompilatorn säger ifrån. **Genomfört** i steg 2 (se §5).
 
 ## 4. Vad som händer med dagens kod
 
@@ -135,8 +141,13 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 1. **Skapa `storm-vk`** med enums + bindings, låt storm-gfx (fortfarande
    namngiven storm-vulkan) importera det. Ingen beteendeändring.
+   *Status: enums-modulen finns (`packages/storm-vulkan/src/enums.ddr`,
+   29 enums, 137 anrop); paketdelningen är kvar.*
 2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
+   *Status: klart 2026-11-23. 135 → 0 råa enum-heltal i structfält, AE = 0
+   mot baslinjen inklusive två spec-korrigeringar av layouter (fynd 44).
+   `post → ui`-beroendet borta.*
 3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
 5. **Dra `ui.ddr`/`post.ddr` ur backend.** `storm-input` slipper Vulkan.

@@ -1,5 +1,6 @@
 capability unsafe
 
+import .enums as enums
 import .layout as vk
 import .state as state
 
@@ -69,7 +70,7 @@ pub unsafe fn image_2d_info(format: u32, width: u32, height: u32, tiling: u32, u
     info.extent = vk.Extent3D { width: width, height: height, depth: 1 }
     info.mipLevels = 1
     info.arrayLayers = 1
-    info.samples = 1
+    info.samples = enums.samples(.Type1)
     info.tiling = tiling
     info.usage = usage
     info
@@ -113,7 +114,7 @@ unsafe fn create_device(r: &mut state.Renderer) -> bool {
     r.api.GetDeviceQueue(r.device, r.family, 0, addr(&mut r.queue))
     mut pool: vk.CommandPoolCreateInfo = zeroed()
     pool.sType = 39
-    pool.flags = 2
+    pool.flags = enums.descriptor_pool(.FreeDescriptorSet)
     pool.queueFamilyIndex = r.family
     if r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool)) != 0 { return false }
     true
@@ -126,17 +127,16 @@ unsafe fn pick_format(r: &mut state.Renderer) -> bool {
     // Each VkSurfaceFormatKHR is two u32 words (format, colorSpace). Read them as words.
     mut words: [u32; 64] = [0; 64]
     _ := r.api.GetPhysicalDeviceSurfaceFormatsKHR(r.physical, r.surface, addr(&mut count), addr(&mut words[0]))
-    // Prefer B8G8R8A8_UNORM (44) or B8G8R8A8_SRGB (50); else take the first.
+    // Prefer B8G8R8A8_UNORM or B8G8R8A8_SRGB; else take the first.
     r.format = words[0]
     r.colorSpace = words[1]
     for i in 0..i32(count) {
         f := words[i * 2]
-        if f == 44 || f == 50 { r.format = f; r.colorSpace = words[i * 2 + 1]; break }
-        if f == 37 && r.format != 44 && r.format != 50 { r.format = f; r.colorSpace = words[i * 2 + 1] }
+        if f == enums.format(.B8G8R8A8_UNORM) || f == enums.format(.B8G8R8A8_SRGB) { r.format = f; r.colorSpace = words[i * 2 + 1]; break }
+        if f == enums.format(.R8G8B8A8_UNORM) && r.format != enums.format(.B8G8R8A8_UNORM) && r.format != enums.format(.B8G8R8A8_SRGB) { r.format = f; r.colorSpace = words[i * 2 + 1] }
     }
     true
 }
-
 
 // Depth attachment matching the current swapchain extent. Recreated with it.
 
@@ -185,9 +185,9 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> bool {
         mut view: vk.ImageViewCreateInfo = zeroed()
         view.sType = 15
         view.image = r.images[i]
-        view.viewType = 1
+        view.viewType = enums.image_view_type(.Type2D)
         view.format = r.format
-        view.subresourceRange.aspectMask = 1
+        view.subresourceRange.aspectMask = enums.image_aspect(.Color)
         view.subresourceRange.levelCount = 1
         view.subresourceRange.layerCount = 1
         if r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.views[i])) != 0 { return false }
@@ -271,8 +271,8 @@ pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> bool {
     mut info: vk.BufferCreateInfo = zeroed()
     info.sType = 12
     info.size = bytes
-    info.usage = 128
-    info.sharingMode = 0
+    info.usage = enums.image_usage(.ColorAttachment)
+    info.sharingMode = enums.sharing_mode(.Exclusive)
     mut handle := ptr(0)
     if r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle)) != 0 { return false }
     mut requirements: vk.MemoryRequirements = zeroed()
@@ -312,7 +312,7 @@ pub unsafe fn setup_frames(r: &mut state.Renderer) -> bool {
         r.commands[i] = commands[i]
         mut fence: vk.FenceCreateInfo = zeroed()
         fence.sType = 11
-        fence.flags = 1
+        fence.flags = enums.fence(.Signaled)
         mut created := ptr(0)
         if r.api.CreateFence(r.device, addr(&fence), ptr(0), addr(&mut created)) != 0 { return false }
         r.fences[i] = created

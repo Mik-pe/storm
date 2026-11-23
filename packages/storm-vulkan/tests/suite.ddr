@@ -3,9 +3,9 @@ capability unsafe
 import ..src.layout as vk
 import ..src.depth as depth
 import ..src.device as device
+import ..src.enums as enums
 import ..src.headless as headless
 import ..src.state as state
-import ..src.ui as ui
 import ..src.vulkan as vulkan
 
 @test fn cube_emits_twelve_triangles_with_face_normals() {
@@ -94,18 +94,52 @@ import ..src.vulkan as vulkan
     }
 }
 
-@test fn alpha_over_blend_uses_the_khronos_blend_factor_values() {
-    // VkBlendFactor: 0 ZERO, 1 ONE, 2 SRC_COLOR, 3 ONE_MINUS_SRC_COLOR,
-    // 4 DST_COLOR, 5 ONE_MINUS_DST_COLOR, 6 SRC_ALPHA, 7 ONE_MINUS_SRC_ALPHA.
-    // The UI and overlay pipelines once carried 5/6, which is an inverting
-    // blend and painted a box around every glyph.
-    assert(vk.BLEND_ONE == 1)
-    assert(vk.BLEND_SRC_ALPHA == 6)
-    assert(vk.BLEND_ONE_MINUS_SRC_ALPHA == 7)
-    assert(vk.BLEND_OP_ADD == 0)
+@test fn vk_enum_values_match_the_khronos_tables() {
+    // The tables as Khronos prints them. A recited table once came out in the
+    // wrong order and shipped two pipelines blending with the inverse factors;
+    // this pins every value Storm converts to a C integer.
+    assert(enums.blend_factor(.SrcAlpha) == 6)
+    assert(enums.blend_factor(.OneMinusSrcAlpha) == 7)
+    assert(enums.blend_factor(.OneMinusDstColor) == 5)
+    assert(enums.blend_factor(.One) == 1)
+    assert(enums.blend_op(.Add) == 0 && enums.blend_op(.Max) == 4)
+    assert(enums.filter(.Nearest) == 0 && enums.filter(.Linear) == 1)
+    assert(enums.sampler_mipmap_mode(.Nearest) == 0 && enums.sampler_mipmap_mode(.Linear) == 1)
+    assert(enums.sampler_address_mode(.ClampToEdge) == 2)
+    assert(enums.primitive_topology(.TriangleList) == 3)
+    assert(enums.polygon_mode(.Fill) == 0)
+    assert(enums.cull_mode(.None) == 0 && enums.cull_mode(.Back) == 2)
+    assert(enums.front_face(.CounterClockwise) == 0 && enums.front_face(.Clockwise) == 1)
+    assert(enums.compare_op(.Less) == 1 && enums.compare_op(.LessOrEqual) == 3)
+    assert(enums.image_view_type(.Type2D) == 1 && enums.image_view_type(.Cube) == 3)
+    assert(enums.image_aspect(.Color) == 1 && enums.image_aspect(.Depth) == 2)
+    assert(enums.image_layout(.Undefined) == 0)
+    assert(enums.image_layout(.ColorAttachmentOptimal) == 2)
+    assert(enums.image_layout(.DepthStencilAttachmentOptimal) == 3)
+    assert(enums.image_layout(.ShaderReadOnlyOptimal) == 5)
+    assert(enums.attachment_load_op(.Load) == 0 && enums.attachment_load_op(.Clear) == 1)
+    assert(enums.attachment_store_op(.Store) == 0 && enums.attachment_store_op(.DontCare) == 1)
+    assert(enums.pipeline_bind_point(.Graphics) == 0)
+    assert(enums.descriptor_type(.CombinedImageSampler) == 1 && enums.descriptor_type(.UniformBuffer) == 6)
+    assert(enums.sharing_mode(.Exclusive) == 0)
+    assert(enums.image_tiling(.Optimal) == 0 && enums.image_tiling(.Linear) == 1)
+    assert(enums.command_buffer_usage(.OneTimeSubmit) == 1)
+    assert(enums.shader_stage(.Vertex) == 1 && enums.shader_stage(.Fragment) == 16)
+    assert(enums.shader_stage(.VertexFragment) == 17)
+    assert(enums.image_usage(.TransferSrc) == 1 && enums.image_usage(.Sampled) == 4)
+    assert(enums.image_usage(.ColorAttachment) == 16 && enums.image_usage(.DepthStencilAttachment) == 32)
+    assert(enums.buffer_usage(.TransferSrc) == 1 && enums.buffer_usage(.UniformBuffer) == 16)
+    assert(enums.buffer_usage(.VertexBuffer) == 128)
+    assert(enums.image_create(.CubeCompatible) == 4)
+    assert(enums.descriptor_pool(.FreeDescriptorSet) == 2)
+    assert(enums.fence(.Signaled) == 1)
+    assert(enums.color_component(.RGBA) == 15)
+    assert(enums.samples(.Type1) == 1)
+    // The blend attachment is a value, not five integers: ALPHA_OVER is the
+    // one every alpha-over pipeline (UI, overlay, glass) writes.
     unsafe {
         mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-        ui.blend_alpha_over(&mut attachment)
+        enums.apply_blend(&mut attachment, &enums.alpha_over())
         assert(attachment.blendEnable == 1)
         assert(attachment.srcColorBlendFactor == 6)
         assert(attachment.dstColorBlendFactor == 7)
@@ -113,15 +147,8 @@ import ..src.vulkan as vulkan
         assert(attachment.dstAlphaBlendFactor == 7)
         assert(attachment.colorBlendOp == 0 && attachment.alphaBlendOp == 0)
         assert(attachment.colorWriteMask == 15)
+        enums.apply_blend(&mut attachment, &enums.shadow_max())
+        assert(attachment.srcColorBlendFactor == 1 && attachment.dstColorBlendFactor == 1)
+        assert(attachment.colorBlendOp == 4)
     }
-}
-
-@test fn glyph_atlas_samples_with_linear_filtering() {
-    // VkFilter: 0 NEAREST, 1 LINEAR. Glyphs are drawn below the rasterized
-    // size, so NEAREST turns the strokes into uneven stair-steps.
-    assert(vk.FILTER_NEAREST == 0)
-    assert(vk.FILTER_LINEAR == 1)
-    // The atlas is a single-channel float image: the coverage bytes are
-    // widened to f32 before upload (100 is VK_FORMAT_R32_SFLOAT).
-    assert(ui.FORMAT_R32_SFLOAT == 100)
 }
