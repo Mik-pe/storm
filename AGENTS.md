@@ -26,10 +26,14 @@ Gäller alla som arbetar i repot, människor som agenter.
 ## Kod
 
 - Allt är Dunder. Inga byggskript i andra språk; `tools/` är Dunder-program.
-- **Arbeta från första principer.** Innan ett steg: vad är problemet
-  egentligen, vilka delar är oföränderliga fakta (API:t, formatet,
-  matematiken), vilka är val? Gör inte om vad andra gjort utan att veta
-  varför det är valt; välj det enklaste som uppfyller fakta.
+- **Arbeta från första principer — tänk stort, inte bandaid.** Innan ett
+  steg: vad är problemet egentligen, vilka delar är oföränderliga fakta
+  (API:t, formatet, matematiken), vilka är val? Designa grunden så att
+  problemet *upphör att finnas*, i stället för att lappa ovanpå en grund
+  som inte bär. Ett bandaid är förbjudet när det döljer en felaktig
+  grund: om en fix kräver att man "kommer ihåg" något, är grunden fel.
+  Gör inte om vad andra gjort utan att veta varför det är valt; när
+  grunden är rätt vinner det enklaste uttrycket för den.
 - **Arkitekturen ska vara framtidssäker.** Det som kommer hända men inte
   finns än ska vara *möjligt att lägga till utan att riva*:
   multiplatform är planerat (Metal på macOS, en annan fönsteryta).
