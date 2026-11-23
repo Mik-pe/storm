@@ -42,6 +42,16 @@ fn frame_limit() -> i64 {
     0
 }
 
+// --capture <path> asks the renderer for an offscreen frame.
+fn capture_path() -> string {
+    mut i := 1
+    while i + 1 < sys.arg_count() {
+        if sys.arg(i) == "--capture" { return sys.arg(i + 1) }
+        i = i + 1
+    }
+    ""
+}
+
 fn trace_enabled() -> bool {
     mut i := 1
     while i < sys.arg_count() {
@@ -71,6 +81,16 @@ fn main() -> i32 {
     }
     if trace_enabled() { vulkan.set_trace(opened.window, true) }
     print("device=" + vulkan.device_name(opened.window))
+    shot := capture_path()
+    mut capturing := false
+    if shot.len > 0 {
+        if !vulkan.capture_next(opened.window) {
+            _ := sys.eprint("storm: could not set up the capture target")
+            vulkan.close(opened.window)
+            return 1
+        }
+        capturing = true
+    }
 
     // --- geometry ---
     mut cube_vertices: []f32 = []
@@ -174,6 +194,15 @@ fn main() -> i32 {
             continue
         }
         frames = finished.frames
+        if capturing {
+            if vulkan.save_capture(opened.window, shot) {
+                _ := sys.eprint("storm: wrote " + shot)
+            } else {
+                _ := sys.eprint("storm: capture failed")
+            }
+            running = false
+            continue
+        }
         if limit > 0 && frames >= limit { running = false }
     }
     vulkan.close(opened.window)

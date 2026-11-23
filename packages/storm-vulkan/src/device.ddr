@@ -235,7 +235,7 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.surface != ptr(0) { r.api.DestroyInstance(r.instance, ptr(0)) }
 }
 
-unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, flags: i32, output: ptr) -> bool {
+pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, flags: i32, output: ptr) -> bool {
     mut i := 0
     while i < i32(r.memoryProperties.typeCount) {
         bits := i32(requirements.memoryTypeBits)

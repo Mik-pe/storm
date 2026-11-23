@@ -89,6 +89,8 @@ frame-loopen exekverar.
 - **Höger musknapp + mus** – titta
 - **R** – återställ kameran, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
+- `--capture fil.ppm` – rendera en frame **headless** till en PPM, utan fönster
+  och utan skärm (fungerar över SSH och med låst session)
 - `--trace` – skriv varje inlämningssteg
 
 ### Körning kräver en aktiv grafisk session

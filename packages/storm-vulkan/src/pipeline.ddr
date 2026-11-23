@@ -159,7 +159,9 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> bool {
     raster.sType = 23
     raster.polygonMode = 0
     raster.cullMode = 2
-    raster.frontFace = 1
+    // The projection negates Y for Vulkan's clip space, which mirrors the
+    // winding, so counter-clockwise is the front face.
+    raster.frontFace = 0
     raster.lineWidth = 1.0
 
     mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()

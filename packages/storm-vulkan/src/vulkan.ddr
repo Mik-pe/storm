@@ -4,6 +4,7 @@ import std.bytes as b
 import std.dl as dl
 import .api as api
 import .device as device
+import .headless as headless
 import .layout as vk
 import .pipeline as pipeline
 import .sdl as sdl
@@ -159,6 +160,29 @@ pub fn device_name(window: Window) -> string {
 }
 
 // Print each submission step to stdout. Useful when a frame hangs.
+// Ask for one offscreen frame; the pixels stay readable until save_capture.
+pub fn capture_next(window: Window) -> bool {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return false }
+        capture_next_at(ref_at(address))
+    }
+}
+
+unsafe fn capture_next_at(r: &mut state.Renderer) -> bool {
+    if !headless.setup(&mut r) { return false }
+    r.captureOn = 1
+    true
+}
+
+pub fn save_capture(window: Window, path: string) -> bool {
+    unsafe {
+        address := active(ref_at(registry_address()), window)
+        if address == ptr(0) { return false }
+        headless.save(ref_at(address), path)
+    }
+}
+
 pub fn set_trace(window: Window, enabled: bool) {
     unsafe {
         address := active(ref_at(registry_address()), window)
@@ -293,6 +317,7 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     trace_step(&r, "acquired image " + i32(image_index).str())
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
     _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
+    r.vertexCursor = 0
     mut begin: vk.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
     begin.flags = 1
@@ -302,8 +327,13 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     mut clear_color: [f32; 4] = [0.02, 0.03, 0.05, 1.0]
     mut pass: vk.RenderPassBeginInfo = zeroed()
     pass.sType = 43
-    pass.renderPass = r.renderPass
-    pass.framebuffer = r.framebuffers[i32(image_index)]
+    if r.captureOn == 1 {
+        pass.renderPass = r.offscreenPass
+        pass.framebuffer = r.offscreenFramebuffer
+    } else {
+        pass.renderPass = r.renderPass
+        pass.framebuffer = r.framebuffers[i32(image_index)]
+    }
     pass.renderArea.extent.width = r.width
     pass.renderArea.extent.height = r.height
     pass.clearValueCount = 1
@@ -344,13 +374,15 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
     }
-    bytes := vertices.len * 4
-    if u64(bytes) > r.vertex.capacity {
+    bytes := u64(vertices.len * 4)
+    offset := r.vertexCursor
+    if offset + bytes > r.vertex.capacity {
         return draw_error(r.frameIndex, "vertex list exceeds the mapped vertex buffer")
     }
     if vertices.len > 0 {
-        _ := copy_bytes(r.vertex.mapped, addr(&vertices[0]), usize(bytes))
+        _ := copy_bytes(ptr(usize(r.vertex.mapped) + usize(offset)), addr(&vertices[0]), usize(bytes))
     }
+    r.vertexCursor = offset + bytes
     slot := r.current
     mut push: [f32; 44] = [0.0; 44]
     for i in 0..16 { push[i] = mvp[i] }
@@ -359,7 +391,6 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
     r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
-    offset: u64 = 0
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, 17, 0, 176, addr(&push[0]))
     r.api.CmdDraw(r.commands[slot], u32(vertices.len / 6), 1, 0, 0)
@@ -388,6 +419,15 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     if r.api.QueueSubmit(r.queue, 1, addr(&submit_info), r.fences[slot]) != 0 {
         r.recording = 0
         return draw_error(r.frameIndex, "queue submission failed")
+    }
+    if r.captureOn == 1 {
+        // Offscreen frames are read back from mapped memory; nothing to present.
+        _ := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
+        r.captureOn = 2
+        r.recording = 0
+        r.current = (r.current + 1) % 2
+        r.frameIndex = r.frameIndex + 1
+        return DrawResult { ok: true, error: "", frames: r.frameIndex }
     }
     mut image_index := u32(r.imageIndex)
     mut present: vk.PresentInfoKHR = zeroed()
@@ -518,6 +558,8 @@ pub fn cube(vertices: &mut []f32, half: f32) {
 
 // Ground plane in XZ at y = 0, normal +Y.
 pub fn plane(vertices: &mut []f32, extent: f32) {
-    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, -extent, extent, 0.0, extent, 0.0, 1.0, 0.0)
-    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, extent, -extent, 0.0, extent, 0.0, 1.0, 0.0)
+    // Wound so the upward face survives back-face culling under the mesh
+    // pipeline's clockwise front face.
+    triangle(&mut vertices, -extent, 0.0, -extent, extent, 0.0, extent, extent, 0.0, -extent, 0.0, 1.0, 0.0)
+    triangle(&mut vertices, -extent, 0.0, -extent, -extent, 0.0, extent, extent, 0.0, extent, 0.0, 1.0, 0.0)
 }

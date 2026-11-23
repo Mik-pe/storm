@@ -512,3 +512,4 @@ pub struct ImageMemoryBarrier {
     image: ptr,
     subresourceRange: ImageSubresourceRange,
 }
+

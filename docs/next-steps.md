@@ -14,7 +14,14 @@ När det fungerar: två bilagor i render passet, `VkPipelineDepthStencilStateCre
 med `depthTestEnable`/`depthWriteEnable`, djup-clear och en `D32_SFLOAT`-bild
 som återskapas med swapchainen.
 
-## 2. Texturpipeline (text och material)
+## 2. Miljöbelysning (IBL)
+
+Metallytorna ser platta ut: en metall utan omgivning har bara solen att spegla.
+Nästa steg är en liten miljökub (eller en analytisk himmelmodell i shadern) som
+ger både diffus hemisfär och en speglande term, plus en BRDF-LUT om vi vill göra
+det ordentligt.
+
+## 3. Texturpipeline (text och material)
 
 `packages/storm-text` producerar en R8-atlas och quads. Kvar: `vkCreateImage`
 (R8_UNORM), staging-buffer, `vkCmdCopyBufferToImage`, layoutövergångar,
@@ -22,40 +29,47 @@ som återskapas med swapchainen.
 samma vertexformat men sampler. Samma maskineri ger material- och
 normalmappar från glTF.
 
-## 3. glTF-scener
+## 4. glTF-scener
 
 Laddaren läser geometri. Nästa steg är `nodes` (TRS/matris), `scenes`,
 `materials` (`pbrMetallicRoughness`), `textures`/`images` och att bygga
 scengrafen direkt från filen i stället för att koda den i `main.ddr`.
 
-## 4. Instancing
+## 5. Instancing
 
 Demot gör en draw call per kub. Med `vkCmdDrawIndexed` och en instansbuffert
 (modellmatris + material per instans) blir hela scenen en draw call. Det är
 också första gången ECS behöver en "renderbar"-vy: en systemfunktion som
 packar om poolerna till GPU-data.
 
-## 5. Skuggor
+## 6. Skuggor
 
 En shadow map-pass i rendergrafen: djupbild från solens vy, samplas i
 PBR-shadern med PCF. Rendergrafen är redan byggd för det — lägg till passet
 `shadow` med `["shadow_depth"]` som skrivning och låt `meshes` läsa den.
 
-## 6. Fler ljus
+## 7. Fler ljus
 
 Push constants räcker för en sol. Nästa steg är en uniform buffer per frame
 (per-frame descriptor set) med en ljusarray, kameraposition och tid.
 
-## 7. Input
+## 8. Input
 
 `storm-input` har scancodes och en fly-kamera. Kvar: `keys_pressed` som
 engångshändelser i ECS, mushjul, textinmatning (`SDL_TextInputEvent`) och
 gamepad via `SDL_GameController`.
 
-## 8. Tid och fast steg
+## 9. Tid och fast steg
 
 `Frame.time` är väggklocka. En `Time`-resurs med `dt`, `elapsed` och en
 ackumulator för fasta fysiksteg (t.ex. 120 Hz) hör till kärnan.
+
+## Klart: headless capture
+
+`--capture fil.ppm` renderar en frame utan fönster och skriver den till disk.
+Det är så skärmdumpar tas när sessionen är låst eller maskinen körs över SSH.
+Se [dogfood.md](dogfood.md#21-vkcmdcopyimagetobuffer-kraschar-i-intel-drivrutinen)
+för varför vägen ser ut som den gör.
 
 ## Kända begränsningar i dag
 

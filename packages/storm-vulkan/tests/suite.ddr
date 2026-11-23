@@ -1,3 +1,4 @@
+import ..src.layout as vk
 import ..src.vulkan as vulkan
 
 @test fn cube_emits_twelve_triangles_with_face_normals() {
@@ -33,4 +34,8 @@ import ..src.vulkan as vulkan
     v.clear()
     vulkan.triangle(&mut v, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
     assert(v.len == 18)
+}
+
+@test fn barrier_struct_matches_the_c_abi() {
+    assert(size_of(vk.ImageMemoryBarrier) == 72)
 }

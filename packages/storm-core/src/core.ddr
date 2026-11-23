@@ -57,8 +57,10 @@ pub fn translation(x: f32, y: f32, z: f32) -> Mat4 {
 pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     // Float methods cover sqrt/rounding only; trigonometry lives in std.math on f64.
     f := f32(1.0 / math.tan(f64(fov_y) * 0.5))
+    // Vulkan's clip space has Y pointing down, so the Y scale is negated.
+    // Without this the whole scene renders upside down.
     Mat4 { m: [f / aspect, 0.0, 0.0, 0.0,
-               0.0, f, 0.0, 0.0,
+               0.0, -f, 0.0, 0.0,
                0.0, 0.0, (far + near) / (near - far), -1.0,
                0.0, 0.0, 2.0 * far * near / (near - far), 0.0] }
 }

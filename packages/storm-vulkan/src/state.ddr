@@ -80,4 +80,19 @@ pub struct Renderer {
     stage: u32,
     lastResult: i32,
     imageIndex: i32,
+    // Headless capture: offscreen render target plus a mapped linear copy.
+    offscreenImage: ptr,
+    offscreenView: ptr,
+    offscreenPass: ptr,
+    offscreenFramebuffer: ptr,
+    linearImage: ptr,
+    linearMemory: ptr,
+    linearMapped: ptr,
+    captureWidth: u32,
+    captureHeight: u32,
+    capturePitch: u64,
+    captureOn: i32,
+    // Append cursor for the shared vertex buffer: every recorded draw keeps its
+    // own slice, so later uploads cannot overwrite earlier geometry.
+    vertexCursor: u64,
 }

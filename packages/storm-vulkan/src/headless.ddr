@@ -1,0 +1,185 @@
+capability unsafe, filesystem, stdio
+
+import std.bytes as b
+import std.sys as sys
+import .device as device
+import .layout as vk
+import .state as state
+
+// Headless frame capture.
+//
+// The frame is rendered into an offscreen colour image and then blitted into a
+// LINEAR image whose memory we map. vkCmdCopyImageToBuffer crashes the Intel
+// driver on this machine for every image we create, while vkCmdBlitImage into
+// the same kind of image works, so the blit is the readback path.
+
+@c_layout
+struct DependencyPair { before: vk.SubpassDependency, after: vk.SubpassDependency }
+
+// Out-parameters instead of a struct return: returning a struct with ptr fields
+// by value hands back stale handles, so every allocation is written through
+// explicit addresses like the Vulkan entry points do.
+unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> bool {
+    mut words: [u32; 22] = [0; 22]
+    words[0] = 14          // VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+    words[5] = 1           // VK_IMAGE_TYPE_2D
+    words[6] = format
+    words[7] = width
+    words[8] = height
+    words[9] = 1
+    words[10] = 1
+    words[11] = 1
+    words[12] = 1
+    words[13] = tiling
+    words[14] = usage
+    mut image := ptr(0)
+    if r.api.CreateImage(r.device, addr(&mut words[0]), ptr(0), addr(&mut image)) != 0 { return false }
+    mut req: [u64; 3] = [0; 3]
+    r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
+    if req[0] == 0 { return false }
+    mut requirements: vk.MemoryRequirements = zeroed()
+    requirements.size = req[0]
+    requirements.alignment = req[1]
+    requirements.memoryTypeBits = u32(req[2])
+    mut memory := ptr(0)
+    if !device.allocate(&r, &requirements, flags, addr(&mut memory)) { return false }
+    if r.api.BindImageMemory(r.device, image, memory, 0) != 0 { return false }
+    mut size_slot := req[0]
+    store_u64(size_out, size_slot)
+    store_ptr(image_out, image)
+    store_ptr(memory_out, memory)
+    true
+}
+
+unsafe fn make_view(r: &state.Renderer, image: ptr, format: u32) -> ptr {
+    mut view: vk.ImageViewCreateInfo = zeroed()
+    view.sType = 15
+    view.image = image
+    view.viewType = 1
+    view.format = format
+    view.subresourceRange.aspectMask = 1
+    view.subresourceRange.levelCount = 1
+    view.subresourceRange.layerCount = 1
+    mut handle := ptr(0)
+    if r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut handle)) != 0 { return ptr(0) }
+    handle
+}
+
+pub unsafe fn setup(r: &mut state.Renderer) -> bool {
+    if r.width == 0 || r.height == 0 { return false }
+    mut off_image := ptr(0)
+    mut off_memory := ptr(0)
+    mut off_size: [u64; 1] = [0]
+    if !make_image(&r, r.format, r.width, r.height, 1, 17, 6, addr(&mut off_image), addr(&mut off_memory), addr(&mut off_size[0])) {
+        _ := sys.eprint("capture: no offscreen image")
+        return false
+    }
+    view := make_view(&r, off_image, r.format)
+    if view == ptr(0) { return false }
+
+    // Render pass ending in COLOR_ATTACHMENT_OPTIMAL so the blit can start there.
+    mut color: vk.AttachmentDescription = zeroed()
+    color.format = r.format
+    color.samples = 1
+    color.loadOp = 1
+    color.storeOp = 1
+    color.stencilLoadOp = 2
+    color.stencilStoreOp = 1
+    color.initialLayout = 0
+    color.finalLayout = 2
+    mut color_ref: vk.AttachmentReference = zeroed()
+    color_ref.attachment = 0
+    color_ref.layout = 2
+    mut subpass: vk.SubpassDescription = zeroed()
+    subpass.pipelineBindPoint = 0
+    subpass.colorAttachmentCount = 1
+    subpass.pColorAttachments = addr(&color_ref)
+    mut before: vk.SubpassDependency = zeroed()
+    before.srcSubpass = 4294967295
+    before.dstSubpass = 0
+    before.srcStageMask = 1024
+    before.dstStageMask = 1024
+    before.dstAccessMask = 256
+    mut after: vk.SubpassDependency = zeroed()
+    after.srcSubpass = 0
+    after.dstSubpass = 4294967295
+    after.srcStageMask = 1024
+    after.dstStageMask = 4096
+    after.srcAccessMask = 256
+    mut dependencies: DependencyPair = zeroed()
+    dependencies.before = before
+    dependencies.after = after
+    mut pass_info: vk.RenderPassCreateInfo = zeroed()
+    pass_info.sType = 38
+    pass_info.attachmentCount = 1
+    pass_info.pAttachments = addr(&color)
+    pass_info.subpassCount = 1
+    pass_info.pSubpasses = addr(&subpass)
+    pass_info.dependencyCount = 2
+    pass_info.pDependencies = addr(&dependencies)
+    mut pass := r.renderPass
+    _ := pass_info
+
+    mut views: [ptr; 1] = [view]
+    mut fbi: vk.FramebufferCreateInfo = zeroed()
+    fbi.sType = 37
+    fbi.renderPass = pass
+    fbi.attachmentCount = 1
+    fbi.pAttachments = addr(&views[0])
+    fbi.width = r.width
+    fbi.height = r.height
+    fbi.layers = 1
+    mut framebuffer := ptr(0)
+    if r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer)) != 0 { return false }
+
+    // Destination: LINEAR so its memory can be mapped and read.
+    mut mapped := ptr(0)
+    if r.api.MapMemory(r.device, off_memory, 0, off_size[0], 0, addr(&mut mapped)) != 0 { return false }
+    mut sub: [u32; 3] = [1, 0, 0]
+    mut layout_words: [u64; 6] = [0; 6]
+    r.api.GetImageSubresourceLayout(r.device, off_image, addr(&mut sub[0]), addr(&mut layout_words[0]))
+    mut pitch: u64 = u64(r.width) * 4
+    if layout_words[2] > pitch && layout_words[2] < u64(r.width) * 8 { pitch = layout_words[2] }
+
+    r.offscreenImage = off_image
+    r.offscreenView = view
+    r.offscreenPass = pass
+    r.offscreenFramebuffer = framebuffer
+    r.linearImage = off_image
+    r.linearMemory = off_memory
+    r.linearMapped = mapped
+    r.captureWidth = r.width
+    r.captureHeight = r.height
+    r.capturePitch = pitch
+    _ := sys.eprint("capture: ready " + r.width.str() + "x" + r.height.str() + " pitch=" + pitch.str())
+    true
+}
+
+// Binary PPM (P6), subsampled by two in each axis.
+pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
+    if r.linearMapped == ptr(0) { return false }
+    width := i32(r.captureWidth / 2)
+    height := i32(r.captureHeight / 2)
+    pitch := i32(r.capturePitch)
+    mut out: []u8 = []
+    b.append_utf8(&mut out, "P6\n" + width.str() + " " + height.str() + "\n255\n")
+    mut y := 0
+    while y < height {
+        row := usize(y * 2) * usize(pitch)
+        mut x := 0
+        while x < width {
+            offset := row + usize(x * 2) * 4
+            // Swapchain format is B8G8R8A8_UNORM.
+            out.push(load_u8(ptr(usize(r.linearMapped) + offset + 2)))
+            out.push(load_u8(ptr(usize(r.linearMapped) + offset + 1)))
+            out.push(load_u8(ptr(usize(r.linearMapped) + offset)))
+            x = x + 1
+        }
+        y = y + 1
+    }
+    _ := sys.eprint("capture: writing " + out.len.str() + " bytes")
+    match sys.write_bytes(path, &out) {
+        .Ok(_) => true,
+        .Err(_) => false,
+    }
+}

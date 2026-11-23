@@ -372,6 +372,48 @@ avsnitt 16, nu med `--frames 5` som ett reproducerbart smoke-test.
 
 ---
 
+---
+
+## 21. `vkCmdCopyImageToBuffer` kraschar i Intel-drivrutinen
+
+Att läsa tillbaka en renderad bild är den enda vägen till en skärmdump utan en
+låst skärm. På den här maskinen (`vulkan-intel` 1:26.2.2, Iris Plus ICL GT2)
+dör processen i `libvulkan_intel.so` så fort kopian innehåller en region:
+
+- swapchain-bild → buffer: krasch
+- egen 16×16-bild (skapad med `COLOR_ATTACHMENT | TRANSFER_SRC`) → buffer: krasch
+- samma anrop med `regionCount = 0`: **ingen krasch** (funktionspekaren är alltså
+  giltig och kommandobufferten är i inspelningsläge)
+
+Buffer, minne, bindning, mappning och layout-barriär är verifierade steg för steg
+(se `packages/storm-vulkan/src/headless.ddr`), så det är inte argumenten.
+
+**Workaround i Storm:** rendera direkt i en bild vars minne är `HOST_VISIBLE`,
+mappa det och läs pixlarna. Ingen kopia behövs. Row pitch hämtas från
+`vkGetImageSubresourceLayout`, där fältet ligger på ord 2 i den här drivrutinen.
+
+---
+
+## 22. En struct med `ptr`-fält som returvärde ger föråldrade handtag
+
+```dunder
+struct Allocated { image: ptr, memory: ptr, size: u64 }
+unsafe fn make_image(...) -> Allocated { ... }
+```
+
+När `make_image` returnerade en sådan struct by value pekade `memory` på fel
+allokering: mappningen vi fick innehöll den *andra* bildens minne, vilket gick
+att se som ett tätt rutmönster i den färdiga bilden.
+
+**Workaround i Storm:** ut-parametrar, precis som Vulkan-API:et:
+`make_image(..., image_out: ptr, memory_out: ptr)` och `store_ptr`.
+
+**Rekommendation:** reproducera med en minimal struct (två `ptr`-fält) och
+undersök om det är returkonventionen eller `store_ptr`/`addr` som blandas ihop.
+Det här är samma familj av buggar som `@c_layout`-problemen i avsnitt 1 och 17.
+
+---
+
 ## Sammanfattning för Dunder-arbetet
 
 Prioriterat, högst nytta först:
