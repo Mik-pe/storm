@@ -9,7 +9,7 @@ gfx = { path = "packages/storm-gfx" }
 ecs = { path = "packages/storm-ecs" }
 scene = { path = "packages/storm-scene" }
 render = { path = "packages/storm-render" }
-input = { path = "packages/storm-input", capabilities = ["unsafe", "filesystem", "stdio"] }
+input = { path = "packages/storm-input" }
 vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
 gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }
 metal = { path = "packages/storm-metal", capabilities = ["unsafe", "stdio", "filesystem"] }

@@ -468,6 +468,92 @@ varningarna så är fallet borta. Skrift är Mickes repo; det är (b) som gälle
 tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
 *i praktiken* är en filterregel tills syskonen är rena.)
 
+## Uppföljning: gränssnittet och Metal-backenden
+
+Ett kontrakt (`storm-gfx`), en app generisk över det, och en andra backend
+(`storm-metal`) som når AppKit och Metal genom Objective-C:s runtingen.
+Fynden är i den ordning de träffades.
+
+**63. `@embed_file` i ett beroende hittar inte sin fil, var den än ligger.**
+Ett paket som ensamt bygger med `@embed_file("assets/x.txt")` (filen i
+paketets rot) fallerar som beroende av en applikation med
+`E3099: cannot embed 'assets/x.txt': file not found` — och samma fel när
+filen kopieras till applikationens rot. Minsta repro i tre filer:
+`deps/lib/src/lib.ddr` med `pub fn asset() -> string { @embed_file("assets/x.txt") }`
+och `deps/lib/assets/x.txt`, samt en applikation med
+`lib = { path = "deps/lib" }` som anropar `lib.asset()`. `dunder run` i
+`deps/lib` skriver filens innehåll; `dunder check` i applikationen ger E3099.
+*Workaround:* en genererad modul med texten som råsträng — `tools/shaders.ddr`
+gör så för Metals 433 rader shaderkälla. *Rekommendation:* lös sökvägen
+mot roten av det paket som innehåller den modul som bäddar in. Det är vad
+"strikt begränsad till filer innanför paketets rot" lovar, och det är det
+enda sättet ett bibliotek kan bära sina egna tillgångar; i dag kan bara
+applikationens rotmodul bädda in något.
+
+**64. `dunder fmt` läser inte `impl modul.Trait for Type`.** Filen kompilerar
+och kör, men `dunder fmt --stdout f.ddr` svarar `f.ddr:3:9: expected '{'`
+vid traitens namn. Minsta repro i två filer: `lib.ddr` med
+`pub trait Speaks { fn word(&self) -> string }` och `main.ddr` med
+`struct Cat { name: string }` och `impl lib.Speaks for Cat { … }`. Med
+`impl Speaks for Cat` i samma fil som traiten formateras den. Det
+kvalificerade namnet är den enda form en traitimplementation från ett annat
+paket kan ta: antingen traiten eller måltypen måste vara deklarerad i
+modulen, så traiten kommer från en annan och måste namnges med den. I Storm
+kan därför de två filer som implementerar kontraktet inte formateras
+(`storm-vulkan/src/vulkan.ddr`, `storm-metal/src/metal.ddr`). Uppmätt över
+varje fil detta arbete lagt till eller ändrat: 23 är fmt-clean, 2 går inte att
+läsa, och de 4 formateraren skulle ändra (`storm-input/src/input.ddr`,
+`storm-text/src/text.ddr` och två testsviter) hade samma diff före arbetet —
+det är inte de här raderna. *Workaround:* ingen. *Rekommendation:*
+formaterarens grammatik bör vara kompilatorns — den har redan traits utan
+modulprefix.
+
+**65. En funktion som heter som en typ döljer typen, och diagnosen namnger
+ett internt modulnummer.** I `objc.ddr` hette en funktion `string`
+(`pub unsafe fn string(rt: &Runtime, value: string) -> ptr`). Kompilatorn
+svarade `error[E2003]: unknown type '__dunder_module_224'` på `-> string` i
+den funktionen: namnet `string` löses inte längre som typ eftersom funktionen
+skuggar den i hela modulen. Det tog en bisektion att hitta. Samma oläsliga
+namn som fynd 60, och en tredje gång: en slarvigt redigerad fil (ett oavslutat
+block) gav samma meddelande inifrån `stdlib/bytes.ddr`, på en rad i
+standardbiblioteket. *Workaround:* döp inte en funktion efter en typ
+(`nsstring`). *Rekommendation:* när en deklaration skuggar ett typnamn, säg
+det vid deklarationen ("`string` is a type; this function hides it in this
+module"), och skriv typernas namn i diagnoser i stället för
+`__dunder_module_N`.
+
+**66. `.Ok(())` ger "this value is not callable for the selected target".**
+För `Result<(), E>` kräver kompilatorn nakna `.Ok` (dokumenterat i
+enums.md). Den som skriver `.Ok(())` — för att vara tydlig, eller för att
+formateraren ska läsa det — får `E3003` med ett meddelande om anropsbarhet
+och mål, som inte nämner den rätta formen. Minsta repro:
+`fn f() -> Result<(), string> { return .Ok(()) }`. Tre gånger under ett
+kväll. *Rekommendation:* "for `Result<(), E>` write `.Ok`".
+
+**67. `match` på ett heltal pekar på `else`.** `match code { 0 => …, else => -1 }`
+med `code: u64` ger `E3099: match pattern requires an enum` med markören
+vid `else =>`. Meddelandet är sant, platsen är det inte: det är subjektet
+som inte är en enum. *Workaround:* en tabell eller en `if`-kedja — vilket
+också blev det bättre uttrycket: båda backends bygger nu en tabell över
+plattformens tangenkoder och parar varje kod med en namngiven `gfx.Key`, så
+tabellen går att testa utan fönster. *Rekommendation:* markera subjektet.
+
+**Vad Dunder gjorde bra, och vad som formade koden (inte brister).** Helt
+utan C-shim, bindningsgenerator eller extern kompilator: `std.dl` + `ffi_fn`
+för typade meddelanden, `callback(namn)` för femton Objective-C-metoder vars
+kroppar är Dunder-funktioner, `static_bytes("native", N)` för det enda
+tillstånd C kan nå (en post med automatisk nollställning), `target_is` för
+att välja backend vid kompilering, och `@c_layout`-poster med flyttal per
+värde i båda riktningar. Regelverket tvingade fram bättre kod än jag
+skrev först: `&mut` vidarebefordras som `&mut r` (fynd 48), en ägande
+parameter kräver `move x` på anropsplatsen, ett mutabelt argument får inte
+stå bredvid ett annat lån av samma värde i ett anrop (därav `require_main(&r)`
+och draws som binder med delade lån), en traitmetod som konsumerar är
+`fn close(move mut self)`, en `mut`-parameter kan inte flyttas ifrån utan
+`move`, `||`/`&&` ska stå på raden som avslutas (fynd 45), och en obunden
+flytliteral med `:=` är f64 (fynd 49 — igen). Tre av reglerna hade en not
+som sa exakt vad som skulle göras.
+
 **Om ECS-frågorna.** Poolerna hade `entities()` och `values()` men inga
 queries; fyra system loopade entiteter för hand med `contains`-kontroller
 (`drawables`, orbräknaren, orbplockaren, editorns radlista). Nu: `Match
@@ -503,6 +589,95 @@ fält-id:n är gränssnittet). Spelloopen: åtta emissiva orber i en ring, går
 man in i en förstörs den och HUD:en räknar; `--eye x y z` startar kameran
 var som helst, vilket är hur capture-körningen bevisar plockningen (orbs 7/8,
 objects 13) utan tangentbord.
+
+## Grafikobservationer på macOS (Metal)
+
+Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen
+av punkterna är en Dunder-brist; de är vad en port till en andra backend
+möter, och var och en kontrolleras nu av en capture eller av self-testet.
+
+**Klippyta och speglad viewport.** Metals NDC har y uppåt, Storms och
+Vulkans nedåt. En viewport med origon längst ner och negativ höjd avbildar
+klipp-y = −1 på översta raden, bevisat med en gradient som lästes tillbaka
+från en offscreen-textur. Självtestet låser det två gånger (en UI-fyrkant på
+punkterna (0,0)–(80,80) är blå i övre vänstra hörnet; med identisk
+view-projection är horisontens röd överst och zenitens grön underst) och
+captures visar detsamma i scenen: text rättvänd, himmel överst. Frontface är
+moturs på en skärm där y pekar nedåt — samma regel som Vulkan — och
+markytan syns uppifrån och är gallrad underifrån (`--eye 6 -4 3`).
+
+**Selektorer kontrolleras, inte stavas från minne.** Backenden skickar 107
+olika selektorer. Var och en kontrolleras mot SDK:s rubriker (269 delar: en
+setter `setFooBar:` kräver en property `fooBar`, skiftlägeskänsligt): det
+hittade `setRGBBlendOperation:` (rätt: `setRgbBlendOperation:`), en
+`depthAttachments` som är `depthAttachment` (ett objekt, inte en array), och
+`waitUntilAllCommandsCompleted`, som inte finns i några rubriker. Kontrollen
+är i dag ett skript utanför repot; som Dunder-program i `tools/` vore den
+naturlig nästa gång någon rör vid selektorer. (En property i
+`NSRunningApplication.h` flaggades felaktigt: kontrollen läste inte den
+rubriken; anropet fungerar.)
+
+**Apple arm64-ABI packar smala argument som hamnar på stacken.**
+`+[NSEvent keyEventWithType:…isARepeat:keyCode:]` har tolv argument; de två
+sista går på stacken. Ett ObjC-referensprogram som skickade dem som `BOOL`
+och `unsigned short` fick keyCode 13; samma anrop med två `uint64_t`-ord gav
+0: Apple lägger en `BOOL` på +0 och en `unsigned short` på +2, utan den
+8-bytes-avrundning som standard-ABI:n har. Dunder skickar dem rätt när de
+deklareras med exakta bredder (`u8`, `u16`). En C-oracle med `uint64_t`-parametrar
+hade visat att *den* formen var rätt — det var fel form att fråga om.
+
+**`objc_msgSend` måste omkastas till metodens typ.** Dess variadiska
+deklaration är en lögn; på Apple arm64 går variadiska ord på stacken och
+meddelandets i register. Alla 40 anropsplatser deklarerar en typad
+funktionspekare och binder den med `ffi_fn`.
+
+**Metals valideringslager** står på ("Metal API Validation Enabled") och
+fångade fyra fel innan de blev tysta: `setDepthStencilState:` med nil för ett
+pass utan djupbilaga; en fragmentfunktion (`env_fragment`) utan bindning för
+sitt block i fragmentsteget; vertexbuffer och UI-block på samma index (0);
+och `setCullMode:` på pipeline-descriptorn — cullning och frontface är
+encoder-state i Metal, inte pipeline-state som i Vulkan.
+
+**Skuggkartan är omvänd.** Vulkan-backenden håller *störst* avstånd till
+solen (ytan närmast); en djupkarta håller *minst* djup. Jämförelsen och
+biasen måste alltså byta tecken. Den första capturen hade hela golvet i sin
+egen skugga — 55 % av bildrutan skiljde sig mot `--no-shadows` — och efteråt
+4 %, alltså bara de verkliga skuggorna. Biasen är i världsenheter som på
+Vulkan och översätts med projektionens djupintervall, läst ur matrisen
+(kolumn 2, rad 2 är 1/(near − far)) i stället för skrivet för hand.
+
+**Tangentfokus kommer genom händelseloopen.** Ett fönster blir nyckelfönster
+bara när applikationen är aktiv, och det blir den bara om systemet låter den
+aktivera sig: lanserad av LaunchServices (Finder, Docken, `open`) var fönstret
+nyckelfönster 0 ms efter öppnandet och applikationen aktiv; lanserad från en
+agents skal var den inte aktiv efter 5 s (främst var `UserNotificationCenter`),
+och tangenterna kommer då först efter ett klick på fönstret. En mätning som
+inte pumpade händelseloopen sa "inte nyckelfönster" även för LaunchServices
+och hade fel; appens `poll()` varje frame räcker.
+
+**En klass föds en gång per process.** Objective-C vägrar skapa en klass vars
+namn redan finns. Självtestets andra fönster avslöjade det: ett fönster gick
+att öppna en gång per process, stängt eller inte. Klassen skapas nu bara om
+den inte finns.
+
+**Shaders kompileras av systemet, utan Metal Toolchain.** `xcrun metal` svarar
+"missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain":
+kompilatorn är en separat nedladdning på flera gigabyte. `newLibraryWithSource:`
+kompilerar Storms 433 rader (17 kB) på 42 ms första gången och 0–1 ms efteråt;
+systemet cachar. Ett pass utan bindning för sitt block, en buffer på fel
+index eller ett djuptillstånd som är nil hade varit tysta fel utan
+valideringslagret.
+
+**Retina.** `backingScaleFactor` är 2, så ett 1280 × 800-poängsfönster har en
+2560 × 1600 drawable; capturen är i den upplösningen och self-testet låser
+att dess storlek följer skala × poäng. Texten rastreras med displayens
+täthet (design.md §5b) och är skarp i captures.
+
+**Minne och taktfart.** Högsta minnesanvändning 98,6 MB vid 30 visade
+bildrutor, 100,0 MB vid 600 och 100,3 MB vid 2 400: platt, alltså ingen
+läckage per frame (den första stigningen är uppvärmning: drawables, Metals
+pipeline-cache). 2 400 bildrutor på 20,5 s med displayens synk, cirka 117 Hz,
+och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 
 ## Verifiering
 
@@ -566,10 +741,40 @@ migrerats till `enums.ddr` (30 structfält, 9 lokala konstanter och
 egen capture: enda skillnaden (AE 115 068) ligger i topprad, paneler och
 underkant, alltså textåtergivningen som inte ingick i IBL:s bas.
 
+**På macOS, 2026-11-23 (gränssnittet och Metal).** Dunder 0.11.0, Apple M5,
+macOS 27.2. Trädet kompilerade inte på macOS innan detta arbete
+(`static_bytes("linux")`). Efteråt: `dunder check` rent på arm64-macos,
+x86_64-linux och arm64-linux (0 egna varningar; de sex från dunder-skrift
+står kvar, fynd 62), en statisk x86_64-linux-binär länkad från Macen, och
+**86 egna tester gröna**, varje svit lika många som den har `@test`: 4 rot +
+82 paket (var 75 dagen innan). Vulkan-backenden har inte körts på en bildruta
+från den här maskinen — den är bara typkontrollerad för Linux — så dess
+pixelbevis står kvar som de äldre mätningarna ovan.
+
+Metal-backenden mättes så här:
+
+- **En capture**, `dunder run -- --capture a.ppm --frames 1`, 2560 × 1600 på
+  ett 1280 × 800-poängsfönster på Retina: himmel, horisont, solgolv, tre
+  metallkuber med skuggor, glaspaneler, orber och hela editorn med läsbar
+  text rättvänt. Captures med `--no-shadows` och `--eye 6 -4 3 --no-glass`
+  jämfördes mot den: se *Grafikobservationer på macOS (Metal)* ovan.
+- **Self-testet** `packages/storm-metal/tools/selftest.ddr`: 60 kontroller,
+  utgång 0, 1,4 s, tre körningar i rad med Metals valideringslager tyst. Det
+  läser varje påstående från en capture eller från input: se
+  *Grafikobservationer på macOS (Metal)* ovan.
+- **2 400 visade bildrutor** på 20,5 s (ca 117 Hz, displayens synk), ingen
+  validering, och högsta minnesanvändning platt: 98,6 MB vid 30 bildrutor,
+  100,0 MB vid 600, 100,3 MB vid 2 400.
+- **Byggtid** `tools/build-time.ddr`: 424 ms på M5:n. Budgeten i AGENTS.md
+  är definierad på Mikparchy och har inte mätts där efter detta arbete.
+
 **Om att räkna tester.** `dunder test` i `packages/storm-text` rapporterar
-7 passed fast paketets `tests/suite.ddr` har 5 `@test`, och `storm-ui` 9 fast
-den har 7: de två extra är samma två `@test fn` i Skrifts egen källmodul
+8 passed fast paketets `tests/suite.ddr` har 6 `@test`, och `storm-ui` 10 fast
+den har 8: de två extra är samma två `@test fn` i Skrifts egen källmodul
 (`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
-`path`-beroendet. Storms egna är därför **75** = 4 rot + 71 paket. En mätning
-som summerar `passed`-raden över paketen får 79 och räknar Skrifts tester som
-Storms; räkna `@test` i `tests/suite.ddr` i stället.
+`path`-beroendet. Storms egna är därför **86** = 4 rot + 82 paket. En mätning
+som summerar `passed`-raden över paketen får 90 och räknar Skrifts tester som
+Storms; räkna `@test` i `tests/suite.ddr` i stället, och jämför med hur många
+som *kördes*: en svit kan tappa tester utan att fallera (det gjorde
+storm-ui:s under detta arbete, då fyra widgettester försvann ur filen och
+körningen gick från tio till sex gröna).

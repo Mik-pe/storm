@@ -1,23 +1,29 @@
 # Nästa steg
 
 Milstolpe 2 är klar: scenträd, rendergraph, himmel och PBR-material, med
-interaktion (WASD + mus) i ett riktigt Vulkan-fönster. Djupbufferten är också
-klar (avsnitt 0c), miljöbelysningen med (avsnitt 0d), och editorn, grafen
-som faktiskt styr, glTF-laddning och ECS-frågor (avsnitt 0e).
+interaktion (WASD + mus) i ett riktigt fönster. Djupbufferten är också klar
+(avsnitt 0c), miljöbelysningen med (avsnitt 0d), editorn, grafen som faktiskt
+styr, glTF-laddning och ECS-frågor (avsnitt 0e), och **gränssnittet och den
+andra backenden** (avsnitt 0f): samma editor och spelloop på Vulkan (Linux)
+och Metal (macOS), genom `storm-gfx`.
 
-**Ordningen efter 0e, beslutad 2026-11-23 mot koden:** först **3a** (UV i
+**Ordningen efter 0f, beslutad 2026-11-23 mot koden:** först **3a** (UV i
 vertexströmmen, ett format överallt), sedan **3b–3c** (sampling, glTF-bilder)
 — det är den kedja som gör störst synlig skillnad: Khronos hjälm och räv
 renderas idag vitgrå för att `interleave` slänger de UV:er parsern läser.
-Därefter **4** (glTF-noder, så scengrafen byggs från filen), och sedan
-**storm-gfx-gränssnittet** (design.md §2, princip 7): multiplatform är
-planerat (Metal på macOS), så nästa arkitektursteg är att `main.ddr`:s 36
-direkta `vulkan.`-anrop och `storm-input`:s beroende av backenden flyttas
-upp till ett gränssnitt som inte nämner Vulkan — storm-vulkan blir dess
-första implementation, Metal den andra. Först därefter storm-vk (genererade
-bindings): 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men ingen
-funktion saknas för den. Instancing (5), fler ljus (7), input (8) och tid
-(9) kommer efter det.
+Därefter **4** (glTF-noder, så scengrafen byggs från filen). Sedan det som
+`storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
+(genererade bindings; 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men
+ingen funktion saknas för den) och **Renderer-uppdelningen** (design.md §5,
+steg 3–6), som Metal-redan har och Vulkan inte. Instancing (5), fler ljus
+(7), input (8) och tid (9) kommer efter det.
+
+Varje steg som rör vad en backend ritar vidrör nu **två backends och två
+shaderuppsättningar**: `packages/storm-vulkan/shaders/*.glsl` och
+`packages/storm-metal/shaders/storm.metal`, och bakom dem
+`tools/shaders.ddr`, som måste köras om när den ena ändras. Beviset är en
+capture på den backend maskinen har, och `dunder check --target x86_64-linux`
+från en Mac håller den andra typgrön.
 
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
@@ -88,7 +94,7 @@ formatet ändras på alla platser i ett steg eller ingen. Idag: 24 byte,
 `position vec3` + `normal vec3`, beskriven **två gånger** —
 `pipeline.ddr:136` (via `enums.format`) och `shadow.ddr:262` (med råa tal:
 `inputRate: 0`, `format: 106` ×2; tre av de heltal design.md steg 2 säger
-är borta) — medan `vulkan.cube`/`plane` ger 6 floats, `gltf.interleave` ger
+är borta) — medan `gfx.cube`/`plane` ger 6 floats, `gltf.interleave` ger
 6 fast `Mesh.uvs` läses från `TEXCOORD_0`, och `mesh_pass`/`shadow.mesh`
 validerar `len % 6`.
 
@@ -155,19 +161,27 @@ validerar `len % 6`.
 
 ### 3a. Ett vertexformat: position, normal, uv (nästa)
 
+Berörda på båda backends, eftersom formatet ägs av `storm-gfx` men
+beskrivs och valideras i varje: `storm-metal/src/device.ddr`
+(`vertex_layout`: mesh-, skugg- och UI-pipelines läser alla därifrån),
+`storm-metal/src/metal.ddr` (`append_vertices` och dess `% 6`),
+`storm-metal/shaders/storm.metal` (`MeshVertex`, som `shadow_vertex` också
+läser) och `tools/shaders.ddr`, som ska köras om för att skriva om
+`storm-metal/src/shader.ddr`. Sedan Vulkan-sidan nedan.
+
 Åtta floats per vertex, 32 byte, uv `(0,0)` när modellen saknar
 `TEXCOORD_0`. Bevis: `interleave`-test mot Khronos `Box.glb` (36 index ×
 8 floats, alla uv = 0) och FoxFixed (464 verticer, 1728 index, TEXCOORD_0
-+ en 1024² PNG i BIN-chunken); `vulkan.cube`/`plane` testas på
-`len % 8 == 0` och att uv-komponenterna är ändliga; capture med uv som färg
++ en 1024² PNG i BIN-chunken); `gfx.cube`/`plane` testas på `len % 8 == 0`
+och att uv-komponenterna är ändliga; capture med uv som färg
 (`out = vec4(uv, 0, 1)`) på `--glb FoxFixed.glb` och pixelprover i hörnen;
 sedan tillbaka till PBR och AE = 0 mot baslinjen (uv påverkar inte färgen
-än). Budget: en timme. Berörda, med det gemensamma formatet ovan:
-`pipeline.ddr` (ägare av beskrivningen), `shadow.ddr` (konsument),
-`vulkan.ddr` (`vertex`/`triangle`/`cube`/`plane`, `mesh_pass` `% 6` → `% 8`),
-`gltf.interleave`, `scene.Mesh`-dokumentationen, `mesh.vert`
-(`layout(location = 2) in vec2 uv` → `mesh.frag`), `shadow.vert`
-(oförändrad i beteende), README ("sex `f32` per vertex").
+än). Vulkan-sidan: `pipeline.ddr` (ägare av beskrivningen), `shadow.ddr`
+(konsument, och de tre sista råa talen försvinner med den), `vulkan.ddr`
+(`mesh_pass` `% 6` → `% 8`), `mesh.vert` (`layout(location = 2) in vec2 uv`
+→ `mesh.frag`), `shadow.vert` (oförändrad i beteende). Gemensamt:
+`gfx.ddr` (dokumentationen av formatet), `gltf.interleave`,
+`scene.Mesh`-dokumentationen, README ("sex `f32` per vertex").
 
 ### 3b. Sampling
 
@@ -179,6 +193,13 @@ plus `vkCreateSampler`, descriptor (binding 5 på mesh-pipelinen; layouten i
 `mesh.frag`. Bevis: en 2×2-checker genererad i Dunder på en plan-yta,
 pixelprover i fyra rutor; `bufferRowLength = 0` betyder tight packning
 (spec: "tightly packed according to imageExtent") — PNG-rader är tight.
+
+På Metal finns samma delar, färre steg: `device.texture` (en bild med
+mipnivåer), `device.upload` (`replaceRegion:…withBytes:bytesPerRow:`, direkt
+i delat minne — ingen staging-buffer och inga layoutövergångar) och
+`device.sampler`. Bindningen är nästa lediga index i `record_mesh`: textur 4
+(efter skuggkarta, kub, irradians, LUT) och sampler 2, och `MeshVertex` i
+`storm.metal` får attributet.
 
 ### 3c. glTF-bilder och material
 
@@ -201,6 +222,42 @@ dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
 inga PR:s eller CI). Kvar: texturer (avsnitt 3), resten av glTF (nodes/
 materials/scenes nedan), `storm-vk` som eget paket (design.md steg 1), sub-5-s-
 bygge (fynd 56: det är Dunders kompilator).
+
+## 0f. Klart: gränssnittet och Metal
+
+`storm-gfx` är kontraktet: `Frame`, `Input` med `Key`, `Sky`, `trait Backend`
+med 18 metoder som alla fallibla en `Result`, och geometrihjälparna som äger
+vertexformatet. `src/app.ddr` är editorn, spelet och exekutorn, generisk över
+`B: gfx.Backend`; `src/main.ddr` är två rader som väljer backend;
+`storm-input` tar ett `Input`-värde och importerar ingen backend.
+`storm-metal` är den andra implementationen: AppKit-fönster och `CAMetalLayer`
+genom Objective-C:s runtingen, med upplägg och beslut i design.md §5c.
+
+Uppmätt på macOS (Apple M5), med bevisen i dogfood.md: 86 egna tester, en
+capture av hela editorn på Retina, self-testet `packages/storm-metal/
+tools/selftest.ddr` (60 kontroller som läser pixlar och input), 2 400 visade
+bildrutor med platt minne, och `dunder build --app` som en signerad bundle
+som får tangentfokus direkt när den lanseras av LaunchServices.
+
+Kvar efter 0f, i den ordning värde:
+
+- **Vulkan-backenden på en bildruta.** Efter kontraktet är den typkontrollerad
+  för x86_64-linux och arm64-linux men inte körd: en capture på Mikparchy
+  mot baslinjen ovan är det bevis som saknas. Vulkan på macOS (MoltenVK) har
+  inte prövats och är inte ett mål.
+- **Muslook med en hand.** `storm-metal` vänder AppKit:s `deltaY` (positiv
+  uppåt) till Storms y-nedåt. Riktningen är resonerad, inte mätt: AppKit
+  räknar ett drags delta ur verkliga musrörelser, så self-testet kan
+  syntetisera klick men inte drag. Den första människan som drar med höger
+  knapp i fönstret bekräftar eller vänder ett tecken i
+  `appkit.ddr` (`on_pointer`).
+- **`tools/selectors.ddr`.** Kontrollen av Metal-selektorer mot SDK:s
+  rubriker är i dag ett skript utanför repot (dogfood.md *Grafikobservationer
+  på macOS*). Som Dunder-program i `tools/`, kört när `storm-metal` rörs, gör
+  den samma sak för nästa person.
+- **`storm-gfx`-exempel.** `examples/` visar ECS, glTF och text utan fönster;
+  ett minimalt "öppna ett fönster och rita en fyrkant" mot kontraktet är det
+  som låter nästa backend börja på fem rader.
 
 ## 4. glTF-scener
 
@@ -242,10 +299,15 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
 
 - Djupbuffert finns men inget reverserar det: glaset skriver inte djup, så två
   glaspaneler som överlappar varandra blandas i sorteringsordning, inte per pixel.
-- En swapchain i taget per process (`Registry.active`).
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
 - Vertexbufferten är 4 MiB och mappad permanent; en mesh-ström per draw.
-- Meshpasset kräver 240 byte push constants. Enhetsvalet kontrollerar `maxPushConstantsSize`.
+- Meshpasset skickar 240 byte konstanter per draw. På Vulkan är de push
+  constants och enhetsvalet kontrollerar `maxPushConstantsSize`; på Metal är
+  de ett block per stage (`setVertexBytes:`/`setFragmentBytes:`, högst 4 KB
+  var).
+- Ett fönster i taget per process. Vulkan håller det i `Registry.active`;
+  Metal i att view-klassens eventmetoder skriver en statisk post. Ett andra
+  fönster kan öppnas efter att det första stängts, inte bredvid det.
 - Miljökartorna byggs en gång vid start och följer inte solen om den flyttas,
   och de innehåller bara himlen och en markton, inte scenens geometri: kuberna
   speglar varandra inte.
@@ -257,4 +319,5 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
 - Marktonen under horisonten är en fast gradient (ljusast vid horisonten), inte
   en rendering av golvet, så golvet syns inte i kuberna.
 - Ingen `vkDestroySurfaceKHR`-anrop: `vkDestroyInstance` städar ytan.
-- Valideringslager aktiveras inte automatiskt.
+- Vulkans valideringslager aktiveras inte automatiskt. (Metals står på när Xcode
+  är installerat, och det är det som fångade fyra fel under porten.)

@@ -5,27 +5,42 @@ för att driva språket framåt: varje del av motorn är ett riktigt program som
 kompileras av Dunders egen kompilator, och varje språkproblem vi stöter på
 bokförs i [docs/dogfood.md](docs/dogfood.md).
 
-Första milstolpen är ett riktigt Vulkan-fönster: `VK_KHR_swapchain` med
-double-buffrade frames, inte readback och inte en SDL-blit. Ovanpå det sitter en
-scengraf i ECS, en deklarativ rendergraph, en fullskärmshimmel och
-metallic-roughness-PBR med en riktad sol och miljöbelysning: metaller speglar
-en miljökub byggd ur samma himmel, prefiltrad per roughness, med en
-CPU-genererad BRDF-LUT. Editorn och spelloopen rider på samma scen: åtta
-emissiva orber att plocka, en panel som listar ECS:et och skriver material och
-transform, och `--glb` som laddar en riktig modell in i scenen.
+Samma editor och samma spelloop körs på två grafikbackends: **Vulkan på
+Linux** (i ett SDL-fönster) och **Metal på macOS** (i ett AppKit-fönster, som
+Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
+Applicationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
+av dem; vilken backend en maskin får bestäms av två rader i `src/main.ddr`.
+
+Scenen är en solig himmel, ett golv, tre metalliska kuber som kretsar kring en
+föräldernod och två glaspaneler: metallic-roughness-PBR med en riktad sol,
+skuggor och miljöbelysning (metaller speglar en miljökub byggd ur samma
+himmel, prefiltrad per roughness, med en BRDF-LUT beräknad på CPU:n). Ovanpå
+det sitter editorn och spelloopen: åtta emissiva orber att plocka, en panel
+som listar ECS:et och skriver material och transform, och `--glb` som laddar
+en riktig modell in i scenen.
 
 ## Förutsättningar
 
-- `dunder` 0.10.0 eller senare på `main` (verifierat mot `f778ef5`).
-- `dunder-skrift` som **syskonkatalog**: `~/Work/dunder-skrift`. Samma
-  konvention som `dunder-hundmat` använder. `packages/storm-text` har ett
-  `path`-beroende till den.
-- `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …) och `sdl2`
-  för fönstret. `glslang` behövs bara när shaders ändras.
+- `dunder` 0.11.0 eller senare (verifierat med 0.11.0).
+- `dunder-skrift` som **syskonkatalog** bredvid `storm` (till exempel
+  `~/dev/dunder-skrift`). `packages/storm-text` har ett `path`-beroende till
+  den.
+- **Linux:** `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …)
+  och `sdl2` för fönstret. `glslangValidator` behövs bara när GLSL-shaders
+  ändras.
+- **macOS:** inget att installera. Metal och AppKit finns i systemet, och
+  Storm når dem genom `libobjc` och ramverken själva. Shaders kompileras av
+  systemet när fönstret öppnas, så inte ens en shaderkompilerare behövs: den
+  offline (`xcrun metal`) är en nedladdning på flera gigabyte som inte följer
+  med Xcode, och Storm klarar sig utan den.
+- En monospacefont. Storm letar själv: JetBrains Mono Nerd Font, DejaVu Sans
+  Mono (Debians och Arch:s sökvägar), Menlo och SF Mono, i den ordningen;
+  `--font sökväg` väljer en egen.
 
 ```sh
-dunder run                      # Vulkan-fönstret: scen, editor, orber
-dunder run -- --capture a.ppm   # en bildruta utan tangentbord (fungerar låst)
+dunder run                      # fönstret: scen, editor, orber
+dunder run -- --frames 120      # rita 120 bildrutor och avsluta
+dunder run -- --capture a.ppm   # en bildruta utan tangentbord
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
 dunder test                     # rotpaketets tester
 ```
@@ -40,56 +55,78 @@ för sig.
 | --- | --- | --- |
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
-| [`packages/storm-vulkan`](packages/storm-vulkan) | Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push-constant-MVP, frame-sync, skuggor, djupbuffert och IBL-kartor (miljökub, irradians, BRDF-LUT). | `core` |
+| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `trait Backend`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
+| [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
+| [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Läser riktiga Khronos-filer. | — |
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och djup-först-propagering till `WorldTransform`. `drawables()` är vad renderaren konsumerar. | `core`, `ecs` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
-| [`packages/storm-input`](packages/storm-input) | SDL-scancodes, tangentbords- och musläge samt en fly-kamera (WASD, Space/Ctrl, höger musknapp). | `core`, `vulkan` |
-| [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads. | `dunder-skrift` |
-| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i skärmpixlar, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
+| [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
+| [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
+| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
 
-`packages/storm-vulkan` är medvetet fritt från ECS- och speltillstånd: det tar
-en `[]f32`-vertexström och en `[f32; 16]`-matris. Motorn kopplar ihop dem.
-Renderpasset har en `D32_SFLOAT`-djupbilaga som återskapas med swapchainen.
+`src/main.ddr` är sammansättningens rot: de två raderna som namnger en
+backend. Allt annat i `src/` (editorn, spelet, exekutorn som mappar varje
+`PassKind` till backendanrop) är skrivet mot `gfx.Backend` och är samma kod
+på båda backends.
 
-## Vulkan-fönstret
+## Fönstret
 
-Ett enkelt färgpass kan spelas in så här.
+En bildruta spelas in med kontraktets anrop, som är samma på båda backends:
 
 ```dunder
-begun := vulkan.begin(opened.window)
-if begun.ok {
-    _ := vulkan.begin_pass(opened.window)
-    _ := vulkan.sky(opened.window, &inv_view_projection.m, &sun, &zenith, &horizon)
-    _ := vulkan.mesh(opened.window, &vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky)
-    _ := vulkan.end(opened.window)
+mut window := match metal.open("Storm", 1280, 800) {   // eller vulkan.open
+    .Ok(opened) => opened,
+    .Err(message) => { _ := sys.eprint("storm: " + message); return 1 },
 }
+match window.begin() {
+    .Ok => {},
+    .Err(message) => { _ := sys.eprint("storm: " + message) },
+}
+_ := window.begin_pass()
+_ := window.sky(&inv_view_projection.m, &sun, &zenith, &horizon)
+_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, .Opaque)
+_ := window.end()
 ```
 
-`mesh` tar sex `f32` per vertex för position och normal, en `Sky` (solen,
-himlen och ljusmatrisen, samlade i `vulkan.sky_params`) och kamerans position.
-Meshpasset använder 240 byte push constants för två matriser, material, kamera
-och himmelsljus; ljusmatrisen ligger i en uniform buffer. Storm kontrollerar
-enhetens `maxPushConstantsSize` när den väljer GPU. Skuggor har ett eget
-renderpass: `shadow_begin` → `shadow_mesh` per objekt → `shadow_end`, före
-`begin_pass`.
+Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar sex
+`f32` per vertex för position och normal, en `Sky` (solen, himlen och
+ljusmatrisen, samlade i `gfx.sky_params`) och kamerans position.
+
+- **På Vulkan** går konstanterna med push constants: 240 byte i meshpasset
+  (två matriser, material, kamera och himmelsljus), och ljusmatrisen ligger i
+  en uniform buffer. Storm kontrollerar enhetens `maxPushConstantsSize` när
+  den väljer GPU.
+- **På Metal** är samma byte ett struct i adressrymden `constant`, som bundits
+  per draw med `setVertexBytes:`/`setFragmentBytes:` (högst 4 KB), så att
+  fragmentsteget läser direkt ur det i stället för genom en varying.
+
+Storms klippyta har y **nedåt** och z i `[0, 1]`, som Vulkan. Metal har y
+uppåt. Skillnaden lever på ett enda ställe, `storm-metal`'s viewport: origon
+längst ner och negativ höjd, så klipp-y = −1 blir översta raden. Varje pass
+använder den, och shaders är Vulkan-GLSL:n portad rad för rad.
+
+Skuggor har ett eget pass före huvudpasset: `shadow_begin` → `shadow_mesh` per
+objekt → `shadow_end`. Vulkan skriver avståndet till ljuset i en färgbild med
+MAX-blending (av historiska skäl, dogfood fynd 23 och 37); Metal skriver en
+riktig djupbild utan fragmentfunktion. En djupkarta är det omvända (minst vinner),
+så jämförelsen och bias är inverterade där.
 
 Miljöbelysningen byggs en gång efter `open()` med
-`vulkan.build_environment(window, &sun, &zenith, &horizon)`: en
-`R16G16B16A16_SFLOAT`-miljökub (64 × 64 per yta, sex mipnivåer, nivå 0 är
-himlen från origo), en GGX-prefilter per mipnivå, en 16 × 16-irradianskub och
-en 64 × 64 `R32G32_SFLOAT`-BRDF-LUT som beräknas på CPU:n i `storm-core`.
-De tre kartorna binds på mesh-pipelinens descriptor set 0 (binding 2–4) och
-`mesh.frag` räknar ambientet som split-sum: `irradians · kd · albedo / π` plus
-`prefiltrad(reflection, roughness) · (F0 · skala + bias)`. Solens direkta term
-och skuggorna är oförändrade.
+`window.build_environment(&sky)`: en `R16G16B16A16_SFLOAT`-miljökub (Vulkan;
+`RGBA16Float` på Metal), 64 × 64 per yta med sex mipnivåer, nivå 0 är himlen
+från origo; en GGX-prefilter per mipnivå; en 16 × 16-irradianskub; och en
+64 × 64 BRDF-LUT (`R32G32_SFLOAT`/`RG32Float`) som beräknas på CPU:n i
+`storm-core`. `mesh`-shadern räknar ambientet som split-sum: `irradians · kd ·
+albedo / π` plus `prefiltrad(reflection, roughness) · (F0 · skala + bias)`.
+Solens direkta term och skuggorna är oförändrade. Se
+[next-steps 0d](docs/next-steps.md).
 
 `sky` ritar en fullskärmstriangel på långt plan och rekonstruerar en
 världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en
-skärmgradient. Solen är en disk plus glöd kring `sun_direction.xyz`, skalad med
-`sun_direction.w`.
+skärmgradient.
 
-Rendergrafen i `src/main.ddr` deklarerar passen varje frame utifrån vad scenen
+Rendergrafen i `src/app.ddr` deklarerar passen varje frame utifrån vad scenen
 faktiskt innehåller — en avstängd pass är inte i schemat alls, inte en no-op:
 
 ```dunder
@@ -103,15 +140,15 @@ for step in 0..plan.steps.len { kind := plan.steps[step].kind }
 ```
 
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
-är tie-breaker och cykler kan inte uppstå. `compile()` validerar (okänt namn,
-dubblerad pass) och returnerar `Compiled.steps` i den ordning frame-loopen
-exekverar. Grafen äger ordning och existens; den vet inte vad Vulkan är. Det är
-`main.ddr` som mappar varje `PassKind` till GPU-arbete och öppnar huvudpasset
-lat vid första passet som inte har ett eget (skuggpasset har sitt eget).
+är tie-breaker och cykler kan inte uppstå. Grafen äger ordning och existens; den
+vet inte vad en backend är. Det är `app.ddr` som mappar varje `PassKind` till
+anrop på `gfx.Backend` och öppnar huvudpasset lat vid första passet som inte har
+ett eget (skuggpasset har sitt eget).
 
-Huvudpasset har en djupbilaga (`D32_SFLOAT`), så opaque geometri behöver ingen
-sortering: mesh-pipelinen testar och skriver djup, glaspipelinen testar men
-skriver inte. Bara glaset sorteras bakifrån-fram, för blendingens skull.
+Huvudpasset har en djupbilaga (`D32_SFLOAT` på Vulkan, `Depth32Float` på Metal),
+så opaque geometri behöver ingen sortering: mesh-pipelinen testar och skriver
+djup, glaspipelinen testar men skriver inte. Bara glaset sorteras bakifrån-fram,
+för blendingens skull.
 
 ### Styrning
 
@@ -120,20 +157,48 @@ skriver inte. Bara glaset sorteras bakifrån-fram, för blendingens skull.
 - **Vänsterklick** i editorpanelen – välj en nod i trädet; slidrarna skriver
   material och transform rakt in i ECS:et, `+ cube`/`delete` lägger till och tar bort
 - **Gå in i en orb** – plocka den (entiteten förstörs, HUD:en räknar)
-- **T** – slå av/på glaspanelerna (transparenspasset försvinner ur grafen)
-- **G** – slå av/på skuggor (skuggpasset försvinner ur grafen)
-- **E** – slå av/på filmeffekterna (överlägget)
+- **T** – slå av/på glaspanelerna, **G** – skuggor, **E** – filmeffekterna.
+  Chipsen längst ner ("T glass", "G shadows", "E effects") visar läget.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
-- `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
-  Fungerar på en låst session; det är så QA görs utan tangentbord.
+- `--capture fil.ppm` – rendera en bildruta till PPM. Fungerar utan att
+  fönstret har fokus eller någon rör tangentbordet; det är så QA görs.
 - `--eye x y z` – starta kameran på en given punkt (så `--capture` bevisar
   orbplockningen: kameran startar inne i en orb)
 - `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på marken)
+- `--font fil.ttf` – rita editorn med den fonten i stället för systemets
 - `--no-glass`, `--no-shadows`, `--effects` – startläget för de tre toggles
 - `--trace` – skriv varje inläsningssteg
 
-### Fönsterprov och headless-körning
+### Kör på macOS
+
+Inget behöver låsas upp eller förberedas: `dunder run` öppnar ett fönster,
+och `--capture` fungerar från ett skript eller en agent. Tangentbordet går
+till nyckelfönstret, och det blir fönstret när systemet låter applikationen
+aktivera sig själv: lanserad av LaunchServices (Finder, Docken, `open`) är det
+det direkt, mätt till 0 ms; en process startad i bakgrunden, från en agents
+skal, får inte aktivera sig och får tangenterna efter ett klick på fönstret.
+
+Som en vanlig Mac-applikation byggs Storm som en signerad bundle:
+
+```sh
+dunder build --app -o build/Storm.app
+open build/Storm.app
+```
+
+På Retina rastreras texten med displayens täthet (två pixlar per punkt), så
+den är skarp och lika stor som på en 1×-skärm.
+
+`packages/storm-metal/tools/selftest.ddr` provar det en capture inte visar:
+att tangentbord, mus, storleksändring och stängning fungerar, att djuptest och
+baksidessortering gör rätt, och att bilden inte är upp-och-ner. 60 kontroller,
+1,4 s, utgångsstatus 0 när alla håller:
+
+```sh
+cd packages/storm-metal && dunder run tools/selftest.ddr
+```
+
+### Kör på Linux
 
 Fönstret kräver en **olåst** Wayland-session (`hyprctl monitors` visar
 `solitaryBlockedBy`). Under en låst session kan Storm inte hämta nästa
@@ -142,8 +207,10 @@ renderaren (dogfood fynd 16 och 20). Då är `--capture fil.ppm --frames 1` väg
 till en bild; över SSH fungerar den om SDL når Wayland-sessionen.
 `dunder run --example scene` kör ECS och textlayout helt utan fönster.
 
-Krav: `vulkan-icd-loader`, `vulkan-intel` (eller annan ICD), `sdl2`.
-Shaderkompilering kräver `glslang`; de färdiga SPIR-V-orden är incheckade.
+Från en Mac kan Vulkan-sidan ändå hållas grön i typ: `dunder check --target
+x86_64-linux` (och `--target arm64-linux`) typkontrollerar hela trädet med
+Vulkan-backenden vald, och Dunder länkar till och med en statisk Linux-binär.
+En bildruta kan bara ses på en Linux-maskin med Vulkan.
 
 ## ECS
 
@@ -203,37 +270,46 @@ steg. I appen laddar `--glb fil.glb` en modell in i scenen som en `Mesh`-kompone
 ## Text
 
 ```dunder
-face := text.load_face("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf", 24.0)
-mut atlas := text.Atlas::new(1024, 256)
+face := text.load_font(24.0)                 // platformens monospacefont
+mut atlas := text.Atlas::new(1024, 1024)
 _ := atlas.add_text(&face, "Storm")
-quads := atlas.layout("Storm", 24.0, 32.0, 32.0)
+quads := atlas.layout("Storm", atlas.raster_size(), 32.0, 32.0)
 ```
 
 Atlanten är R8 (en coverage-byte per pixel) och packas med hyllor. Varje
 `Quad` har skärmposition, storlek och normaliserade atlas-koordinater.
-Renderaren breddar coverage-byten till f32 och laddar upp dem som en
-`R32_SFLOAT`-bild (format 100) som samplas med linjär filtrering. Rita texten
-nära den storlek den rastrerades vid — `ui.RASTER_SIZE` är 22 px och editorn
-använder skalorna 0.8–1.2 — så undviker du både suddiga och taggiga streck.
-Renderaren behöver en texturpipeline (descriptor set, sampler, bild) för att
-rita dem; Storms egen finns i `packages/storm-vulkan/src/ui.ddr`.
+Atlasen vet själv i vilken pixelstorlek dess glyfer rastrerades
+(`raster_size`), och `ui.Canvas` frågar den: texten ritas `RASTER_SIZE` punkter
+oavsett, så en Retina-display packar atlasen på dubbla storleken och får
+dubbel skärpa. Rita texten nära den storlek den rastrerades vid — `ui.RASTER_SIZE`
+är 22 px och editorn använder skalorna 0.8–1.2. En backend behöver en
+texturpipeline för att rita dem; Storms egna finns i `packages/storm-vulkan/src/ui.ddr`
+och `packages/storm-metal/src/ui.ddr`.
 
 ## Bygga
 
 ```sh
 dunder build                    # bygger src/main.ddr
 dunder run --example scene      # ECS/glTF/text utan fönster
-dunder test                     # rotpaketets tester
-dunder run tools/shaders.ddr    # kompilerar om shaders till src/shader.ddr
+dunder test                     # rotpaketets tester; och i varje packages/*
+dunder run tools/shaders.ddr    # GLSL → SPIR-V, Metal-källa → Dunder-modul
 dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
 ```
+
+`tools/shaders.ddr` är ett Dunder-program. För Vulkan kör det `glslangValidator`,
+läser SPIR-V-filen och skriver `packages/storm-vulkan/src/shader.ddr`; för Metal
+läser det `packages/storm-metal/shaders/storm.metal` och skriver källan som en
+råsträng i `packages/storm-metal/src/shader.ddr`. Båda modulerna är incheckade,
+så ett bygge behöver ingen shaderkompilerare. (Metal-källan kan inte bäddas in
+med `@embed_file`: ett beroende hittar inte sina egna filer, dogfood fynd 63.)
 
 ## Regler
 
 Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
 
-- **Bygget ska ta under 20 sekunder.** `dunder run tools/build-time.ddr`
-  mäter och fallerar annars. En byggnad över budget pushas inte.
+- **Bygget ska ta under 20 sekunder** på Mikparchy. `dunder run tools/build-time.ddr`
+  mäter och fallerar annars, även när bygget självt fallerar. En byggnad över
+  budget pushas inte.
 - **Bara `main`.** Inga pull requester, inga reviews, ingen CI. Arbete
   commit:as på `main` och pushas direkt när `check`, testerna och
   byggbudgeten är gröna.
@@ -241,14 +317,12 @@ Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
   val och designa grunden så att problemet upphör att finnas, i stället
   för att lappa ovanpå en grund som inte bär. Om en fix kräver att man
   "kommer ihåg" något är grunden fel.
-- **Framtidssäker arkitektur.** Multiplatform är planerat (Metal på macOS,
-  andra fönsterytor). App och paket talar bara med gränssnitt, aldrig med
-  en backend: `storm-vulkan` är dagens enda backend, och inget utanför
-  den ska veta att Vulkan finns. Se [docs/design.md](docs/design.md) §2.
+- **Framtidssäker arkitekturen.** Appen och pakagen talar bara med
+  gränssnittet `storm-gfx`, aldrig med en backend: `storm-vulkan` och
+  `storm-metal` är dess två implementationer, och inget annat paket nämner
+  Vulkan eller Metal. Se [docs/design.md](docs/design.md) §2.
 - **Noll död kod.** En varning från kompilatorn är ett fel.
 - **Dunder-brister bokförs** i [docs/dogfood.md](docs/dogfood.md), ett numrerat
   fynd per brist, medan de är färska.
-
-`tools/shaders.ddr` är ett Dunder-program: det kör `glslangValidator`, läser
-SPIR-V-filen och skriver `packages/storm-vulkan/src/shader.ddr`. Inga
-byggskript i andra språk.
+- **Pixelbevis krävs för grafik.** En capture är ett faktum; en self-test
+  som läser pixlar och input är det som kan köras igen.
