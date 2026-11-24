@@ -14,10 +14,12 @@ import scene.animation as anim
 import std.math as _
 
 struct Socket { hinge: ecs.Entity, pivot: core.Vec3 }
+struct TailBox { lo: core.Vec3, hi: core.Vec3 }
+struct TailLink { joint: Socket, bounds: [TailBox; 4] }
 struct Limb { plane: ecs.Entity, upper: ecs.Entity, shin: ecs.Entity, foot: ecs.Entity, bind: fox_animation.Leg }
 struct Fox {
     root: ecs.Entity, body: Socket, chest: Socket, head: ecs.Entity, bouquet: ecs.Entity,
-    tail: [ecs.Entity; 3], limbs: []Limb, eyes: []Socket, ears: []ecs.Entity, clips: fox_animation.Clips,
+    tail_guard: Socket, tail: [TailLink; 3], limbs: []Limb, eyes: []Socket, ears: []ecs.Entity, clips: fox_animation.Clips,
 }
 struct Flyer { root: ecs.Entity, left: ecs.Entity, right: ecs.Entity, home: core.Vec3, bee: bool }
 pub struct Cast { ground: woodland_ground.Ground, foxes: []Fox, insects: []Flyer, motes: []ecs.Entity, petals: []ecs.Entity }
@@ -39,13 +41,52 @@ fn bind(g: &mut scene.Graph, parent: ecs.Entity, rig: &model.Rig, name: string, 
     .Ok(joint)
 }
 
+fn tail_part(part: &gltf.Part, prefix: string) -> bool {
+    part.name.len >= prefix.len && part.name[0..prefix.len] == prefix
+}
+
+// Four short bounds follow each curved section. Build them once from the imported fur.
+fn tail_link(g: &scene.Graph, joint: &model.Joint, art: &gltf.Asset) -> TailLink {
+    mut left: f32 = 1.0e20
+    mut right: f32 = -1.0e20
+    for i in 0..art.parts.len {
+        part := &art.parts[i]
+        if !tail_part(part, joint.prefix) { continue }
+        for j in 0..(part.vertices.len / gfx.VERTEX_FLOATS) {
+            x := part.vertices[j * gfx.VERTEX_FLOATS]
+            if x < left { left = x }
+            if x > right { right = x }
+        }
+    }
+    far := core.vec3(1.0e20, 1.0e20, 1.0e20)
+    mut bounds: [TailBox; 4] = [TailBox { lo: far, hi: core.scale(far, -1.0) }; 4]
+    for i in 0..art.parts.len {
+        part := &art.parts[i]
+        if !tail_part(part, joint.prefix) { continue }
+        for j in 0..(part.vertices.len / gfx.VERTEX_FLOATS) {
+            index := j * gfx.VERTEX_FLOATS
+            x := part.vertices[index]
+            y := part.vertices[index + 1]
+            z := part.vertices[index + 2]
+            mut bin := i32(4.0 * (x - left) / (right - left + 0.000001))
+            if bin > 3 { bin = 3 }
+            b := &mut bounds[bin]
+            if x < b.lo.x { b.lo.x = x }; if x > b.hi.x { b.hi.x = x }
+            if y < b.lo.y { b.lo.y = y }; if y > b.hi.y { b.hi.y = y }
+            if z < b.lo.z { b.lo.z = z }; if z > b.hi.z { b.hi.z = z }
+        }
+    }
+    TailLink { joint: Socket { hinge: joint.hinge, pivot: g.local(joint.hinge).position }, bounds: bounds }
+}
+
 fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Rig) -> Result<Fox, string> {
     root := g.create_child(parent, origin())
     mut joints: []model.Joint = []
     body := bind(&mut g, root, rig, "Body", "", &mut joints)?
     chest := bind(&mut g, body.mount, rig, "Chest", "Body", &mut joints)?
     head := bind(&mut g, chest.mount, rig, "Head", "Chest", &mut joints)?
-    tail := bind(&mut g, body.mount, rig, "Tail", "Body", &mut joints)?
+    guard := model.joint(&mut g, body.mount, "", rig.get("Tail")?.pivot)
+    tail := bind(&mut g, guard.mount, rig, "Tail", "Body", &mut joints)?
     mid := bind(&mut g, tail.mount, rig, "TailMid", "Tail", &mut joints)?
     tip := bind(&mut g, mid.mount, rig, "TailTip", "TailMid", &mut joints)?
     mut eyes: []Socket = []
@@ -79,7 +120,8 @@ fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Ri
     clips := fox_animation.clips()?
     .Ok(Fox { root: root, body: Socket { hinge: body.hinge, pivot: g.local(body.hinge).position },
         chest: Socket { hinge: chest.hinge, pivot: g.local(chest.hinge).position }, head: head.hinge, bouquet: bouquet,
-        tail: [tail.hinge, mid.hinge, tip.hinge], limbs: move limbs, eyes: move eyes, ears: move ears, clips: move clips })
+        tail_guard: Socket { hinge: guard.hinge, pivot: g.local(guard.hinge).position },
+        tail: [tail_link(g, &tail, art), tail_link(g, &mid, art), tail_link(g, &tip, art)], limbs: move limbs, eyes: move eyes, ears: move ears, clips: move clips })
 }
 
 fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
@@ -206,6 +248,51 @@ fn apply_joint(g: &mut scene.Graph, socket: &Socket, pose: &anim.Pose) {
     g.set_scale(socket.hinge, pose.scale)
 }
 
+fn lowest_tail_y(actor: &Fox, body: &core.Mat4, segments: &[core.Mat4; 3], lift: f32) -> f32 {
+    mut guard := anim.identity()
+    guard.rotation.z = -lift
+    base := core.multiply(body.clone(), joint_matrix(&actor.tail_guard, &guard))
+    mut lowest: f32 = 1.0e20
+    for i in 0..3 {
+        m := core.multiply(base, segments[i])
+        for j in 0..4 {
+            b := &actor.tail[i].bounds[j]
+            if b.lo.x > b.hi.x { continue }
+            // The corner furthest along world -Y bounds the whole rotated section.
+            x := if m.m[1] < 0.0 { b.hi.x } else { b.lo.x }
+            y := if m.m[5] < 0.0 { b.hi.y } else { b.lo.y }
+            z := if m.m[9] < 0.0 { b.hi.z } else { b.lo.z }
+            low := m.m[13] + x * m.m[1] + y * m.m[5] + z * m.m[9]
+            if low < lowest { lowest = low }
+        }
+    }
+    lowest
+}
+
+fn animate_tail(g: &mut scene.Graph, actor: &Fox, body: &core.Mat4, p: &fox_animation.Pose, floor: f32) {
+    mut parent := core.identity()
+    mut segments: [core.Mat4; 3] = [core.identity(); 3]
+    for i in 0..3 {
+        link := &actor.tail[i].joint
+        mut pose := anim.identity()
+        a := p.tail[i]
+        pose.rotation = a
+        g.set_angles(link.hinge, a.x, a.y, a.z)
+        parent = core.multiply(parent, joint_matrix(link, &pose))
+        segments[i] = parent.clone()
+    }
+    mut lift: f32 = 0.0
+    if lowest_tail_y(actor, body, &segments, 0.0) < floor {
+        mut high: f32 = 1.25
+        for _ in 0..8 {
+            mid := (lift + high) * 0.5
+            if lowest_tail_y(actor, body, &segments, mid) < floor { lift = mid } else { high = mid }
+        }
+        lift = high
+    }
+    g.set_angles(actor.tail_guard.hinge, 0.0, 0.0, -lift)
+}
+
 fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground, course: &canopy.Course,
     s: &play.Session, player: i32, exact: bool) {
     motion := play.render_motion(s, exact)
@@ -223,6 +310,13 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
     mut ankles: [core.Vec3; 4] = [origin(); 4]
     mut pitches: [f32; 4] = [0.0; 4]
     mut lower: f32 = 0.0
+    mut tail_floor: f32 = 0.035 / scale
+    if !motion.grounded {
+        // During flight the tail clears the launch surface, which recedes beneath the body.
+        launch_y := play.last_support_anchor(s, 0.0).position.y
+        clearance := if center.y >= launch_y { center.y - launch_y } else { center.y - radius }
+        if clearance > 0.0 { tail_floor -= clearance / scale }
+    }
     heading_x := motion.heading.sin()
     heading_z := motion.heading.cos()
     for i in 0..4 {
@@ -240,6 +334,7 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
             mut surface := if toe_height > sole_height { toe_height } else { sole_height }
             if heel_height > surface { surface = heel_height }
             foot.sole.y += surface / scale
+            if surface / scale + 0.045 > tail_floor { tail_floor = surface / scale + 0.045 }
         }
         ankles[i] = fox_animation.ankle_target(leg, &foot)
         pitches[i] = foot.pitch
@@ -267,7 +362,7 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
         g.set_angles(leg.foot, angles.ankle, 0.0, -angles.roll)
     }
     g.set_angles(actor.head, p.head.x, p.head.y, p.head.z)
-    for i in 0..3 { a := p.tail[i]; g.set_angles(actor.tail[i], a.x, a.y, a.z) }
+    animate_tail(&mut g, actor, &joint_matrix(&actor.body, &p.body), &p, tail_floor)
     closed := 1.0 - p.eye_open
     depth := -0.065 * closed * closed * closed * closed
     for i in 0..2 {

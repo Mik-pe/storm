@@ -229,3 +229,41 @@ fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
         play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
     }
 }
+
+struct TailMesh { node: ecs.Entity, vertices: []f32 }
+
+@test fn furthest_tail_vertices_clear_the_meadow_in_a_full_speed_gallop_and_reversal() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    mut meshes: []TailMesh = []
+    for e in world.graph.names().entities() {
+        name := world.graph.name(e)
+        if name.len >= 4 && name[0..4] == "Tail" {
+            meshes.push(TailMesh { node: e, vertices: world.graph.vertices(e) })
+        }
+    }
+    assert(meshes.len >= 3)
+    periods := [22, 40, 1, 17, 30, 80, 70]
+    pace: [f32; 7] = [0.0, -1.0, 0.2, 0.0, 0.0, 1.0, -1.0]
+    for part in 0..periods.len {
+        for _ in 0..periods[part] {
+            play.step(&mut s, play.Input { x: pace[part], z: if part == 0 { 1.0 } else { 0.0 }, jump: false })
+            if part < 5 { continue }
+            view.sync(&mut world, &s, true)
+            support := play.position(&s, world.player_node).y - 0.4
+            for i in 0..meshes.len {
+                skin := &meshes[i]
+                matrix := &world.graph.world(skin.node).matrix
+                mut lowest := core.vec3(0.0, 10.0, 0.0)
+                for j in 0..(skin.vertices.len / gfx.VERTEX_FLOATS) {
+                    b := j * gfx.VERTEX_FLOATS
+                    q := core.transform_point(matrix, core.vec3(skin.vertices[b], skin.vertices[b+1], skin.vertices[b+2]))
+                    if q.y < lowest.y { lowest = q }
+                }
+                surface := support + ground.height(&world.cast.ground, &world.course, &s, lowest.x, lowest.z, support, true)
+                assert(lowest.y > surface + 0.025)
+            }
+        }
+    }
+}
