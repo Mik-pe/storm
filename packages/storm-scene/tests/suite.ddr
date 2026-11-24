@@ -197,3 +197,17 @@ import core
     assert(draws.len == 1 && fresh[draws[0].mesh_index].vertices[0] == 3.0)
     assert(old.len == 2 && old[1].vertices[0] == 2.0)
 }
+
+@test fn propagation_reaches_deep_descendants_and_survives_dense_slot_reordering() {
+    mut g := scene.Graph::new()
+    spare := g.create_root(core.vec3(0.0, 0.0, 0.0))
+    base := g.create_root(core.vec3(1.0, 0.0, 0.0))
+    mut leaf := base
+    for _ in 0..128 { leaf = g.create_child(leaf, core.vec3(1.0, 0.0, 0.0)) }
+    g.propagate()
+    assert(g.world(leaf).matrix.m[12] == 129.0)
+    assert(g.destroy(spare))
+    g.set_position(base, core.vec3(2.0, 0.0, 0.0))
+    g.propagate()
+    assert(g.world(leaf).matrix.m[12] == 130.0)
+}

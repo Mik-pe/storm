@@ -50,6 +50,7 @@ pub struct Atlas {
     height: i32,
     pixels: []u8,
     glyphs: []Glyph,
+    indices: Map<i32, i32>,
     // Shelf packer: current row's top and height, and the cursor in that row.
     shelf_y: i32,
     shelf_height: i32,
@@ -69,7 +70,7 @@ impl Atlas {
             pixels.reserve(width * height)
             for _ in 0..width * height { pixels.push(0) }
         }
-        Self { width: width, height: height, pixels: pixels, glyphs: [], shelf_y: 0, shelf_height: 0, cursor_x: 0, full: false }
+        Self { width: width, height: height, pixels: pixels, glyphs: [], indices: Map<i32, i32>::new(), shelf_y: 0, shelf_height: 0, cursor_x: 0, full: false }
     }
 
     pub fn is_full(&self) -> bool { self.full }
@@ -86,10 +87,14 @@ impl Atlas {
     }
 
     pub fn find(&self, codepoint: i32) -> i32 {
-        for i in 0..self.glyphs.len {
-            if self.glyphs[i].codepoint == codepoint { return i }
-        }
-        -1
+        self.indices.get_or(codepoint, -1)
+    }
+
+    fn insert_glyph(&mut self, move glyph: Glyph) -> i32 {
+        i := self.glyphs.len
+        self.indices.put(glyph.codepoint, i)
+        self.glyphs.push(glyph)
+        i
     }
 
     pub fn glyph_at(&self, index: i32) -> &Glyph from self { &self.glyphs[index] }
@@ -109,8 +114,7 @@ impl Atlas {
                 advance: f32(metrics.advance_width), bearing_x: f32(metrics.left_side_bearing),
                 bearing_y: 0.0, size: f32(face.pixel_size), ok: true,
             }
-            self.glyphs.push(glyph)
-            return self.glyphs.len - 1
+            return self.insert_glyph(glyph)
         }
         if self.cursor_x + bitmap.width > self.width {
             self.shelf_y = self.shelf_y + self.shelf_height
@@ -138,8 +142,7 @@ impl Atlas {
             // raster.Bitmap.top is the distance from the baseline to the top row.
             bearing_y: f32(bitmap.top), size: f32(face.pixel_size), ok: true,
         }
-        self.glyphs.push(glyph)
-        self.glyphs.len - 1
+        self.insert_glyph(glyph)
     }
 
     pub fn add_text(&mut self, face: &skrift.Face, text: string) -> bool {

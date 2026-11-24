@@ -31,7 +31,7 @@ pub struct WorldTransform { matrix: core.Mat4 }
 
 pub struct Name { value: string }
 
-pub enum Shape { Cube = 0, Plane = 1, Mesh = 2 }
+pub enum Shape { Cube = 0, Plane = 1, Mesh = 2, Sphere = 3 }
 
 // What a node is drawn as. Cube and Plane are built-in; Mesh carries the
 // vertex stream itself ([x,y,z,nx,ny,nz,u,v] per vertex, what gltf.interleave
@@ -86,6 +86,8 @@ pub struct Graph {
     meshes: ecs.Pool<Mesh>,
     mesh_revision: i64,
     tree_revision: i64,
+    world_order_revision: i64,
+    world_order: []TreeRow,
     materials: ecs.Pool<Material>,
 }
 
@@ -96,19 +98,12 @@ fn local_identity() -> LocalTransform {
 fn matrix_for(local: &LocalTransform) -> core.Mat4 {
     c := local.rotation_y.cos()
     s := local.rotation_y.sin()
-    rotation := core.Mat4 {
-        m: [c, 0.0, -s, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            s, 0.0, c, 0.0,
-            0.0, 0.0, 0.0, 1.0]
-    }
-    scaled := core.Mat4 {
-        m: [local.scale.x, 0.0, 0.0, 0.0,
+    core.Mat4 {
+        m: [c * local.scale.x, 0.0, -s * local.scale.x, 0.0,
             0.0, local.scale.y, 0.0, 0.0,
-            0.0, 0.0, local.scale.z, 0.0,
-            0.0, 0.0, 0.0, 1.0]
+            s * local.scale.z, 0.0, c * local.scale.z, 0.0,
+            local.position.x, local.position.y, local.position.z, 1.0]
     }
-    core.multiply(core.multiply(core.translation(local.position.x, local.position.y, local.position.z), rotation), scaled)
 }
 
 impl Graph {
@@ -122,6 +117,7 @@ impl Graph {
             meshes: ecs.Pool<Mesh>::new(),
             mesh_revision: 0,
             tree_revision: 0,
+            world_order_revision: -1, world_order: [],
             materials: ecs.Pool<Material>::new(),
         }
     }
@@ -357,30 +353,22 @@ impl Graph {
         self.allocator.destroy(entity)
     }
 
-    // Depth-first walk from every root. A node's world matrix is
-    // parent_world * local; roots use their local matrix directly.
+    // The cached hierarchy puts every parent before its children. Recompute
+    // matrices in that order, including nodes below any depth.
     pub fn propagate(&mut self) {
-        for i in 0..self.locals.len() {
-            entity := self.locals.entities()[i]
-            if !self.parents.contains(entity) {
-                self.visit(entity, core.identity(), 0)
-            }
+        if self.world_order_revision != self.tree_revision {
+            self.world_order = self.hierarchy()
+            self.world_order_revision = self.tree_revision
         }
-    }
-
-    fn visit(&mut self, entity: ecs.Entity, parent_world: core.Mat4, depth: i32) {
-        if depth > 64 { return }
-        world := core.multiply(parent_world, matrix_for(self.locals.get(entity)))
-        if self.worlds.contains(entity) {
-            self.worlds.get_mut(entity).matrix = world.clone()
-        } else {
-            _ := self.worlds.insert(entity, WorldTransform { matrix: world.clone() })
-        }
-        for i in 0..self.parents.len() {
-            if self.parents.values()[i].entity.index == entity.index {
-                child := self.parents.entities()[i]
-                self.visit(child, world.clone(), depth + 1)
+        for i in 0..self.world_order.len {
+            entity := self.world_order[i].entity
+            mut matrix := matrix_for(self.locals.get(entity))
+            if self.parents.contains(entity) {
+                parent := self.parents.get(entity).entity
+                matrix = core.multiply(self.worlds.get(parent).matrix, matrix)
             }
+            if self.worlds.contains(entity) { self.worlds.get_mut(entity).matrix = matrix }
+            else { _ := self.worlds.insert(entity, WorldTransform { matrix: matrix }) }
         }
     }
 
