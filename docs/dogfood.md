@@ -583,6 +583,22 @@ och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 
 ## Verifiering
 
+Mätning på Mikparchy, 2026-11-24 (låst session, generatorn för `layout.ddr`
++ `X::new()`-fabriker, Dunder 0.12.0 byggd 09:02): **152 egna `@test fn`
+gröna** i 16 sviter, varje svit lika många som sin `@test`-räkning (räknat
+som egna PASS-rader per fil; Skrifts två och paketens källmoduler hålls
+utanför), `dunder check` 0 varningar i Storms paket, `check
+--unused-functions` rent, `tools/build-time.ddr` **16 480–16 550 ms** av
+20 000 — samma siffra på oförändrad `0fd104e` i en worktree med samma
+kompilator, alltså kostar de 71 fabrikerna inget. `tools/vk.ddr --check`
+grönt för både `api.ddr` och `layout.ddr`, och `--check` utgång 2 med ett
+namngivet fel när en post i `STRUCTS` ligger efter den som nästlar den.
+Migreringens 135 borttagna `sType`-tal verifierades vart och ett mot
+registret (inkl. `PresentInfoKHR` = 1000001001 via extension-regeln) innan
+det togs bort: alla stämde. Capture 1280 × 800 före/efter (`0fd104e` i en
+worktree mot det nya trädet): **AE = 0**. Storlekspinnarna i
+`storm-vulkan` (17) håller oförändrade mot den genererade layouten.
+
 Mätning på Mikparchy, 2026-11-24 (låst session, `5a0a9ec`, Dunder 0.12.0,
 vid genomgången av dokumentationen mot koden): **188 egna tester gröna** —
 43 i roten och 145 i de 15 paketen, 16 sviter, varje svit lika många som sin

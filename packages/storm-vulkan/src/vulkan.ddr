@@ -239,15 +239,13 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     // Per-frame cursors: every stream is appended anew, by the frame itself.
     r.vertexCursor = 0
     ui.reset(&mut r)
-    mut begin: vk.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
+    mut begin: vk.CommandBufferBeginInfo = vk.CommandBufferBeginInfo::new()
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
         return BeginResult { ok: false, error: "beginning the command buffer failed" }
     }
     mut clear_color: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
-    mut pass: vk.RenderPassBeginInfo = zeroed()
-    pass.sType = 43
+    mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
     pass.renderPass = r.renderPass
     pass.framebuffer = if r.captureOn == 1 { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
     pass.renderArea.extent.width = r.width
@@ -362,8 +360,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     } else {
         // The same scene pass writes every target. A swapchain image must be
         // transitioned for the presentation engine.
-        mut barrier: vk.ImageMemoryBarrier = zeroed()
-        barrier.sType = 45
+        mut barrier: vk.ImageMemoryBarrier = vk.ImageMemoryBarrier::new()
         barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
         barrier.dstAccessMask = enums.access(.None)
         barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
@@ -381,8 +378,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
         r.pass = state.PASS_IDLE
         return draw_error(r.frameIndex, "ending the command buffer failed")
     }
-    mut submit_info: vk.SubmitInfo = zeroed()
-    submit_info.sType = 4
+    mut submit_info: vk.SubmitInfo = vk.SubmitInfo::new()
     wait_stage := enums.pipeline_stage(.ColorAttachmentOutput)
     if r.captureOn != 1 {
         submit_info.waitSemaphoreCount = 1
@@ -411,8 +407,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
         return DrawResult { ok: true, error: "", frames: r.frameIndex }
     }
     mut image_index := u32(r.imageIndex)
-    mut present: vk.PresentInfoKHR = zeroed()
-    present.sType = 1000001001
+    mut present: vk.PresentInfoKHR = vk.PresentInfoKHR::new()
     present.waitSemaphoreCount = 1
     present.pWaitSemaphores = addr(&r.render_finished[r.imageIndex])
     present.swapchainCount = 1

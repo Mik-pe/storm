@@ -15,12 +15,10 @@ pub unsafe fn fail(r: &mut state.Renderer, code: i32, step: state.SetupStep) -> 
 }
 
 unsafe fn create_instance(r: &mut state.Renderer) -> state.SetupStep {
-    mut app: vk.ApplicationInfo = zeroed()
-    app.sType = 0
+    mut app: vk.ApplicationInfo = vk.ApplicationInfo::new()
     app.pApplicationName = cstr("storm")
     app.apiVersion = 4194304
-    mut info: vk.InstanceCreateInfo = zeroed()
-    info.sType = 1
+    mut info: vk.InstanceCreateInfo = vk.InstanceCreateInfo::new()
     info.pApplicationInfo = addr(&app)
     // SDL knows which platform surface extensions the window needs.
     mut count: u32 = 0
@@ -78,8 +76,7 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> state.SetupStep {
 }
 
 pub unsafe fn image_2d_info(format: u32, width: u32, height: u32, tiling: u32, usage: u32) -> vk.ImageCreateInfo {
-    mut info: vk.ImageCreateInfo = zeroed()
-    info.sType = 14
+    mut info: vk.ImageCreateInfo = vk.ImageCreateInfo::new()
     info.imageType = 1
     info.format = format
     info.extent = vk.Extent3D { width: width, height: height, depth: 1 }
@@ -118,14 +115,12 @@ unsafe fn pick_queue(r: &mut state.Renderer) -> state.SetupStep {
 
 unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
     priority: f32 = 1.0
-    mut q: vk.DeviceQueueCreateInfo = zeroed()
-    q.sType = 2
+    mut q: vk.DeviceQueueCreateInfo = vk.DeviceQueueCreateInfo::new()
     q.queueFamilyIndex = r.family
     q.queueCount = 1
     q.pQueuePriorities = addr(&priority)
     mut swapchain := cstr("VK_KHR_swapchain")
-    mut device: vk.DeviceCreateInfo = zeroed()
-    device.sType = 3
+    mut device: vk.DeviceCreateInfo = vk.DeviceCreateInfo::new()
     device.queueCreateInfoCount = 1
     device.pQueueCreateInfos = addr(&q)
     if r.surface != ptr(0) {
@@ -135,8 +130,7 @@ unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
     mut code := r.api.CreateDevice(r.physical, addr(&device), ptr(0), addr(&mut r.device))
     if code != 0 { return fail(&mut r, code, .Device) }
     r.api.GetDeviceQueue(r.device, r.family, 0, addr(&mut r.queue))
-    mut pool: vk.CommandPoolCreateInfo = zeroed()
-    pool.sType = 39
+    mut pool: vk.CommandPoolCreateInfo = vk.CommandPoolCreateInfo::new()
     pool.flags = enums.command_pool_flag(.ResetCommandBuffer)
     pool.queueFamilyIndex = r.family
     code = r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool))
@@ -145,11 +139,11 @@ unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
 }
 
 pub unsafe fn frame_viewport(view: &mut vk.FrameViewport) {
-    view.viewport.sType = 22
+    view.viewport = vk.PipelineViewportStateCreateInfo::new()
     view.viewport.viewportCount = 1
     view.viewport.scissorCount = 1
     view.states = [0, 1] // VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR
-    view.dynamic.sType = 27
+    view.dynamic = vk.PipelineDynamicStateCreateInfo::new()
     view.dynamic.dynamicStateCount = 2
     view.dynamic.pDynamicStates = addr(&view.states[0])
 }
@@ -169,8 +163,7 @@ pub unsafe fn set_frame_viewport(r: &state.Renderer) {
 
 pub unsafe fn color_framebuffer(r: &state.Renderer, view: ptr, output: ptr) -> i32 {
     views := [view, r.depthView]
-    mut info: vk.FramebufferCreateInfo = zeroed()
-    info.sType = 37
+    mut info: vk.FramebufferCreateInfo = vk.FramebufferCreateInfo::new()
     info.renderPass = r.renderPass
     info.attachmentCount = 2
     info.pAttachments = addr(&views[0])
@@ -182,8 +175,7 @@ pub unsafe fn color_framebuffer(r: &state.Renderer, view: ptr, output: ptr) -> i
 
 // A single linearly sampled 2D texture at fragment binding zero.
 pub unsafe fn sampled_texture(api: &vkapi.Api, dev: ptr, texture: &mut state.SampledTexture) -> i32 {
-    mut sampler: vk.SamplerCreateInfo = zeroed()
-    sampler.sType = 31
+    mut sampler: vk.SamplerCreateInfo = vk.SamplerCreateInfo::new()
     sampler.minFilter = enums.filter(.Linear)
     sampler.magFilter = enums.filter(.Linear)
     sampler.addressModeU = enums.sampler_address_mode(.ClampToEdge)
@@ -195,22 +187,19 @@ pub unsafe fn sampled_texture(api: &vkapi.Api, dev: ptr, texture: &mut state.Sam
     binding.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     binding.descriptorCount = 1
     binding.stageFlags = enums.shader_stage(.Fragment)
-    mut layout: vk.DescriptorSetLayoutCreateInfo = zeroed()
-    layout.sType = 32
+    mut layout: vk.DescriptorSetLayoutCreateInfo = vk.DescriptorSetLayoutCreateInfo::new()
     layout.bindingCount = 1
     layout.pBindings = addr(&binding)
     code = api.CreateDescriptorSetLayout(dev, addr(&layout), ptr(0), addr(&mut texture.layout))
     if code != 0 { return code }
     size := vk.DescriptorPoolSize { type: binding.descriptorType, descriptorCount: 1 }
-    mut pool: vk.DescriptorPoolCreateInfo = zeroed()
-    pool.sType = 33
+    mut pool: vk.DescriptorPoolCreateInfo = vk.DescriptorPoolCreateInfo::new()
     pool.maxSets = 1
     pool.poolSizeCount = 1
     pool.pPoolSizes = addr(&size)
     code = api.CreateDescriptorPool(dev, addr(&pool), ptr(0), addr(&mut texture.pool))
     if code != 0 { return code }
-    mut allocation: vk.DescriptorSetAllocateInfo = zeroed()
-    allocation.sType = 34
+    mut allocation: vk.DescriptorSetAllocateInfo = vk.DescriptorSetAllocateInfo::new()
     allocation.descriptorPool = texture.pool
     allocation.descriptorSetCount = 1
     allocation.pSetLayouts = addr(&texture.layout)
@@ -219,8 +208,7 @@ pub unsafe fn sampled_texture(api: &vkapi.Api, dev: ptr, texture: &mut state.Sam
 
 pub unsafe fn sample_view(r: &state.Renderer, texture: &state.SampledTexture, view: ptr) {
     image := vk.DescriptorImageInfo { sampler: texture.sampler, imageView: view, imageLayout: enums.image_layout(.ShaderReadOnlyOptimal) }
-    mut write: vk.WriteDescriptorSet = zeroed()
-    write.sType = 35
+    mut write: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write.dstSet = texture.set
     write.descriptorCount = 1
     write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
@@ -289,8 +277,7 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> state.SetupStep {
     mut images := caps.minImageCount + 1
     if caps.maxImageCount > 0 && images > caps.maxImageCount { images = caps.maxImageCount }
     if images > 8 { images = 8 }
-    mut info: vk.SwapchainCreateInfoKHR = zeroed()
-    info.sType = 1000001000
+    mut info: vk.SwapchainCreateInfoKHR = vk.SwapchainCreateInfoKHR::new()
     info.surface = r.surface
     info.minImageCount = images
     info.imageFormat = r.format
@@ -312,16 +299,14 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> state.SetupStep {
     if count == 0 || count > 8 { return .Swapchain }
     r.imageCount = i32(count)
     for i in 0..i32(count) {
-        mut view: vk.ImageViewCreateInfo = zeroed()
-        view.sType = 15
+        mut view: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
         view.image = r.images[i]
         view.viewType = enums.image_view_type(.Type2D)
         view.format = r.format
         view.subresourceRange.aspectMask = enums.image_aspect(.Color)
         view.subresourceRange.levelCount = 1
         view.subresourceRange.layerCount = 1
-        mut semaphore: vk.SemaphoreCreateInfo = zeroed()
-        semaphore.sType = 9
+        mut semaphore: vk.SemaphoreCreateInfo = vk.SemaphoreCreateInfo::new()
         code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut r.render_finished[i]))
         if code != 0 { return fail(&mut r, code, .FrameSync) }
         code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.views[i]))
@@ -403,8 +388,7 @@ pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements,
     while i < i32(r.memoryProperties.typeCount) {
         bits := i32(requirements.memoryTypeBits)
         if bits.bit_and(i32(1).shl(i)) != 0 && i32(r.memoryProperties.types[i * 2]).bit_and(flags) == flags {
-            mut alloc: vk.MemoryAllocateInfo = zeroed()
-            alloc.sType = 5
+            mut alloc: vk.MemoryAllocateInfo = vk.MemoryAllocateInfo::new()
             alloc.allocationSize = requirements.size
             alloc.memoryTypeIndex = u32(i)
             return r.api.AllocateMemory(r.device, addr(&alloc), ptr(0), output)
@@ -417,8 +401,7 @@ pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements,
 // One SPIR-V module from words already in memory. `bytes` is the word count
 // times four; the caller owns the step and turns a non-zero code into fail().
 pub unsafe fn shader_module(r: &state.Renderer, words: ptr, bytes: usize, output: ptr) -> i32 {
-    mut info: vk.ShaderModuleCreateInfo = zeroed()
-    info.sType = 16
+    mut info: vk.ShaderModuleCreateInfo = vk.ShaderModuleCreateInfo::new()
     info.codeSize = bytes
     info.pCode = words
     r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output)
@@ -433,8 +416,7 @@ unsafe fn release_vertex_buffer(r: &mut state.Renderer) {
 
 // Replace only after all commands using the previous mapping have retired.
 pub unsafe fn replace_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
-    mut info: vk.BufferCreateInfo = zeroed()
-    info.sType = 12
+    mut info: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
     info.size = bytes
     info.usage = enums.buffer_usage(.VertexBuffer)
     info.sharingMode = enums.sharing_mode(.Exclusive)
@@ -471,8 +453,7 @@ pub unsafe fn replace_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state
 }
 
 pub unsafe fn setup_frames(r: &mut state.Renderer) -> state.SetupStep {
-    mut allocate_info: vk.CommandBufferAllocateInfo = zeroed()
-    allocate_info.sType = 40
+    mut allocate_info: vk.CommandBufferAllocateInfo = vk.CommandBufferAllocateInfo::new()
     allocate_info.commandPool = r.pool
     allocate_info.level = 0
     allocate_info.commandBufferCount = 2
@@ -481,16 +462,14 @@ pub unsafe fn setup_frames(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return fail(&mut r, code, .FrameSync) }
     for i in 0..2 {
         r.commands[i] = commands[i]
-        mut fence: vk.FenceCreateInfo = zeroed()
-        fence.sType = 8
+        mut fence: vk.FenceCreateInfo = vk.FenceCreateInfo::new()
         fence.flags = enums.fence(.Signaled)
         mut created := ptr(0)
         code = r.api.CreateFence(r.device, addr(&fence), ptr(0), addr(&mut created))
         if code != 0 { return fail(&mut r, code, .FrameSync) }
         r.fences[i] = created
         if r.surface == ptr(0) { continue }
-        mut semaphore: vk.SemaphoreCreateInfo = zeroed()
-        semaphore.sType = 9
+        mut semaphore: vk.SemaphoreCreateInfo = vk.SemaphoreCreateInfo::new()
         mut available := ptr(0)
         code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut available))
         if code != 0 { return fail(&mut r, code, .FrameSync) }

@@ -39,8 +39,7 @@ unsafe fn create(r: &mut state.Renderer) -> i32 {
     if code != 0 { return code }
     code = r.api.BindImageMemory(r.device, r.captureImage, r.captureMemory, 0)
     if code != 0 { return code }
-    mut view: vk.ImageViewCreateInfo = zeroed()
-    view.sType = 15
+    mut view: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
     view.image = r.captureImage
     view.viewType = enums.image_view_type(.Type2D)
     view.format = r.format
@@ -53,8 +52,7 @@ unsafe fn create(r: &mut state.Renderer) -> i32 {
     code = device.color_framebuffer(&r, r.captureView, addr(&mut framebuffer))
     r.captureFramebuffer = framebuffer
     if code != 0 { return code }
-    mut buffer: vk.BufferCreateInfo = zeroed()
-    buffer.sType = 12
+    mut buffer: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
     buffer.size = readback_size(r.width, r.height)
     buffer.usage = enums.buffer_usage(.TransferDst)
     buffer.sharingMode = enums.sharing_mode(.Exclusive)
@@ -83,8 +81,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 
 pub unsafe fn copy_to_host(r: &state.Renderer) {
     cmd := r.commands[r.current]
-    mut transfer: vk.ImageMemoryBarrier = zeroed()
-    transfer.sType = 45
+    mut transfer: vk.ImageMemoryBarrier = vk.ImageMemoryBarrier::new()
     transfer.srcAccessMask = enums.access(.ColorAttachmentWrite)
     transfer.dstAccessMask = enums.access(.TransferRead)
     transfer.oldLayout = enums.image_layout(.ColorAttachmentOptimal)

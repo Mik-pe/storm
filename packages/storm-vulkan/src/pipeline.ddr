@@ -58,8 +58,7 @@ unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     after.dstAccessMask = enums.access(.None)
     dependencies := vk.Dependencies { before: before, after: after }
 
-    mut pass: vk.RenderPassCreateInfo = zeroed()
-    pass.sType = 38
+    mut pass: vk.RenderPassCreateInfo = vk.RenderPassCreateInfo::new()
     pass.attachmentCount = 2
     pass.pAttachments = addr(&attachments)
     pass.subpassCount = 1
@@ -110,8 +109,7 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     push_range.stageFlags = enums.shader_stage(.VertexFragment)
     push_range.offset = 0
     push_range.size = state.MESH_PUSH_BYTES
-    mut layout: vk.PipelineLayoutCreateInfo = zeroed()
-    layout.sType = 30
+    mut layout: vk.PipelineLayoutCreateInfo = vk.PipelineLayoutCreateInfo::new()
     layout.pushConstantRangeCount = 1
     layout.pPushConstantRanges = addr(&push_range)
     // Set 0: shadow map sampler + light uniform buffer + environment.
@@ -123,8 +121,7 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
-    stage.sType = 18
+    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
     stage.stage = enums.shader_stage(.Vertex)
     stage.module = r.vertexShader
     stage.pName = cstr("main")
@@ -138,22 +135,19 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     // in the shadow pipeline from the same record.
     mut vertex_input := vk.vertex_input()
     enums.apply_vertex_input(&mut vertex_input)
-    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
-    input.sType = 19
+    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
     input.vertexBindingDescriptionCount = 1
     input.pVertexBindingDescriptions = addr(&vertex_input.binding)
     input.vertexAttributeDescriptionCount = 3
     input.pVertexAttributeDescriptions = addr(&vertex_input.attributes)
 
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
     assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut view: vk.FrameViewport = zeroed()
     device.frame_viewport(&mut view)
 
-    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
+    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
     raster.polygonMode = enums.polygon_mode(.Fill)
     raster.cullMode = enums.cull_mode(.Back)
     // The projection negates Y for Vulkan's clip space, which mirrors the
@@ -161,12 +155,10 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     raster.frontFace = enums.front_face(.CounterClockwise)
     raster.lineWidth = 1.0
 
-    mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
-    samples.sType = 24
+    mut samples: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
     samples.rasterizationSamples = 1
 
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth_state.sType = 25
+    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
     // Opaque geometry: closer fragments win and write their depth.
     depth_state.depthTestEnable = 1
     depth_state.depthWriteEnable = 1
@@ -174,13 +166,11 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
 
     mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
     blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
+    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
     blend.attachmentCount = 1
     blend.pAttachments = addr(&blend_attachment)
 
-    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
+    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
     info.stageCount = 2
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&input)
@@ -224,8 +214,7 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     push_range.stageFlags = enums.shader_stage(.VertexFragment)
     push_range.offset = 0
     push_range.size = 112
-    mut layout: vk.PipelineLayoutCreateInfo = zeroed()
-    layout.sType = 30
+    mut layout: vk.PipelineLayoutCreateInfo = vk.PipelineLayoutCreateInfo::new()
     layout.pushConstantRangeCount = 1
     layout.pPushConstantRanges = addr(&push_range)
     // Set 0: shadow map sampler + light uniform buffer.
@@ -234,8 +223,7 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
-    stage.sType = 18
+    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
     stage.stage = enums.shader_stage(.Vertex)
     stage.module = r.skyVertexShader
     stage.pName = cstr("main")
@@ -245,41 +233,34 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     mut encoding: vk.DisplayEncoding = zeroed()
     stages.fragment.pSpecializationInfo = device.display_encoding(r.format, &mut encoding)
 
-    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
-    input.sType = 19
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
+    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
     assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut view: vk.FrameViewport = zeroed()
     device.frame_viewport(&mut view)
 
-    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
+    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
     raster.polygonMode = enums.polygon_mode(.Fill)
     raster.cullMode = enums.cull_mode(.None)
     raster.frontFace = enums.front_face(.Clockwise)
     raster.lineWidth = 1.0
 
-    mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
-    samples.sType = 24
+    mut samples: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
     samples.rasterizationSamples = 1
 
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth_state.sType = 25
+    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
     depth_state.depthTestEnable = 0
     depth_state.depthWriteEnable = 0
     depth_state.depthCompareOp = enums.compare_op(.LessOrEqual)
 
     mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
     blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
+    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
     blend.attachmentCount = 1
     blend.pAttachments = addr(&blend_attachment)
 
-    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
+    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
     info.stageCount = 2
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&input)

@@ -43,8 +43,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.BindImageMemory(r.device, image, memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut view_info: vk.ImageViewCreateInfo = zeroed()
-    view_info.sType = 15
+    mut view_info: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
     view_info.image = image
     view_info.viewType = enums.image_view_type(.Type2D)
     view_info.format = enums.format(.R32_SFLOAT)
@@ -56,8 +55,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- sampler ---
-    mut sampler_info: vk.SamplerCreateInfo = zeroed()
-    sampler_info.sType = 31
+    mut sampler_info: vk.SamplerCreateInfo = vk.SamplerCreateInfo::new()
     sampler_info.magFilter = enums.filter(.Nearest)
     sampler_info.minFilter = enums.filter(.Nearest)
     sampler_info.mipmapMode = enums.sampler_mipmap_mode(.Nearest)
@@ -70,8 +68,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- light uniform buffer: mat4 light_vp + vec4 light_dir_c = 80 bytes ---
-    mut buffer_info: vk.BufferCreateInfo = zeroed()
-    buffer_info.sType = 12
+    mut buffer_info: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
     buffer_info.size = 80
     buffer_info.usage = enums.buffer_usage(.UniformBuffer)
     buffer_info.sharingMode = enums.sharing_mode(.Exclusive)
@@ -106,8 +103,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
         bindings[binding * 3] = enums.binding_word(u32(binding), .CombinedImageSampler)
         bindings[binding * 3 + 1] = enums.stages_word(1, .Fragment)
     }
-    mut layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
-    layout_info.sType = 32
+    mut layout_info: vk.DescriptorSetLayoutCreateInfo = vk.DescriptorSetLayoutCreateInfo::new()
     layout_info.bindingCount = 5
     layout_info.pBindings = addr(&mut bindings[0])
     mut set_layout := ptr(0)
@@ -116,8 +112,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 
     // Four combined image samplers and one uniform buffer.
     mut pool_sizes: [u32; 4] = [1, 4, 6, 1]
-    mut pool_info: vk.DescriptorPoolCreateInfo = zeroed()
-    pool_info.sType = 33
+    mut pool_info: vk.DescriptorPoolCreateInfo = vk.DescriptorPoolCreateInfo::new()
     pool_info.maxSets = 1
     pool_info.poolSizeCount = 2
     pool_info.pPoolSizes = addr(&mut pool_sizes[0])
@@ -125,8 +120,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
-    allocate_info.sType = 34
+    mut allocate_info: vk.DescriptorSetAllocateInfo = vk.DescriptorSetAllocateInfo::new()
     allocate_info.descriptorPool = pool
     allocate_info.descriptorSetCount = 1
     allocate_info.pSetLayouts = addr(&set_layout)
@@ -143,15 +137,13 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     buffer_info2.offset = 0
     buffer_info2.range = 80
     // Two vkWriteDescriptorSet records (14 words each) laid out contiguously.
-    mut write_image: vk.WriteDescriptorSet = zeroed()
-    write_image.sType = 35
+    mut write_image: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write_image.dstSet = set
     write_image.dstBinding = 0
     write_image.descriptorCount = 1
     write_image.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     write_image.pImageInfo = addr(&image_info)
-    mut write_buffer: vk.WriteDescriptorSet = zeroed()
-    write_buffer.sType = 35
+    mut write_buffer: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write_buffer.dstSet = set
     write_buffer.dstBinding = 1
     write_buffer.descriptorCount = 1
@@ -194,8 +186,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     after.srcAccessMask = enums.access(.ColorAttachmentWrite)
     after.dstAccessMask = enums.access(.ShaderRead)
     deps := vk.Dependencies { before: before, after: after }
-    mut pass_info: vk.RenderPassCreateInfo = zeroed()
-    pass_info.sType = 38
+    mut pass_info: vk.RenderPassCreateInfo = vk.RenderPassCreateInfo::new()
     pass_info.attachmentCount = 1
     pass_info.pAttachments = addr(&attachment)
     pass_info.subpassCount = 1
@@ -207,8 +198,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut views: [ptr; 1] = [view]
-    mut fbi: vk.FramebufferCreateInfo = zeroed()
-    fbi.sType = 37
+    mut fbi: vk.FramebufferCreateInfo = vk.FramebufferCreateInfo::new()
     fbi.renderPass = pass
     fbi.attachmentCount = 1
     fbi.pAttachments = addr(&views[0])
@@ -222,16 +212,14 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // --- pipeline ---
     vertex := shader.shadow_vertex()
     mut vshader := ptr(0)
-    mut module_info: vk.ShaderModuleCreateInfo = zeroed()
-    module_info.sType = 16
+    mut module_info: vk.ShaderModuleCreateInfo = vk.ShaderModuleCreateInfo::new()
     module_info.codeSize = usize(vertex.len * 4)
     module_info.pCode = addr(&vertex[0])
     code = r.api.CreateShaderModule(r.device, addr(&module_info), ptr(0), addr(&mut vshader))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     fragment := shader.shadow_fragment()
     mut fshader := ptr(0)
-    mut module_info2: vk.ShaderModuleCreateInfo = zeroed()
-    module_info2.sType = 16
+    mut module_info2: vk.ShaderModuleCreateInfo = vk.ShaderModuleCreateInfo::new()
     module_info2.codeSize = usize(fragment.len * 4)
     module_info2.pCode = addr(&fragment[0])
     code = r.api.CreateShaderModule(r.device, addr(&module_info2), ptr(0), addr(&mut fshader))
@@ -241,16 +229,14 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut push_range: vk.PushConstantRange = zeroed()
     push_range.stageFlags = enums.shader_stage(.Vertex)
     push_range.size = 144
-    mut layout_info2: vk.PipelineLayoutCreateInfo = zeroed()
-    layout_info2.sType = 30
+    mut layout_info2: vk.PipelineLayoutCreateInfo = vk.PipelineLayoutCreateInfo::new()
     layout_info2.pushConstantRangeCount = 1
     layout_info2.pPushConstantRanges = addr(&push_range)
     mut pipeline_layout := ptr(0)
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info2), ptr(0), addr(&mut pipeline_layout))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
-    stage.sType = 18
+    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
     stage.stage = enums.shader_stage(.Vertex)
     stage.module = vshader
     stage.pName = cstr("main")
@@ -265,15 +251,13 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // whole 32-byte stream or the stride is wrong.
     mut vertex_input := vk.vertex_input()
     enums.apply_vertex_input(&mut vertex_input)
-    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
-    input.sType = 19
+    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
     input.vertexBindingDescriptionCount = 1
     input.pVertexBindingDescriptions = addr(&vertex_input.binding)
     input.vertexAttributeDescriptionCount = 3
     input.pVertexAttributeDescriptions = addr(&vertex_input.attributes)
 
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
     assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut viewport: vk.Viewport = zeroed()
@@ -283,37 +267,31 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut scissor: vk.Rect2D = zeroed()
     scissor.extent.width = SHADOW_SIZE
     scissor.extent.height = SHADOW_SIZE
-    mut viewport_state: vk.PipelineViewportStateCreateInfo = zeroed()
-    viewport_state.sType = 22
+    mut viewport_state: vk.PipelineViewportStateCreateInfo = vk.PipelineViewportStateCreateInfo::new()
     viewport_state.viewportCount = 1
     viewport_state.pViewports = addr(&viewport)
     viewport_state.scissorCount = 1
     viewport_state.pScissors = addr(&scissor)
 
-    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
+    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
     raster.polygonMode = enums.polygon_mode(.Fill)
     raster.cullMode = enums.cull_mode(.Back)
     raster.frontFace = enums.front_face(.CounterClockwise)
     raster.lineWidth = 1.0
 
-    mut multisample: vk.PipelineMultisampleStateCreateInfo = zeroed()
-    multisample.sType = 24
+    mut multisample: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
     multisample.rasterizationSamples = 1
 
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth_state.sType = 25
+    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
 
     mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
     // MAX keeps the surface closest to the sun in every texel.
     enums.apply_blend(&mut blend_attachment, &enums.shadow_max())
-    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
+    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
     blend.attachmentCount = 1
     blend.pAttachments = addr(&blend_attachment)
 
-    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
+    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
     info.stageCount = 2
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&input)
@@ -371,8 +349,7 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     store_u32(ptr(usize(addr(&mut clear[0])) + 4), depth.float_bits(-CLEAR_FAR))
     store_u32(ptr(usize(addr(&mut clear[0])) + 8), depth.float_bits(-CLEAR_FAR))
     store_u32(ptr(usize(addr(&mut clear[0])) + 12), depth.float_bits(1.0))
-    mut pass: vk.RenderPassBeginInfo = zeroed()
-    pass.sType = 43
+    mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
     pass.renderPass = r.shadowPass
     pass.framebuffer = r.shadowFramebuffer
     pass.renderArea.extent.width = SHADOW_SIZE

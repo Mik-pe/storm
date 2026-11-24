@@ -123,8 +123,7 @@ pub unsafe fn set_of(table: &Table, id: i64) -> ptr {
 
 unsafe fn bind_sampler(r: &state.Renderer, set: ptr, view: ptr) {
     image := vkl.DescriptorImageInfo { sampler: r.material.sampler, imageView: view, imageLayout: enums.image_layout(.ShaderReadOnlyOptimal) }
-    mut write: vkl.WriteDescriptorSet = zeroed()
-    write.sType = 35
+    mut write: vkl.WriteDescriptorSet = vkl.WriteDescriptorSet::new()
     write.dstSet = set
     write.descriptorCount = 1
     write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
@@ -135,8 +134,7 @@ unsafe fn bind_sampler(r: &state.Renderer, set: ptr, view: ptr) {
 // Image barrier over the given mip range of a single-layer image.
 unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, old_layout: u32, new_layout: u32,
     src_access: u32, dst_access: u32, src_stage: u32, dst_stage: u32) {
-    mut b: vkl.ImageMemoryBarrier = zeroed()
-    b.sType = 45
+    mut b: vkl.ImageMemoryBarrier = vkl.ImageMemoryBarrier::new()
     b.srcAccessMask = src_access
     b.dstAccessMask = dst_access
     b.oldLayout = old_layout
@@ -153,16 +151,14 @@ unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_c
 
 // Allocate and begin a one-time command buffer from the renderer's pool.
 unsafe fn begin(r: &state.Renderer, cmd_out: ptr) -> i32 {
-    mut alloc: vkl.CommandBufferAllocateInfo = zeroed()
-    alloc.sType = 40
+    mut alloc: vkl.CommandBufferAllocateInfo = vkl.CommandBufferAllocateInfo::new()
     alloc.commandPool = r.pool
     alloc.level = 0
     alloc.commandBufferCount = 1
     mut cmd := ptr(0)
     mut code := r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
     if code != 0 { return code }
-    mut info: vkl.CommandBufferBeginInfo = zeroed()
-    info.sType = 42
+    mut info: vkl.CommandBufferBeginInfo = vkl.CommandBufferBeginInfo::new()
     info.flags = enums.command_buffer_usage(.OneTimeSubmit)
     code = r.api.BeginCommandBuffer(cmd, addr(&info))
     if code != 0 { return code }
@@ -172,8 +168,7 @@ unsafe fn begin(r: &state.Renderer, cmd_out: ptr) -> i32 {
 
 // Submit the one-time buffer, wait for it, and free it.
 unsafe fn finish(r: &state.Renderer, cmd: ptr) -> i32 {
-    mut submit: vkl.SubmitInfo = zeroed()
-    submit.sType = 4
+    mut submit: vkl.SubmitInfo = vkl.SubmitInfo::new()
     submit.commandBufferCount = 1
     submit.pCommandBuffers = addr(&cmd)
     mut code := r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
@@ -187,8 +182,7 @@ unsafe fn finish(r: &state.Renderer, cmd: ptr) -> i32 {
 // The handles are written through the out-parameters, the way the entry
 // points hand theirs back.
 unsafe fn staging_buffer(r: &state.Renderer, bytes: u64, buffer_out: ptr, memory_out: ptr, mapped_out: ptr) -> i32 {
-    mut info: vkl.BufferCreateInfo = zeroed()
-    info.sType = 12
+    mut info: vkl.BufferCreateInfo = vkl.BufferCreateInfo::new()
     info.size = bytes
     info.usage = enums.buffer_usage(.TransferSrc)
     info.sharingMode = enums.sharing_mode(.Exclusive)
@@ -220,8 +214,7 @@ unsafe fn release_staging(r: &state.Renderer, buffer: ptr, memory: ptr) {
 // Create a single-layer RGBA8 sRGB image with `levels` mips, allocate and
 // bind its memory, and make the view over the whole chain.
 unsafe fn create_image(r: &state.Renderer, width: u32, height: u32, levels: u32, image_out: ptr, memory_out: ptr, view_out: ptr) -> i32 {
-    mut info: vkl.ImageCreateInfo = zeroed()
-    info.sType = 14
+    mut info: vkl.ImageCreateInfo = vkl.ImageCreateInfo::new()
     info.imageType = 1
     info.format = enums.format(.R8G8B8A8_SRGB)
     info.extent = vkl.Extent3D { width: width, height: height, depth: 1 }
@@ -240,8 +233,7 @@ unsafe fn create_image(r: &state.Renderer, width: u32, height: u32, levels: u32,
     if code != 0 { return code }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
     if code != 0 { return code }
-    mut view: vkl.ImageViewCreateInfo = zeroed()
-    view.sType = 15
+    mut view: vkl.ImageViewCreateInfo = vkl.ImageViewCreateInfo::new()
     view.image = image
     view.viewType = 1
     view.format = enums.format(.R8G8B8A8_SRGB)
@@ -297,8 +289,7 @@ unsafe fn record_upload(r: &state.Renderer, cmd: ptr, staging: ptr, image: ptr, 
 
 // Allocate the descriptor set of one slot from the shared pool.
 unsafe fn allocate_set(r: &state.Renderer, table: &mut Table, slot: i32) -> i32 {
-    mut allocation: vkl.DescriptorSetAllocateInfo = zeroed()
-    allocation.sType = 34
+    mut allocation: vkl.DescriptorSetAllocateInfo = vkl.DescriptorSetAllocateInfo::new()
     allocation.descriptorPool = r.material.pool
     allocation.descriptorSetCount = 1
     allocation.pSetLayouts = addr(&r.material.setLayout)
@@ -350,8 +341,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     needed := FEATURE_BLIT_SRC.bit_or(FEATURE_BLIT_DST).bit_or(FEATURE_LINEAR_FILTER)
     r.material.blit = if features.optimalTilingFeatures.bit_and(needed) == needed { 1 } else { 0 }
 
-    mut sampler: vkl.SamplerCreateInfo = zeroed()
-    sampler.sType = 31
+    mut sampler: vkl.SamplerCreateInfo = vkl.SamplerCreateInfo::new()
     sampler.magFilter = enums.filter(.Linear)
     sampler.minFilter = enums.filter(.Linear)
     sampler.mipmapMode = enums.sampler_mipmap_mode(.Linear)
@@ -366,16 +356,14 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     binding.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     binding.descriptorCount = 1
     binding.stageFlags = enums.shader_stage(.Fragment)
-    mut layout: vkl.DescriptorSetLayoutCreateInfo = zeroed()
-    layout.sType = 32
+    mut layout: vkl.DescriptorSetLayoutCreateInfo = vkl.DescriptorSetLayoutCreateInfo::new()
     layout.bindingCount = 1
     layout.pBindings = addr(&binding)
     code = r.api.CreateDescriptorSetLayout(r.device, addr(&layout), ptr(0), addr(&mut r.material.setLayout))
     if code != 0 { return device.fail(&mut r, code, .Texture) }
 
     size := vkl.DescriptorPoolSize { type: enums.descriptor_type(.CombinedImageSampler), descriptorCount: u32(CAPACITY) }
-    mut pool: vkl.DescriptorPoolCreateInfo = zeroed()
-    pool.sType = 33
+    mut pool: vkl.DescriptorPoolCreateInfo = vkl.DescriptorPoolCreateInfo::new()
     pool.maxSets = u32(CAPACITY)
     pool.poolSizeCount = 1
     pool.pPoolSizes = addr(&size)

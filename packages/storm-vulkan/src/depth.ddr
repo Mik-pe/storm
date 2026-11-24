@@ -44,8 +44,7 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.S
         r.api.DestroyImage(r.device, image, ptr(0))
         return device.fail(&mut r, code, .DepthBuffer)
     }
-    mut view_info: vk.ImageViewCreateInfo = zeroed()
-    view_info.sType = 15
+    mut view_info: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
     view_info.image = image
     view_info.viewType = enums.image_view_type(.Type2D)
     view_info.format = enums.format(.D32_SFLOAT)

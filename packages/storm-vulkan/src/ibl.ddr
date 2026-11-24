@@ -59,8 +59,7 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
         return code
     }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
-    stage.sType = 18
+    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
     stage.stage = enums.shader_stage(.Vertex)
     stage.module = vmodule
     stage.pName = cstr("main")
@@ -68,10 +67,8 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
     stages.fragment.stage = enums.shader_stage(.Fragment)
     stages.fragment.module = fmodule
 
-    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
-    input.sType = 19
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
+    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
+    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
     assembly.topology = enums.primitive_topology(.TriangleList)
     mut viewport: vk.Viewport = zeroed()
     viewport.width = f32(size)
@@ -80,32 +77,26 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
     mut scissor: vk.Rect2D = zeroed()
     scissor.extent.width = size
     scissor.extent.height = size
-    mut view: vk.PipelineViewportStateCreateInfo = zeroed()
-    view.sType = 22
+    mut view: vk.PipelineViewportStateCreateInfo = vk.PipelineViewportStateCreateInfo::new()
     view.viewportCount = 1
     view.pViewports = addr(&viewport)
     view.scissorCount = 1
     view.pScissors = addr(&scissor)
-    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
+    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
     raster.polygonMode = enums.polygon_mode(.Fill)
     raster.cullMode = enums.cull_mode(.None)
     raster.frontFace = enums.front_face(.CounterClockwise)
     raster.lineWidth = 1.0
-    mut samples: vk.PipelineMultisampleStateCreateInfo = zeroed()
-    samples.sType = 24
+    mut samples: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
     samples.rasterizationSamples = 1
-    mut depth: vk.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth.sType = 25
+    mut depth: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
     mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
     blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
+    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
     blend.attachmentCount = 1
     blend.pAttachments = addr(&blend_attachment)
 
-    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
+    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
     info.stageCount = 2
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&input)
@@ -129,8 +120,7 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
 // image and memory handles come back in outputs[0] and outputs[1] so the
 // same helper can build both cubes.
 unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemory {
-    mut info: vk.ImageCreateInfo = zeroed()
-    info.sType = 14
+    mut info: vk.ImageCreateInfo = vk.ImageCreateInfo::new()
     info.flags = enums.image_create(.CubeCompatible)
     info.imageType = 1
     info.format = enums.format(.R16G16B16A16_SFLOAT)
@@ -167,8 +157,7 @@ unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemo
 
 unsafe fn make_view(r: &state.Renderer, image: ptr, view_type: u32, format: u32,
     base_mip: u32, mip_count: u32, base_layer: u32, layer_count: u32, output: ptr) -> i32 {
-    mut view: vk.ImageViewCreateInfo = zeroed()
-    view.sType = 15
+    mut view: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
     view.image = image
     view.viewType = view_type
     view.format = format
@@ -183,8 +172,7 @@ unsafe fn make_view(r: &state.Renderer, image: ptr, view_type: u32, format: u32,
 // Linear filtering with a mip chain: the mesh shader picks the level with
 // textureLod, so the sampler's maxLod must cover the whole chain.
 unsafe fn create_sampler(r: &state.Renderer, max_lod: f32, output: ptr) -> i32 {
-    mut info: vk.SamplerCreateInfo = zeroed()
-    info.sType = 31
+    mut info: vk.SamplerCreateInfo = vk.SamplerCreateInfo::new()
     info.magFilter = enums.filter(.Linear)
     info.minFilter = enums.filter(.Linear)
     info.mipmapMode = enums.sampler_mipmap_mode(.Linear)
@@ -197,8 +185,7 @@ unsafe fn create_sampler(r: &state.Renderer, max_lod: f32, output: ptr) -> i32 {
 
 unsafe fn create_framebuffer(r: &state.Renderer, pass: ptr, view: ptr, size: u32, output: ptr) -> i32 {
     mut views: [ptr; 1] = [view]
-    mut info: vk.FramebufferCreateInfo = zeroed()
-    info.sType = 37
+    mut info: vk.FramebufferCreateInfo = vk.FramebufferCreateInfo::new()
     info.renderPass = pass
     info.attachmentCount = 1
     info.pAttachments = addr(&mut views[0])
@@ -215,8 +202,7 @@ unsafe fn write_image(r: &state.Renderer, set: ptr, binding: u32, sampler: ptr, 
     image_info.sampler = sampler
     image_info.imageView = view
     image_info.imageLayout = layout
-    mut write: vk.WriteDescriptorSet = zeroed()
-    write.sType = 35
+    mut write: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write.dstSet = set
     write.dstBinding = binding
     write.descriptorCount = 1
@@ -228,8 +214,7 @@ unsafe fn write_image(r: &state.Renderer, set: ptr, binding: u32, sampler: ptr, 
 // Image barrier over all 6 layers of the given mip range.
 unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, layer_count: u32, old_layout: u32, new_layout: u32,
     src_access: u32, dst_access: u32, src_stage: u32, dst_stage: u32) {
-    mut b: vk.ImageMemoryBarrier = zeroed()
-    b.sType = 45
+    mut b: vk.ImageMemoryBarrier = vk.ImageMemoryBarrier::new()
     b.srcAccessMask = src_access
     b.dstAccessMask = dst_access
     b.oldLayout = old_layout
@@ -248,8 +233,7 @@ unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_c
 // Record one fullscreen draw into a face framebuffer with its push constants.
 unsafe fn draw_face(r: &state.Renderer, cmd: ptr, pipeline: ptr, layout: ptr, pass: ptr, framebuffer: ptr,
     set: ptr, size: u32, push: &[f32; 24]) {
-    mut pass_begin: vk.RenderPassBeginInfo = zeroed()
-    pass_begin.sType = 43
+    mut pass_begin: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
     pass_begin.renderPass = pass
     pass_begin.framebuffer = framebuffer
     pass_begin.renderArea.extent.width = size
@@ -273,8 +257,7 @@ unsafe fn draw_face(r: &state.Renderer, cmd: ptr, pipeline: ptr, layout: ptr, pa
 // runs after the queue has finished.
 unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging {
     bytes := usize(words.len * 4)
-    mut stage_info: vk.BufferCreateInfo = zeroed()
-    stage_info.sType = 12
+    mut stage_info: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
     stage_info.size = u64(bytes)
     stage_info.usage = enums.buffer_usage(.TransferSrc)
     stage_info.sharingMode = enums.sharing_mode(.Exclusive)
@@ -430,8 +413,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     subpass.pipelineBindPoint = enums.pipeline_bind_point(.Graphics)
     subpass.colorAttachmentCount = 1
     subpass.pColorAttachments = addr(&color_ref)
-    mut pass_info: vk.RenderPassCreateInfo = zeroed()
-    pass_info.sType = 38
+    mut pass_info: vk.RenderPassCreateInfo = vk.RenderPassCreateInfo::new()
     pass_info.attachmentCount = 1
     pass_info.pAttachments = addr(&attachment)
     pass_info.subpassCount = 1
@@ -458,8 +440,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     bindings[0] = enums.binding_word(0, .CombinedImageSampler)
     bindings[1] = enums.stages_word(1, .Fragment)
     bindings[2] = 0
-    mut set_layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
-    set_layout_info.sType = 32
+    mut set_layout_info: vk.DescriptorSetLayoutCreateInfo = vk.DescriptorSetLayoutCreateInfo::new()
     set_layout_info.bindingCount = 1
     set_layout_info.pBindings = addr(&mut bindings[0])
     code = r.api.CreateDescriptorSetLayout(r.device, addr(&set_layout_info), ptr(0), addr(&mut set_layout))
@@ -467,16 +448,14 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     // Sets 0..4 sample mip 0..4 as the prefilter source, set 5 samples mip 0
     // for the irradiance pass.
     mut pool_sizes: [u32; 2] = [enums.descriptor_type(.CombinedImageSampler), 6]
-    mut pool_info: vk.DescriptorPoolCreateInfo = zeroed()
-    pool_info.sType = 33
+    mut pool_info: vk.DescriptorPoolCreateInfo = vk.DescriptorPoolCreateInfo::new()
     pool_info.maxSets = 6
     pool_info.poolSizeCount = 1
     pool_info.pPoolSizes = addr(&mut pool_sizes[0])
     code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool))
     if code != 0 { return device.fail(&mut r, code, .Environment) }
     for i in 0..6 {
-        mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
-        allocate_info.sType = 34
+        mut allocate_info: vk.DescriptorSetAllocateInfo = vk.DescriptorSetAllocateInfo::new()
         allocate_info.descriptorPool = pool
         allocate_info.descriptorSetCount = 1
         allocate_info.pSetLayouts = addr(&set_layout)
@@ -489,8 +468,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     mut push_range: vk.PushConstantRange = zeroed()
     push_range.stageFlags = u32(enums.shader_stage(.VertexFragment))
     push_range.size = PUSH_BYTES
-    mut layout_info: vk.PipelineLayoutCreateInfo = zeroed()
-    layout_info.sType = 30
+    mut layout_info: vk.PipelineLayoutCreateInfo = vk.PipelineLayoutCreateInfo::new()
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&push_range)
     layout_info.setLayoutCount = 1
@@ -554,16 +532,14 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     for i in 0..6 { r.prefilterPipelines[i] = prefilter_pipelines[i] }
 
     // --- one command buffer for the whole build ---
-    mut alloc: vk.CommandBufferAllocateInfo = zeroed()
-    alloc.sType = 40
+    mut alloc: vk.CommandBufferAllocateInfo = vk.CommandBufferAllocateInfo::new()
     alloc.commandPool = r.pool
     alloc.level = 0
     alloc.commandBufferCount = 1
     mut cmd := ptr(0)
     code = r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
     if code != 0 { return device.fail(&mut r, code, .Environment) }
-    mut begin: vk.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
+    mut begin: vk.CommandBufferBeginInfo = vk.CommandBufferBeginInfo::new()
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     code = r.api.BeginCommandBuffer(cmd, addr(&begin))
     if code != 0 { return device.fail(&mut r, code, .Environment) }
@@ -600,8 +576,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
 
     code = r.api.EndCommandBuffer(cmd)
     if code != 0 { return device.fail(&mut r, code, .Environment) }
-    mut submit: vk.SubmitInfo = zeroed()
-    submit.sType = 4
+    mut submit: vk.SubmitInfo = vk.SubmitInfo::new()
     submit.commandBufferCount = 1
     submit.pCommandBuffers = addr(&mut cmd)
     code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))

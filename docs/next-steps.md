@@ -17,14 +17,23 @@ Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. 
 
 **3b är landat (2026-11-24):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen; bevis i avsnittet). Nästa är **3c**: glTF-bilder (PNG via `packages/zlib`), `Material.texture` i `storm-scene`, samplarens parametrar som enum i `storm-gltf` (anisotropi, wrap, filter) och Metal:s mipkedja.
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
-(genererade bindings). Första delen är landad: `tools/vk.ddr` skriver
-`api.ddr` ur `vk.xml` (80 prototyper + `load()`), och `--check` är som
-`fmt --check` (utgång 1 om filen skiljer sig från registriet). Anropet är
+(genererade bindings). Två delar är landade: `tools/vk.ddr` skriver
+`api.ddr` ur `vk.xml` (80 prototyper + `load()`) och `layout.ddr` (71
+`@c_layout`-poster + en `impl X { pub unsafe fn new() -> X }`-fabrik per post
+som nollställer och skriver `sType` ur registret; 135 `x.sType = N` vid
+anropsplatserna blev `X::new()`, inget strukturtal står kvar utanför
+generatorn), och `--check` är som `fmt --check` (utgång 1 om filen skiljer sig
+från registriet; `--check api`/`--check layout` för en fil). Anropet är
 `dunder run tools/vk.ddr -- /tmp/vk.xml --check` — `--` krävs, annars äter
-`dunder run` flaggan själv (`unknown option: --check`). Kvar: `layout.ddr`
-(698 rader `@c_layout`, de fel som är tyst minneskorruption) och `enums.ddr`
-(34 enums som i dag pinnas av tester mot Khronos-tabellerna) med samma
-taggläsare, och paketet som eget namn. Sedan **Renderer-uppdelningen**
+`dunder run` flaggan själv (`unknown option: --check`). Storms egna poster
+(`Dependencies`, `ShaderStages`, `FrameViewport`, `vertex_input()`, de två
+tiling-konstanterna) står under `// --- Storm's own records ---` och kopieras
+oförändrade. Kvar: `enums.ddr` (34 enums som i dag pinnas av tester mot
+Khronos-tabellerna) med samma taggläsare; `state.ddr`:s `Properties`/`Limits`
+(läs ur `raw[65]`) som genererade `VkPhysicalDeviceProperties`/`Limits`/
+`MemoryProperties`; de nio egna par-posterna (`Dependencies` o.s.v.) är
+möjliga som raka `[T; 2]`-fält i 0.12.0 men byts inte förrän registret
+genererar dem; och paketet som eget namn. Sedan **Renderer-uppdelningen**
 (design.md §5). Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy

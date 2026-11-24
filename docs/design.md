@@ -38,12 +38,10 @@
   returnerar `Result`. Geometrihjälparna äger vertexformatet. Åtta tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
   Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
-  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Däremot skrivs
-  **130 råa `sType`-tal** för hand i nio moduler (`ibl` 25, `device` 23,
-  `shadow` 23, `pipeline` 19, `ui` 18, `post` 12, `vulkan` 5, `headless` 4,
-  `depth` 1; varken enum eller konstant). De är strukturtagningsnummer, inte
-  enums, men samma sorts tal-utan-vittne som blend-faktorerna var — och det är
-  den första vinsten med `layout.ddr` genererad ur `vk.xml` (§6).
+  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. **0 råa
+  `sType`-tal** (var 135 i nio moduler): `layout.ddr` genereras ur `vk.xml`
+  och varje post har en `new()`-fabrik som skriver strukturtypen, så talet
+  finns på en rad per post i en fil ingen skriver för hand (§6).
 - **Enums är ett eget lager:** `enums.ddr` har 34 `pub enum` och 42
   `pub fn`: 40 konverterare/namngivna värden och två skrivare av C-poster
   (`apply_blend`, `apply_vertex_input`). Endast två
@@ -99,7 +97,7 @@ Lagren i storm-vulkan (5 202 rader + 4 212 genererad `shader.ddr`):
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 259 |
+| FFI-bindings | `api.ddr`, `layout.ddr` (båda genererade), `sdl.ddr` | 1 896 |
 | Enums vid gränsen | `enums.ddr` | 357 |
 | Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 149 |
 | App-nära kod | `ui.ddr`, `post.ddr` | 562 |
@@ -365,9 +363,17 @@ renderaren mutabelt vid sidan av en pekare in i den.
   ger. Kommandolistan är Storms (vilka kommandon som laddas), typerna är
   registriets. De tio WSI-kommandona hamnar i `load()`:s `windowed`-gren
   därför att `VK_KHR_swapchain` beror på `VK_KHR_surface` i registriet, inte
-  på en handskriven lista. `layout.ddr` (698 rader `@c_layout`) och
-  `enums.ddr` (34 enums) är nästa med samma taggläsare; där är vinsten större,
-  för de är 800 rader mot 80. För Metal behövs det inte på samma sätt: det
+  på en handskriven lista. `layout.ddr` är den andra utdatafilen: 71 poster
+  ur registret, varje med `impl X { pub unsafe fn new() -> X }` som
+  nollställer och skriver `sType` (strukturtypen är en `values=` på
+  registriets `sType`-medlem, och en `<enum extends="VkStructureType"
+  offset="N"/>` i en extension räknas fram: 1 000 000 000 + (nummer − 1) ×
+  1 000 + N). Före det stod 135 strukturtal för hand vid anropsplatserna —
+  migreringen verifierade varje tal mot registret innan det togs bort, och
+  alla stämde. En union blir sitt största medlemsslag (`VkClearValue` →
+  `color: ClearColorValue`, 16 byte), och Storms egna poster står under en
+  markör som generatorn kopierar oförändrat. `enums.ddr` (34 enums) är nästa
+  med samma taggläsare. För Metal behövs det inte på samma sätt: det
   som hålls för hand är 109 selektorer och 53 deklarerade meddelandetyper
   (34 unika signaturer), och det
   som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin

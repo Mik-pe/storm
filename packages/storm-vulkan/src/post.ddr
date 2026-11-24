@@ -25,35 +25,29 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
         fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Fragment), module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: device.display_encoding(r.format, &mut encoding) },
     }
 
-    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()
-    vertex_input.sType = 19
+    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = vk2.PipelineVertexInputStateCreateInfo::new()
 
-    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
+    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = vk2.PipelineInputAssemblyStateCreateInfo::new()
     assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut view: vk2.FrameViewport = zeroed()
     device.frame_viewport(&mut view)
 
-    mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
+    mut raster: vk2.PipelineRasterizationStateCreateInfo = vk2.PipelineRasterizationStateCreateInfo::new()
     raster.polygonMode = enums.polygon_mode(.Fill)
     raster.cullMode = enums.cull_mode(.None)
     raster.frontFace = enums.front_face(.Clockwise)
     raster.lineWidth = 1.0
 
-    mut multisample: vk2.PipelineMultisampleStateCreateInfo = zeroed()
-    multisample.sType = 24
+    mut multisample: vk2.PipelineMultisampleStateCreateInfo = vk2.PipelineMultisampleStateCreateInfo::new()
     multisample.rasterizationSamples = 1
 
-    mut depth: vk2.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth.sType = 25
+    mut depth: vk2.PipelineDepthStencilStateCreateInfo = vk2.PipelineDepthStencilStateCreateInfo::new()
 
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
     blend_attachment.colorWriteMask = enums.color_component(.RGBA)
 
-    mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
+    mut blend: vk2.PipelineColorBlendStateCreateInfo = vk2.PipelineColorBlendStateCreateInfo::new()
     blend.attachmentCount = 1
     blend.pAttachments = addr(&mut blend_attachment)
 
@@ -61,8 +55,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     push_range.stageFlags = enums.shader_stage(.Fragment)
     push_range.size = 16
 
-    mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
-    layout_info.sType = 30
+    mut layout_info: vk2.PipelineLayoutCreateInfo = vk2.PipelineLayoutCreateInfo::new()
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&r.postTexture.layout)
     layout_info.pushConstantRangeCount = 1
@@ -70,8 +63,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .PostProcess) }
 
-    mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
+    mut info: vk2.GraphicsPipelineCreateInfo = vk2.GraphicsPipelineCreateInfo::new()
     info.stageCount = 2
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&mut vertex_input)
@@ -126,8 +118,7 @@ unsafe fn create_target(r: &mut state.Renderer) -> i32 {
     if code != 0 { return code }
     code = r.api.BindImageMemory(r.device, r.sceneImage, memory, 0)
     if code != 0 { return code }
-    mut view: vk2.ImageViewCreateInfo = zeroed()
-    view.sType = 15
+    mut view: vk2.ImageViewCreateInfo = vk2.ImageViewCreateInfo::new()
     view.image = r.sceneImage
     view.viewType = enums.image_view_type(.Type2D)
     view.format = r.format
@@ -164,8 +155,7 @@ pub unsafe fn composite(r: &mut state.Renderer, settings: &gfx.PostProcess) -> R
     if !settings.valid() { return .Err("post-process strength must be between 0 and 1") }
     cmd := r.commands[r.current]
     r.api.CmdEndRenderPass(cmd)
-    mut barrier: vk2.ImageMemoryBarrier = zeroed()
-    barrier.sType = 45
+    mut barrier: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
     barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
     barrier.dstAccessMask = enums.access(.ShaderRead)
     barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)

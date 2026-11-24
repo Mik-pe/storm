@@ -54,8 +54,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> state.SetupStep {
     if memory == ptr(0) { return .Ui }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    mut view_info: vk2.ImageViewCreateInfo = zeroed()
-    view_info.sType = 15
+    mut view_info: vk2.ImageViewCreateInfo = vk2.ImageViewCreateInfo::new()
     view_info.image = image
     view_info.viewType = enums.image_view_type(.Type2D)
     view_info.format = enums.format(.R32_SFLOAT)
@@ -104,39 +103,33 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
         second: vk2.VertexInputAttributeDescription { location: 1, binding: 0, format: enums.format(.R32G32B32A32_SFLOAT), offset: 16 },
     }
 
-    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()
-    vertex_input.sType = 19
+    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = vk2.PipelineVertexInputStateCreateInfo::new()
     vertex_input.vertexBindingDescriptionCount = 1
     vertex_input.pVertexBindingDescriptions = addr(&mut binding_desc)
     vertex_input.vertexAttributeDescriptionCount = 2
     vertex_input.pVertexAttributeDescriptions = addr(&attributes)
 
-    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
+    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = vk2.PipelineInputAssemblyStateCreateInfo::new()
     assembly.topology = enums.primitive_topology(.TriangleList)
 
     mut view: vk2.FrameViewport = zeroed()
     device.frame_viewport(&mut view)
 
-    mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
+    mut raster: vk2.PipelineRasterizationStateCreateInfo = vk2.PipelineRasterizationStateCreateInfo::new()
     raster.polygonMode = enums.polygon_mode(.Fill)
     raster.cullMode = enums.cull_mode(.None)
     raster.frontFace = enums.front_face(.Clockwise)
     raster.lineWidth = 1.0
 
-    mut multisample: vk2.PipelineMultisampleStateCreateInfo = zeroed()
-    multisample.sType = 24
+    mut multisample: vk2.PipelineMultisampleStateCreateInfo = vk2.PipelineMultisampleStateCreateInfo::new()
     multisample.rasterizationSamples = 1
 
-    mut depth: vk2.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth.sType = 25
+    mut depth: vk2.PipelineDepthStencilStateCreateInfo = vk2.PipelineDepthStencilStateCreateInfo::new()
 
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
     enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
 
-    mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
+    mut blend: vk2.PipelineColorBlendStateCreateInfo = vk2.PipelineColorBlendStateCreateInfo::new()
     blend.attachmentCount = 1
     blend.pAttachments = addr(&mut blend_attachment)
 
@@ -144,8 +137,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     push_range.stageFlags = enums.shader_stage(.Vertex)
     push_range.size = 16
 
-    mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
-    layout_info.sType = 30
+    mut layout_info: vk2.PipelineLayoutCreateInfo = vk2.PipelineLayoutCreateInfo::new()
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&mut r.uiTexture.layout)
     layout_info.pushConstantRangeCount = 1
@@ -153,8 +145,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
+    mut info: vk2.GraphicsPipelineCreateInfo = vk2.GraphicsPipelineCreateInfo::new()
     info.stageCount = 2
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&mut vertex_input)
@@ -176,8 +167,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
 }
 
 unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
-    mut info: vk2.BufferCreateInfo = zeroed()
-    info.sType = 12
+    mut info: vk2.BufferCreateInfo = vk2.BufferCreateInfo::new()
     info.size = bytes
     info.usage = enums.buffer_usage(.VertexBuffer)
     info.sharingMode = enums.sharing_mode(.Exclusive)
@@ -224,8 +214,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     if u64(pixels.len) != pixels_count { return .Ui }
     bytes := pixels_count * 4
 
-    mut stage_info: vk2.BufferCreateInfo = zeroed()
-    stage_info.sType = 12
+    mut stage_info: vk2.BufferCreateInfo = vk2.BufferCreateInfo::new()
     stage_info.size = bytes
     stage_info.usage = enums.buffer_usage(.TransferSrc)
     stage_info.sharingMode = enums.sharing_mode(.Exclusive)
@@ -251,22 +240,19 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     for i in 0..pixels.len { widened.push(f32(pixels[i]) / 255.0) }
     _ := copy_bytes(mapped, ptr(usize(addr(&widened[0]))), usize(bytes))
 
-    mut alloc: vk2.CommandBufferAllocateInfo = zeroed()
-    alloc.sType = 40
+    mut alloc: vk2.CommandBufferAllocateInfo = vk2.CommandBufferAllocateInfo::new()
     alloc.commandPool = r.pool
     alloc.level = 0
     alloc.commandBufferCount = 1
     mut cmd := ptr(0)
     code = r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    mut begin: vk2.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
+    mut begin: vk2.CommandBufferBeginInfo = vk2.CommandBufferBeginInfo::new()
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     code = r.api.BeginCommandBuffer(cmd, addr(&begin))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    mut to_transfer: vk2.ImageMemoryBarrier = zeroed()
-    to_transfer.sType = 45
+    mut to_transfer: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
     to_transfer.dstAccessMask = enums.access(.TransferWrite)
     to_transfer.oldLayout = enums.image_layout(.Undefined)
     to_transfer.newLayout = enums.image_layout(.TransferDstOptimal)
@@ -288,8 +274,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     copy.imageExtent.depth = 1
     r.api.CmdCopyBufferToImage(cmd, staging, r.uiAtlasImage, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
 
-    mut to_sample: vk2.ImageMemoryBarrier = zeroed()
-    to_sample.sType = 45
+    mut to_sample: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
     to_sample.srcAccessMask = enums.access(.TransferWrite)
     to_sample.dstAccessMask = enums.access(.ShaderRead)
     to_sample.oldLayout = enums.image_layout(.TransferDstOptimal)
@@ -304,8 +289,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
 
     code = r.api.EndCommandBuffer(cmd)
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    mut submit: vk2.SubmitInfo = zeroed()
-    submit.sType = 4
+    mut submit: vk2.SubmitInfo = vk2.SubmitInfo::new()
     submit.commandBufferCount = 1
     submit.pCommandBuffers = addr(&mut cmd)
     code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
