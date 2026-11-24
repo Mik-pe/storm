@@ -365,8 +365,6 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     // shading pass can tell "no geometry" apart from a real distance.
     // ClearValue is a union; the shadow pass has only a colour attachment, so
     // its four float words are the whole value: (-1000, -1000, -1000, 1).
-    // depth.float_bits, not to_bits: a negative float's bits cannot be taken
-    // directly in Dunder (finding 55).
     mut clear: [u64; 4] = [0; 4]
     store_u32(addr(&mut clear[0]), depth.float_bits(-CLEAR_FAR))
     store_u32(ptr(usize(addr(&mut clear[0])) + 4), depth.float_bits(-CLEAR_FAR))

@@ -301,16 +301,13 @@ och `packages/storm-metal/src/ui.ddr`.
 dunder build                    # bygger src/main.ddr
 dunder run --example scene      # ECS/glTF/text utan fönster
 dunder test                     # rotpaketets tester; och i varje packages/*
-dunder run tools/shaders.ddr    # GLSL → SPIR-V, Metal-källa → Dunder-modul
+dunder run tools/shaders.ddr    # GLSL → SPIR-V
 dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
 ```
 
-`tools/shaders.ddr` är ett Dunder-program. För Vulkan kör det `glslangValidator`,
-läser SPIR-V-filen och skriver `packages/storm-vulkan/src/shader.ddr`; för Metal
-läser det `packages/storm-metal/shaders/storm.metal` och skriver källan som en
-råsträng i `packages/storm-metal/src/shader.ddr`. Båda modulerna är incheckade,
-så ett bygge behöver ingen shaderkompilerare. (Metal-källan kan inte bäddas in
-med `@embed_file`: ett beroende hittar inte sina egna filer, dogfood fynd 65.)
+Vulkans SPIR-V ligger i `packages/storm-vulkan/src/shader.ddr`. Kör
+`tools/shaders.ddr` med `glslangValidator` efter en ändring i GLSL-koden.
+Metal bäddar in `packages/storm-metal/shaders/storm.metal` direkt vid bygget.
 
 ## Regler
 

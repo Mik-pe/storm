@@ -55,11 +55,8 @@ pub fn spawn_orbs(graph: &mut scenegraph.Graph) {
 
 pub fn orbs_left(graph: &scenegraph.Graph) -> i32 {
     mut n: i32 = 0
-    // Accessor results go through locals: a `from self` return passed straight
-    // into a generic fails E3003 here (Storm dogfood finding 60).
     names := graph.names()
-    locals := graph.locals()
-    for row in ecs.join2(names, locals) {
+    for row in ecs.join2(names, graph.locals()) {
         if is_orb(names.at(row.a).value) { n = n + 1 }
     }
     n

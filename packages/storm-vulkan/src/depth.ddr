@@ -11,18 +11,8 @@ import .state as state
 // the second attachment of the main render pass and is cleared to 1.0 every
 // frame together with the colour attachment.
 
-// Packed VkClearValue for a depth/stencil attachment: depth in word 0 as an
-// f32 bit pattern, stencil in word 1. One VkClearValue is 16 bytes, so this
-// is the second half of a colour+depth clear pair.
-// IEEE-754 bits of an f32, for any sign. `to_bits()` on a negative float
-// ends the program silently (Dunder finding 55), so negatives are assembled
-// from the magnitude and the sign bit.
 pub fn float_bits(value: f32) -> u32 {
-    if value < 0.0 {
-        u32((f32(0.0) - value).to_bits()).bit_or(0x80000000)
-    } else {
-        u32(value.to_bits())
-    }
+    u32(i64(value.to_bits()).bit_and(0xffffffff))
 }
 
 pub fn depth_clear(depth: f32) -> u64 {
