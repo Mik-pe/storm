@@ -71,7 +71,11 @@ Beslut tills vidare:
 Varje steg som rör vad en backend ritar vidrör nu **två backends och två
 shaderuppsättningar**: `packages/storm-vulkan/shaders/*.glsl` och
 `packages/storm-metal/shaders/storm.metal`, och bakom dem
-`tools/shaders.ddr`, som måste köras om när den ena ändras. Beviset är en
+`tools/shaders.ddr`, som har `--check` sedan 2026-11-24 (utgång 1 när
+`shader.ddr` skiljer sig från vad källorna kompileras till; en include som
+`display.glsl` räknas, eftersom verktyget kompilerar om allt) — regeln
+"kör om verktyget" är därmed ett kommando som fallerar, inte en att komma
+ihåg. Beviset är en
 capture på den backend maskinen har, och `dunder check --target x86_64-linux`
 från en Mac håller den andra typgrön.
 
