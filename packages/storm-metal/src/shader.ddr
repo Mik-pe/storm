@@ -8,7 +8,7 @@ pub const SOURCE: string = r#"""
 //
 // Storm's clip space is x right, y DOWN, z in [0, 1]. The backend's viewport
 // mirrors y, so nothing here flips anything. Vertex data is interleaved
-// [x, y, z, nx, ny, nz] (24 bytes).
+// [x, y, z, nx, ny, nz, u, v] (32 bytes).
 //
 // What Vulkan passes as push constants is a struct in the constant address
 // space, bound by buffer index and readable by every stage. So each pass has
@@ -92,6 +92,7 @@ struct Light {
 struct MeshVertex {
     float3 position [[attribute(0)]];
     float3 normal [[attribute(1)]];
+    float2 uv [[attribute(2)]];
 };
 
 struct MeshOut {

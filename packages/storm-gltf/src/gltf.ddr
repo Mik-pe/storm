@@ -1,13 +1,14 @@
 // Storm glTF 2.0 loader.
 //
-// Supports both .glb (binary container) and .gltf (JSON) files. Reads meshes,
-// primitives, accessors over float POSITION/NORMAL and index buffers, plus node
-// TRS/matrix transforms baked into world space. No materials, skins or
-// animation yet — the loader returns triangle data ready for the Vulkan pipeline.
+// Supports both .glb (binary container) and .gltf (JSON) files. Reads the
+// first mesh's first primitive: float POSITION/NORMAL/TEXCOORD_0 accessors
+// and the index buffer. No nodes, materials, skins or animation yet; the
+// loader returns triangle data ready for the mesh pipeline.
 //
 //   doc := gltf.load("cube.glb")
 //   if !doc.ok { print(doc.error); return }
-//   mesh := gltf.to_vertices(&doc)      // []f32, interleaved x,y,z,nx,ny,nz,r,g,b,a
+//   mesh := gltf.load_mesh(&doc)       // positions, normals, uvs, indices
+//   stream := gltf.interleave(&mesh)   // []f32, x,y,z,nx,ny,nz,u,v per vertex
 capability filesystem
 
 import std.bytes as bytes
@@ -341,13 +342,15 @@ pub fn load_mesh(doc: &Document) -> Mesh {
 }
 
 // Expand the mesh through its index buffer into Storm's unindexed
-// [x,y,z,nx,ny,nz] f32 stream, one vertex per index. A glTF index buffer is
-// what ties the triangles together; ignoring it draws every triangle from
+// [x,y,z,nx,ny,nz,u,v] f32 stream, one vertex per index. A glTF index buffer
+// is what ties the triangles together; ignoring it draws every triangle from
 // consecutive vertices, which turns any indexed model (Khronos's Damaged
-// Helmet, the Fox) into a cloud of shards.
+// Helmet, the Fox) into a cloud of shards. A primitive without TEXCOORD_0
+// (Khronos's Box) gets uv (0, 0), the same choice Filament makes: a missing
+// attribute is not an error, the material decides whether it is sampled.
 pub fn interleave(mesh: &Mesh) -> []f32 {
     mut out: []f32 = []
-    out.reserve(mesh.index_count * 6)
+    out.reserve(mesh.index_count * 8)
     for k in 0..mesh.index_count {
         i := mesh.indices[k]
         if i < 0 || i >= mesh.vertex_count { continue }
@@ -361,6 +364,13 @@ pub fn interleave(mesh: &Mesh) -> []f32 {
         } else {
             out.push(0.0)
             out.push(1.0)
+            out.push(0.0)
+        }
+        if mesh.uvs.len >= (i + 1) * 2 {
+            out.push(mesh.uvs[i * 2])
+            out.push(mesh.uvs[i * 2 + 1])
+        } else {
+            out.push(0.0)
             out.push(0.0)
         }
     }

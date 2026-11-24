@@ -7,11 +7,7 @@ styr, glTF-laddning och ECS-frågor (avsnitt 0e), och **gränssnittet och den
 andra backenden** (avsnitt 0f): samma editor och spelloop på Vulkan (Linux)
 och Metal (macOS), genom `storm-gfx`.
 
-**Ordningen efter 0f, beslutad 2026-11-23 mot koden:** först **3a** (UV i
-vertexströmmen, ett format överallt), sedan **3b–3c** (sampling, glTF-bilder)
-— det är den kedja som gör störst synlig skillnad: Khronos hjälm och räv
-renderas idag vitgrå för att `interleave` slänger de UV:er parsern läser.
-Därefter **4** (glTF-noder, så scengrafen byggs från filen). Sedan det som
+**Efter 0f och 3a:** bygg textursampling och glTF-material (3b–3c). Därefter **4** (glTF-noder, så scengrafen byggs från filen). Sedan det som
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
 (genererade bindings; 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men
 ingen funktion saknas för den) och **Renderer-uppdelningen** (design.md §5,
@@ -89,14 +85,13 @@ Matematiken (kubytornas baser, projektionen och BRDF-integralen) ligger i
 
 ## 3. Texturer (UV i strömmen, sampling, glTF-bilder)
 
-En vertexström delas av kuber, plan, glTF-modeller och skuggpasset, så
-formatet ändras på alla platser i ett steg eller ingen. Idag: 24 byte,
-`position vec3` + `normal vec3`, beskriven **två gånger** —
-`pipeline.ddr:136` (via `enums.format`) och `shadow.ddr:262` (med råa tal:
-`inputRate: 0`, `format: 106` ×2; tre av de heltal design.md steg 2 säger
-är borta) — medan `gfx.cube`/`plane` ger 6 floats, `gltf.interleave` ger
-6 fast `Mesh.uvs` läses från `TEXCOORD_0`, och `mesh_pass`/`shadow.mesh`
-validerar `len % 6`.
+En vertexström delas av kuber, plan, glTF-modeller och skuggpasset. Sedan
+3a äger `storm-gfx` vertexformatet. Vulkan beskriver det med `layout.vertex_input()` (post med en binding
+och tre attribut, `VERTEX_FLOATS = 8`, `VERTEX_BYTES = 32`) och
+`enums.apply_vertex_input` skriver dess enum-fält; `pipeline.ddr` och
+`shadow.ddr` deklarerar samma post, och `mesh_pass`/`shadow.mesh` validerar
+`len % VERTEX_FLOATS`. Stride, offset och format finns inte på någon annan
+plats i paketet.
 
 ### Beslut inför 3a–3c (researchad 2026-11-23)
 
@@ -159,31 +154,25 @@ validerar `len % 6`.
   utan `VK_KHR_maintenance5`/1.3) — eller först med `mipLevels = 1` och
   `maxLod = 0` som bevis, mipmaps som 3b:2.
 
-### 3a. Ett vertexformat: position, normal, uv (nästa)
+### 3a. Klart: ett vertexformat — position, normal, uv
 
-Berörda på båda backends, eftersom formatet ägs av `storm-gfx` men
-beskrivs och valideras i varje: `storm-metal/src/device.ddr`
-(`vertex_layout`: mesh-, skugg- och UI-pipelines läser alla därifrån),
-`storm-metal/src/metal.ddr` (`append_vertices` och dess `% 6`),
-`storm-metal/shaders/storm.metal` (`MeshVertex`, som `shadow_vertex` också
-läser) och `tools/shaders.ddr`, som ska köras om för att skriva om
-`storm-metal/src/shader.ddr`. Sedan Vulkan-sidan nedan.
+Åtta floats per vertex, 32 byte; `gfx.cube`/`plane` bygger sina ytor med
+`gfx.vertex`/`push_quad` och bär uv (0,0)..(1,1) per yta (v = 0 är
+bildens överkant, glTF-konventionen — ingen flip i shadern), `gltf.interleave`
+läser `TEXCOORD_0` och ger `(0,0)` när primitiven saknar den, `mesh.vert`
+skickar `uv` vidare på location 9. Bevis: `interleave`-tester mot Khronos
+`Box.glb` (36 index × 8 floats, alla uv = 0) och `FoxFixed.glb` (464
+verticer, 1728 index, `TEXCOORD_0` men ingen `NORMAL`; uv (0.5287, 0.6786)
+för index 0, utläst ur filen med Python innan testet skrevs);
+`vertex_input_declares_the_whole_stream` pinner C-ordningen (storlek 48,
+16 byte mellan attributen, råorden `[0,0,0,0][1,0,0,12][2,0,0,24]`).
+Capture med uv som färg (`out = vec4(uv, 0, 1)`, sonder, inte committad):
+kubyta (214,83) → (127,159) från övre-vänster till nedre-höger, himlen
+(180,200,227) oförändrad; tillbaka till PBR: **AE = 0** mot baslinjen för
+både standardscenen och `--glb FoxFixed.glb`. De tre sista råa enum-heltalen
+i `shadow.ddr` är borta (design.md steg 2: 3 → 0).
 
-Åtta floats per vertex, 32 byte, uv `(0,0)` när modellen saknar
-`TEXCOORD_0`. Bevis: `interleave`-test mot Khronos `Box.glb` (36 index ×
-8 floats, alla uv = 0) och FoxFixed (464 verticer, 1728 index, TEXCOORD_0
-+ en 1024² PNG i BIN-chunken); `gfx.cube`/`plane` testas på `len % 8 == 0`
-och att uv-komponenterna är ändliga; capture med uv som färg
-(`out = vec4(uv, 0, 1)`) på `--glb FoxFixed.glb` och pixelprover i hörnen;
-sedan tillbaka till PBR och AE = 0 mot baslinjen (uv påverkar inte färgen
-än). Vulkan-sidan: `pipeline.ddr` (ägare av beskrivningen), `shadow.ddr`
-(konsument, och de tre sista råa talen försvinner med den), `vulkan.ddr`
-(`mesh_pass` `% 6` → `% 8`), `mesh.vert` (`layout(location = 2) in vec2 uv`
-→ `mesh.frag`), `shadow.vert` (oförändrad i beteende). Gemensamt:
-`gfx.ddr` (dokumentationen av formatet), `gltf.interleave`,
-`scene.Mesh`-dokumentationen, README ("sex `f32` per vertex").
-
-### 3b. Sampling
+### 3b. Sampling (nästa)
 
 `vkCreateImage` + staging + `vkCmdCopyBufferToImage` + layoutövergångar
 finns för miljökuben (`ibl.ddr`: `create_cube`, `stage_lut`, `barrier`,
@@ -319,5 +308,13 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
 - Marktonen under horisonten är en fast gradient (ljusast vid horisonten), inte
   en rendering av golvet, så golvet syns inte i kuberna.
 - Ingen `vkDestroySurfaceKHR`-anrop: `vkDestroyInstance` städar ytan.
-- Vulkans valideringslager aktiveras inte automatiskt. (Metals står på när Xcode
-  är installerat, och det är det som fångade fyra fel under porten.)
+- Fönsterläge (`--frames N` utan `--capture`) på en **låst** session avslutas
+  med SIGSEGV i **första** framen (sett 2026-11-24 på `ac268f0`, spårat med
+  `--trace`): sista markören är `acquired image 0`, nästa (`render pass
+  begun`) nås aldrig — alltså faller det mellan `AcquireNextImageKHR` och
+  `CmdBeginRenderPass` i `begin_frame`. Capture-vägen går genom samma rader
+  och fungerar låst; den enda skillnaden där är `pass.framebuffer`
+  (swapchain-framebuffern i stället för capture-framebuffern). QA-punkt:
+  markör per anrop i det fönstret, rapportera "session locked" och avsluta
+  med status i stället för krasch.
+- Valideringslager aktiveras inte automatiskt.

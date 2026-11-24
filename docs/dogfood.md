@@ -468,13 +468,65 @@ varningarna så är fallet borta. Skrift är Mickes repo; det är (b) som gälle
 tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
 *i praktiken* är en filterregel tills syskonen är rena.)
 
+**63. E3003 "too many arguments" säger inte hur många som väntades.** Ett
+anrop med ett argument för mycket ger `error[E3003]: too many arguments`
+och inget tal. I Storm (`triangle(&mut vertices, …)` med 19 argument mot 18
+parametrar efter `&mut`) satt markören på det *sista* argumentet, och utan
+antal lästes det som ett *tak* (språket tillåter inte så många) i stället
+för en *räkning* (du gav ett för mycket) — jag mätte därför taket i
+isolation med 17, 18, 19 och 20 parametrar: alla går igenom. Minimal repro:
+`fn f2(a: f32, b: f32) -> f32 { a + b }` + `f2(1.0, 2.0, 3.0)` →
+`E3003 too many arguments`, markör på `f2`, inget "expected 2, got 3".
+För få heter det `E3003 wrong argument count`, också utan tal.
+*Workaround:* räkna argumenten för hand mot deklarationen, eller mät
+taket i isolation. *Rekommendation:* `expected N arguments, got M` i båda
+meddelandena. (Felet var mitt — en vertex med 18 positionsargument är
+oläslig oavsett språk; grunden blev en `Vertex`-post och `push_quad`, inte
+en rad till med tal.)
+
+**64. En funktion utan anropare ger ingen varning — varken `check` eller
+`build`.** `ui.ddr` bar 82 rader (`submit_barrier`, `transition_atlas`, båda
+privata `unsafe fn`) som inget anropade sedan textatlasen bytte uppladdningsväg;
+de kompilerade in i varje bygge och `dunder check` var tyst. Kompilatorn
+varnar för döda *namn* (W1001 oanvänd lokal, W1002 oanvänd import) men inte
+för döda *funktioner*, och `build` kompilerar bara det `main` når, så den
+döda koden kostade ingenting i binären och syntes därför aldrig. Minimal
+repro (Dunder 0.10.0, mätt i isolation): en rotmodul med `capability unsafe`
+och `unsafe fn dead_in_root(x: i32) -> i32 { x + 3 }` aldrig anropad, plus
+en importerad `helper.ddr` med en privat `dead_private` och en `pub
+dead_public`, båda oanropade; `main` når bara `helper.live()`.
+`dunder check` → `checked src/main.ddr (2 modules)`, exit 0, noll varningar.
+Kontroller i samma träd: en oanvänd import ger W1002 och en oanvänd lokal
+ger W1001. *Workaround:* grep efter varje privat funktionsnamn i hela
+repot innan den får stanna; AGENTS.md-regeln "noll död kod" har inget
+verktygsstöd för funktioner och vilar på att någon letar. *Rekommendation:*
+W1003 för en privat (`fn` utan `pub`) funktion eller metod utan anropare i
+någon kompilerad modul, med samma förlåtelser som W1001 (`_`-prefix eller
+`pub` tar bort den). Publika funktioner i ett bibliotek är dess API och ska
+fortfarande vara tysta — det är de privata som är ett misstag. (Död koden
+var min; tystnaden är kompilatorns.)
+
+**Om vertexformatet (3a).** Stride, offset och format stod på två ställen
+(`pipeline.ddr` via enums, `shadow.ddr` med `inputRate: 0`, `format: 106`
+×2) och "ändra på båda eller ingen" var en regel att komma ihåg — AGENTS.md
+kallar det ett bandaid över en grund som inte bär. Nu äger `layout.ddr`
+-posten `VertexInput { binding, attributes }` hela beskrivningen
+(`VERTEX_FLOATS = 8`, `VERTEX_BYTES = 32`, offset 0/12/24),
+`enums.apply_vertex_input` skriver enum-fälten, och båda pipelinearna
+deklarerar samma post; `mesh_pass` och `shadow.mesh` validerar mot
+`VERTEX_FLOATS`. Tre råa heltal kvar → noll, och det finns ingen andra
+plats att glömma. En mätfälla på vägen: testet `addr(&c) - addr(&b) == 16`
+mätte tre *kopior* av fälten (`a := input.attributes.position` …), inte
+posten — fynd 39/54 igen, råorden `[0,0,0,0][1,0,0,12][2,0,0,24]` mätta i
+isolation var korrekta och testet var fel.
+
 ## Uppföljning: gränssnittet och Metal-backenden
 
 Ett kontrakt (`storm-gfx`), en app generisk över det, och en andra backend
 (`storm-metal`) som når AppKit och Metal genom Objective-C:s runtingen.
 Fynden är i den ordning de träffades.
 
-**63. `@embed_file` i ett beroende hittar inte sin fil, var den än ligger.**
+**65. `@embed_file` i ett beroende hittar inte sin fil, var den än ligger.**
 Ett paket som ensamt bygger med `@embed_file("assets/x.txt")` (filen i
 paketets rot) fallerar som beroende av en applikation med
 `E3099: cannot embed 'assets/x.txt': file not found` — och samma fel när
@@ -490,7 +542,7 @@ mot roten av det paket som innehåller den modul som bäddar in. Det är vad
 enda sättet ett bibliotek kan bära sina egna tillgångar; i dag kan bara
 applikationens rotmodul bädda in något.
 
-**64. `dunder fmt` läser inte `impl modul.Trait for Type`.** Filen kompilerar
+**66. `dunder fmt` läser inte `impl modul.Trait for Type`.** Filen kompilerar
 och kör, men `dunder fmt --stdout f.ddr` svarar `f.ddr:3:9: expected '{'`
 vid traitens namn. Minsta repro i två filer: `lib.ddr` med
 `pub trait Speaks { fn word(&self) -> string }` och `main.ddr` med
@@ -508,7 +560,7 @@ det är inte de här raderna. *Workaround:* ingen. *Rekommendation:*
 formaterarens grammatik bör vara kompilatorns — den har redan traits utan
 modulprefix.
 
-**65. En funktion som heter som en typ döljer typen, och diagnosen namnger
+**67. En funktion som heter som en typ döljer typen, och diagnosen namnger
 ett internt modulnummer.** I `objc.ddr` hette en funktion `string`
 (`pub unsafe fn string(rt: &Runtime, value: string) -> ptr`). Kompilatorn
 svarade `error[E2003]: unknown type '__dunder_module_224'` på `-> string` i
@@ -522,7 +574,7 @@ det vid deklarationen ("`string` is a type; this function hides it in this
 module"), och skriv typernas namn i diagnoser i stället för
 `__dunder_module_N`.
 
-**66. `.Ok(())` ger "this value is not callable for the selected target".**
+**68. `.Ok(())` ger "this value is not callable for the selected target".**
 För `Result<(), E>` kräver kompilatorn nakna `.Ok` (dokumenterat i
 enums.md). Den som skriver `.Ok(())` — för att vara tydlig, eller för att
 formateraren ska läsa det — får `E3003` med ett meddelande om anropsbarhet
@@ -530,7 +582,7 @@ och mål, som inte nämner den rätta formen. Minsta repro:
 `fn f() -> Result<(), string> { return .Ok(()) }`. Tre gånger under ett
 kväll. *Rekommendation:* "for `Result<(), E>` write `.Ok`".
 
-**67. `match` på ett heltal pekar på `else`.** `match code { 0 => …, else => -1 }`
+**69. `match` på ett heltal pekar på `else`.** `match code { 0 => …, else => -1 }`
 med `code: u64` ger `E3099: match pattern requires an enum` med markören
 vid `else =>`. Meddelandet är sant, platsen är det inte: det är subjektet
 som inte är en enum. *Workaround:* en tabell eller en `if`-kedja — vilket
@@ -682,8 +734,8 @@ och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 75 tester passerade (mätning
-2026-11-23, `93c20bc`: 4 rot + 71 paket, 6 663 ms byggtid): de 60 som
+underpaketen kördes var för sig och alla 81 tester passerade (mätning
+2026-11-24: 8 rot + 73 paket, 6 850 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
@@ -702,7 +754,11 @@ komponenter, neutralgrå åt materiallösa, hierarkins world-matriser i
 `drawables`, en laddad mesh som komponent med sin vertexström), fyra i
 `storm-ui` (träffyta, knappens kant, sliderns drag och klämma, radval), ett i
 `storm-vulkan` (alla `VkResult`-koder mot Khronos) och ett i `storm-gltf`
-(Khronos `Box.glb`: 24 verticer, 36 index, expanderad ström).
+(Khronos `Box.glb`: 24 verticer, 36 index, expanderad ström). Efter 3a:
+en till i `storm-vulkan` (`vertex_input_declares_the_whole_stream`: storlek
+48/60, 16 byte mellan attributen, råorden i C-ordning) och en till i
+`storm-gltf` (`FoxFixed.glb`: 464 verticer, 1728 index, `TEXCOORD_0` utan
+`NORMAL`, uv (0.5287, 0.6786) för index 0 utläst ur filen med Python).
 Scenexemplet verifierade ECS och textlayout. En bildruta renderades på Intel Iris Plus via
 SSH med tillgång till Wayland-sessionen; textatlasen samplar och editor-UI:t
 står rättvänt i den bilden. Textåtergivningen verifierades med parvisa
@@ -741,6 +797,24 @@ migrerats till `enums.ddr` (30 structfält, 9 lokala konstanter och
 egen capture: enda skillnaden (AE 115 068) ligger i topprad, paneler och
 underkant, alltså textåtergivningen som inte ingick i IBL:s bas.
 
+**QA 2026-11-24 (låst session, fyra captures på 2256 × 1504).**
+Standardcapturen mot baslinjen från samma timme: **AE = 0** (baseline oförändrad
+efter att kamerans yaw/pitch flyttade från `main.ddr` till `args.aim`).
+`--eye 6 4 -7` gav före ändringen en tom horisont (kameran flyttades men såg
+rakt fram, AE 73 710 mot baslinjen = 2,2 % himla- och markförskjutning);
+efter att `--eye` vänder kameran mot scenens mitt syns kubarna bakifrån,
+glaset, orberna och skuggorna (AE 156 753 = 4,6 %). `--glb Fox.glb` stod
+förut på (5.4, 0, 0.8) och skars av vid högerkanten: differensmasken mot
+baslinjen sträckte sig från kolumn 1 932 till 2 252 av 2 256; på (0, 0, 4.2)
+står räven hel i mitten av bilden, på golvet, med skugga, i storlek mellan
+kuberna (`objects` 15, "model" i scengrafen). `--effects`: hörnen i himlen
+(181,201,227) → (170,189,215), mitten (203,205,211) oförändrad, inga
+inverterade områden. En visionmodell som skulle läsa effects-capturen fick
+i stället fox-capturen förbi (samma filnamn, ny konvertering) - därför står
+pixelproberna här, inte bildbeskrivningen. `--frames 5` utan capture på den
+låsta sessionen: SIGSEGV i första framen mellan `acquired image 0` och
+`render pass begun` (next-steps, kända begränsningar).
+
 **På macOS, 2026-11-23 (gränssnittet och Metal).** Dunder 0.11.0, Apple M5,
 macOS 27.2. Trädet kompilerade inte på macOS innan detta arbete
 (`static_bytes("linux")`). Efteråt: `dunder check` rent på arm64-macos,
@@ -772,6 +846,13 @@ Metal-backenden mättes så här:
 8 passed fast paketets `tests/suite.ddr` har 6 `@test`, och `storm-ui` 10 fast
 den har 8: de två extra är samma två `@test fn` i Skrifts egen källmodul
 (`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
+`path`-beroendet. Storms egna är därför **81** = 8 rot + 73 paket (tre till i roten
+2026-11-24: argumenttolkningen och orbspelet flyttades ur `main.ddr` till
+`src/args.ddr`/`src/game.ddr` just för att kunna testas utan fönster, och ett
+fjärde samma dag: `--eye` vänder kameran mot scenen, se QA nedan). En mätning
+som summerar `passed`-raden över paketen får 82 och räknar Skrifts tester som
+Storms; räkna `@test` i `tests/suite.ddr` i stället.
+
 `path`-beroendet. Storms egna är därför **86** = 4 rot + 82 paket. En mätning
 som summerar `passed`-raden över paketen får 90 och räknar Skrifts tester som
 Storms; räkna `@test` i `tests/suite.ddr` i stället, och jämför med hur många

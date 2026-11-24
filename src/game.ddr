@@ -1,0 +1,106 @@
+// The playable loop and the frame's draw classification, without a window.
+//
+// Eight emissive cubes stand in a ring around the orbit. Walking into one
+// collects it: the entity is destroyed and the score goes up. When the ring
+// is empty the HUD says so; R rebuilds it together with the camera.
+//
+// This module is pure scene logic over `scene.Graph` and `scene.Drawable`:
+// no Vulkan, no window, so a test drives it exactly as a frame does.
+
+import core
+import ecs
+import scene as scenegraph
+
+pub const ORB_COUNT: i32 = 8
+pub const ORB_RADIUS: f32 = 6.5
+pub const ORB_PICKUP: f32 = 1.4
+
+fn orb_material() -> scenegraph.Material {
+    scenegraph.emissive_material(0.35, 0.95, 0.70, 1.0, 0.0, 0.35, 0.45)
+}
+
+// An orb is marked by its name, exactly as `spawn_orbs` writes it: "orb <n>".
+// The space is part of the mark, so "orbit" or "orbital station" are not orbs.
+pub fn is_orb(name: string) -> bool { name.len >= 4 && name[0..4] == "orb " }
+
+pub fn spawn_orbs(graph: &mut scenegraph.Graph) {
+    for i in 0..ORB_COUNT {
+        // Half a step off, so no orb starts squarely in front of the camera.
+        angle := (f32(i) + 0.5) * 6.2831853 / f32(ORB_COUNT)
+        position := core.vec3(angle.cos() * ORB_RADIUS, 0.7, angle.sin() * ORB_RADIUS)
+        orb := graph.create_root(position)
+        _ := graph.set_name(orb, "orb " + i.str())
+        _ := graph.set_shape(orb, .Cube)
+        _ := graph.set_scale(orb, core.vec3(0.28, 0.28, 0.28))
+        _ := graph.set_material(orb, orb_material())
+    }
+}
+
+pub fn orbs_left(graph: &scenegraph.Graph) -> i32 {
+    mut n: i32 = 0
+    // Accessor results go through locals: a `from self` return passed straight
+    // into a generic fails E3003 here (Storm dogfood finding 60).
+    names := graph.names()
+    locals := graph.locals()
+    for row in ecs.join2(names, locals) {
+        if is_orb(names.at(row.a).value) { n = n + 1 }
+    }
+    n
+}
+
+// Destroy every orb within pickup range of the eye; returns how many.
+pub fn collect_orbs(graph: &mut scenegraph.Graph, eye: core.Vec3) -> i32 {
+    // The query is a snapshot, so collect first and destroy after the loop.
+    mut doomed: []ecs.Entity = []
+    {
+        names := graph.names()
+        locals := graph.locals()
+        for row in ecs.join2(names, locals) {
+            if !is_orb(names.at(row.a).value) { continue }
+            at := locals.at(row.b).position
+            dx := at.x - eye.x
+            dy := at.y - eye.y
+            dz := at.z - eye.z
+            if dx * dx + dy * dy + dz * dz < ORB_PICKUP * ORB_PICKUP { doomed.push(row.entity) }
+        }
+    }
+    mut collected: i32 = 0
+    for entity in doomed {
+        if graph.destroy(entity) { collected = collected + 1 }
+    }
+    collected
+}
+
+// A surface is transparent when its base colour has alpha. Opaque items rely
+// on the depth buffer; only transparent items are sorted back to front.
+pub fn is_transparent(material: &scenegraph.Material) -> bool { material.base.a < 0.999 }
+
+// Glass is blended, so it must be painted farthest first: descending depth
+// (squared distance), stable, so equal depths keep their declaration order.
+pub fn sort_back_to_front(items: &mut []scenegraph.Drawable) {
+    mut i := 1
+    while i < items.len {
+        mut j := i
+        while j > 0 && items[j - 1].depth < items[j].depth {
+            held := items[j - 1].clone()
+            items[j - 1] = items[j].clone()
+            items[j] = held
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+// Whether a drawable casts a shadow: everything opaque does, including the
+// ground and loaded meshes. Transparent items only blend into the main pass.
+pub fn casts_shadow(item: &scenegraph.Drawable) -> bool { !is_transparent(&item.material) }
+
+// The vertex stream a drawable is drawn with: its own when it is a loaded
+// mesh, otherwise the built-in geometry for its shape.
+pub fn geometry_of(item: &scenegraph.Drawable, cube: &[]f32, plane: &[]f32) -> []f32 {
+    match item.shape {
+        .Mesh => item.vertices.clone(),
+        .Plane => plane.clone(),
+        .Cube => cube.clone(),
+    }
+}

@@ -52,30 +52,28 @@ unsafe fn release(address: ptr)
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
-unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32) -> bool {
+unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32) -> state.SetupStep {
     r.width = u32(width)
     r.height = u32(height)
     r.frameIndex = 0
     r.current = 0
-    r.stage = 1
-    if !sdl.open(&mut r.window, title, width, height) { return false }
-    r.stage = 2
-    if !device.setup(&mut r) { return false }
-    r.stage = 6
-    if !shadow.setup(&mut r) { return false }
-    r.stage = 3
-    if !pipeline.setup(&mut r) { return false }
-    if !post.setup(&mut r) { return false }
-    if !ui.setup(&mut r) { return false }
-    r.stage = 17
-    if !depth.create(&mut r, r.width, r.height) { return false }
-    r.stage = 4
-    if !device.setup_frames(&mut r) { return false }
-    r.stage = 5
+    if !sdl.open(&mut r.window, title, width, height) { return .Window }
+    mut step := device.setup(&mut r)
+    if step != .Ready { return step }
+    step = shadow.setup(&mut r)
+    if step != .Ready { return step }
+    step = pipeline.setup(&mut r)
+    if step != .Ready { return step }
+    step = post.setup(&mut r)
+    if step != .Ready { return step }
+    step = ui.setup(&mut r)
+    if step != .Ready { return step }
+    step = depth.create(&mut r, r.width, r.height)
+    if step != .Ready { return step }
+    step = device.setup_frames(&mut r)
+    if step != .Ready { return step }
     // 4 MiB of mapped vertex space, enough for a few hundred thousand vertices.
-    if !device.create_vertex_buffer(&mut r, 4194304) { return false }
-    r.stage = 0
-    true
+    device.create_vertex_buffer(&mut r, 4194304)
 }
 
 // The live renderer behind a handle, or null for one that has expired.
@@ -103,8 +101,9 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
         release(address)
         return .Err("Vulkan loader is missing required entry points")
     }
-    if !initialize(ref_at(address), title, width, height) {
-        failure := stage_name(ref_at(address))
+    mut failed := initialize(ref_at(address), title, width, height)
+    if failed != .Ready {
+        failure := describe(ref_at(address), failed)
         device.destroy(ref_at(address))
         _ := dl.close(loader)
         release(address)
@@ -138,7 +137,7 @@ unsafe fn name(r: &state.Renderer) -> string {
 }
 
 unsafe fn capture_next_at(r: &mut state.Renderer) -> bool {
-    if !headless.setup(&mut r) { return false }
+    if headless.setup(&mut r) != .Ready { return false }
     r.captureOn = 1
     true
 }
@@ -169,29 +168,11 @@ fn closed_frame() -> gfx.Frame {
     gfx.Frame { closed: true, width: 0, height: 0, scale: 1.0, time: 0.0, resized: false, input: gfx.Input::empty() }
 }
 
-fn stage_name(r: &state.Renderer) -> string {
-    stage := r.stage
-    mut name := ""
-    if stage == 1 { name = "SDL window" }
-    if stage == 2 { name = "Vulkan device" }
-    if stage == 11 { name = "instance/surface" }
-    if stage == 12 { name = "physical device (mesh requires " + state.MESH_PUSH_BYTES.str() + " bytes of push constants)" }
-    if stage == 13 { name = "queue family" }
-    if stage == 14 { name = "logical device" }
-    if stage == 15 { name = "surface format" }
-    if stage == 16 { name = "swapchain" }
-    if stage == 17 { name = "depth buffer" }
-    if stage == 3 { name = "pipeline" }
-    if stage == 21 { name = "render pass" }
-    if stage == 22 { name = "mesh pipeline" }
-    if stage == 23 { name = "sky pipeline" }
-    if stage == 24 { name = "framebuffers" }
-    if stage == 4 { name = "frame sync" }
-    if stage == 5 { name = "vertex buffer" }
-    if name.len == 0 { name = "stage " + stage.str() }
-    // What Vulkan said, when Vulkan said no.
-    if r.lastResult != 0 { name = name + " (" + enums.result_name(r.lastResult) + ")" }
-    name
+// The step that failed, and what Vulkan said when it did.
+fn describe(r: &state.Renderer, failed: state.SetupStep) -> string {
+    mut text := failed.name()
+    if r.lastResult != 0 { text = text + " (" + enums.result_name(r.lastResult) + ")" }
+    text
 }
 
 fn draw_error(frames: i64, move message: string) -> DrawResult {
@@ -209,7 +190,8 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
         r.image_available[slot], ptr(0), addr(&mut image_index))
     if enums.is_out_of_date(acquired) {
-        if !recreate(&mut r) { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated (" + enums.result_name(r.lastResult) + ")" } }
+        failed := recreate(&mut r)
+        if failed != .Ready { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated at " + describe(&r, failed) } }
         return BeginResult { ok: false, error: "swapchain recreated; retry the frame" }
     }
     if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
@@ -280,7 +262,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
     base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, blended: bool) -> DrawResult {
     if r.recording == 0 { return draw_error(r.frameIndex, "mesh drawn outside begin/end") }
-    if vertices.len % 6 != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz] triples") }
+    if vertices.len % gfx.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
     }
@@ -313,7 +295,7 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     }
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, enums.shader_stage(.VertexFragment), 0, state.MESH_PUSH_BYTES, addr(&push[0]))
-    r.api.CmdDraw(r.commands[slot], u32(vertices.len / 6), 1, 0, 0)
+    r.api.CmdDraw(r.commands[slot], u32(vertices.len / gfx.VERTEX_FLOATS), 1, 0, 0)
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }
 
@@ -381,11 +363,13 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     r.recording = 0
     if enums.is_out_of_date(presented) {
         // The frame was not shown; build a new swapchain before the next one.
-        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is out of date and could not be recreated (" + enums.result_name(r.lastResult) + ")") }
+        failed := recreate(&mut r)
+        if failed != .Ready { return draw_error(r.frameIndex, "swapchain is out of date and could not be recreated at " + describe(&r, failed)) }
     } else if presented == i32(enums.VkResult.SuboptimalKHR) {
         // Shown, but the swapchain no longer matches the window: rebuild it
         // now that presenting is done, and let the frame count as delivered.
-        if !recreate(&mut r) { return draw_error(r.frameIndex, "swapchain is suboptimal and could not be recreated (" + enums.result_name(r.lastResult) + ")") }
+        failed := recreate(&mut r)
+        if failed != .Ready { return draw_error(r.frameIndex, "swapchain is suboptimal and could not be recreated at " + describe(&r, failed)) }
     } else if presented != 0 {
         return draw_error(r.frameIndex, "presenting failed (" + enums.result_name(presented) + ")")
     }
@@ -395,13 +379,15 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
 }
 
 // Rebuild everything that depends on the swapchain size.
-unsafe fn recreate(r: &mut state.Renderer) -> bool {
+unsafe fn recreate(r: &mut state.Renderer) -> state.SetupStep {
     _ := r.api.DeviceWaitIdle(r.device)
     pipeline.destroy_framebuffers(&mut r)
     depth.destroy(&mut r)
     device.destroy_swapchain(&mut r)
-    if !device.setup_swapchain_only(&mut r) { return false }
-    if !depth.create(&mut r, r.width, r.height) { return false }
+    mut step := device.setup_swapchain_only(&mut r)
+    if step != .Ready { return step }
+    step = depth.create(&mut r, r.width, r.height)
+    if step != .Ready { return step }
     pipeline.setup_frames_only(&mut r)
 }
 
@@ -463,8 +449,9 @@ impl gfx.Backend for Window {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            if !ibl.setup(ref_at(address), &sky.sun, &sky.zenith, &sky.horizon) {
-                return .Err("could not build the environment maps")
+            failed := ibl.setup(ref_at(address), &sky.sun, &sky.zenith, &sky.horizon)
+            if failed != .Ready {
+                return .Err("could not build the environment maps at " + describe(ref_at(address), failed))
             }
             .Ok
         }
@@ -549,7 +536,8 @@ impl gfx.Backend for Window {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            if !ui.upload_atlas(ref_at(address), pixels, width, height) { return .Err("atlas upload failed") }
+            failed := ui.upload_atlas(ref_at(address), pixels, width, height)
+            if failed != .Ready { return .Err("atlas upload failed at " + describe(ref_at(address), failed)) }
             .Ok
         }
     }

@@ -89,8 +89,8 @@ _ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sk
 _ := window.end()
 ```
 
-Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar sex
-`f32` per vertex för position och normal, en `Sky` (solen, himlen och
+Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar åtta
+`f32` per vertex för position, normal och UV, en `Sky` (solen, himlen och
 ljusmatrisen, samlade i `gfx.sky_params`) och kamerans position.
 
 - **På Vulkan** går konstanterna med push constants: 240 byte i meshpasset
@@ -161,12 +161,13 @@ för blendingens skull.
   Chipsen längst ner ("T glass", "G shadows", "E effects") visar läget.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
-- `--capture fil.ppm` – rendera en bildruta till PPM. Fungerar utan att
-  fönstret har fokus eller någon rör tangentbordet; det är så QA görs.
-- `--eye x y z` – starta kameran på en given punkt (så `--capture` bevisar
-  orbplockningen: kameran startar inne i en orb)
-- `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på marken)
-- `--font fil.ttf` – rita editorn med den fonten i stället för systemets
+- `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
+  Fungerar på en låst session; det är så QA görs utan tangentbord.
+- `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
+  (`--at x y z` ändrar målet; `--yaw a`/`--pitch b` ger en egen vinkel). Utan
+  `--eye` står kameran på baslinjen som varje pixeljämförelse mäter mot.
+- `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på
+  marken mitt framför kameran)
 - `--no-glass`, `--no-shadows`, `--effects` – startläget för de tre toggles
 - `--trace` – skriv varje inläsningssteg
 
@@ -256,15 +257,14 @@ efter den. Se `docs/dogfood.md` "Om ECS-frågorna".
 doc := gltf.load("model.glb")
 if !doc.ok { print(doc.error); return 1 }
 mesh := gltf.load_mesh(&doc)
-stream := gltf.interleave(&mesh)   // [x,y,z,nx,ny,nz] per vertex
+stream := gltf.interleave(&mesh)   // [x,y,z,nx,ny,nz,u,v] per vertex
 ```
 
 Laddaren läser `.glb` (JSON- och BIN-chunk) och `.gltf`. Accessorns
 `componentType` hanteras för `5126` (float) samt de normaliserade
 heltalstyperna. Saknade index genereras som `0..n`; finns index expanderar
 `interleave` genom dem (Khronos `Box.glb` är fixtur och läses: 24 verticer, 36
-index). `Mesh.uvs` läses från `TEXCOORD_0` men ännu inte interleavad — det är
-textursteget (next-steps 3a). Material, texturer, noder och animation är nästa
+index). `TEXCOORD_0` följer med i vertexströmmen. Om UV saknas används (0, 0). Material, texturer, noder och animation är nästa
 steg. I appen laddar `--glb fil.glb` en modell in i scenen som en `Mesh`-komponent.
 
 ## Text
@@ -301,7 +301,7 @@ läser SPIR-V-filen och skriver `packages/storm-vulkan/src/shader.ddr`; för Met
 läser det `packages/storm-metal/shaders/storm.metal` och skriver källan som en
 råsträng i `packages/storm-metal/src/shader.ddr`. Båda modulerna är incheckade,
 så ett bygge behöver ingen shaderkompilerare. (Metal-källan kan inte bäddas in
-med `@embed_file`: ett beroende hittar inte sina egna filer, dogfood fynd 63.)
+med `@embed_file`: ett beroende hittar inte sina egna filer, dogfood fynd 65.)
 
 ## Regler
 

@@ -37,6 +37,36 @@ import ..src.state as state
     }
 }
 
+@test fn vertex_input_declares_the_whole_stream() {
+    // The one layout both mesh pipelines declare: one binding, three
+    // attributes, and the binding's stride covers all of them.
+    unsafe {
+        mut input := vk.vertex_input()
+        enums.apply_vertex_input(&mut input)
+        assert(input.binding.stride == gfx.VERTEX_BYTES)
+        assert(input.binding.inputRate == 0)
+        assert(size_of(vk.VertexAttributes) == 48)
+        assert(size_of(vk.VertexInput) == 60)
+        a := input.attributes.position
+        b := input.attributes.normal
+        c := input.attributes.uv
+        assert(a.location == 0 && a.offset == 0 && a.format == 106)
+        assert(b.location == 1 && b.offset == 12 && b.format == 106)
+        assert(c.location == 2 && c.offset == 24 && c.format == 103)
+        assert(a.binding == 0 && b.binding == 0 && c.binding == 0)
+        // Inside the record the three descriptions sit back to back, 16 bytes
+        // apart, and the words are C's: [location, binding, format, offset].
+        base := usize(addr(&input.attributes))
+        assert(usize(addr(&input.attributes.normal)) - base == 16)
+        assert(usize(addr(&input.attributes.uv)) - base == 32)
+        assert(usize(addr(&input.attributes)) - usize(addr(&input.binding)) == 12)
+        assert(load_u32(ptr(base + 4 * 4)) == 1)
+        assert(load_u32(ptr(base + 8 * 4)) == 2)
+        assert(load_u32(ptr(base + 8 * 4 + 8)) == 103)
+        assert(load_u32(ptr(base + 8 * 4 + 12)) == 24)
+    }
+}
+
 @test fn barrier_struct_matches_the_c_abi() {
     assert(size_of(vk.ImageMemoryBarrier) == 72)
 }
@@ -222,4 +252,40 @@ import ..src.state as state
     assert(!enums.is_success(-1000001004))
     assert(enums.is_out_of_date(-1000001004))
     assert(!enums.is_out_of_date(-1000001003))
+}
+
+// fail() is the one place a Vulkan code becomes a setup failure: it must hand
+// back the step it was given (the step is the return value, not a field) and
+// record the code for describe(). Every step takes the same path, so check all.
+@test fn fail_hands_back_its_step_and_records_the_code() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
+            .Shadow, .Pipeline, .Overlay, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+        mut i := 0
+        while i < steps.len {
+            r.lastResult = 0
+            code := -1000001000 - i
+            failed := device.fail(&mut r, code, steps[i])
+            assert(failed == steps[i])
+            assert(r.lastResult == code)
+            i = i + 1
+        }
+    }
+}
+
+// A failure message is "<step name> (<VK name>)": a step without a name would
+// print as an empty string and the message would start with a space.
+@test fn every_setup_step_is_named_and_ready_is_the_sentinel() {
+    assert(state.SetupStep.Ready.name() == "ready")
+    steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
+        .Shadow, .Pipeline, .Overlay, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+    mut i := 0
+    while i < steps.len {
+        text := steps[i].name()
+        assert(text.len > 0)
+        assert(text != "ready")
+        i = i + 1
+    }
+    assert(enums.result_name(-13) == "VK_ERROR_UNKNOWN")
 }

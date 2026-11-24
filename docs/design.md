@@ -43,19 +43,27 @@
   som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `trait Backend` med 18
   metoder (varje fallibel en `Result` som säger varför), och
   geometrihjälparna som äger vertexformatet. Sju tester, inga med fönster.
-- **3 råa enum-heltal** i storm-vulkans pipeline-state (var 135 före steg 2):
-  `shadow.ddr` 262–265 (`inputRate: 0`, `format: 106` ×2). De väntar på
-  next-steps 3a. Fyra `sType: 18` skrivs också för hand (`ui.ddr` ×2,
-  `post.ddr` ×2).
-- **Enums är ett eget lager** i båda backends: storm-vulkans `enums.ddr` har
-  33 enums och 228 anrop går genom dess konverterare; storm-metals har 26
-  enums och 26 konverterare, med vart och ett värde låst mot en tabell som
-  SDK:s egen kompilator skriver ut.
-- **Vulkans `Renderer`: 132 fält** (`state.ddr`), 18 stage-markörer, och
-  varje Vulkan-anrop binder dessutom sin `VkResult`-kod. **Metals
-  `Renderer`: 33 fält** — resten ägs av `appkit.Window`,
-  `ibl.Environment`, `ui.Atlas`, `device.Buffer` och `device.Pipeline`, var
-  och en med sin skapare och sin förstörare.
+- **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
+  Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
+  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Fyra
+  `sType: 18` skrivs också för hand (`ui.ddr` ×2, `post.ddr` ×2) — de är
+  strukturtagningsnummer, inte enums, men samma sorts tal-utan-vittne.
+- **Enums är ett eget lager:** `enums.ddr` har 33 `pub enum` och 43
+  `pub fn`: 41 konverterare/namngivna värden och två skrivare av C-poster
+  (`apply_blend`, `apply_vertex_input`); 225 anrop i paketet går genom
+  `enums.*(.Variant)`. Endast två
+  namngivna `u32`-konstanter lever kvar i `layout.ddr`
+  (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
+- `state.ddr` `Renderer`: **131 fält** (var ~60 när steget skrevs; IBL,
+  djup, skuggor, post, UI och headless har alla lagt till sina). Varje
+  modul tar `&mut Renderer`.
+- **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
+  returnerar `state.SetupStep` (`Ready` eller steget som föll); `device.fail(&mut r, code, step)`
+  sätter `r.lastResult` och ger steget tillbaka, så en Vulkan-kod kan inte
+  rapporteras utan sin plats. Hjälpare med `&Renderer` (immutable) returnerar
+  koden `-> i32` och ägaren med `&mut` binder den: `code := helper(…); if code
+  != 0 { return device.fail(&mut r, code, .Step) }`. 109 `fail`-platser,
+  30 funktioner, noll `stage`-tilldelningar.
 - **Beroenden:** `storm-input -> storm-gfx` (ett `Input`-värde, ingen
   backend, inga capabilities), `storm-text -> dunder-skrift` via
   `../../../dunder-skrift` (syskonkatalog utan versionslås),
@@ -199,17 +207,28 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 1. **Skapa `storm-vk` med enums + bindings.** *Status: enums-modulen finns
     (`packages/storm-vulkan/src/enums.ddr`, 33 enums, 228 anrop);
     paketdelningen är kvar.*
-2. **Ersätt de 133 heltalen** med enums. *Status: klart 2026-11-23. 135 →
-    **3** råa enum-heltal i structfält (`shadow.ddr:262–265`), som
-    next-steps 3a tar.*
-3. **Dela upp `Renderer` i ägda strukturer.** *Status: första halvan klar
-    2026-11-23 (fynd 52 löst, 53–55 dokumenterade); `Renderer`-structen på
-    132 fält är kvar i storm-vulkan. Storm-metal har den uppdelningen
-    redan.*
-4. **`Result` istället för `stage`.** *Status: `VkResult` är en enum med
-    Khronos-värden och 92 anrop binder sin kod; `r.stage = N` som
-    stegmarkör är kvar internt i storm-vulkan. **Kontraktet är helt
-    `Result`:** varje fallibel metod i `gfx.Backend` säger varför.*
+2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
+   konverterare, modul för modul. Pixelidentisk capture som bevis.
+   *Status: klart 2026-11-23. 135 → **0** råa enum-heltal i structfält: de
+   sista tre var vertexlayouten i `shadow.ddr` (`inputRate: 0`,
+   `format: 106` ×2); next-steps 3a tog dem genom att låta
+   `layout.vertex_input()` äga beskrivningen och `enums.apply_vertex_input`
+   skriva enum-fälten, så det inte finns en andra plats att hålla lika.
+   AE = 0 mot baslinjen, inklusive två spec-korrigeringar av layouter
+   (fynd 44). `post → ui`-beroendet borta.*
+3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
+   *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och
+   skuggpassens handpackade ord är riktiga C-poster i delade wrappers
+   (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
+   `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
+   `Renderer`-structen (131 fält) är kvar.*
+4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
+   *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
+   (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
+   returvärdet `SetupStep` i stället för `r.stage = N`: `name()` är en
+   exhaustiv match (E3006 när ett steg läggs till utan namn) och
+   `describe` sätter ihop `"steg (VK_…)"`. Tester: `fail` ger steget tillbaka
+   och sätter koden för varje steg; varje steg har ett namn.*
 5. **Dra `ui.ddr`/`post.ddr` ur backenden.** Kvar.
 6. **Lås skrift-dependency.** Kvar.
 7. **`storm-gfx` och Metal.** *Status: klart 2026-11-23 — kontraktet, en

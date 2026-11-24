@@ -1,5 +1,6 @@
 #version 450
-// PBR mesh pipeline: world-space position and normal for lighting.
+// PBR mesh pipeline: world-space position and normal for lighting, uv for
+// the base colour texture (next-steps 3b).
 layout(push_constant, std430) uniform Push {
     mat4 mvp;
     mat4 model;
@@ -14,6 +15,7 @@ layout(push_constant, std430) uniform Push {
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
+layout(location = 2) in vec2 uv;
 
 layout(location = 0) out vec3 world_normal;
 layout(location = 1) out vec3 world_position;
@@ -24,6 +26,7 @@ layout(location = 5) out vec4 sky_sun;
 layout(location = 6) out vec4 sky_sun_color;
 layout(location = 7) out vec4 sky_zenith;
 layout(location = 8) out vec4 sky_horizon;
+layout(location = 9) out vec2 vertex_uv;
 
 void main() {
     vec4 world = push.model * vec4(position, 1.0);
@@ -37,5 +40,6 @@ void main() {
     sky_sun_color = push.sun_color;
     sky_zenith = push.zenith;
     sky_horizon = push.horizon;
+    vertex_uv = uv;
     gl_Position = push.mvp * vec4(position, 1.0);
 }

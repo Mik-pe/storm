@@ -1,0 +1,150 @@
+// Command-line arguments, read from a list rather than from the process.
+//
+// Everything here is a pure function of `args` (the strings after the program
+// name), so the parsing is testable without spawning a process: `main` copies
+// `sys.arg(1..)` into a `[]string` once and hands that to every reader.
+//
+//   args := arguments.from_process()
+//   limit := arguments.frame_limit(&args)
+//   if arguments.flag(&args, "--no-glass") { … }
+//   aim := arguments.aim(&args)
+//   mut camera := input.Camera::new(aim.position)
+//   camera.yaw = aim.yaw
+//   camera.pitch = aim.pitch
+
+import core
+import std.math as math
+import std.parse as parse
+import sys
+
+// Where the camera stands when --eye is not given.
+fn default_eye() -> core.Vec3 { core.vec3(0.0, 2.2, 9.5) }
+// How it is turned without --eye: straight ahead, tilted a little down.
+// Together with default_eye this is the baseline capture every pixel
+// comparison in docs/dogfood.md is measured against.
+const DEFAULT_YAW: f32 = 0.0
+const DEFAULT_PITCH: f32 = -0.16
+// What --eye looks at when --at is not given: the middle of the scene.
+fn default_target() -> core.Vec3 { core.vec3(0.0, 0.9, 0.0) }
+
+// The strings after the program name, in order.
+pub fn from_process() -> []string {
+    mut out: []string = []
+    for i in 1..sys.arg_count() { out.push(sys.arg(i)) }
+    out
+}
+
+// The index of `name` in the list, or -1.
+fn find(args: &[]string, name: string) -> i32 {
+    for i in 0..args.len {
+        if args[i] == name { return i }
+    }
+    -1
+}
+
+// A flag that stands alone: present or absent.
+pub fn flag(args: &[]string, name: string) -> bool { find(args, &name) >= 0 }
+
+// The value after a flag, or "" when the flag is absent or the last word.
+pub fn value(args: &[]string, name: string) -> string {
+    i := find(args, &name)
+    if i < 0 || i + 1 >= args.len { return "" }
+    args[i + 1].clone()
+}
+
+// --frames N: how many frames to render before exiting, 0 for no limit.
+// A missing, trailing or non-positive value means "not given".
+pub fn frame_limit(args: &[]string) -> i64 {
+    given := value(args, "--frames")
+    if given.len == 0 { return 0 }
+    parsed := parse.integer(given)
+    if parsed.ok && parsed.value > 0 { return parsed.value }
+    0
+}
+
+// Three floats after `name`, or .None when the flag is absent, short or
+// unparsable: "anything unparsable is the default" is one rule for the whole
+// triple, not per component.
+fn triple(args: &[]string, name: string) -> Option<core.Vec3> {
+    i := find(args, &name)
+    if i < 0 || i + 3 >= args.len { return .None }
+    x := parse.Float32::parse(args[i + 1])
+    y := parse.Float32::parse(args[i + 2])
+    z := parse.Float32::parse(args[i + 3])
+    if x.ok && y.ok && z.ok { return .Some(core.vec3(x.value, y.value, z.value)) }
+    .None
+}
+
+// One float after `name`, or .None when the flag is absent or unparsable.
+fn single(args: &[]string, name: string) -> Option<f32> {
+    i := find(args, &name)
+    if i < 0 || i + 1 >= args.len { return .None }
+    parsed := parse.Float32::parse(args[i + 1])
+    if parsed.ok { return .Some(parsed.value) }
+    .None
+}
+
+// Where the camera starts and how it is turned.
+pub struct Aim {
+    position: core.Vec3,
+    // Yaw around +Y, pitch around the camera's right axis, in the camera's
+    // own convention: forward = (sin yaw cos pitch, sin pitch, -cos yaw cos
+    // pitch). Radians.
+    yaw: f32,
+    pitch: f32,
+}
+
+// The turn that makes a camera at `from` look at `to`. Pitch is atan2 of the
+// height over the horizontal distance - exact at the horizon and no inverse
+// sine needed; yaw follows from forward's x and -z. Straight up or down
+// (no horizontal distance) keeps the yaw at zero.
+pub fn look_at(from: core.Vec3, to: core.Vec3) -> Aim {
+    dx := to.x - from.x
+    dy := to.y - from.y
+    dz := to.z - from.z
+    flat := (dx * dx + dz * dz).sqrt()
+    mut yaw: f32 = 0.0
+    if flat > 0.0 { yaw = f32(math.atan2(f64(dx), f64(-dz))) }
+    Aim { position: from, yaw: yaw, pitch: f32(math.atan2(f64(dy), f64(flat))) }
+}
+
+// The baseline: the default position turned by the default yaw and pitch.
+fn baseline() -> Aim {
+    Aim { position: default_eye(), yaw: DEFAULT_YAW, pitch: DEFAULT_PITCH }
+}
+
+// --eye x y z [--at x y z] [--yaw a] [--pitch b]: where the camera starts and
+// what it looks at.
+//
+// Without --eye the camera is the baseline. With --eye it *looks at* --at
+// (the middle of the scene by default), so a position anywhere around the
+// scene produces a picture of the scene: an --eye that only moved the camera
+// showed the empty horizon behind it. --yaw and --pitch, when given, replace
+// the computed turn, so one specific angle is still one flag away. Anything
+// unparsable is the baseline.
+pub fn aim(args: &[]string) -> Aim {
+    given := triple(args, "--eye")
+    match given {
+        .None => baseline(),
+        .Some(eye) => {
+            mut target := default_target()
+            at := triple(args, "--at")
+            match at {
+                .Some(t) => { target = t },
+                .None => {},
+            }
+            mut a := look_at(eye, target)
+            yaw := single(args, "--yaw")
+            match yaw {
+                .Some(v) => { a.yaw = v },
+                .None => {},
+            }
+            pitch := single(args, "--pitch")
+            match pitch {
+                .Some(v) => { a.pitch = v },
+                .None => {},
+            }
+            a
+        },
+    }
+}

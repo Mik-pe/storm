@@ -14,21 +14,15 @@ import .state as state
 // vignette, grain, scanlines and a cool grade. It needs no scene texture, so
 // the whole thing stays inside the scene render pass.
 
-unsafe fn module(r: &state.Renderer, words: ptr, size: usize, output: ptr) -> bool {
-    mut info: vk2.ShaderModuleCreateInfo = zeroed()
-    info.sType = 16
-    info.codeSize = size
-    info.pCode = words
-    r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output) == 0
-}
-
-unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
+unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     vert := shader.overlay_vertex()
     frag := shader.overlay_fragment()
     mut vert_module := ptr(0)
-    if !module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module)) { return false }
+    mut code := device.shader_module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module))
+    if code != 0 { return device.fail(&mut r, code, .Overlay) }
     mut frag_module := ptr(0)
-    if !module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module)) { return false }
+    code = device.shader_module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module))
+    if code != 0 { return device.fail(&mut r, code, .Overlay) }
     r.postVertShader = vert_module
     r.postFragShader = frag_module
 
@@ -90,8 +84,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     layout_info.sType = 30
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&mut push_range)
-    mut code := r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout))
-    if code != 0 { return device.fail(&mut r, code) }
+    code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout))
+    if code != 0 { return device.fail(&mut r, code, .Overlay) }
 
     mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
     info.sType = 28
@@ -109,16 +103,16 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> bool {
     info.subpass = 0
     info.basePipelineIndex = -1
     code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.postPipeline))
-    if code != 0 { return device.fail(&mut r, code) }
-    true
+    if code != 0 { return device.fail(&mut r, code, .Overlay) }
+    .Ready
 }
 
-pub unsafe fn setup(r: &mut state.Renderer) -> bool {
-    if !create_pipeline(&mut r) {
+pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
+    if create_pipeline(&mut r) != .Ready {
         _ := sys.eprint("overlay: pipeline failed")
-        return false
+        return .Overlay
     }
-    true
+    .Ready
 }
 
 // Draw the overlay inside the open scene pass.

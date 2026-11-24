@@ -41,6 +41,40 @@ pub struct MemoryProperties {
 pub const FRAME_COUNT: i32 = 2
 pub const MESH_PUSH_BYTES: u32 = 240
 
+// Which setup step failed. It is the return value of every setup function,
+// so a step cannot exist without a name: `name` matches exhaustively and the
+// compiler rejects a new variant without one (E3006). `.Ready` means no step
+// failed.
+pub enum SetupStep {
+    Ready, Window, Instance, PhysicalDevice, QueueFamily, Device, Format, Swapchain,
+    Shadow, Pipeline, Overlay, Ui, DepthBuffer, FrameSync, VertexBuffer,
+    Environment, CaptureTarget,
+}
+
+impl SetupStep {
+    pub fn name(&self) -> string {
+        match self {
+            .Ready => "ready",
+            .Window => "SDL window",
+            .Instance => "instance/surface",
+            .PhysicalDevice => "physical device (mesh requires " + MESH_PUSH_BYTES.str() + " bytes of push constants)",
+            .QueueFamily => "queue family",
+            .Device => "logical device",
+            .Format => "surface format",
+            .Swapchain => "swapchain",
+            .Shadow => "shadow pass",
+            .Pipeline => "pipeline",
+            .Overlay => "overlay (post) pipeline",
+            .Ui => "UI atlas and pipeline",
+            .DepthBuffer => "depth buffer",
+            .FrameSync => "frame sync",
+            .VertexBuffer => "vertex buffer",
+            .Environment => "environment maps",
+            .CaptureTarget => "capture target",
+        }
+    }
+}
+
 // All mutable renderer state lives behind one heap allocation. Public handles
 // carry only a generation; this struct never escapes the module.
 @c_layout
@@ -169,7 +203,6 @@ pub struct Renderer {
     recording: u32,
     pendingPass: vkl.RenderPassBeginInfo,
     pendingClear: [u64; 4],
-    stage: u32,
     lastResult: i32,
     imageIndex: i32,
     // Headless capture: offscreen render target plus a mapped linear copy.

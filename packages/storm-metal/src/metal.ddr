@@ -265,7 +265,7 @@ unsafe fn open_pass(r: &mut Renderer, descriptor: ptr, size_wide: u64, size_high
 // the frame's cursor, and bound for the vertex stage. False when it is not a
 // vertex list or the frame's vertex space has run out.
 unsafe fn append_vertices(r: &mut Renderer, vertices: &[]f32) -> bool {
-    if vertices.len == 0 || vertices.len % 6 != 0 { return false }
+    if vertices.len == 0 || vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
     for i in 0..vertices.len { if !vertices[i].is_finite() { return false } }
     offset := r.vertex_cursor
     if !device.append(&r.vertices, &mut r.vertex_cursor, u64(vertices.len * 4), addr(&vertices[0])) { return false }
@@ -289,7 +289,7 @@ unsafe fn record_shadow_mesh(r: &mut Renderer, vertices: &[]f32, model: &[f32; 1
     for i in 0..16 { push[i] = r.light_vp[i] }
     for i in 0..16 { push[16 + i] = model[i] }
     pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), u64(SHADOW_FLOATS * 4), 1)
-    pass.triangles(&r.objc, r.encoder, u64(vertices.len / 6))
+    pass.triangles(&r.objc, r.encoder, u64(vertices.len / gfx.VERTEX_FLOATS))
     .Ok
 }
 
@@ -368,7 +368,7 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     pass.fragment_texture(&r.objc, r.encoder, r.environment.brdf, 3)
     pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
     pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
-    pass.triangles(&r.objc, r.encoder, u64(vertices.len / 6))
+    pass.triangles(&r.objc, r.encoder, u64(vertices.len / gfx.VERTEX_FLOATS))
     .Ok
 }
 

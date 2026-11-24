@@ -48,23 +48,15 @@ struct Staging { buffer: ptr, memory: ptr }
 // filled in or the pipeline rasterises nothing, and this keeps the state
 // struct list to what layout.ddr already declares.
 unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_count: usize,
-    fragment_words: ptr, fragment_count: usize, layout: ptr, pass: ptr, size: u32, output: ptr) -> bool {
+    fragment_words: ptr, fragment_count: usize, layout: ptr, pass: ptr, size: u32, output: ptr) -> i32 {
     mut vmodule := ptr(0)
-    mut vinfo: vk.ShaderModuleCreateInfo = zeroed()
-    vinfo.sType = 16
-    vinfo.codeSize = vertex_count * 4
-    vinfo.pCode = vertex_words
-    mut code := r.api.CreateShaderModule(r.device, addr(&vinfo), ptr(0), addr(&mut vmodule))
-    if code != 0 { return false }
+    mut code := device.shader_module(&r, vertex_words, vertex_count * 4, addr(&mut vmodule))
+    if code != 0 { return code }
     mut fmodule := ptr(0)
-    mut finfo: vk.ShaderModuleCreateInfo = zeroed()
-    finfo.sType = 16
-    finfo.codeSize = fragment_count * 4
-    finfo.pCode = fragment_words
-    code = r.api.CreateShaderModule(r.device, addr(&finfo), ptr(0), addr(&mut fmodule))
+    code = device.shader_module(&r, fragment_words, fragment_count * 4, addr(&mut fmodule))
     if code != 0 {
         r.api.DestroyShaderModule(r.device, vmodule, ptr(0))
-        return false
+        return code
     }
 
     mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
@@ -126,11 +118,11 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
     info.layout = layout
     info.renderPass = pass
     info.basePipelineIndex = -1
-    created := r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), output) == 0
+    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), output)
     // The pipeline keeps its own reference; the modules are not needed again.
     r.api.DestroyShaderModule(r.device, vmodule, ptr(0))
     r.api.DestroyShaderModule(r.device, fmodule, ptr(0))
-    created
+    code
 }
 
 // A 6-layer, cube-compatible OPTIMAL image with the given mip count. The
@@ -158,7 +150,7 @@ unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemo
     requirements.size = req[0]
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
-    if !device.allocate(&r, &requirements, 1, addr(&mut result.memory)) {
+    if device.allocate(&r, &requirements, 1, addr(&mut result.memory)) != 0 {
         r.api.DestroyImage(r.device, result.image, ptr(0))
         result.image = ptr(0)
         return result
@@ -174,7 +166,7 @@ unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemo
 }
 
 unsafe fn make_view(r: &state.Renderer, image: ptr, view_type: u32, format: u32,
-    base_mip: u32, mip_count: u32, base_layer: u32, layer_count: u32, output: ptr) -> bool {
+    base_mip: u32, mip_count: u32, base_layer: u32, layer_count: u32, output: ptr) -> i32 {
     mut view: vk.ImageViewCreateInfo = zeroed()
     view.sType = 15
     view.image = image
@@ -185,12 +177,12 @@ unsafe fn make_view(r: &state.Renderer, image: ptr, view_type: u32, format: u32,
     view.subresourceRange.levelCount = mip_count
     view.subresourceRange.baseArrayLayer = base_layer
     view.subresourceRange.layerCount = layer_count
-    r.api.CreateImageView(r.device, addr(&view), ptr(0), output) == 0
+    r.api.CreateImageView(r.device, addr(&view), ptr(0), output)
 }
 
 // Linear filtering with a mip chain: the mesh shader picks the level with
 // textureLod, so the sampler's maxLod must cover the whole chain.
-unsafe fn create_sampler(r: &state.Renderer, max_lod: f32, output: ptr) -> bool {
+unsafe fn create_sampler(r: &state.Renderer, max_lod: f32, output: ptr) -> i32 {
     mut info: vk.SamplerCreateInfo = zeroed()
     info.sType = 31
     info.magFilter = enums.filter(.Linear)
@@ -200,10 +192,10 @@ unsafe fn create_sampler(r: &state.Renderer, max_lod: f32, output: ptr) -> bool 
     info.addressModeV = enums.sampler_address_mode(.ClampToEdge)
     info.addressModeW = enums.sampler_address_mode(.ClampToEdge)
     info.maxLod = max_lod
-    r.api.CreateSampler(r.device, addr(&info), ptr(0), output) == 0
+    r.api.CreateSampler(r.device, addr(&info), ptr(0), output)
 }
 
-unsafe fn create_framebuffer(r: &state.Renderer, pass: ptr, view: ptr, size: u32, output: ptr) -> bool {
+unsafe fn create_framebuffer(r: &state.Renderer, pass: ptr, view: ptr, size: u32, output: ptr) -> i32 {
     mut views: [ptr; 1] = [view]
     mut info: vk.FramebufferCreateInfo = zeroed()
     info.sType = 37
@@ -213,7 +205,7 @@ unsafe fn create_framebuffer(r: &state.Renderer, pass: ptr, view: ptr, size: u32
     info.width = size
     info.height = size
     info.layers = 1
-    r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), output) == 0
+    r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), output)
 }
 
 // COMBINED_IMAGE_SAMPLER write for one binding. Used for the convolve sets
@@ -290,7 +282,7 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
     if r.api.CreateBuffer(r.device, addr(&stage_info), ptr(0), addr(&mut staging.buffer)) != 0 { return staging }
     mut requirements: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, staging.buffer, addr(&requirements))
-    if !device.allocate(&r, &requirements, 6, addr(&mut staging.memory)) {
+    if device.allocate(&r, &requirements, 6, addr(&mut staging.memory)) != 0 {
         r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
         staging.buffer = ptr(0)
         return staging
@@ -338,10 +330,10 @@ unsafe fn release_staging(r: &mut state.Renderer, staging: Staging) {
     if staging.buffer != ptr(0) { r.api.DestroyBuffer(r.device, staging.buffer, ptr(0)) }
 }
 
-pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> bool {
+pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> state.SetupStep {
     if r.iblPass != ptr(0) {
         _ := sys.eprint("ibl: the environment maps are already built\n")
-        return false
+        return .Environment
     }
     // Every handle is created into a local and copied into the renderer at
     // the end: a call that takes &r cannot also borrow one of its fields.
@@ -369,46 +361,56 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     env := create_cube(&mut r, ENV_SIZE, ENV_MIPS)
     if env.image == ptr(0) {
         _ := sys.eprint("ibl: could not create the environment cubemap\n")
-        return false
+        return .Environment
     }
     irradiance := create_cube(&mut r, IRRADIANCE_SIZE, 1)
     if irradiance.image == ptr(0) {
         _ := sys.eprint("ibl: could not create the irradiance cubemap\n")
-        return false
+        return .Environment
     }
     mut lut_info := device.image_2d_info(enums.format(.R32G32_SFLOAT), LUT_SIZE, LUT_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.TransferDstSampled))
     mut lut_image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&lut_info), ptr(0), addr(&mut lut_image))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     mut lut_req: vk.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, lut_image, addr(&mut lut_req))
     mut lut_memory := ptr(0)
-    if !device.allocate(&r, &lut_req, 1, addr(&mut lut_memory)) { return false }
+    code = device.allocate(&r, &lut_req, 1, addr(&mut lut_memory))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     code = r.api.BindImageMemory(r.device, lut_image, lut_memory, 0)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
 
     // --- views: whole chains for the mesh shader, one view per mip for the
     // prefilter's source (descriptor writes take effect at submit, so each
     // level needs its own set and view), a 2D view per (mip, face) for the
     // framebuffers. ---
-    if !make_view(&r, lut_image, 1, enums.format(.R32G32_SFLOAT), 0, 1, 0, 1, addr(&mut brdf_view)) { return false }
-    if !make_view(&r, env.image, 3, enums.format(.R16G16B16A16_SFLOAT), 0, ENV_MIPS, 0, 6, addr(&mut env_view)) { return false }
-    if !make_view(&r, irradiance.image, 3, enums.format(.R16G16B16A16_SFLOAT), 0, 1, 0, 6, addr(&mut irradiance_view)) { return false }
+    code = make_view(&r, lut_image, 1, enums.format(.R32G32_SFLOAT), 0, 1, 0, 1, addr(&mut brdf_view))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
+    code = make_view(&r, env.image, 3, enums.format(.R16G16B16A16_SFLOAT), 0, ENV_MIPS, 0, 6, addr(&mut env_view))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
+    code = make_view(&r, irradiance.image, 3, enums.format(.R16G16B16A16_SFLOAT), 0, 1, 0, 6, addr(&mut irradiance_view))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     for mip in 0..i32(ENV_MIPS) {
-        if !make_view(&r, env.image, 3, enums.format(.R16G16B16A16_SFLOAT), u32(mip), 1, 0, 6, addr(&mut env_mip_views[mip])) { return false }
+        code = make_view(&r, env.image, 3, enums.format(.R16G16B16A16_SFLOAT), u32(mip), 1, 0, 6, addr(&mut env_mip_views[mip]))
+        if code != 0 { return device.fail(&mut r, code, .Environment) }
         for face in 0..6 {
             index := mip * 6 + face
-            if !make_view(&r, env.image, 1, enums.format(.R16G16B16A16_SFLOAT), u32(mip), 1, u32(face), 1, addr(&mut env_face_views[index])) { return false }
+            code = make_view(&r, env.image, 1, enums.format(.R16G16B16A16_SFLOAT), u32(mip), 1, u32(face), 1, addr(&mut env_face_views[index]))
+            if code != 0 { return device.fail(&mut r, code, .Environment) }
         }
     }
     for face in 0..6 {
-        if !make_view(&r, irradiance.image, 1, enums.format(.R16G16B16A16_SFLOAT), 0, 1, u32(face), 1, addr(&mut irradiance_face_views[face])) { return false }
+        code = make_view(&r, irradiance.image, 1, enums.format(.R16G16B16A16_SFLOAT), 0, 1, u32(face), 1, addr(&mut irradiance_face_views[face]))
+        if code != 0 { return device.fail(&mut r, code, .Environment) }
     }
 
     // --- samplers ---
-    if !create_sampler(&r, f32(ENV_MIPS), addr(&mut env_sampler)) { return false }
-    if !create_sampler(&r, 1.0, addr(&mut irradiance_sampler)) { return false }
-    if !create_sampler(&r, 1.0, addr(&mut brdf_sampler)) { return false }
+    code = create_sampler(&r, f32(ENV_MIPS), addr(&mut env_sampler))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
+    code = create_sampler(&r, 1.0, addr(&mut irradiance_sampler))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
+    code = create_sampler(&r, 1.0, addr(&mut brdf_sampler))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
 
     // --- render pass shared by every IBL draw: one RGBA16F attachment,
     // cleared, stored, left SHADER_READ_ONLY for the next pass to sample. ---
@@ -435,18 +437,20 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     pass_info.subpassCount = 1
     pass_info.pSubpasses = addr(&subpass)
     code = r.api.CreateRenderPass(r.device, addr(&pass_info), ptr(0), addr(&mut pass))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
 
     // --- framebuffers ---
     for mip in 0..i32(ENV_MIPS) {
         size := ENV_SIZE.shr(mip)
         for face in 0..6 {
             index := mip * 6 + face
-            if !create_framebuffer(&r, pass, env_face_views[index], size, addr(&mut env_framebuffers[index])) { return false }
+            code = create_framebuffer(&r, pass, env_face_views[index], size, addr(&mut env_framebuffers[index]))
+            if code != 0 { return device.fail(&mut r, code, .Environment) }
         }
     }
     for face in 0..6 {
-        if !create_framebuffer(&r, pass, irradiance_face_views[face], IRRADIANCE_SIZE, addr(&mut irradiance_framebuffers[face])) { return false }
+        code = create_framebuffer(&r, pass, irradiance_face_views[face], IRRADIANCE_SIZE, addr(&mut irradiance_framebuffers[face]))
+        if code != 0 { return device.fail(&mut r, code, .Environment) }
     }
 
     // --- descriptor sets for the convolve passes: binding 0 = source cube ---
@@ -459,7 +463,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     set_layout_info.bindingCount = 1
     set_layout_info.pBindings = addr(&mut bindings[0])
     code = r.api.CreateDescriptorSetLayout(r.device, addr(&set_layout_info), ptr(0), addr(&mut set_layout))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     // Sets 0..4 sample mip 0..4 as the prefilter source, set 5 samples mip 0
     // for the irradiance pass.
     mut pool_sizes: [u32; 2] = [enums.descriptor_type(.CombinedImageSampler), 6]
@@ -469,7 +473,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     pool_info.poolSizeCount = 1
     pool_info.pPoolSizes = addr(&mut pool_sizes[0])
     code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     for i in 0..6 {
         mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
         allocate_info.sType = 34
@@ -477,7 +481,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
         allocate_info.descriptorSetCount = 1
         allocate_info.pSetLayouts = addr(&set_layout)
         code = r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut sets[i]))
-        if code != 0 { return device.fail(&mut r, code) }
+        if code != 0 { return device.fail(&mut r, code, .Environment) }
         write_image(&r, sets[i], 0, env_sampler, env_mip_views[i], enums.image_layout(.ShaderReadOnlyOptimal))
     }
 
@@ -492,22 +496,25 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&set_layout)
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut pipeline_layout))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
 
     // --- pipelines: env at 64, prefilter at 32..2, irradiance at 16 ---
     vertex := shader.env_vertex()
     env_fragment := shader.env_fragment()
-    if !fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&env_fragment[0]), usize(env_fragment.len),
-        pipeline_layout, pass, ENV_SIZE, addr(&mut env_pipeline)) { return false }
+    code = fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&env_fragment[0]), usize(env_fragment.len),
+        pipeline_layout, pass, ENV_SIZE, addr(&mut env_pipeline))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     prefilter_fragment := shader.prefilter_fragment()
     for mip in 1..i32(ENV_MIPS) {
         size := ENV_SIZE.shr(mip)
-        if !fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&prefilter_fragment[0]), usize(prefilter_fragment.len),
-            pipeline_layout, pass, size, addr(&mut prefilter_pipelines[mip])) { return false }
+        code = fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&prefilter_fragment[0]), usize(prefilter_fragment.len),
+            pipeline_layout, pass, size, addr(&mut prefilter_pipelines[mip]))
+        if code != 0 { return device.fail(&mut r, code, .Environment) }
     }
     irradiance_fragment := shader.irradiance_fragment()
-    if !fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&irradiance_fragment[0]), usize(irradiance_fragment.len),
-        pipeline_layout, pass, IRRADIANCE_SIZE, addr(&mut irradiance_pipeline)) { return false }
+    code = fullscreen_pipeline(&r, addr(&vertex[0]), usize(vertex.len), addr(&irradiance_fragment[0]), usize(irradiance_fragment.len),
+        pipeline_layout, pass, IRRADIANCE_SIZE, addr(&mut irradiance_pipeline))
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
 
     // --- the BRDF LUT on the CPU ---
     mut lut := core.brdf_lut(i32(LUT_SIZE), LUT_SAMPLES)
@@ -554,14 +561,14 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     alloc.commandBufferCount = 1
     mut cmd := ptr(0)
     code = r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     mut begin: vk.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     code = r.api.BeginCommandBuffer(cmd, addr(&begin))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     staging := stage_lut(&mut r, cmd, lut_words)
-    if staging.buffer == ptr(0) { return false }
+    if staging.buffer == ptr(0) { return .Environment }
 
     // Mip 0 of every face: the sky, from the face's own basis.
     mut push: [f32; 24] = [0.0; 24]
@@ -592,13 +599,13 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     barrier(&r, cmd, irradiance.image, 0, 1, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
 
     code = r.api.EndCommandBuffer(cmd)
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     mut submit: vk.SubmitInfo = zeroed()
     submit.sType = 4
     submit.commandBufferCount = 1
     submit.pCommandBuffers = addr(&mut cmd)
     code = r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
-    if code != 0 { return device.fail(&mut r, code) }
+    if code != 0 { return device.fail(&mut r, code, .Environment) }
     _ := r.api.QueueWaitIdle(r.queue)
     release_staging(&mut r, staging)
     _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&mut cmd))
@@ -607,7 +614,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     write_image(&r, r.shadowSet, 2, env_sampler, env_view, enums.image_layout(.ShaderReadOnlyOptimal))
     write_image(&r, r.shadowSet, 3, irradiance_sampler, irradiance_view, enums.image_layout(.ShaderReadOnlyOptimal))
     write_image(&r, r.shadowSet, 4, brdf_sampler, brdf_view, enums.image_layout(.ShaderReadOnlyOptimal))
-    true
+    .Ready
 }
 
 // Push constants for the env pass: right, up, forward, sun, zenith, horizon.

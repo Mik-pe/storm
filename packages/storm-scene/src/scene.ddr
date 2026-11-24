@@ -34,7 +34,7 @@ pub struct Name { value: string }
 pub enum Shape { Cube = 0, Plane = 1, Mesh = 2 }
 
 // What a node is drawn as. Cube and Plane are built-in; Mesh carries the
-// vertex stream itself ([x,y,z,nx,ny,nz] per vertex, what gltf.interleave
+// vertex stream itself ([x,y,z,nx,ny,nz,u,v] per vertex, what gltf.interleave
 // produces and what the renderer consumes), so a loaded model needs no
 // renderer-side geometry table.
 pub struct Mesh {
@@ -57,6 +57,12 @@ pub struct Material {
 
 pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -> Material {
     Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0 }
+}
+
+// The same surface with an emissive term: what the shader adds on its own,
+// for orbs, lamps and anything that should glow rather than reflect.
+pub fn emissive_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> Material {
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive }
 }
 
 pub struct Drawable {

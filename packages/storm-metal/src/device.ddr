@@ -9,6 +9,7 @@
 
 capability unsafe
 
+import gfx
 import .enums as enums
 import .objc as objc
 import .records as records
@@ -163,14 +164,14 @@ unsafe fn alpha_over(rt: &objc.Runtime, colour: ptr) {
     objc.tell_number(rt, colour, cstr("setAlphaBlendOperation:"), enums.blend_operation(.Add))
 }
 
-// Describe the vertex layout to the pipeline: two attributes, interleaved
+// Describe the vertex layout to the pipeline: attributes interleaved
 // in buffer 0.
 unsafe fn vertex_layout(rt: &objc.Runtime, descriptor: ptr, vertices: Vertices) {
     layout := objc.make(rt, objc.class(rt, cstr("MTLVertexDescriptor")))
     attributes := objc.send(rt, layout, cstr("attributes"))
     first := attachment(rt, attributes, 0)
     second := attachment(rt, attributes, 1)
-    mut stride: u64 = 24
+    mut stride := u64(gfx.VERTEX_BYTES)
     if vertices == .Ui {
         // [x, y, u, v] then [r, g, b, a]: two float4, 32 bytes a vertex.
         objc.tell_number(rt, first, cstr("setFormat:"), enums.vertex_format(.Float4))
@@ -178,10 +179,13 @@ unsafe fn vertex_layout(rt: &objc.Runtime, descriptor: ptr, vertices: Vertices) 
         objc.tell_number(rt, second, cstr("setOffset:"), 16)
         stride = 32
     } else {
-        // [x, y, z] then [nx, ny, nz]: two float3, 24 bytes a vertex.
+        uv := attachment(rt, attributes, 2)
+        objc.tell_number(rt, uv, cstr("setFormat:"), enums.vertex_format(.Float2))
+        objc.tell_number(rt, uv, cstr("setOffset:"), u64(gfx.UV_OFFSET))
+        objc.tell_number(rt, uv, cstr("setBufferIndex:"), 0)
         objc.tell_number(rt, first, cstr("setFormat:"), enums.vertex_format(.Float3))
         objc.tell_number(rt, second, cstr("setFormat:"), enums.vertex_format(.Float3))
-        objc.tell_number(rt, second, cstr("setOffset:"), 12)
+        objc.tell_number(rt, second, cstr("setOffset:"), u64(gfx.NORMAL_OFFSET))
     }
     objc.tell_number(rt, first, cstr("setOffset:"), 0)
     for attribute in [first, second] { objc.tell_number(rt, attribute, cstr("setBufferIndex:"), 0) }

@@ -1,6 +1,8 @@
 // Vulkan 1.0 structures passed by address. Field names follow the Vulkan headers.
 // Only what Storm's swapchain path needs; extend as features land.
 
+import gfx
+
 @c_layout
 pub struct ApplicationInfo {
     sType: u32,
@@ -256,6 +258,34 @@ pub struct VertexInputBindingDescription { binding: u32, stride: u32, inputRate:
 
 @c_layout
 pub struct VertexInputAttributeDescription { location: u32, binding: u32, format: u32, offset: u32 }
+
+// Three attribute descriptions in C order (location 0, 1, 2) for
+// pVertexAttributeDescriptions. A record of records is contiguous (a Dunder
+// array of C records is not (finding 54).
+@c_layout
+pub struct VertexAttributes { position: VertexInputAttributeDescription, normal: VertexInputAttributeDescription, uv: VertexInputAttributeDescription }
+
+@c_layout
+pub struct VertexInput {
+    binding: VertexInputBindingDescription,
+    attributes: VertexAttributes,
+}
+
+// The binding and the three attributes every mesh pipeline declares, with
+// zeroed format fields: `enums.apply_vertex_input` fills them. The shadow
+// shader reads only location 0, but a pipeline must declare all the buffer
+// contains: with a 24-byte stride against a 32-byte stream the whole shadow
+// map would be wrong without a single error.
+pub fn vertex_input() -> VertexInput {
+    VertexInput {
+        binding: VertexInputBindingDescription { binding: 0, stride: gfx.VERTEX_BYTES, inputRate: 0 },
+        attributes: VertexAttributes {
+            position: VertexInputAttributeDescription { location: 0, binding: 0, format: 0, offset: 0 },
+            normal: VertexInputAttributeDescription { location: 1, binding: 0, format: 0, offset: gfx.NORMAL_OFFSET },
+            uv: VertexInputAttributeDescription { location: 2, binding: 0, format: 0, offset: gfx.UV_OFFSET },
+        },
+    }
+}
 
 @c_layout
 pub struct PipelineVertexInputStateCreateInfo {

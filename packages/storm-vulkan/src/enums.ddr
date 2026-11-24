@@ -340,3 +340,13 @@ pub unsafe fn apply_blend(attachment: &mut layout.PipelineColorBlendAttachmentSt
     attachment.alphaBlendOp = blend_op(blend.color_op)
     attachment.colorWriteMask = color_component(.RGBA)
 }
+
+// The only writer of the mesh vertex layout's enum fields: one binding in
+// vertex rate, position and normal as vec3, uv as vec2. Stride and offsets
+// come from the record itself (layout.VERTEX_BYTES), never from here.
+pub unsafe fn apply_vertex_input(input: &mut layout.VertexInput) {
+    input.binding.inputRate = vertex_input_rate(.Vertex)
+    input.attributes.position.format = format(.R32G32B32_SFLOAT)
+    input.attributes.normal.format = format(.R32G32B32_SFLOAT)
+    input.attributes.uv.format = format(.R32G32_SFLOAT)
+}
