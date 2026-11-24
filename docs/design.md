@@ -32,9 +32,9 @@
 ## 1. Nuläge (mätt i koden, 2026-11-24)
 
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
-  som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `Vertex`, `trait Backend` med 19
-  metoder (varje fallibel en `Result` som säger varför), och
-  geometrihjälparna som äger vertexformatet. Åtta tester, inga med fönster.
+  som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `Vertex` och `PostProcess`.
+  `trait Backend` beskriver pass, ritning och bildexport. Anrop som kan misslyckas
+  returnerar `Result`. Geometrihjälparna äger vertexformatet. Åtta tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
   Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
   och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Fyra
@@ -282,11 +282,15 @@ ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har
 
 `src/app.ddr` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
 
-`storm-play` äger spelets startscen och det föränderliga tillståndet under en provspelning. Varje tick tar samma indata från fönstret eller MCP. Fysikpaketet löser kontakterna. Spelmodulen håller reda på plockade blommor, målsensorer och rävens gångfas. `src/play_view.ddr` översätter kropparnas positioner till scennoder. I Blomsterskogen animerar `src/woodland.ddr` rävmodellens leder, insektsvingarna och kronbladen med simuleringens klocka. Flera exemplar av samma form delar vertexdata och kan ha olika material. Fönstret interpolerar mellan två tick. Vid paus, ensteg och bildexport används den exakta positionen för aktuell tick.
+`begin_scene(filtered)` väljer färgmål för himmel, ogenomskinlig geometri och transparens. När FXAA eller färgtoning och glöd är aktiva skriver scenen till `scene_color`, en åttabitars färgtextur i bildens upplösning. `post_process` läser scenfärgen och skriver till slutbilden i ett fullskärmspass. HUD och editor ritas sedan ovanpå slutbilden i skärmens pixeltäthet. När båda filtren är avstängda skriver scenen direkt till slutbilden. Fönstret, filcapture och MCP-förhandsvisningen kör samma rendergraf.
+
+`storm-play` äger spelets startscen och det föränderliga tillståndet under en provspelning. Varje tick tar samma indata från fönstret eller MCP. Fysikpaketet löser kontakterna. Spelmodulen håller reda på blommorna, bonusfjärilarna, målsensorerna och rävens gångfas. Molnplattformarnas ovansida bär spelaren vid landning. Fysiken rapporterar vilken plattform foten träffade och spelmodulen ger Vallmo en uppåthastighet om plattformen är ett studsmoln. Samma landnings- och plocktick styr de visuella effekterna i fönster och agentbilder. `src/play_view.ddr` översätter kropparnas positioner till scennoder. I Blomsterskogen använder rävmodellens leder, insektsvingarna och kronbladen simuleringens klocka. Flera exemplar av samma form delar vertexdata och kan ha olika material. Fönstret interpolerar mellan två tick. Vid paus, ensteg och bildexport används den exakta positionen för aktuell tick.
+
+`scene.animation` samplar glesa nyckelspår för lokal position, Eulerrotation och skala. Varje klipp kan loopa eller stanna i ändposen. Rörelserna blandas per kanal. Spelet delar klippmotorn mellan Vallmos rigg och molnens fjädring. `play.render_motion` levererar riktning, gångfas, vertikalhastighet och tid sedan avstamp eller landning på samma klocka som spelarens position. Det gör att fötter och partikeleffekter träffar molnet på samma tick i spelet och vid enstegskörning. [Klippsampling](../packages/storm-scene/src/animation.ddr) · [Rävens poser](../src/fox_animation.ddr)
 
 `storm-mcp` håller en session per klientprocess och tar emot en renderingsfunktion från `src/main.ddr`. Agentens bildexport kör den vanliga rendergrafen mot en fristående textur. Simuleringen kan köras utan GPU. `--watch` låter ett öppet spel ta emot en sparad bana från en agent. Fönstret byter spelvärld när hela filen har validerats.
 
-Förändringar i scenträdet bygger om traverseringsordningen. Mellan ändringar uppdateras världsmatriserna i den sparade ordningen med föräldern före barnet. Rendergrafens kompilerade passordning återanvänds tills skuggor, transparens eller filmeffekter ändras.
+Förändringar i scenträdet bygger om traverseringsordningen. Mellan ändringar uppdateras världsmatriserna i den sparade ordningen med föräldern före barnet. Rendergrafens kompilerade passordning återanvänds tills behovet av skuggpass, transparenspass eller efterbehandling ändras.
 
 Mätfallen finns i `tools/bench-frame.ddr`. Kör `dunder run tools/bench-frame.ddr` för 300 uppdateringar av 1 024 noder och lägg till `-- --editor` för 4 000 omritningar. Vid isolering av respektive ändring på Apple M5 sjönk medianen för processens CPU-tid från 3,184 till 0,166 sekunder för scenträdet och från 0,624 till 0,553 sekunder för editorn över sju varv. Tre par körningar av 600 visade bildrutor gav 5,95 sekunder före och 6,07 efter.
 

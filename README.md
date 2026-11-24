@@ -11,7 +11,7 @@ Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
 Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
 av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexport.
 
-**Blomsterskogen** är Storms basspel. Styr räven Vallmo genom en rosa körsbärsglänta och plocka fem blommor till en bukett. Fjärilar och humlor flyger mellan träden. När Vallmo hittar en blomma stiger hjärtan och stjärnor från platsen.
+**Blomsterskogen** är Storms basspel. Hjälp räven Vallmo att plocka fem blommor till en bukett i körsbärsgläntan. Ovanför stigen finns sex moln och tre frivilliga bonusfjärilar. Det rosa studsmolnet lyfter Vallmo ända upp till Kronbalkongen. [Se molnhoppet i spelet](docs/molnhopp.mp4)
 
 ![Vallmo bland körsbärsträden i Blomsterskogen, renderad av Storm på macOS](docs/blomsterskogen.png)
 
@@ -42,7 +42,7 @@ dunder test                     # rotpaketets tester
 
 ## Spela och bygg med en agent
 
-Styr Vallmo med **WASD** eller **piltangenterna** och gå fram till en blomma för att plocka den. **Mellanslag** hoppar, **Q** pausar och **R** börjar om. I pausläget flyttar **Ett steg** fram simuleringen en tick. Efter fem blommor är buketten klar.
+Styr Vallmo med **WASD** eller **piltangenterna**. Gå intill blommorna för att plocka dem. Den femte fullbordar buketten och vinner spelet. Du kan fortsätta upp bland molnen efteråt. Tryck **mellanslag** för att hoppa och håll en riktning även i luften. Landa på det rosa molnet och styr åt höger i studsen för att nå den översta fjärilen. **Q** pausar och **R** börjar om. I pausläget flyttar **Ett steg** fram simuleringen en tick.
 
 ```sh
 dunder build -o build/storm
@@ -54,7 +54,13 @@ Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporo
 
 ### Redigera modellerna i Blender
 
-[Räven](assets/blomsterskogen/fox.blend), [gläntan](assets/blomsterskogen/glade.blend) och [blomman och insekterna](assets/blomsterskogen/creatures.blend) är redigerbara original. I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `PawFL_`, `Tail_` och `WingL_`. Storm animerar dem kring modellens leder.
+Räven, gläntan och smådjuren har redigerbara Blender-original. [Räven](assets/blomsterskogen/fox.blend) · [Gläntan](assets/blomsterskogen/glade.blend) · [Blomman och insekterna](assets/blomsterskogen/creatures.blend)
+
+Molnbanan har en egen Blenderfil med separata scener för det vita molnet, det rosa studsmolnet och bonusfjärilen. De exporteras till `cloud.glb`, `boost_cloud.glb` och `super_butterfly.glb`. [Molnbanans Blender-original](assets/blomsterskogen/canopy.blend)
+
+Vallmos rigg i `fox.blend` har elva poserbara leder. Ögon och öron följer huvudet. Rävens andetag, blinkning, steg, avstamp och landning har egna klipp. I `clips()` kan du ändra nyckelposer och tajming. Löpcykeln följer sträckan som Vallmo faktiskt färdas, och hur hårt hon landar avgör hur mycket kroppen trycks ihop. [Rörelserna i spelet](docs/vallmo.png) · [Vallmos animationsklipp](src/fox_animation.ddr)
+
+I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `PawFL_`, `Tail_` och `WingL_`. Storm animerar dem kring modellens leder.
 
 Granska exportens geometri och material direkt med `./build/storm --glb assets/blomsterskogen/fox.glb`. För att använda en ny export i basspelet, ersätt motsvarande GLB och bygg Storm igen. Modellerna följer med i binären och Mac-appen.
 
@@ -70,10 +76,10 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer och PBR-material. | `core` |
-| [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och djup-först-propagering till `WorldTransform`. `drawables()` är vad renderaren konsumerar. | `core`, `ecs` |
+| [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och propagering till `WorldTransform`. Modulen `animation` samplar och blandar nyckelposer för position, rotation och skala. | `core`, `ecs` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
-| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning och målsensorer. | `core`, `physics` |
+| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning, studsmoln, bonusfjärilar och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
 | [`packages/storm-image`](packages/storm-image) | Omvandlar renderarens bild till en PNG med systemets zlib. | — |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
@@ -140,14 +146,18 @@ Solens direkta term och skuggorna är oförändrade. Se
 världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en
 skärmgradient.
 
-Rendergrafen i `src/app.ddr` kompilerar om schemat när scenen börjar eller slutar använda skuggor, transparens eller filmeffekter. Mellan ändringarna körs samma passföljd.
+När kantutjämning eller färgeffekter används ritas scenen först till en färgtextur. Ett fullskärmspass läser texturen och jämnar ut diagonala kanter med FXAA, färgtonar bilden och ger ljusa partier en mjuk glöd enligt de valda inställningarna. Därefter ritas HUD och text i skärmens egen upplösning. Med båda inställningarna avstängda ritas scenen direkt till slutbilden. [Jämför kantutjämningen](docs/kantutjamning.png)
+
+FXAA är på från start i både spelet och Studio. Färgtoning och glöd är på i Blomsterskogen och av i materialstudien och banor utan blomskogstemat. **E** växlar färgtoning och glöd under körning. `--no-aa` stänger av kantutjämningen vid start. `--no-post` stänger av färgtoning och glöd vid start, medan `--effects` slår på dem. Ange `--no-aa --no-post` för att jämföra med direktrendering.
 
 ```dunder
 mut schedule := render.Graph::new()
 _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], [])
-_ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
-_ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
-_ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"])
+_ := schedule.add_pass(.Sky, "sky", ["scene_color", "depth"], [])
+_ := schedule.add_pass(.Opaque, "opaque", ["scene_color", "depth"], ["scene_color", "depth", "shadow_map"])
+_ := schedule.add_pass(.Transparent, "transparent", ["scene_color"], ["scene_color", "depth"])
+_ := schedule.add_pass(.PostProcess, "post", ["display"], ["scene_color"])
+_ := schedule.add_pass(.Ui, "ui", ["display"], ["display"])
 plan := schedule.compile()
 for step in 0..plan.steps.len { kind := plan.steps[step].kind }
 ```
@@ -170,7 +180,7 @@ för blendingens skull.
 - **Vänsterklick** i editorpanelen – välj en nod i trädet; slidrarna skriver
   material och position i ECS:et. **Add cube** och **Delete** ändrar scenen.
 - **Gå in i en orb** – plocka den (entiteten förstörs, HUD:en räknar)
-- **T** – slå av/på glaspanelerna, **G** – skuggor, **E** – filmeffekterna.
+- **T** – slå av/på glaspanelerna, **G** – skuggor, **E** – färgtoning och glöd.
   Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
@@ -181,7 +191,7 @@ för blendingens skull.
   `--eye` står kameran på baslinjen som varje pixeljämförelse mäter mot.
 - `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på
   marken mitt framför kameran)
-- `--no-glass`, `--no-shadows`, `--effects` – startläget för de tre toggles
+- `--no-glass` och `--no-shadows` stänger av glaset respektive skuggorna vid start. Inspektorn har också reglagen **Anti-aliasing** och **Color and glow**.
 - `--trace` – skriv varje inläsningssteg
 
 ### Kör på macOS

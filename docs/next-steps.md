@@ -13,17 +13,20 @@ paket under kontraktet — `storm-physics`, `storm-play` (fast tick, 60 Hz),
 ingen backend. Hur det står i arkitekturen beskriver design.md §1–2;
 hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
-**Efter 0f och 3a:** bygg textursampling och glTF-material (3b–3c). Därefter **4** (glTF-noder, så scengrafen byggs från filen). Sedan det som
+Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
+
+**Efter 0f och 3a** kommer textursampling för meshmaterial och glTF-bilder (3b–3c). Studion läser redan scenens noder och materialfaktorer (avsnitt 4). Sedan det som
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
 (genererade bindings; 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men
 ingen funktion saknas för den) och **Renderer-uppdelningen** (design.md §5,
 steg 3–6), som Metal-redan har och Vulkan inte. Instancing (5), fler ljus
 (7), och input (8) kommer efter det.
 
-## Byggtid: 15,6 s av 20 s (mätt 2026-11-24)
+## Byggtid på Mikparchy
 
-Byggtiden är den första begränsningen som kan stoppa en push: AGENTS.md
-säger under 20 s, och `tools/build-time.ddr` mätte **15 079–15 700 ms** på
+Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Budgeten är 20 s. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen.
+
+`tools/build-time.ddr` mätte tidigare **15 079–15 700 ms** på
 `77d9b0c`. Dagen innan var trädet 6 850 ms. Halva ökningen är kompilatorn
 (samma commit `54214f3`, Dunder 0.11.0 → 0.11.3: 6,9 → 9,1–10,3 s, fynd
 70); den andra halvan är spelets +496 emitterade funktioner (680 → 1 176)
@@ -55,7 +58,9 @@ från en Mac håller den andra typgrön.
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
 Skuggpass med MAX-blending i en R32-bild, transparent pass med egen blend-pipeline
-och en rendergraf som återanvänder passföljden tills scenens aktiva pass ändras. Kvar nedan.
+och en rendergraf som återanvänder passföljden tills scenens aktiva pass ändras.
+
+Scenfärgen kan filtreras på GPU:n på både Metal och Vulkan. FXAA och färgtoning med en diskret glöd delar ett fullskärmspass före HUD och editor. Metoden används även för bildexport. När både FXAA och färgeffekter är avstängda går scenen direkt till slutbilden. [Jämför kantutjämningen](kantutjamning.png)
 
 ## 0b. Klart: textrenderingen
 
@@ -226,7 +231,7 @@ bygge (fynd 56: det är Dunders kompilator).
 ## 0f. Klart: gränssnittet och Metal
 
 `storm-gfx` är kontraktet: `Frame`, `Input` med `Key`, `Sky`, `trait Backend`
-med 18 metoder som alla fallibla en `Result`, och geometrihjälparna som äger
+med `Result` för anrop som kan fallera, och geometrihjälparna som äger
 vertexformatet. `src/app.ddr` kör rendergrafen genom `B: gfx.Backend`.
 `src/editor.ddr` äger panelerna, `src/game.ddr` spellogiken och `src/gallery.ddr` materialstudien.
 `src/main.ddr` väljer backend för fönster och bildexport.
