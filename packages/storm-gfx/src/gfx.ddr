@@ -111,6 +111,21 @@ impl PostProcess {
     pub fn enabled(&self) -> bool { self.antialias || self.strength > 0.0 }
 }
 
+// A texture the backend uploaded, as a plain value the application copies:
+// the same shape as a window handle, and never a pointer. `NO_TEXTURE` is
+// the material colour alone; the backend binds a white 1x1 texture for it,
+// so the shader has one path and nothing has to branch per draw.
+pub struct Texture { id: i64 }
+
+pub fn no_texture() -> Texture { Texture { id: 0 } }
+
+// An uploaded texture is 8-bit RGBA, `width` x `height`, rows top to bottom,
+// with no padding between rows: the decoded form of a PNG or a generated
+// pattern. A backend builds a mip chain when its device can filter between
+// levels, and one level otherwise; either way the texture is complete when
+// upload_texture returns.
+pub const TEXTURE_BYTES_PER_PIXEL: i32 = 4
+
 // The backend contract. A frame is recorded like this:
 //
 //   poll()                          input, size, and whether to stop
@@ -141,6 +156,13 @@ pub trait Backend {
     // the same value every frame passes to sky().
     fn build_environment(&mut self, sky: &Sky) -> Result<(), string>
 
+    // Upload RGBA8 pixels as a texture and hand back its handle. The pixels
+    // are read before the call returns; the handle stays valid until
+    // free_texture, and is refused afterwards.
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32) -> Result<Texture, string>
+
+    fn free_texture(&mut self, texture: Texture)
+
     // Reserve the complete mesh stream (shadow and color draws) before recording.
     // Frames without an explicit estimate use the initial stream capacity.
     fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string>
@@ -158,9 +180,11 @@ pub trait Backend {
     fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string>
 
     // Vertices are interleaved [x, y, z, nx, ny, nz, u, v] f32 (32 bytes); the
-    // helpers below are the only way Storm makes them.
+    // helpers below are the only way Storm makes them. `texture` multiplies
+    // the base colour where the surface has uv; NO_TEXTURE leaves the colour
+    // as it is.
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, surface: Surface) -> Result<(), string>
+        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, texture: Texture, surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
     fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>

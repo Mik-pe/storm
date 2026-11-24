@@ -19,6 +19,21 @@ fn draw(pixels: &[]u8, path: string) -> Result<(), string> {
     .Ok
 }
 
+// rgba(): the two P6 pixels become two RGBA pixels with alpha 255, in order.
+@test fn rgba_widens_p6_pixels() {
+    decoded := image.rgba(&sample()).unwrap()
+    assert(decoded.width == 2)
+    assert(decoded.height == 1)
+    assert(decoded.pixels.len == 8)
+    expected: []u8 = [10, 35, 32, 255, 255, 0, 42, 255]
+    for i in 0..8 { assert(decoded.pixels[i] == expected[i]) }
+}
+
+// rgba(): a truncated file is refused, never read past its end.
+@test fn rgba_refuses_a_broken_file() {
+    assert(image.rgba(&[80, 54, 10, 50, 32, 49, 10, 50, 53, 53, 10, 1, 2]).is_err())
+}
+
 fn fail(value: &i32, path: string) -> Result<(), string> {
     if value == 0 || path.len == 0 { return .Err("invalid fixture") }
     .Err("renderer diagnostic: " + path)

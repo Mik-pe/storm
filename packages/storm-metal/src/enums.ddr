@@ -12,7 +12,7 @@
 
 pub enum PixelFormat {
     Invalid = 0, A8Unorm = 1, R8Unorm = 10, R32Float = 55, RG32Float = 105,
-    RGBA16Float = 115, RGBA8Unorm = 70, BGRA8Unorm = 80, Depth32Float = 252,
+    RGBA16Float = 115, RGBA8Unorm = 70, RGBA8Unorm_sRGB = 71, BGRA8Unorm = 80, Depth32Float = 252,
 }
 
 pub fn pixel_format(v: PixelFormat) -> u64 { u64(i32(v)) }
@@ -74,7 +74,7 @@ pub enum SamplerMipFilter { NotMipmapped = 0, Linear = 2 }
 
 pub fn sampler_mip_filter(v: SamplerMipFilter) -> u64 { u64(i32(v)) }
 
-pub enum SamplerAddressMode { ClampToEdge = 0 }
+pub enum SamplerAddressMode { ClampToEdge = 0, Repeat = 2 }
 
 pub fn sampler_address_mode(v: SamplerAddressMode) -> u64 { u64(i32(v)) }
 

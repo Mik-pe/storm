@@ -176,14 +176,18 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     texturecube<float> prefiltered_env [[texture(1)]],
     texturecube<float> irradiance_map [[texture(2)]],
     texture2d<float> brdf_lut [[texture(3)]],
+    texture2d<float> base_texture [[texture(4)]],
     sampler shadow_sampler [[sampler(0)]],
-    sampler env_sampler [[sampler(1)]]) {
+    sampler env_sampler [[sampler(1)]],
+    sampler material_sampler [[sampler(2)]]) {
     float3 n = normalize(in.world_normal);
     float3 v = normalize(push.camera_pos.xyz - in.world_position);
     float3 l = normalize(push.sun_direction.xyz);
     float3 h = normalize(v + l);
 
-    float3 albedo = push.base_color.rgb;
+    // The material's base texture; white 1x1 when it has none, so the
+    // multiply is the identity for untextured surfaces.
+    float3 albedo = push.base_color.rgb * base_texture.sample(material_sampler, in.uv).rgb;
     float metallic = clamp(push.params.x, 0.0, 1.0);
     float roughness = clamp(push.params.y, 0.045, 1.0);
     float emissive = max(push.params.z, 0.0);

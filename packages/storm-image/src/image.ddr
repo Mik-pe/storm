@@ -30,10 +30,39 @@ fn header(data: &[]u8) -> Result<Header, string> {
     mut at: i32 = 3
     width := number(data, &mut at, 32)?
     height := number(data, &mut at, 10)?
-    if at + 4 > data.len || data[at] != 50 || data[at+1] != 53 || data[at+2] != 53 || data[at+3] != 10 { return .Err("expected 8-bit RGB pixels") }
+    if at + 4 > data.len || data[at] != 50 || data[at + 1] != 53 || data[at + 2] != 53 || data[at + 3] != 10 { return .Err("expected 8-bit RGB pixels") }
     at += 4
     if i64(width) * i64(height) * 3 != i64(data.len - at) || i64(data.len) > CAPTURE_BYTES { return .Err("capture size disagrees with its header") }
     .Ok(Header { width: width, height: height, start: at })
+}
+
+// An image in the form a backend uploads: 8-bit RGBA, rows top to bottom,
+// no padding (gfx.upload_texture).
+pub struct Image { width: i32, height: i32, pixels: []u8 }
+
+// The pixels of a P6 capture as RGBA (alpha 255). The same parser that
+// encodes a capture validates the file, so a texture and a preview agree on
+// what a Storm capture is.
+pub fn rgba(data: &[]u8) -> Result<Image, string> {
+    source := header(data)?
+    mut pixels: []u8 = []
+    pixels.reserve(source.width * source.height * 4)
+    mut at := source.start
+    for _ in 0..source.width * source.height {
+        pixels.push(data[at])
+        pixels.push(data[at + 1])
+        pixels.push(data[at + 2])
+        pixels.push(255)
+        at += 3
+    }
+    .Ok(Image { width: source.width, height: source.height, pixels: pixels })
+}
+
+// A P6 file on disk as RGBA, through the same reader every capture path uses.
+pub fn read_rgba(path: string) -> Result<Image, string> {
+    read := sys.read_u8_limit(path, CAPTURE_BYTES)
+    if !read.ok { return .Err("could not read the file: " + sys.error_message(read.error)) }
+    rgba(&read.value)
 }
 
 fn scanlines(data: &[]u8, source: Header, width: i32, height: i32) -> []u8 {

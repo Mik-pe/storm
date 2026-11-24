@@ -1,0 +1,74 @@
+// Material textures on Metal: a list of uploaded 2D textures, slot 0 a white
+// 1x1 fallback, with the same handle arithmetic as the Vulkan backend:
+// `generation << 16 | slot + 1`, zero always the fallback. Each texture is
+// one mip level (replaceRegion fills level 0 only); the sampler is shared.
+capability unsafe
+
+import .device as device
+import .objc as objc
+
+pub const CAPACITY: i32 = 64
+
+// One uploaded texture: the Metal texture object and the generation its
+// handle carries. A null image marks a freed slot.
+pub struct Texture { image: ptr, generation: i64 }
+
+pub fn slot_of(id: i64) -> i32 { i32(id.bit_and(0xFFFF)) - 1 }
+
+pub fn generation_of(id: i64) -> i64 { id.shr(16) }
+
+pub fn handle(slot: i32, generation: i64) -> i64 { generation.shl(16).bit_or(i64(slot + 1)) }
+
+// The empty list plus the fallback slot, filled by setup.
+// The white 1x1 fallback in slot 0 of a fresh list.
+pub unsafe fn setup(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture) -> Result<(), string> {
+    white := device.texture(rt, gpu, .Type2D, .RGBA8Unorm_sRGB, 1, 1, 1, .ShaderRead, .Shared)?
+    pixels := [255, 255, 255, 255]
+    device.upload(rt, white, 1, 1, 4, addr(&pixels[0]))
+    textures.push(Texture { image: white, generation: 1 })
+    .Ok
+}
+
+// The texture a handle names, or the fallback for zero, unknown and freed
+// handles: a stale handle draws white, it does not draw garbage.
+pub unsafe fn image_of(textures: &[]Texture, id: i64) -> ptr {
+    if id == 0 { return textures[0].image }
+    slot := slot_of(id)
+    if slot < 1 || slot >= CAPACITY { return textures[0].image }
+    if textures[slot].generation != generation_of(id) || textures[slot].image == ptr(0) { return textures[0].image }
+    textures[slot].image
+}
+
+pub unsafe fn upload(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture, pixels: []u8, width: i32, height: i32) -> Result<i64, string> {
+    if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("texture dimensions must be between 1 and 16384") }
+    if i64(pixels.len) != i64(width) * i64(height) * 4 { return .Err("texture pixels must be width x height x 4 bytes") }
+    mut slot := 1
+    while slot < textures.len && textures[slot].image != ptr(0) { slot = slot + 1 }
+    if slot == CAPACITY { return .Err("the texture table is full") }
+    made := device.texture(rt, gpu, .Type2D, .RGBA8Unorm_sRGB, u64(width), u64(height), 1, .ShaderRead, .Shared)?
+    device.upload(rt, made, u64(width), u64(height), u64(width) * 4, addr(&pixels[0]))
+    generation := if slot < textures.len { textures[slot].generation + 1 } else { 1 }
+    if slot < textures.len {
+        textures[slot] = Texture { image: made, generation: generation }
+    } else {
+        textures.push(Texture { image: made, generation: generation })
+    }
+    .Ok(handle(slot, generation))
+}
+
+// Free a texture. Unknown, zero and already freed handles are ignored.
+pub unsafe fn free(rt: &objc.Runtime, textures: &mut []Texture, id: i64) {
+    if id == 0 { return }
+    slot := slot_of(id)
+    if slot < 1 || slot >= CAPACITY { return }
+    if textures[slot].generation != generation_of(id) || textures[slot].image == ptr(0) { return }
+    rt.release(textures[slot].image)
+    textures[slot].image = ptr(0)
+}
+
+pub unsafe fn destroy(rt: &objc.Runtime, textures: &mut []Texture) {
+    for i in 0..textures.len {
+        if textures[i].image != ptr(0) { rt.release(textures[i].image) }
+        textures[i].image = ptr(0)
+    }
+}

@@ -28,6 +28,7 @@ import .enums as enums
 import .ibl as ibl
 import .objc as objc
 import .pass as pass
+import .texture as texture
 import .records as records
 import .shader as shader
 import .ui as ui
@@ -74,6 +75,9 @@ pub struct Renderer {
     depth_buffer: ptr,
     scene_color: ptr,
     environment: ibl.Environment,
+    // Material textures: slot 0 is the white fallback (texture.ddr).
+    textures: []texture.Texture,
+    material_sampler: ptr,
     atlas: ui.Atlas,
     vertices: device.Buffer,
     // The frame being recorded: its autorelease pool, its drawable, and
@@ -116,6 +120,7 @@ unsafe fn empty() -> Renderer {
         depth_write: ptr(0), depth_test: ptr(0), depth_off: ptr(0),
         shadow_sampler: ptr(0), shadow_map: ptr(0), depth_buffer: ptr(0), scene_color: ptr(0),
         environment: ibl.empty(),
+        textures: [], material_sampler: ptr(0),
         atlas: ui.empty(),
         vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
         pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), submitted: ptr(0), encoder: ptr(0),
@@ -179,6 +184,8 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
     r.depth_off = device.depth_state(&r.objc, r.device, .Always, false)?
     r.shadow_sampler = device.sampler(&r.objc, r.device, .Nearest, .NotMipmapped)?
     r.shadow_map = device.texture(&r.objc, r.device, .Type2D, depth, SHADOW_SIZE, SHADOW_SIZE, 1, .RenderTargetAndShaderRead, .Private)?
+    r.material_sampler = device.sampler_repeating(&r.objc, r.device)?
+    texture.setup(&r.objc, r.device, &mut r.textures)?
     r.atlas = ui.create(&r.objc, r.device, r.library)?
     .Ok
 }
@@ -397,7 +404,7 @@ unsafe fn record_sky(r: &mut Renderer, inv_view_projection: &[f32; 16], sun: &[f
 }
 
 unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, blended: bool) -> Result<(), string> {
+    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, texture_id: i64, blended: bool) -> Result<(), string> {
     require_main(&r)?
     if blended {
         use_pipeline(r, &r.glass_pipeline, r.depth_test)
@@ -426,8 +433,10 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     pass.fragment_texture(&r.objc, r.encoder, r.environment.cube, 1)
     pass.fragment_texture(&r.objc, r.encoder, r.environment.irradiance, 2)
     pass.fragment_texture(&r.objc, r.encoder, r.environment.brdf, 3)
+    pass.fragment_texture(&r.objc, r.encoder, texture.image_of(&r.textures, texture_id), 4)
     pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
     pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
+    pass.fragment_sampler(&r.objc, r.encoder, r.material_sampler, 2)
     pass.triangles(&r.objc, r.encoder, u64(vertices.len / gfx.VERTEX_FLOATS))
     .Ok
 }
@@ -507,6 +516,9 @@ unsafe fn destroy(r: &mut Renderer) {
         r.pool = ptr(0)
     }
     device.release_buffer(&r.objc, &mut r.vertices)
+    texture.destroy(&r.objc, &mut r.textures)
+    if r.material_sampler != ptr(0) { r.objc.release(r.material_sampler) }
+    r.material_sampler = ptr(0)
     ui.destroy(&r.objc, &mut r.atlas)
     ibl.destroy(&r.objc, &mut r.environment)
     for owned in [r.scene_color, r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
@@ -620,8 +632,21 @@ impl gfx.Backend for Renderer {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, surface: gfx.Surface) -> Result<(), string> {
-        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, surface == gfx.Surface.Blended) }
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, handle: gfx.Texture, surface: gfx.Surface) -> Result<(), string> {
+        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, handle.id, surface == gfx.Surface.Blended) }
+    }
+
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32) -> Result<gfx.Texture, string> {
+        unsafe {
+            match texture.upload(&self.objc, self.device, &mut self.textures, pixels, width, height) {
+                .Ok(id) => .Ok(gfx.Texture { id: id }),
+                .Err(message) => .Err(message),
+            }
+        }
+    }
+
+    fn free_texture(&mut self, handle: gfx.Texture) {
+        unsafe { texture.free(&self.objc, &mut self.textures, handle.id) }
     }
 
     fn post_process(&mut self, settings: &gfx.PostProcess) -> Result<(), string> {

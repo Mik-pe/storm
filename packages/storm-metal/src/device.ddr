@@ -102,6 +102,22 @@ pub unsafe fn sampler(rt: &objc.Runtime, device: ptr, filter: enums.SamplerFilte
     .Ok(made)
 }
 
+// A sampler for material textures: linear, mipmapped, repeating on every
+// axis (the same as sampler() otherwise).
+pub unsafe fn sampler_repeating(rt: &objc.Runtime, device: ptr) -> Result<ptr, string> {
+    descriptor := objc.make(rt, objc.class(rt, cstr("MTLSamplerDescriptor")))
+    objc.tell_number(rt, descriptor, cstr("setMinFilter:"), enums.sampler_filter(.Linear))
+    objc.tell_number(rt, descriptor, cstr("setMagFilter:"), enums.sampler_filter(.Linear))
+    objc.tell_number(rt, descriptor, cstr("setMipFilter:"), enums.sampler_mip_filter(.Linear))
+    for axis in [cstr("setSAddressMode:"), cstr("setTAddressMode:"), cstr("setRAddressMode:")] {
+        objc.tell_number(rt, descriptor, axis, enums.sampler_address_mode(.Repeat))
+    }
+    made := objc.send_to(rt, device, cstr("newSamplerStateWithDescriptor:"), descriptor)
+    rt.release(descriptor)
+    if made == ptr(0) { return .Err("the device could not make a sampler") }
+    .Ok(made)
+}
+
 // ---- depth ----
 
 // Whether fragments are dropped by depth and whether they write it.
