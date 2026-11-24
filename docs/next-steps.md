@@ -7,12 +7,43 @@ styr, glTF-laddning och ECS-frågor (avsnitt 0e), och **gränssnittet och den
 andra backenden** (avsnitt 0f): samma editor och spelloop på Vulkan (Linux)
 och Metal (macOS), genom `storm-gfx`.
 
+Sedan kom **Blomsterskogen** (`77d9b0c`): ett spelbart basspel med fyra egna
+paket under kontraktet — `storm-physics`, `storm-play` (fast tick, 60 Hz),
+`storm-image` och `storm-mcp` (agentens verktyg på stdio) — som känner
+ingen backend. Hur det står i arkitekturen beskriver design.md §1–2;
+hur man bygger och provspelar en bana står i [spel.md](spel.md).
+
 **Efter 0f och 3a:** bygg textursampling och glTF-material (3b–3c). Därefter **4** (glTF-noder, så scengrafen byggs från filen). Sedan det som
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
 (genererade bindings; 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men
 ingen funktion saknas för den) och **Renderer-uppdelningen** (design.md §5,
 steg 3–6), som Metal-redan har och Vulkan inte. Instancing (5), fler ljus
 (7), och input (8) kommer efter det.
+
+## Byggtid: 15,6 s av 20 s (mätt 2026-11-24)
+
+Byggtiden är den första begränsningen som kan stoppa en push: AGENTS.md
+säger under 20 s, och `tools/build-time.ddr` mätte **15 079–15 700 ms** på
+`77d9b0c`. Dagen innan var trädet 6 850 ms. Halva ökningen är kompilatorn
+(samma commit `54214f3`, Dunder 0.11.0 → 0.11.3: 6,9 → 9,1–10,3 s, fynd
+70); den andra halvan är spelets +496 emitterade funktioner (680 → 1 176)
+och +115 000 MIR-operationer. Det finns inget enkelt offer: en stubb-`main`
+med hela manifestet bygger på 207 ms, `shader.ddr`s 12 579 ord kostar 70 ms,
+och `--timings` visar `mir_pipeline` = 10,0 s av 14,1 s utspridda på allt.
+
+Beslut tills vidare:
+
+- **Ingen ny kod läggs i `main`:s nåfång utan att byggtiden mäts.** Ett
+  paket som bara står i manifestet och inte anropas kostar inget: en
+  stubb-`main` med alla femton paket bygger på 207 ms. Kostnaden kommer
+  när `app.ddr` kallar det. Nästa funktion som drar in ett helt subsystem
+  i bildrutan mäts med `tools/build-time.ddr` före och efter.
+- **Växer trädet förbi 18 s är nästa steg i Dunder-repot, inte här.**
+  `--timings` räknar funktioner och operationer för hela bygget, inte per
+  modul eller funktion (fynd 70–71); utan den siffran är varje sänkning en
+  bisektion. Rekommendationen står i dogfood.md.
+- **`--incremental` är inte vägen runt.** Budgeten gäller från-scratch, och
+  den är definierad som kompilatorns väggklocka på Mikparchy.
 
 Varje steg som rör vad en backend ritar vidrör nu **två backends och två
 shaderuppsättningar**: `packages/storm-vulkan/shaders/*.glsl` och
