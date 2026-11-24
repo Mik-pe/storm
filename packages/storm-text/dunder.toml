@@ -4,4 +4,4 @@ root = "src/text.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
-skrift = { path = "../../../dunder-skrift", capabilities = ["filesystem"] }
+skrift = { git = "https://github.com/Mik-pe/dunder-skrift.git", rev = "c973a099ec3b19a89644bffcf69fe2001e1854e8", capabilities = ["filesystem"] }

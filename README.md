@@ -20,9 +20,7 @@ av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexp
 ## Förutsättningar
 
 - `dunder` 0.11.3 eller senare. Version 0.11.3 stöder den paketrelativa Metal-shadern och de lånade ECS-frågorna som används i spelet.
-- `dunder-skrift` som **syskonkatalog** bredvid `storm` (till exempel
-  `~/dev/dunder-skrift`). `packages/storm-text` har ett `path`-beroende till
-  den.
+- Git i `PATH` och nätåtkomst vid första bygget. Dunder hämtar de låsta revisionerna av `dunder-skrift` och dess zlib-beroende automatiskt.
 - **Linux:** `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …)
   och `sdl2` för fönstret. `glslangValidator` behövs bara när GLSL-shaders
   ändras.
@@ -62,9 +60,7 @@ Granska exportens geometri och material direkt med `./build/storm --glb assets/b
 
 ## Paket
 
-Repot är ett monorepo med ett paket per ansvarsområde. Beroenden deklareras med
-lokala `path`-beroenden i rotmanifestet, så varje paket kan byggas och testas
-för sig.
+Storms egna paket följer med i samma Git-klon och kan byggas och testas var för sig. Externa paket deklareras med en full Git-revision och ingår i `dunder.lock`.
 
 | Paket | Ansvar | Beroenden |
 | --- | --- | --- |

@@ -57,8 +57,7 @@
   != 0 { return device.fail(&mut r, code, .Step) }`. 109 `fail`-platser,
   30 funktioner, noll `stage`-tilldelningar.
 - **Beroenden:** `storm-input -> storm-gfx` (ett `Input`-värde, ingen
-  backend, inga capabilities), `storm-text -> dunder-skrift` via
-  `../../../dunder-skrift` (syskonkatalog utan versionslås),
+  backend, inga capabilities), `storm-text -> dunder-skrift` via en låst Git-revision med `filesystem` för att läsa typsnitt,
   `src/main.ddr -> storm-vulkan, storm-metal` (de enda).
 - **Ett gränssnitt, två implementationer.** Materialstudien och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den delade vertexströmmen. Metals självtest täcker både fönstret och bildexporten till en fristående textur.
 
@@ -186,7 +185,6 @@ Två gränser till har samma regel, om än inte enums:
   flyttades inte till `storm-core`; i stället är input ett *värde*:
   backenden rapporterar `gfx.Input` per frame, kameran tar det, och
   kameran är testbar utan fönster (två nya tester).
-- `dunder-skrift` låses: git-revision eller versions-pinned dependency (kvar).
 
 ## 5. Migration, stegvis
 

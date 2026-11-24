@@ -1,6 +1,12 @@
 version = 1
 
 [[git]]
+url = "https://github.com/Mik-pe/dunder-skrift.git"
+kind = "rev"
+reference = "c973a099ec3b19a89644bffcf69fe2001e1854e8"
+commit = "c973a099ec3b19a89644bffcf69fe2001e1854e8"
+
+[[git]]
 url = "https://github.com/Mik-pe/dunder.git"
 kind = "rev"
 reference = "50cb55968d2df84b9c80b9b74afcf42fb6f1da52"

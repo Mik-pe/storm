@@ -25,6 +25,7 @@ Gäller alla som arbetar i repot, människor som agenter.
 
 ## Kod
 
+- Externa paket hämtas automatiskt från Git med full commitidentifierare och incheckad låsfil. `path` används endast för Storms egna paket i samma repo.
 - Allt är Dunder. Inga byggskript i andra språk; `tools/` är Dunder-program.
 - **Arbeta från första principer — tänk stort, inte bandaid.** Innan ett
   steg: vad är problemet egentligen, vilka delar är oföränderliga fakta

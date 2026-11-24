@@ -4,4 +4,4 @@ root = "src/ui.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
-text = { path = "../storm-text", capabilities = ["filesystem", "stdio", "unsafe"] }
+text = { path = "../storm-text", capabilities = ["filesystem"] }
