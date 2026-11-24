@@ -1,7 +1,8 @@
-// Generate packages/storm-vulkan/src/api.ddr from Khronos' vk.xml.
+// Generate packages/storm-vulkan/src/api.ddr and layout.ddr from Khronos' vk.xml.
 //
-//   dunder run tools/vk.ddr -- <vk.xml>            rewrite api.ddr
-//   dunder run tools/vk.ddr -- <vk.xml> --check    exit 1 when api.ddr differs
+//   dunder run tools/vk.ddr -- <vk.xml>                 rewrite api.ddr and layout.ddr
+//   dunder run tools/vk.ddr -- <vk.xml> --check         exit 1 when either differs
+//   dunder run tools/vk.ddr -- <vk.xml> [--check] api   one file only: api or layout
 //
 // The entry points Storm loads by name were written by hand: one `extern fn`
 // and one `dl.symbol` per command, each spelled from the headers. This reads
@@ -11,6 +12,15 @@
 // their types. Which of them need a surface is the registry's answer too: the
 // commands of an extension that depends on VK_KHR_surface are the windowed
 // ones, followed through `depends=` as vk.xml states them.
+//
+// The records Storm passes by address (STRUCTS below) come from the registry
+// the same way: field names, order and widths are the registry's, and every
+// record whose sType member names a VkStructureType gets a `new()` that
+// zeroes it and writes that number — the one place a structure type number
+// exists in Storm. A union becomes its largest member (Dunder has no unions),
+// which for VkClearValue is the four floats Storm clears with. Storm's own
+// records, the ones that are not Vulkan's, stay hand-written below a marker
+// that the generator copies through unchanged.
 //
 // vk.xml is not vendored. Fetch the Khronos registry when regenerating:
 //   curl -o /tmp/vk.xml https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/main/xml/vk.xml
@@ -22,6 +32,7 @@ capability filesystem, stdio
 
 import std.bytes as bytes
 import std.map as map
+import std.parse as parse
 import std.text as text
 import sys
 
@@ -51,9 +62,47 @@ const COMMANDS: []string = [
 // The extension whose commands only exist with a surface.
 const SURFACE_EXTENSION: string = "VK_KHR_surface"
 
+// Records Storm passes by address, without the `Vk` prefix, in the order
+// layout.ddr declares them. A record nested by value in another is declared
+// before its user, as C requires.
+const STRUCTS: []string = [
+    "ApplicationInfo", "InstanceCreateInfo", "DeviceQueueCreateInfo", "DeviceCreateInfo",
+    "CommandPoolCreateInfo", "CommandBufferAllocateInfo", "MemoryRequirements", "MemoryAllocateInfo",
+    "BufferCreateInfo", "ComponentMapping", "ImageSubresourceRange",
+    "ImageSubresourceLayers", "ImageViewCreateInfo", "AttachmentDescription", "AttachmentReference",
+    "SubpassDescription", "SubpassDependency", "RenderPassCreateInfo", "FramebufferCreateInfo",
+    "ShaderModuleCreateInfo", "PipelineLayoutCreateInfo", "PushConstantRange", "SpecializationMapEntry",
+    "SpecializationInfo", "PipelineShaderStageCreateInfo", "VertexInputBindingDescription",
+    "VertexInputAttributeDescription", "PipelineVertexInputStateCreateInfo", "PipelineInputAssemblyStateCreateInfo",
+    "Viewport", "Offset2D", "Extent2D", "Rect2D", "PipelineViewportStateCreateInfo", "PipelineDynamicStateCreateInfo",
+    "PipelineRasterizationStateCreateInfo", "PipelineMultisampleStateCreateInfo",
+    "PipelineColorBlendAttachmentState", "PipelineColorBlendStateCreateInfo", "GraphicsPipelineCreateInfo",
+    "CommandBufferBeginInfo", "ClearColorValue", "ClearDepthStencilValue", "ClearValue",
+    "RenderPassBeginInfo", "SubmitInfo", "PresentInfoKHR", "SwapchainCreateInfoKHR", "SurfaceCapabilitiesKHR",
+    "SurfaceFormatKHR", "SemaphoreCreateInfo", "FenceCreateInfo", "Extent3D", "Offset3D", "ImageCreateInfo",
+    "StencilOpState", "PipelineDepthStencilStateCreateInfo", "BufferImageCopy", "ImageBlit",
+    "FormatProperties", "MemoryBarrier", "ImageMemoryBarrier", "SamplerCreateInfo",
+    "DescriptorSetLayoutBinding", "DescriptorSetLayoutCreateInfo", "DescriptorPoolSize",
+    "DescriptorPoolCreateInfo", "DescriptorSetAllocateInfo", "DescriptorImageInfo", "WriteDescriptorSet",
+    "DescriptorBufferInfo",
+]
+
+// layout.ddr's own marker: everything from this line on is Storm's, not the
+// registry's, and is copied through unchanged.
+const OWN_RECORDS_MARKER: string = "// --- Storm's own records ---"
+
+// Where each generated file goes, by the name the last argument accepts.
+const API_TARGET: string = "packages/storm-vulkan/src/api.ddr"
+const LAYOUT_TARGET: string = "packages/storm-vulkan/src/layout.ddr"
+
 struct Param { type_name: string, pointer: bool, name: string }
 struct Command { name: string, params: []Param, returns: string }
 struct Extension { name: string, depends: string }
+// `array` is the text between a member's brackets, "" when it is not an array.
+struct Member { type_name: string, pointer: bool, name: string, array: string }
+// `structure_type` is the VkStructureType name the registry gives the record's
+// sType member, "" when the record has none.
+struct Record { name: string, members: []Member, union: bool, structure_type: string }
 
 // Everything the registry says, indexed by name.
 struct Registry {
@@ -62,6 +111,8 @@ struct Registry {
     extensions: []Extension,
     typedefs: map.Map<string, string>,
     handles: map.Map<string, bool>,
+    records: map.Map<string, Record>,
+    enums: map.Map<string, i64>,
 }
 
 // ---- bytes -------------------------------------------------------------------
@@ -186,11 +237,11 @@ fn children(data: &[]u8, open: &Tag, close: i32, name: string) -> []Tag {
     out
 }
 
-// Whether a `<param api="…">` variant applies to Vulkan. The registry lists one
-// parameter per API profile when they differ, as a comma-separated list
-// (`api="vulkan,vulkanbase"` versus `api="vulkansc"`); a parameter without
-// `api` applies to every profile. Profiles are compared as whole names: "vulkansc"
-// is another API that merely shares a prefix.
+// Whether a `<param api="…">` or `<member api="…">` variant applies to
+// Vulkan. The registry lists one per API profile when they differ, as a
+// comma-separated list (`api="vulkan,vulkanbase"` versus `api="vulkansc"`);
+// one without `api` applies to every profile. Profiles are compared as whole
+// names: "vulkansc" is another API that merely shares a prefix.
 fn applies_to_vulkan(data: &[]u8, t: &Tag) -> bool {
     apis := attribute(data, t.attr_start, t.attr_end, "api")
     if apis == "" { return true }
@@ -202,8 +253,9 @@ fn applies_to_vulkan(data: &[]u8, t: &Tag) -> bool {
 
 // ---- scanning ----------------------------------------------------------------
 
-// `<type category="basetype">typedef <type>uint64_t</type> <name>VkDeviceSize</name>;</type>`
-// and `<type category="handle"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>`.
+// `<type category="basetype">typedef <type>uint64_t</type> <name>VkDeviceSize</name>;</type>`,
+// `<type category="handle"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>`, and
+// `<type category="struct" name="VkExtent3D"><member><type>uint32_t</type> <name>width</name></member> …</type>`.
 fn scan_types(data: &[]u8, r: &mut Registry) {
     // <types> … </types> holds every <type category="…"> element.
     types_open := find_open(data, 0, "types")
@@ -213,14 +265,63 @@ fn scan_types(data: &[]u8, r: &mut Registry) {
     for t in children(data, &types_open, types_close, "type") {
         close := close_of(data, &t)
         if close < 0 { continue }
-        name := inner(data, t.body_start, close, "name")
-        if name == "" { continue }
         category := attribute(data, t.attr_start, t.attr_end, "category")
         if category == "basetype" {
+            name := inner(data, t.body_start, close, "name")
             base := inner(data, t.body_start, close, "type")
-            if base != "" { r.typedefs.put(name.clone(), base.clone()) }
+            if name != "" && base != "" { r.typedefs.put(name.clone(), base.clone()) }
         } else if category == "handle" {
-            r.handles.put(name.clone(), true)
+            name := inner(data, t.body_start, close, "name")
+            if name != "" { r.handles.put(name.clone(), true) }
+        } else if category == "struct" || category == "union" {
+            // A record's name is an attribute, not a child element.
+            name := attribute(data, t.attr_start, t.attr_end, "name")
+            if name == "" { continue }
+            scan_record(data, &t, close, name, category == "union", &mut r)
+        }
+    }
+}
+
+// The members of one record, in registry order. The member named sType carries
+// the record's structure type in `values="VK_STRUCTURE_TYPE_…"`.
+fn scan_record(data: &[]u8, open: &Tag, close: i32, name: string, union: bool, r: &mut Registry) {
+    mut members: []Member = []
+    mut structure_type := ""
+    for m in children(data, open, close, "member") {
+        m_close := close_of(data, &m)
+        if m_close < 0 { continue }
+        if !applies_to_vulkan(data, &m) { continue }
+        member := parse_member(data, m.body_start, m_close)
+        // A <member> without a <type> is not a member.
+        if member.type_name == "" { continue }
+        if member.name == "sType" {
+            structure_type = attribute(data, m.attr_start, m.attr_end, "values")
+        }
+        members.push(member.clone())
+    }
+    r.records.put(name.clone(), Record { name: name.clone(), members: members, union: union, structure_type: structure_type })
+}
+
+// Every `<enums>` block's `<enum name="…" value="N"/>`; an `alias="…"` entry
+// repeats a name and is skipped. Bitmask blocks carry `bitpos=` instead, and
+// the value is 1 << bitpos. The numbers are i64 so that
+// VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR (1000001001) fits.
+fn scan_enums(data: &[]u8, r: &mut Registry) {
+    mut at := 0
+    while at < data.len {
+        block := find_open(data, at, "enums")
+        if block.start < 0 { break }
+        block_close := close_of(data, &block)
+        if block_close < 0 { break }
+        at = block_close
+        for e in children(data, &block, block_close, "enum") {
+            if attribute(data, e.attr_start, e.attr_end, "alias") != "" { continue }
+            name := attribute(data, e.attr_start, e.attr_end, "name")
+            if name == "" { continue }
+            value := parse.integer(attribute(data, e.attr_start, e.attr_end, "value"))
+            bitpos := parse.integer(attribute(data, e.attr_start, e.attr_end, "bitpos"))
+            if value.ok { r.enums.put(name.clone(), value.value) }
+            else if bitpos.ok { r.enums.put(name.clone(), i64(1).shl(i32(bitpos.value))) }
         }
     }
 }
@@ -237,6 +338,26 @@ fn parse_param(data: &[]u8, start: i32, end: i32) -> Param {
         for i in type_close + 7..name_open { if data[i] == 42 { pointer = true } }
     }
     Param { type_name: type_name, pointer: pointer, name: name }
+}
+
+// `<member><type>VkOffset3D</type> <name>srcOffsets</name>[2]<comment>…</comment></member>`:
+// a parameter, plus the text between the brackets after `</name>` when there
+// is one (a number, or an enum name the registry defines). Only brackets that
+// follow `</name>` through whitespace count: a member's comment may hold a
+// `[` of its own (`BUFFER[_DYNAMIC]`).
+fn parse_member(data: &[]u8, start: i32, end: i32) -> Member {
+    p := parse_param(data, start, end)
+    mut array := ""
+    name_close := find_bytes(data, start, end, "</name>")
+    if name_close >= 0 {
+        mut at := name_close + 7
+        while at < end && (data[at] == 32 || data[at] == 9 || data[at] == 10 || data[at] == 13) { at += 1 }
+        if at < end && data[at] == 91 {
+            stop := find_bytes(data, at, end, "]")
+            if stop > at + 1 { array = text_at(data, at + 1, stop) }
+        }
+    }
+    Member { type_name: p.type_name, pointer: p.pointer, name: p.name, array: array }
 }
 
 // `<command …><proto><type>VkResult</type> <name>vkCreateImage</name></proto>
@@ -274,9 +395,15 @@ fn scan_commands(data: &[]u8, r: &mut Registry) {
     }
 }
 
-// `<extension name="VK_KHR_swapchain" … depends="VK_KHR_surface" …>` blocks
+// `<extension name="VK_KHR_swapchain" number="2" … depends="VK_KHR_surface" …>` blocks
 // list what they provide as `<command name="vkCreateSwapchainKHR"/>`, inside
-// <require> elements that may themselves depend on another extension.
+// <require> elements that may themselves depend on another extension. They
+// also extend registry enums: `<enum name="VK_STRUCTURE_TYPE_PRESENT_INFO_KHR"
+// extends="VkStructureType" offset="1"/>` has no value, it is computed —
+// 1000000000 + (number − 1) × 1000 + offset, with the extension's own
+// `extnumber` attribute in place of `number` when it has one, and negated
+// for `dir="-"` (VkResult's extension errors). An `api="…"` variant applies
+// to Vulkan by the same rule as a parameter.
 fn scan_extensions(data: &[]u8, r: &mut Registry) {
     root_open := find_open(data, 0, "extensions")
     if root_open.start < 0 { return }
@@ -288,15 +415,31 @@ fn scan_extensions(data: &[]u8, r: &mut Registry) {
         name := attribute(data, ext.attr_start, ext.attr_end, "name")
         if name == "" { continue }
         r.extensions.push(Extension { name: name.clone(), depends: attribute(data, ext.attr_start, ext.attr_end, "depends") })
-        // Walk the whole extension body for <command name="…"/> at any depth.
+        number := parse.integer(attribute(data, ext.attr_start, ext.attr_end, "number"))
+        // Walk the whole extension body for <command …/> and <enum …/> at any depth.
         mut cat := ext.body_start
         while cat < ext_close {
             t := next_tag(data, cat)
             if t.start < 0 || t.body_start > ext_close { break }
             cat = t.body_start
-            if t.closing || t.name != "command" { continue }
-            cname := attribute(data, t.attr_start, t.attr_end, "name")
-            if text.starts_with(cname, "vk") { r.provider.put(cname[2..cname.len].clone(), name.clone()) }
+            if t.closing { continue }
+            if t.name == "command" {
+                cname := attribute(data, t.attr_start, t.attr_end, "name")
+                if text.starts_with(cname, "vk") { r.provider.put(cname[2..cname.len].clone(), name.clone()) }
+            } else if t.name == "enum" {
+                if !applies_to_vulkan(data, &t) { continue }
+                if attribute(data, t.attr_start, t.attr_end, "alias") != "" { continue }
+                ename := attribute(data, t.attr_start, t.attr_end, "name")
+                offset := parse.integer(attribute(data, t.attr_start, t.attr_end, "offset"))
+                if ename == "" || !offset.ok { continue }
+                extnumber := parse.integer(attribute(data, t.attr_start, t.attr_end, "extnumber"))
+                mut base := if number.ok { number.value } else { -1 }
+                if extnumber.ok { base = extnumber.value }
+                if base <= 0 { continue }
+                mut value := 1000000000 + (base - 1) * 1000 + offset.value
+                if attribute(data, t.attr_start, t.attr_end, "dir") == "-" { value = 0 - value }
+                r.enums.put(ename.clone(), value)
+            }
         }
     }
 }
@@ -308,8 +451,11 @@ fn registry(data: &[]u8) -> Registry {
         extensions: [],
         typedefs: map.Map<string, string>::new(),
         handles: map.Map<string, bool>::new(),
+        records: map.Map<string, Record>::new(),
+        enums: map.Map<string, i64>::new(),
     }
     scan_types(data, &mut r)
+    scan_enums(data, &mut r)
     scan_commands(data, &mut r)
     scan_extensions(data, &mut r)
     r
@@ -378,7 +524,7 @@ fn return_type(r: &Registry, c: &Command) -> string {
     }
 }
 
-// ---- writing -----------------------------------------------------------------
+// ---- writing api.ddr ---------------------------------------------------------
 
 // api.ddr's `load`: every command resolved by name, a missing symbol fails
 // the load. Windowed commands are resolved only when a surface is asked for.
@@ -426,18 +572,202 @@ fn write_api(r: &Registry, names: &[]string) -> string {
     bytes.decode(&out).unwrap_or_default()
 }
 
+// ---- writing layout.ddr ------------------------------------------------------
+
+// The Dunder type of a member. A record nested by value keeps its registry
+// name without the `Vk`; a handle is a pointer; `size_t` is `usize`, a size
+// in Dunder as in C; `char` by value is a byte.
+fn member_type(r: &Registry, m: &Member) -> string {
+    if m.pointer { return "ptr" }
+    if r.records.contains(m.type_name) { return m.type_name[2..m.type_name.len] }
+    if r.handles.contains(m.type_name) { return "ptr" }
+    match resolves_to(r, m.type_name) {
+        "uint32_t" => "u32",
+        "int32_t" => "i32",
+        "int" => "i32",
+        "uint64_t" => "u64",
+        "size_t" => "usize",
+        "float" => "f32",
+        "char" => "u8",
+        _ => "u32",
+    }
+}
+
+// The number of elements of a member's array as text: the text in its
+// brackets, or the value of the enum name it names
+// (VK_MAX_PHYSICAL_DEVICE_NAME_SIZE). "" when the member is not an array, and
+// "" too when the length does not resolve, which the caller reports rather
+// than guesses.
+fn array_length(r: &Registry, m: &Member) -> string {
+    if m.array == "" { return "" }
+    if parse.integer(m.array.clone()).ok { return m.array.clone() }
+    match r.enums.get(m.array.clone()) {
+        .Some(n) => n.str(),
+        .None => "",
+    }
+}
+
+// The members a record is written with: its own, or — for a union — its
+// largest member, the one that fixes the union's size (VkClearValue's colour).
+// Dunder has no unions; a record the size of its largest member is what
+// Storm passes by address.
+fn written_members(r: &Registry, rec: &Record) -> []Member {
+    if !rec.union { return rec.members.clone() }
+    mut best: []Member = []
+    mut best_size: i64 = -1
+    for m in &rec.members {
+        s := c_size(r, m.type_name)
+        if s.0 > best_size { best_size = s.0; best = [m.clone()] }
+    }
+    best
+}
+
+// The C size and alignment of a type name, with C alignment rules; (0, 0) when
+// the type is not something the registry widths say, which the caller reports.
+fn c_size(r: &Registry, type_name: string) -> (i64, i64) {
+    if r.records.contains(type_name) {
+        rec := r.records.get(type_name).unwrap()
+        mut size: i64 = 0
+        mut align: i64 = 1
+        for m in &rec.members {
+            s := member_size(r, m)
+            if s.0 == 0 { return (0, 0) }
+            if rec.union {
+                if s.0 > size { size = s.0 }
+            } else {
+                size = (size + s.1 - 1) / s.1 * s.1 + s.0
+            }
+            if s.1 > align { align = s.1 }
+        }
+        return ((size + align - 1) / align * align, align)
+    }
+    match resolves_to(r, type_name) {
+        "uint8_t" => (1, 1), "int8_t" => (1, 1), "char" => (1, 1),
+        "uint16_t" => (2, 2), "int16_t" => (2, 2),
+        "uint32_t" => (4, 4), "int32_t" => (4, 4), "int" => (4, 4), "float" => (4, 4),
+        "uint64_t" => (8, 8), "int64_t" => (8, 8), "size_t" => (8, 8),
+        _ => (0, 0),
+    }
+}
+
+// The C size and alignment of one member: its type's, times its array length.
+fn member_size(r: &Registry, m: &Member) -> (i64, i64) {
+    if m.pointer || r.handles.contains(m.type_name) { return (8, 8) }
+    base := c_size(r, m.type_name)
+    if base.0 == 0 { return (0, 0) }
+    length := array_length(r, m)
+    if length == "" { return base }
+    n := parse.integer(length)
+    if !n.ok || n.value <= 0 { return (0, 0) }
+    (base.0 * n.value, base.1)
+}
+
+// One record as Dunder: the `@c_layout` struct, then `impl X { pub unsafe fn
+// new() -> X }` that zeroes it and, when the registry names the record's
+// structure type, writes it. `new()` is the way a record with a tag is made,
+// so the tag is never a number at a call site and can never be left out.
+fn write_record(r: &Registry, name: string) -> string {
+    rec := r.records.get("Vk" + name).unwrap()
+    mut out: []u8 = []
+    bytes.append_utf8(&mut out, "@c_layout\npub struct " + name + " {\n")
+    for m in written_members(r, &rec) {
+        t := member_type(r, &m)
+        length := array_length(r, &m)
+        if m.array != "" {
+            bytes.append_utf8(&mut out, "    " + m.name + ": [" + t + "; " + length + "],\n")
+        } else {
+            bytes.append_utf8(&mut out, "    " + m.name + ": " + t + ",\n")
+        }
+    }
+    bytes.append_utf8(&mut out, "}\n\n")
+    bytes.append_utf8(&mut out, "impl " + name + " {\n")
+    bytes.append_utf8(&mut out, "    pub unsafe fn new() -> " + name + " {\n")
+    bytes.append_utf8(&mut out, "        mut value: " + name + " = zeroed()\n")
+    if rec.structure_type != "" {
+        match r.enums.get(rec.structure_type.clone()) {
+            .Some(number) => bytes.append_utf8(&mut out, "        value.sType = " + number.str() + "\n"),
+            .None => {},
+        }
+    }
+    bytes.append_utf8(&mut out, "        value\n    }\n}\n\n")
+    bytes.decode(&out).unwrap_or_default()
+}
+
+// layout.ddr: the generated records, then Storm's own records copied through
+// from the current file below the marker.
+fn write_layout(r: &Registry, names: &[]string, own: string) -> string {
+    mut out: []u8 = []
+    bytes.append_utf8(&mut out, "// Generated by tools/vk.ddr from Khronos' vk.xml. Do not edit above the marker.\n")
+    bytes.append_utf8(&mut out, "// Vulkan structures Storm passes by address: field names, order and widths\n")
+    bytes.append_utf8(&mut out, "// are the registry's. `new()` zeroes a record and writes its structure type,\n")
+    bytes.append_utf8(&mut out, "// so that number exists in one place per record and nowhere at a call site.\n")
+    bytes.append_utf8(&mut out, "capability unsafe\n\nimport gfx\n\n")
+    for n in names {
+        bytes.append_utf8(&mut out, write_record(r, n.clone()))
+    }
+    bytes.append_utf8(&mut out, own)
+    bytes.decode(&out).unwrap_or_default()
+}
+
+// Everything from the marker to the end of `current`, marker line included.
+fn own_records(current: string) -> string {
+    match text.find(current, OWN_RECORDS_MARKER) {
+        .Some(i) => current[i..current.len].clone(),
+        .None => "",
+    }
+}
+
+// Every record nested by value in `rec`, through a union's members too, as
+// names with the `Vk` prefix.
+fn nested_records(r: &Registry, rec: &Record) -> []string {
+    mut out: []string = []
+    for m in &rec.members {
+        if m.pointer || !r.records.contains(m.type_name) { continue }
+        out.push(m.type_name.clone())
+        nested := r.records.get(m.type_name).unwrap()
+        for n in nested_records(r, &nested) { out.push(n) }
+    }
+    out
+}
+
+// ---- main --------------------------------------------------------------------
+
+// `--check` over one file: compare, or write. Returns the process exit code.
+fn check_or_write(target: string, generated: string, check: bool) -> i32 {
+    if check {
+        current := sys.read_text(target)
+        if !current.ok || current.value != generated {
+            _ := sys.eprint("vk: " + target + " differs from what the registry generates; run tools/vk.ddr")
+            return 1
+        }
+        print("vk: " + target + " matches the registry")
+        return 0
+    }
+    _ := sys.write_text(target, generated)
+    print("vk: wrote " + target)
+    0
+}
+
+// Whether `name` (without `Vk`) is among the first `before` entries of `names`.
+fn declared_before(names: &[]string, name: string, before: i32) -> bool {
+    for i in 0..before {
+        if names[i] == name { return true }
+    }
+    false
+}
+
 fn main() -> i32 {
-    // usage: vk.ddr <vk.xml> [--check] [target]
-    // `--check` compares the target with what the registry generates instead of
-    // writing it; the target defaults to the package's api.ddr.
+    // usage: vk.ddr <vk.xml> [--check] [api|layout]
+    // `--check` compares each target with what the registry generates instead
+    // of writing it; the last argument narrows that to one file.
     path := if sys.arg_count() > 1 { sys.arg(1) } else { "" }
     mut check := false
-    mut target := "packages/storm-vulkan/src/api.ddr"
+    mut only := ""
     if sys.arg_count() > 2 && sys.arg(2) == "--check" { check = true }
-    if sys.arg_count() > 2 && sys.arg(2) != "--check" { target = sys.arg(2) }
-    if sys.arg_count() > 3 { target = sys.arg(3) }
+    if sys.arg_count() > 2 && sys.arg(2) != "--check" { only = sys.arg(2) }
+    if sys.arg_count() > 3 { only = sys.arg(3) }
     if path == "" {
-        _ := sys.eprint("usage: dunder run tools/vk.ddr -- <vk.xml> [--check] [target]")
+        _ := sys.eprint("usage: dunder run tools/vk.ddr -- <vk.xml> [--check] [api|layout]")
         return 2
     }
     data := sys.read_u8(path)
@@ -446,25 +776,64 @@ fn main() -> i32 {
         return 2
     }
     r := registry(&data.value)
-    mut wanted: []string = []
-    for n in &COMMANDS { wanted.push(n.clone()) }
-    for n in &wanted {
+    for n in &COMMANDS {
         if !r.commands.contains(n.clone()) {
             _ := sys.eprint("vk: vk" + n + " is not in the registry")
             return 2
         }
     }
-    generated := write_api(&r, &wanted)
-    if check {
-        current := sys.read_text(target)
-        if !current.ok || current.value != generated {
-            _ := sys.eprint("vk: " + target + " differs from what the registry generates; run tools/vk.ddr")
-            return 1
+    // Every record Storm names is in the registry; every record nested in one
+    // of them is declared before its user; every array length and structure
+    // type resolves to a number the registry defines. A failure here is a tool
+    // error, reported, never a guess.
+    for i in 0..STRUCTS.len {
+        name := STRUCTS[i]
+        if !r.records.contains("Vk" + name) {
+            _ := sys.eprint("vk: Vk" + name + " is not in the registry")
+            return 2
         }
-        print("vk: " + target + " matches the registry (" + wanted.len.str() + " commands)")
-        return 0
+        rec := r.records.get("Vk" + name).unwrap()
+        for nested in nested_records(r, &rec) {
+            if !declared_before(&STRUCTS, nested[2..nested.len], i) {
+                _ := sys.eprint("vk: " + nested + " is nested in Vk" + name + " but not declared before it in STRUCTS")
+                return 2
+            }
+        }
+        for m in &rec.members {
+            if m.array != "" && array_length(r, m) == "" {
+                _ := sys.eprint("vk: Vk" + name + "." + m.name + " has an array length the registry does not number: " + m.array)
+                return 2
+            }
+            if m.pointer || !r.records.contains(m.type_name) { continue }
+            for um in &r.records.get(m.type_name).unwrap().members {
+                if um.array != "" && array_length(r, um) == "" {
+                    _ := sys.eprint("vk: " + m.type_name + "." + um.name + " has an array length the registry does not number: " + um.array)
+                    return 2
+                }
+            }
+        }
+        if rec.structure_type != "" && !r.enums.contains(rec.structure_type.clone()) {
+            _ := sys.eprint("vk: Vk" + name + " names " + rec.structure_type + ", which the registry does not define")
+            return 2
+        }
     }
-    _ := sys.write_text(target, generated)
-    print("vk: wrote " + target + " (" + wanted.len.str() + " commands)")
+    if only == "" || only == "api" {
+        code := check_or_write(API_TARGET, write_api(&r, &COMMANDS), check)
+        if code != 0 { return code }
+    }
+    if only == "" || only == "layout" {
+        current := sys.read_text(LAYOUT_TARGET)
+        if !current.ok {
+            _ := sys.eprint("vk: could not read " + LAYOUT_TARGET + " for Storm's own records")
+            return 2
+        }
+        own := own_records(current.value)
+        if own == "" {
+            _ := sys.eprint("vk: " + LAYOUT_TARGET + " has no marker line '" + OWN_RECORDS_MARKER + "'")
+            return 2
+        }
+        code := check_or_write(LAYOUT_TARGET, write_layout(&r, &STRUCTS, own), check)
+        if code != 0 { return code }
+    }
     0
 }
