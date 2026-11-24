@@ -42,7 +42,7 @@ pub struct PlayerMotion {
 struct MotionTick {
     heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, platform: i32, vertical_velocity: f32,
     bank: f32, drive: f32,
-    takeoff_tick: i64, landing_tick: i64, boost_tick: i64, landing_strength: f32,
+    takeoff_tick: i64, landing_tick: i64, boost_tick: i64, rest_tick: i64, rest_weight: f32, landing_strength: f32,
 }
 pub struct Session {
     scene: Scene, tick: i64, won: bool, contacts: i32, player: i32,
@@ -292,7 +292,7 @@ fn make_body(e: &Entity) -> physics.Body {
 pub fn start(scene: &Scene) -> Session {
     rest := MotionTick { heading: 0.35, walk_phase: 0.0, run_weight: 0.0, bank: 0.0, drive: 0.0,
         grounded: false, platform: -1, vertical_velocity: 0.0,
-        takeoff_tick: -1, landing_tick: -1, boost_tick: -1, landing_strength: 0.0 }
+        takeoff_tick: -1, landing_tick: -1, boost_tick: -1, rest_tick: 0, rest_weight: 1.0, landing_strength: 0.0 }
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
         bodies: [], body_indices: [], sensors: [], accumulator: 0.0, jump_pending: false,
@@ -399,6 +399,19 @@ fn event_age(tick: i64, event: i64, fraction: f64) -> f32 {
     f32((f64(tick - event) + fraction) * TICK_SECONDS)
 }
 
+pub struct Rest { age: f32, weight: f32 }
+
+// A short tap can interrupt an ongoing gesture. Rewind it only after it has completely faded.
+pub fn render_rest(s: &Session, exact: bool) -> Rest {
+    if exact || s.tick == 0 { return Rest { age: event_age(s.tick, s.motion.rest_tick, 0.0), weight: s.motion.rest_weight } }
+    Rest { age: event_age(s.tick - 1, s.previous_motion.rest_tick, s.accumulator),
+        weight: s.previous_motion.rest_weight + f32(s.accumulator) * (s.motion.rest_weight - s.previous_motion.rest_weight) }
+}
+
+pub fn stride_stop(s: &Session, exact: bool, index: i32) -> Option<stride.Stop> {
+    stride.resting(&s.trail, exact || s.tick == 0, f32(s.accumulator), index)
+}
+
 // Continuous values share the position interpolation clock. Contacts and impulses
 // become visible at their fixed-tick boundary, including in multi-tick frames.
 pub fn render_motion(s: &Session, exact: bool) -> PlayerMotion {
@@ -466,9 +479,14 @@ fn update_stride(s: &mut Session, dx: f32, dz: f32, grounded: bool) {
 fn update_player(s: &mut Session, before: core.Vec3) {
     match s.scene.bounds { .Some(b) => { stay_in_bounds(&mut s.bodies[s.player], &b) }, .None => {} }
     player := s.bodies[s.player]
+    was_moving := s.walking || !s.previous_motion.grounded
     update_stride(&mut s, player.position.x - before.x, player.position.z - before.z, player.grounded)
+    resting := player.grounded && !s.walking
+    if resting && was_moving && s.motion.rest_weight <= 0.0 { s.motion.rest_tick = s.tick }
+    s.motion.rest_weight = if resting { approach(s.motion.rest_weight, 1.0, f32(TICK_SECONDS) / 0.30) }
+        else { approach(s.motion.rest_weight, 0.0, f32(TICK_SECONDS) / 0.22) }
     support := player.grounded || s.motion.boost_tick == s.tick
-    stride.record(&mut s.trail, before, player.position, s.motion.heading, s.motion.run_weight, s.previous_motion.grounded, support)
+    stride.record(&mut s.trail, before, player.position, s.motion.heading, s.motion.run_weight, s.previous_motion.grounded, support, f32(TICK_SECONDS))
     s.motion.platform = if player.platform >= 0 { s.body_entities[player.platform] } else { -1 }
     s.motion.grounded = player.grounded
     s.motion.vertical_velocity = player.velocity.y

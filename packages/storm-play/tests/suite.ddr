@@ -216,14 +216,18 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     walk(&mut s, 0.01, -1.0, 1)
     start := play.render_motion(&s, true)
     assert(start.heading > 0.35 && start.heading < 0.7 && start.run_weight > 0.0 && start.run_weight < 0.2)
-    walk(&mut s, 0.01, -1.0, 15)
+    for _ in 0..60 {
+        if s.walk_phase + start.walk_phase >= 6.2831853 { break }
+        walk(&mut s, 0.01, -1.0, 1)
+    }
     before := play.render_motion(&s, true)
     assert(before.heading > 3.10 && before.run_weight > 0.95 && before.walk_phase > 5.5)
     assert(play.advance(&mut s, play.TICK_SECONDS * 1.5, play.Input { x: -0.01, z: -1.0, jump: false }) == 1)
     middle := play.render_motion(&s, false)
     after := play.render_motion(&s, true)
     assert(middle.heading.abs() > 3.12 && after.heading < -3.10)
-    assert(after.walk_phase < 0.3 && middle.walk_phase > before.walk_phase && middle.walk_phase < 6.30)
+    assert(after.walk_phase < start.walk_phase && middle.walk_phase > before.walk_phase)
+    assert((middle.walk_phase - (before.walk_phase + after.walk_phase + 6.2831853) * 0.5).abs() < 0.0001)
     play.step(&mut s, command(0.0, false))
     stop := play.render_motion(&s, true)
     assert(stop.run_weight > 0.7 && stop.run_weight < after.run_weight && stop.walk_phase == after.walk_phase)
@@ -467,4 +471,17 @@ fn meadow() -> play.Scene {
             assert(play.render_motion(&s, true).vertical_velocity > 8.0)
         }
     }
+}
+
+@test fn interrupted_microsteps_keep_bounded_footprint_history() {
+    scene := meadow()
+    mut s := play.start(&scene)
+    walk(&mut s, 0.0, 0.0, 40)
+    for i in 0..2500 {
+        walk(&mut s, if i % 2 == 0 { 0.0002 } else { -0.0002 }, 0.0, 1)
+        walk(&mut s, 0.0, 0.0, 3)
+    }
+    assert(play.stride_stop(&s, true, -1).is_none())
+    assert(play.stride_stop(&s, true, 1).is_some())
+    assert(play.stride_stop(&s, true, 8).is_none())
 }
