@@ -80,8 +80,7 @@ Lagren i storm-vulkan (4 973 rader + 2 900 genererad SPIR-V):
 | App-nära kod | `ui.ddr`, `post.ddr` | 640 |
 | Orkestrering | `vulkan.ddr`, `state.ddr` | 793 |
 
-Lagren i storm-metal (2 184 rader + 433 rader Metal-källa i en genererad
-modul):
+Lagren i storm-metal (2 184 rader + inbäddad Metal-källa):
 
 | Lager | Moduler | Rader |
 |---|---|---|
@@ -274,13 +273,9 @@ bindningsgenerator, inget bibliotek att hitta. Fyra beslut är värda sina namn:
   ett enda `pass.bind` som sätter båda gör att de inte kan skilja sig: en
   pipeline som läser mesh-layouten gallrar baksidor, en som ritar en
   fullskärmstriangel eller UI-fyrkanter gallrar ingenting.
-- **Shaders som källkod, kompilerade av systemet.** 433 rader Metal som en
-  råsträng i en genererad modul (`tools/shaders.ddr`, samma mönster som
-  Vulkan-SPIR-V:n), kompilerade av `newLibraryWithSource:` när fönstret
-  öppnas: 42 ms första gången, 0–1 ms efteråt (systemet cachar). Den
-  offline (`xcrun metal`) är en nedladdning på flera gigabyte som inte
-  följer med Xcode, och `@embed_file` går inte (ett beroende hittar inte sina
-  egna filer — fynd 65).
+- **Shaders som källkod.** Metal-paketet bäddar in `shaders/storm.metal`.
+  `newLibraryWithSource:` kompilerar källan när fönstret öppnas. Första
+  kompileringen tog 42 ms och följande 0–1 ms med systemets cache.
 
 Ägarskap följer Objective-C:s namn: `alloc`, `init`, `new`, `copy` ger ett
 ägt objekt som släpps exakt en gång, i `close`, i omvänd skapandeordning;

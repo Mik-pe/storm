@@ -310,13 +310,9 @@ och det fungerar. `&mut *push` är ett syntaxfel (`expected expression`).
 Rekommendation: dokumentera reborrow-formen i språkreferensen; noten räcker
 för att lösa det, men bara om man läser den.
 
-**49. Flytlitteral på vänster sida gör uttrycket f64.** Med `x: f32` är
-`x * 2.0` f32 men `2.0 * x` f64, och `f32(1.0) - y` behövs i stället för
-`(1.0).f32()`, som ger `unknown float method`. Färdighetsbladet beskriver bara
-höger sidan. Minsta repro: `mut a: f32 = 1.0; _ := 2.0 * a` i en funktion som
-förväntar f32. Rekommendation: typa litteralen efter den andra operanden när
-ena sidan redan är f32, eller låt `-`/`*` med en f64-litteral och en f32-variabel
-bli ett fel i stället för en tyst uppgradering.
+**49. Flytlitteraler får typ från sammanhanget.** I 0.11.2 ger både
+`x * 2.0` och `2.0 * x` ett `f32` när `x` och returtypen är `f32`.
+En fristående `x := 2.0` skapar däremot ett `f64`.
 
 **50. `perspective()` mappade närplanet till −1.** Testet för
 `cube_projection()` (Vulkan, z i [0, 1]) avslöjade att det befintliga
@@ -398,17 +394,6 @@ själv producerat är inget bevis; ett test mot **en fil utifrån** är det.
 **61. Dela zlib mellan WOFF och andra filformat.** Dunders paket `packages/zlib` tillhandahåller `decompress(src, max_bytes)`. Gränsen gäller även när ett komprimerat block hänvisar bakåt i utdata. Skrift använder WOFF-tabellens deklarerade längd som gräns. En PNG-läsare kan i stället härleda sin gräns ur bildmåtten.
 
 **62. Oanvänd kod i beroendet.** Varningarna gick att reproducera i Skrift. De oanvända importerna har tagits bort och den gemensamma avkodaren använder `_` för överhoppade loopindex.
-
-**varje** kompilering, däribland `tools/build-time.ddr`:s. Det är rätt att
-kompilatorn visar dem — Skrift har faktiskt död kod och Micke har
-nolltolerans för det — men det gör Storms regel "0 varningar i Storms egna
-paket" omöjlig att kontrollera med `dunder check` + `grep warning` utan att
-handskriva ett undantag per syskonrepo. *Workaround:* `grep -v dunder-skrift`.
-*Rekommendation:* antingen (a) en `--warnings deps|own`-flagga på `check`/
-`build`, eller (b) — enklast och mest ärligt — Skrift rensar de sex
-varningarna så är fallet borta. Skrift är Mickes repo; det är (b) som gäller
-tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
-*i praktiken* är en filterregel tills syskonen är rena.)
 
 **63. Antal argument.** Anropet `f2(1.0, 2.0, 3.0)` till en funktion med två parametrar fick E3003 utan antal. Dunder 0.11.3 visar både förväntat och faktiskt antal. För metoder räknas de argument anroparen skriver.
 
