@@ -1,0 +1,146 @@
+// Sparse local-transform tracks. Key times are seconds; rotation tracks use the
+// graph's pitch, yaw and roll in radians and can author explicit full turns.
+import .scene
+import core
+import ecs
+
+pub enum Ease { Step, Linear, Smooth, EaseIn, EaseOut }
+pub enum Playback { Clamp, Loop }
+pub struct Key { time: f32, value: core.Vec3, ease: Ease }
+pub struct Pose { position: core.Vec3, rotation: core.Vec3, scale: core.Vec3 }
+pub opaque struct Clip { duration: f32, position: []Key, rotation: []Key, scale: []Key }
+
+pub fn identity() -> Pose {
+    Pose { position: core.vec3(0.0, 0.0, 0.0), rotation: core.vec3(0.0, 0.0, 0.0), scale: core.vec3(1.0, 1.0, 1.0) }
+}
+
+pub fn key(time: f32, x: f32, y: f32, z: f32, ease: Ease) -> Key {
+    Key { time: time, value: core.vec3(x, y, z), ease: ease }
+}
+
+fn validate(keys: &[]Key, duration: f32, channel: string) -> Result<(), string> {
+    mut last: f32 = -1.0
+    for k in keys {
+        if !k.time.is_finite() || k.time < 0.0 || k.time > duration || k.time <= last {
+            return .Err(channel + " key times must increase within the clip duration")
+        }
+        if !k.value.x.is_finite() || !k.value.y.is_finite() || !k.value.z.is_finite() {
+            return .Err(channel + " contains a non-finite key value")
+        }
+        last = k.time
+    }
+    .Ok
+}
+
+pub fn clip(duration: f32, move position: []Key, move rotation: []Key, move scale: []Key) -> Result<Clip, string> {
+    if !duration.is_finite() || duration <= 0.0 { return .Err("clip duration must be finite and positive") }
+    validate(&position, duration, "position")?
+    validate(&rotation, duration, "rotation")?
+    validate(&scale, duration, "scale")?
+    .Ok(Clip { duration: duration, position: move position, rotation: move rotation, scale: move scale })
+}
+
+fn weight(t: f32) -> f32 {
+    if !t.is_finite() || t <= 0.0 { return 0.0 }
+    if t >= 1.0 { return 1.0 }
+    t
+}
+
+fn lerp(a: core.Vec3, b: core.Vec3, t: f32) -> core.Vec3 {
+    core.add(core.scale(a, 1.0 - t), core.scale(b, t))
+}
+
+fn segment(a: &Key, b: &Key, at: f64, start: f64, end: f64) -> core.Vec3 {
+    t := weight(f32((at - start) / (end - start)))
+    k := match a.ease {
+        .Step => f32(0.0), .Linear => t, .Smooth => t * t * (3.0 - 2.0 * t),
+        .EaseIn => t * t, .EaseOut => t * (2.0 - t),
+    }
+    lerp(a.value, b.value, k)
+}
+
+fn track(keys: &[]Key, time: f64, duration: f64, playback: Playback, base: core.Vec3) -> core.Vec3 {
+    if keys.len == 0 { return base }
+    first := &keys[0]
+    if keys.len == 1 { return first.value }
+    last := &keys[keys.len - 1]
+    if time < f64(first.time) {
+        if playback == .Clamp { return first.value }
+        return segment(last, first, time, f64(last.time) - duration, f64(first.time))
+    }
+    if time >= f64(last.time) {
+        if playback == .Clamp || time == f64(last.time) { return last.value }
+        return segment(last, first, time, f64(last.time), duration + f64(first.time))
+    }
+    mut left := 0
+    mut right := keys.len - 1
+    while right - left > 1 {
+        mid := left + (right - left) / 2
+        if time < f64(keys[mid].time) { right = mid } else { left = mid }
+    }
+    segment(&keys[left], &keys[right], time, f64(keys[left].time), f64(keys[right].time))
+}
+
+fn wrapped(time: f64, period: f64) -> f64 {
+    if time >= 0.0 && time < period { return time }
+    mut left := time.abs()
+    if left < period * 67108864.0 {
+        left -= (left / period).floor() * period
+    } else {
+        // With many elapsed cycles the product above can round to time itself.
+        // Subtract exact power-of-two multiples; at most 277 for f32 inputs.
+        mut span := period
+        while span <= left * 0.5 { span *= 2.0 }
+        while span >= period {
+            if left >= span { left -= span }
+            span *= 0.5
+        }
+    }
+    if time < 0.0 && left > 0.0 { return period - left }
+    left
+}
+
+// Each key's easing shapes its outgoing segment. A sparse loop interpolates
+// across the seam; explicit keys at zero and duration can also author a cut.
+// A non-finite playhead samples time zero.
+pub fn sample(c: &Clip, time: f32, playback: Playback, base: Pose) -> Pose {
+    duration := f64(c.duration)
+    mut t := if time.is_finite() { f64(time) } else { f64(0.0) }
+    if playback == .Loop { t = wrapped(t, duration) }
+    Pose {
+        position: track(&c.position, t, duration, playback, base.position),
+        rotation: track(&c.rotation, t, duration, playback, base.rotation),
+        scale: track(&c.scale, t, duration, playback, base.scale),
+    }
+}
+
+fn angle_mix(a: f32, b: f32, t: f32) -> f32 {
+    if t == 0.0 { return a }
+    if t == 1.0 { return b }
+    delta := f64(b) - f64(a)
+    tau := 6.283185307179586
+    mut near := delta
+    if delta >= tau * 0.5 || delta < -tau * 0.5 {
+        near = wrapped(delta, tau)
+        if near >= tau * 0.5 { near -= tau }
+    }
+    f32(f64(a) + near * f64(t))
+}
+
+// Cross-fade local poses independently per channel. Blends take the short
+// arc for each Euler angle; authored rotations within a clip stay unwrapped.
+pub fn mix(a: Pose, b: Pose, position_weight: f32, rotation_weight: f32, scale_weight: f32) -> Pose {
+    r := weight(rotation_weight)
+    Pose {
+        position: lerp(a.position, b.position, weight(position_weight)),
+        rotation: core.vec3(angle_mix(a.rotation.x, b.rotation.x, r), angle_mix(a.rotation.y, b.rotation.y, r),
+            angle_mix(a.rotation.z, b.rotation.z, r)),
+        scale: lerp(a.scale, b.scale, weight(scale_weight)),
+    }
+}
+
+pub fn apply(g: &mut scene.Graph, node: ecs.Entity, p: &Pose) {
+    g.set_position(node, p.position)
+    g.set_angles(node, p.rotation.x, p.rotation.y, p.rotation.z)
+    g.set_scale(node, p.scale)
+}

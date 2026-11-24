@@ -1,0 +1,72 @@
+import ..src.animation as anim
+import ..src.scene as scene
+import core
+
+fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.0001 }
+
+@test fn clip_construction_rejects_unordered_nonfinite_and_out_of_duration_keys() {
+    bad := f32.from_bits(0x7fc00000)
+    assert(anim.clip(0.0, [], [], []).is_err())
+    assert(anim.clip(bad, [], [], []).is_err())
+    assert(anim.clip(1.0, [], [anim.key(-0.1, 1.0, 0.0, 0.0, .Smooth)], []).is_err())
+    assert(anim.clip(1.0, [], [], [anim.key(1.1, 1.0, 0.0, 0.0, .Smooth)]).is_err())
+    assert(anim.clip(1.0, [anim.key(0.2, 0.0, 0.0, 0.0, .Smooth), anim.key(0.2, 1.0, 0.0, 0.0, .Step)], [], []).is_err())
+    assert(anim.clip(1.0, [], [], [anim.key(0.0, bad, 1.0, 1.0, .Step)]).is_err())
+    assert(anim.clip(1.0, [], [], []).is_ok())
+}
+
+@test fn clamped_tracks_hold_endpoints_and_each_outgoing_key_shapes_its_segment() {
+    c := anim.clip(6.0, [
+        anim.key(0.5, 1.0, 0.0, 0.0, .Step),
+        anim.key(1.0, 2.0, 0.0, 0.0, .Linear),
+        anim.key(2.0, 3.0, 0.0, 0.0, .Smooth),
+        anim.key(3.0, 4.0, 0.0, 0.0, .EaseIn),
+        anim.key(4.0, 5.0, 0.0, 0.0, .EaseOut),
+        anim.key(5.0, 6.0, 0.0, 0.0, .Linear),
+    ], [], []).unwrap()
+    rest := anim.identity()
+    assert(anim.sample(&c, -3.0, .Clamp, rest).position.x == 1.0)
+    assert(anim.sample(&c, 0.999, .Clamp, rest).position.x == 1.0)
+    assert(anim.sample(&c, 1.0, .Clamp, rest).position.x == 2.0)
+    assert(near(anim.sample(&c, 1.25, .Clamp, rest).position.x, 2.25))
+    assert(near(anim.sample(&c, 2.25, .Clamp, rest).position.x, 3.15625))
+    assert(near(anim.sample(&c, 3.25, .Clamp, rest).position.x, 4.0625))
+    assert(near(anim.sample(&c, 4.25, .Clamp, rest).position.x, 5.4375))
+    assert(anim.sample(&c, 77.0, .Clamp, rest).position.x == 6.0)
+}
+
+@test fn sparse_loop_interpolates_across_zero_and_inherits_unanimated_channels() {
+    c := anim.clip(2.0, [], [anim.key(0.5, 0.0, 0.0, 0.0, .Linear), anim.key(1.5, 0.0, 6.0, 0.0, .Linear)],
+        [anim.key(0.25, 2.0, 0.7, 2.0, .Step)]).unwrap()
+    mut rest := anim.identity()
+    rest.position = core.vec3(0.25, 1.3, 0.5)
+    at_zero := anim.sample(&c, 0.0, .Loop, rest)
+    assert(at_zero.rotation.y == 3.0 && at_zero.position.y == rest.position.y && at_zero.scale.y == 0.7)
+    assert(near(anim.sample(&c, -0.25, .Loop, rest).rotation.y, 4.5))
+    assert(near(anim.sample(&c, 63.75, .Loop, rest).rotation.y, 4.5))
+    assert(anim.sample(&c, 2.0, .Loop, rest).rotation.y == at_zero.rotation.y)
+    assert(anim.sample(&c, f32.from_bits(0x7fc00000), .Loop, rest).rotation.y == at_zero.rotation.y)
+    turn := anim.clip(1.0, [], [anim.key(0.0, 0.0, 0.0, 0.0, .Linear), anim.key(1.0, 0.0, 6.28, 0.0, .Linear)], []).unwrap()
+    assert(near(anim.sample(&turn, 0.5, .Loop, rest).rotation.y, 3.14))
+    assert(anim.sample(&turn, 1.0, .Loop, rest).rotation.y == 0.0)
+    triplet := anim.clip(3.0, [anim.key(0.0, 0.0, 0.0, 0.0, .Linear), anim.key(3.0, 3.0, 0.0, 0.0, .Linear)], [], []).unwrap()
+    many_cycles := f32.from_bits(0x71800000) // 2^100 seconds, phase 1 in a three-second loop.
+    assert(near(anim.sample(&triplet, many_cycles, .Loop, rest).position.x, 1.0))
+    assert(near(anim.sample(&triplet, -many_cycles, .Loop, rest).position.x, 2.0))
+}
+
+@test fn crossfade_uses_per_channel_weights_and_writes_only_local_transform() {
+    a := anim.Pose { position: core.vec3(0.0, 5.0, 0.0), rotation: core.vec3(0.0, 3.1, 0.0), scale: core.vec3(1.0, 1.0, 1.0) }
+    b := anim.Pose { position: core.vec3(7.0, 0.0, 1.0), rotation: core.vec3(0.0, -3.1, 0.0), scale: core.vec3(0.8, 1.2, 0.8) }
+    p := anim.mix(a, b, -0.5, 0.5, 1.5)
+    mut graph := scene.Graph::new()
+    parent := graph.create_root(core.vec3(5.0, 0.0, 0.0))
+    child := graph.create_child(parent, a.position)
+    graph.set_visible(child, false)
+    revision := graph.geometry_revision()
+    anim.apply(&mut graph, child, &p)
+    local := graph.local(child)
+    assert(local.position.x == a.position.x && local.position.y == a.position.y && local.scale.y == b.scale.y)
+    assert(near(local.rotation_y, 3.14159265) && !local.visible)
+    assert(graph.local(parent).position.x == 5.0 && graph.geometry_revision() == revision)
+}

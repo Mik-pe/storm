@@ -252,3 +252,5 @@ import core
     graph.propagate()
     assert(graph.drawables(core.vec3(0.0,0.0,0.0)).len == 1)
 }
+
+import .animation as _
