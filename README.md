@@ -19,7 +19,7 @@ Materialstudien visar en mässingsring, en räfflad keramikvas och en porslinsku
 
 ## Förutsättningar
 
-- `dunder` 0.11.0 eller senare (verifierat med 0.11.0).
+- `dunder` 0.11.3 eller senare. Version 0.11.3 stöder den paketrelativa Metal-shadern och de lånade ECS-frågorna som används i spelet.
 - `dunder-skrift` som **syskonkatalog** bredvid `storm` (till exempel
   `~/dev/dunder-skrift`). `packages/storm-text` har ett `path`-beroende till
   den.
