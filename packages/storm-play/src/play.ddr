@@ -2,6 +2,7 @@
 capability filesystem
 
 import .codec
+import .stride
 import core
 import physics
 import std.fs as fs
@@ -16,6 +17,7 @@ const MAX_CATCHUP: i32 = 8
 const RUN_SPEED: f32 = 4.5
 const BOOST_SPEED: f32 = 8.2
 const TAU: f32 = 6.2831853
+pub const STRIDE_LENGTH: f32 = stride.LENGTH
 
 pub enum Shape { Box, Sphere }
 pub enum Role { Prop, Player, Goal, Flower, Collider, Cloud, BoostCloud, SuperButterfly }
@@ -30,12 +32,16 @@ pub struct Entity {
 
 pub struct Scene { name: string, gravity: core.Vec3, theme: Theme, bounds: Option<Bounds>, entities: []Entity }
 pub struct Input { x: f32, z: f32, jump: bool }
+pub struct StrideAnchor { position: core.Vec3, heading: f32, run_weight: f32, distance: f32 }
 pub struct PlayerMotion {
     seconds: f32, heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, vertical_velocity: f32,
+    // Positive bank leans into a right turn. Positive drive loads the rear feet during acceleration.
+    bank: f32, drive: f32,
     takeoff_age: f32, landing_age: f32, boost_age: f32, landing_strength: f32,
 }
 struct MotionTick {
     heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, vertical_velocity: f32,
+    bank: f32, drive: f32,
     takeoff_tick: i64, landing_tick: i64, boost_tick: i64, landing_strength: f32,
 }
 pub struct Session {
@@ -45,7 +51,7 @@ pub struct Session {
     butterflies: i32, total_butterflies: i32, last_butterfly: i32, butterfly_tick: i64,
     last_cloud: i32, cloud_tick: i64, cloud_origin: core.Vec3, body_entities: []i32, has_goal: bool,
     heading: f32, walk_phase: f32, walking: bool,
-    motion: MotionTick, previous_motion: MotionTick,
+    motion: MotionTick, previous_motion: MotionTick, forward_speed: f32, trail: stride.Trail,
     previous: []core.Vec3, accumulator: f64, jump_pending: bool,
 }
 
@@ -284,7 +290,8 @@ fn make_body(e: &Entity) -> physics.Body {
 }
 
 pub fn start(scene: &Scene) -> Session {
-    rest := MotionTick { heading: 0.35, walk_phase: 0.0, run_weight: 0.0, grounded: false, vertical_velocity: 0.0,
+    rest := MotionTick { heading: 0.35, walk_phase: 0.0, run_weight: 0.0, bank: 0.0, drive: 0.0,
+        grounded: false, vertical_velocity: 0.0,
         takeoff_tick: -1, landing_tick: -1, boost_tick: -1, landing_strength: 0.0 }
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
@@ -292,7 +299,8 @@ pub fn start(scene: &Scene) -> Session {
         collected: [], flowers: 0, total_flowers: 0, last_flower: -1, picked_tick: -1,
         butterflies: 0, total_butterflies: 0, last_butterfly: -1, butterfly_tick: -1,
         last_cloud: -1, cloud_tick: -1, cloud_origin: core.vec3(0.0, 0.0, 0.0), body_entities: [], has_goal: false,
-        heading: rest.heading, walk_phase: 0.0, walking: false, motion: rest, previous_motion: rest,
+        heading: rest.heading, walk_phase: 0.0, walking: false, motion: rest, previous_motion: rest, forward_speed: 0.0,
+        trail: stride.start(core.vec3(0.0, 0.0, 0.0), rest.heading, 0.0),
     }
     for i in 0..scene.entities.len {
         item := &scene.entities[i]
@@ -323,6 +331,7 @@ pub fn start(scene: &Scene) -> Session {
         session.motion.grounded = session.bodies[p].grounded
         session.motion.vertical_velocity = session.bodies[p].velocity.y
         session.previous_motion = session.motion
+        session.trail = stride.start(session.bodies[p].position, rest.heading, 0.0)
     }
     session
 }
@@ -343,9 +352,31 @@ pub fn render_tick_offset(s: &Session, exact: bool) -> f32 {
     f32(s.accumulator - 1.0)
 }
 
-fn near_angle(from: f32, to: f32) -> f32 {
-    d := to - from
-    d - ((d + TAU * 0.5) / TAU).floor() * TAU
+// Recover the player centre and orientation at a planted paw's touchdown.
+// A new ground path starts at spawn, teleport or landing. In flight there is
+// no ground contact and the requested distance clamps to zero.
+pub fn stride_anchor(s: &Session, exact: bool, distance_back: f32) -> StrideAnchor {
+    at_tick := exact || s.tick == 0
+    grounded := if at_tick { s.motion.grounded } else { s.previous_motion.grounded }
+    if !grounded || s.player < 0 {
+        m := render_motion(s, exact)
+        mut p := core.vec3(0.0, 0.0, 0.0)
+        if s.player >= 0 {
+            index := s.body_entities[s.player]
+            p = if at_tick { position(s, index) } else { render_position(s, index) }
+        }
+        return StrideAnchor { position: p, heading: m.heading, run_weight: m.run_weight, distance: 0.0 }
+    }
+    support_anchor(s, if at_tick { f64(1.0) } else { s.accumulator }, distance_back)
+}
+
+pub fn last_support_anchor(s: &Session, distance_back: f32) -> StrideAnchor {
+    support_anchor(s, 1.0, distance_back)
+}
+
+fn support_anchor(s: &Session, fraction: f64, distance_back: f32) -> StrideAnchor {
+    p := stride.sample(&s.trail, fraction, distance_back)
+    StrideAnchor { position: p.position, heading: p.heading, run_weight: p.weight, distance: f32(p.along) }
 }
 
 fn approach(from: f32, to: f32, limit: f32) -> f32 {
@@ -375,9 +406,10 @@ pub fn render_motion(s: &Session, exact: bool) -> PlayerMotion {
         else if from.grounded { f32(0.0) } else { s.scene.gravity.y * f32(TICK_SECONDS) }
     PlayerMotion {
         seconds: f32((f64(tick) + fraction) * TICK_SECONDS),
-        heading: from.heading + near_angle(from.heading, current.heading) * t,
-        walk_phase: from.walk_phase + near_angle(from.walk_phase, current.walk_phase) * t,
+        heading: from.heading + stride.near_angle(from.heading, current.heading) * t,
+        walk_phase: from.walk_phase + stride.near_angle(from.walk_phase, current.walk_phase) * t,
         run_weight: from.run_weight + (current.run_weight - from.run_weight) * t,
+        bank: from.bank + (current.bank - from.bank) * t, drive: from.drive + (current.drive - from.drive) * t,
         grounded: from.grounded, vertical_velocity: from.vertical_velocity + dy * t,
         takeoff_age: event_age(tick, from.takeoff_tick, fraction), landing_age: event_age(tick, from.landing_tick, fraction),
         boost_age: event_age(tick, from.boost_tick, fraction), landing_strength: from.landing_strength,
@@ -398,23 +430,36 @@ fn stay_in_bounds(body: &mut physics.Body, bounds: &Bounds) {
     if body.position.z > bounds.max_z { body.position.z = bounds.max_z; body.velocity.z = 0.0 }
 }
 
-fn update_player(s: &mut Session, before: core.Vec3) {
-    match s.scene.bounds { .Some(b) => { stay_in_bounds(&mut s.bodies[s.player], &b) }, .None => {} }
-    player := &s.bodies[s.player]
-    dx := player.position.x - before.x
-    dz := player.position.z - before.z
+fn update_stride(s: &mut Session, dx: f32, dz: f32, grounded: bool) {
+    dt := f32(TICK_SECONDS)
     distance := (dx * dx + dz * dz).sqrt()
-    s.walking = distance > 0.00001 && player.grounded
+    s.walking = distance > 0.00001 && grounded
     if distance > 0.00001 { s.heading = f32(math.atan2(f64(dx), f64(dz))) }
     if s.walking {
-        s.walk_phase += distance * 5.0
+        s.walk_phase += distance * (TAU / STRIDE_LENGTH)
         if s.walk_phase >= TAU { s.walk_phase -= (s.walk_phase / TAU).floor() * TAU }
     }
     s.motion.walk_phase = s.walk_phase
-    turn := near_angle(s.motion.heading, s.heading)
-    s.motion.heading = near_angle(0.0, s.motion.heading + approach(0.0, turn, 16.0 * f32(TICK_SECONDS)))
-    weight := if s.walking { axis(distance / (RUN_SPEED * f32(TICK_SECONDS))) } else { f32(0.0) }
-    s.motion.run_weight = approach(s.motion.run_weight, weight, 8.0 * f32(TICK_SECONDS))
+    turn := approach(0.0, stride.near_angle(s.motion.heading, s.heading), 16.0 * dt)
+    s.motion.heading = stride.near_angle(0.0, s.motion.heading + turn)
+    weight := if s.walking { axis(distance / (RUN_SPEED * dt)) } else { f32(0.0) }
+    // Bank into the yaw actually covered while travelling. Forward acceleration
+    // shifts weight relative to the direction the body is currently facing.
+    bank := (turn / (16.0 * dt)) * weight * s.motion.run_weight
+    forward := axis((dx * s.motion.heading.sin() + dz * s.motion.heading.cos()) / (RUN_SPEED * dt))
+    drive := if grounded { axis(forward - s.forward_speed) } else { f32(0.0) }
+    s.forward_speed += (forward - s.forward_speed) * (8.0 * dt)
+    s.motion.bank += (bank - s.motion.bank) * (14.0 * dt)
+    s.motion.drive += (drive - s.motion.drive) * (18.0 * dt)
+    s.motion.run_weight = approach(s.motion.run_weight, weight, 8.0 * dt)
+}
+
+fn update_player(s: &mut Session, before: core.Vec3) {
+    match s.scene.bounds { .Some(b) => { stay_in_bounds(&mut s.bodies[s.player], &b) }, .None => {} }
+    player := s.bodies[s.player]
+    update_stride(&mut s, player.position.x - before.x, player.position.z - before.z, player.grounded)
+    support := player.grounded || s.motion.boost_tick == s.tick
+    stride.record(&mut s.trail, before, player.position, s.motion.heading, s.motion.run_weight, s.previous_motion.grounded, support)
     s.motion.grounded = player.grounded
     s.motion.vertical_velocity = player.velocity.y
     if s.won && s.butterflies == s.total_butterflies { return }
@@ -422,7 +467,7 @@ fn update_player(s: &mut Session, before: core.Vec3) {
     for i in 0..s.sensors.len {
         sensor := &s.sensors[i]
         index := sensor.entity_index
-        if s.collected[index] || !physics.overlap(player, &sensor.body) { continue }
+        if s.collected[index] || !physics.overlap(&player, &sensor.body) { continue }
         role := s.scene.entities[index].role
         if role == .Goal { at_goal = true }
         else if role == .SuperButterfly {

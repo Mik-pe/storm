@@ -1,0 +1,83 @@
+import core
+import std.math as _
+
+pub const LENGTH: f32 = 6.2831853 / 5.0
+const CAPACITY: i32 = 64
+const SPACING: f64 = f64(LENGTH) / 60.0
+
+pub struct Point { position: core.Vec3, heading: f32, weight: f32, along: f64 }
+pub opaque struct Trail { points: [Point; CAPACITY], next: i32, count: i32, previous: Point, tip: Point }
+
+pub fn near_angle(from: f32, to: f32) -> f32 {
+    d := to - from
+    tau: f32 = 6.2831853
+    d - ((d + tau * 0.5) / tau).floor() * tau
+}
+
+fn between(a: Point, b: Point, t: f64) -> Point {
+    Point { position: core.add(a.position, core.scale(core.sub(b.position, a.position), f32(t))),
+        heading: a.heading + near_angle(a.heading, b.heading) * f32(t), weight: a.weight + (b.weight - a.weight) * f32(t),
+        along: a.along + (b.along - a.along) * t }
+}
+
+pub fn start(position: core.Vec3, heading: f32, weight: f32) -> Trail {
+    p := Point { position: position, heading: heading, weight: weight, along: 0.0 }
+    Trail { points: [p; CAPACITY], next: 1, count: 1, previous: p, tip: p }
+}
+
+fn reset(trail: &mut Trail, p: Point) {
+    trail.points[0] = p
+    trail.next = 1
+    trail.count = 1
+    trail.previous = p
+    trail.tip = p
+}
+
+// Sample by distance so arbitrarily slow steps and long pauses keep the same
+// planted foot. Only continuous travel on one support path contributes length.
+pub fn record(trail: &mut Trail, before: core.Vec3, after: core.Vec3, heading: f32, weight: f32,
+    was_grounded: bool, grounded: bool) {
+    if was_grounded && core.length(core.sub(before, trail.tip.position)) > 0.001 {
+        reset(&mut trail, Point { position: before, heading: heading, weight: 0.0, along: 0.0 })
+    }
+    trail.previous = trail.tip
+    if !grounded { return }
+    delta := core.sub(after, before)
+    end := Point { position: after, heading: heading, weight: weight, along: 0.0 }
+    if !was_grounded || core.length(delta) > 0.5 {
+        reset(&mut trail, end)
+        return
+    }
+    distance := f64((delta.x * delta.x + delta.z * delta.z).sqrt())
+    if distance == 0.0 { return }
+    trail.tip = end
+    trail.tip.along = trail.previous.along + distance
+    mut at := trail.points[(trail.next + CAPACITY - 1) % CAPACITY].along + SPACING
+    while at <= trail.tip.along {
+        mut p := between(trail.previous, trail.tip, (at - trail.previous.along) / distance)
+        p.along = at
+        trail.points[trail.next] = p
+        trail.next = (trail.next + 1) % CAPACITY
+        if trail.count < CAPACITY { trail.count += 1 }
+        at += SPACING
+    }
+}
+
+pub fn sample(trail: &Trail, fraction: f64, back: f32) -> Point {
+    tip := between(trail.previous, trail.tip, fraction)
+    mut newer := tip
+    if !back.is_finite() || back <= 0.0 { newer.along = 0.0; return newer }
+    target := tip.along - f64(back)
+    for i in 0..trail.count {
+        p := trail.points[(trail.next + CAPACITY - 1 - i) % CAPACITY]
+        if p.along >= tip.along { continue }
+        if p.along <= target {
+            mut hit := between(p, newer, (target - p.along) / (newer.along - p.along))
+            hit.along = f64(back)
+            return hit
+        }
+        newer = p
+    }
+    newer.along = tip.along - newer.along
+    newer
+}

@@ -261,6 +261,116 @@ fn climb_to_pink(s: &mut play.Session, realtime: bool) {
     }
 }
 
+fn meadow() -> play.Scene {
+    demo := play.demo()
+    mut scene := play.empty("Äng")
+    scene.entities.push(demo.entities[0].clone())
+    scene.entities.push(demo.entities[1].clone())
+    scene
+}
+
+@test fn body_weight_tracks_signed_turns_braking_and_restart_at_both_frame_rates() {
+    scene := meadow()
+    for realtime in [false, true] {
+        mut s := play.start(&scene)
+        fly(&mut s, 0.0, 1.0, false, 4, realtime)
+        assert(play.render_motion(&s, true).drive > 0.50)
+        fly(&mut s, 0.0, 1.0, false, 40, realtime)
+        steady := play.render_motion(&s, true)
+        assert(steady.drive.abs() < 0.01 && steady.bank.abs() < 0.01)
+        fly(&mut s, -1.0, 0.0, false, 4, realtime)
+        assert(play.render_motion(&s, true).bank < -0.6)
+        fly(&mut s, -1.0, 0.0, false, 24, realtime)
+        fly(&mut s, 0.0, 1.0, false, 4, realtime)
+        assert(play.render_motion(&s, true).bank > 0.6)
+        fly(&mut s, 0.0, 1.0, false, 32, realtime)
+        fly(&mut s, 0.0, 0.0, false, 3, realtime)
+        braking := play.render_motion(&s, true)
+        assert(braking.drive < -0.45 && braking.run_weight > 0.5)
+        assert(play.advance(&mut s, play.TICK_SECONDS * 1.5, command(0.0, false)) == 1)
+        middle := play.render_motion(&s, false)
+        after := play.render_motion(&s, true)
+        assert((middle.drive - 0.5 * (braking.drive + after.drive)).abs() < 0.00001)
+        assert((middle.bank - 0.5 * (braking.bank + after.bank)).abs() < 0.00001)
+        walk(&mut s, 0.0, 0.0, 42)
+        assert(play.render_motion(&s, true).drive.abs() < 0.01)
+        walk(&mut s, 0.0, 1.0, 3)
+        assert(play.render_motion(&s, true).drive > 0.45)
+    }
+}
+
+@test fn contact_history_covers_an_analog_stride_through_a_long_pause_and_sharp_turn() {
+    scene := meadow()
+    mut s := play.start(&scene)
+    first := play.stride_anchor(&s, true, 0.5)
+    assert(first.distance == 0.0 && first.run_weight == 0.0)
+    walk(&mut s, 0.05, 0.0, 500)
+    anchor := play.stride_anchor(&s, true, play.STRIDE_LENGTH)
+    end := play.position(&s, 1)
+    assert(anchor.distance == play.STRIDE_LENGTH && (end.x - anchor.position.x - anchor.distance).abs() < 0.00002)
+    assert((anchor.run_weight - 0.05).abs() < 0.001 && (anchor.heading - 1.5708).abs() < 0.001)
+    walk(&mut s, 0.0, 0.0, 900)
+    held := play.stride_anchor(&s, true, play.STRIDE_LENGTH)
+    assert(held.position.x == anchor.position.x && held.heading == anchor.heading && held.run_weight == anchor.run_weight)
+    assert(play.stride_anchor(&s, true, 0.0).run_weight > 0.049 && play.render_motion(&s, true).run_weight == 0.0)
+    walk(&mut s, 0.0, 1.0, 6)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 1.5, play.Input { x: 0.0, z: 1.0, jump: false }) == 1)
+    corner := play.stride_anchor(&s, false, 0.7)
+    now := play.render_position(&s, 1)
+    assert((corner.position.x - (end.x - (0.7 - (now.z - end.z)))).abs() < 0.0001)
+    assert((corner.position.z - end.z).abs() < 0.0001 && (corner.heading - 1.5708).abs() < 0.001)
+}
+
+@test fn contact_history_breaks_at_teleports_ledges_landings_and_restart() {
+    mut scene := meadow()
+    mut upper := scene.entities[0].clone()
+    upper.role = .Cloud
+    upper.name = "Hylla"
+    upper.size.x = 2.1
+    scene.entities[0].position.y -= 2.0
+    scene.entities.push(move upper)
+    mut s := play.start(&scene)
+    walk(&mut s, 1.0, 0.0, 8)
+    assert(play.stride_anchor(&s, true, 1.0).distance > 0.5)
+    s.bodies[s.player].position.x = -0.75
+    walk(&mut s, 0.0, 0.0, 1)
+    warped := play.stride_anchor(&s, true, 1.0)
+    assert(warped.distance == 0.0 && warped.position.x == -0.75)
+    mut fell := false
+    mut landed := false
+    for _ in 0..100 {
+        walk(&mut s, 1.0, 0.0, 1)
+        anchor := play.stride_anchor(&s, true, play.STRIDE_LENGTH)
+        if !s.bodies[s.player].grounded {
+            assert(anchor.distance == 0.0 && anchor.position.y == play.position(&s, 1).y)
+            fell = true
+        } else if fell && !landed {
+            assert(anchor.distance == 0.0 && anchor.position.y < -1.5)
+            landed = true
+        }
+    }
+    assert(fell && landed)
+    reset := play.stride_anchor(&play.start(&scene), true, play.STRIDE_LENGTH)
+    assert(reset.distance == 0.0 && reset.position.x == 0.0)
+}
+
+@test fn airborne_takeoff_keeps_the_grounded_paw_position_heading_and_weight() {
+    scene := meadow()
+    mut s := play.start(&scene)
+    walk(&mut s, 1.0, 0.0, 8)
+    walk(&mut s, 0.0, 1.0, 3)
+    ground := play.stride_anchor(&s, true, 0.33)
+    assert(ground.distance == 0.33)
+    for i in 0..5 {
+        play.step(&mut s, play.Input { x: 0.0, z: 1.0, jump: i == 0 })
+        assert(!s.bodies[s.player].grounded)
+        held := play.last_support_anchor(&s, 0.33)
+        assert(held.distance == ground.distance && held.heading == ground.heading && held.run_weight == ground.run_weight)
+        assert(held.position.x == ground.position.x && held.position.y == ground.position.y && held.position.z == ground.position.z)
+        assert(held.position.y < play.position(&s, 1).y)
+    }
+}
+
 @test fn real_inputs_climb_the_clouds_bounce_to_the_crown_and_replay_across_frame_rates() {
     scene := play.demo()
     mut expected := ""
@@ -273,6 +383,9 @@ fn climb_to_pink(s: &mut play.Session, realtime: bool) {
         spring := play.render_motion(&s, true)
         assert(spring.boost_age == 0.0 && spring.takeoff_age == 0.0 && spring.landing_age == 0.0)
         assert(!spring.grounded && spring.vertical_velocity == 8.2 && spring.landing_strength > 0.5)
+        spring_anchor := play.last_support_anchor(&s, 0.33)
+        assert(spring_anchor.distance == 0.0 && spring_anchor.position.x == play.position(&s, 1).x)
+        assert((spring_anchor.position.y - s.cloud_origin.y - 0.4).abs() < 0.001)
         fly(&mut s, 1.0, 0.11, false, 24, realtime)
         assert(s.cloud_tick == 368 && play.position(&s, 1).y > 4.5)
         fly(&mut s, 0.0, 0.0, false, 90, realtime)
