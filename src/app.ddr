@@ -4,18 +4,15 @@
 // contract and never to a backend: `run` is generic over whichever backend
 // the composition root (main.ddr) picks for the platform.
 //
-// Demo scene: a sunlit sky, a ground plane, three metallic cubes orbiting a
-// parent node and two glass panes. Every frame the render graph is rebuilt from
-// what the scene actually contains, draws are sorted back to front and the
-// transparent pass only exists when something transparent is visible.
-//
 //   dunder run                     interactive
 //   dunder run -- --frames 60      render 60 frames and exit
 //   dunder run -- --capture a.ppm  one headless frame to disk
 //   dunder run -- --font f.ttf     draw the editor with that font
 capability stdio
 
+import .editor
 import .args
+import .gallery
 import .game
 import core
 import ecs
@@ -30,16 +27,8 @@ import ui
 import ui.widgets as widgets
 
 // Every character the editor draws has to be packed into the atlas.
-const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ åäö ÅÄÖ ²³"
-// Text scales relative to ui.RASTER_SIZE: 26 px title, 20 px status, 18 px
-// section headers and 17.6 px body text. All are close to the rasterized size
-// so the linearly filtered atlas stays sharp.
-const TITLE_SCALE: f32 = 1.2
-const STATUS_SCALE: f32 = 0.9
-const HEADER_SCALE: f32 = 0.8
-const BODY_SCALE: f32 = 0.8
-
-const TITLE: string = "Storm — Dunder (WASD + right mouse, Esc to quit)"
+const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ – åäö ÅÄÖ ²³"
+const TITLE: string = "Storm — Material study"
 
 // Report why the backend refused, close it, and stop with a failure.
 fn stop<B: gfx.Backend>(move window: B, message: string) -> i32 {
@@ -82,8 +71,9 @@ fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Opti
     .Some(node)
 }
 
-fn draw_item<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
-    camera_position: core.Vec3, sky: &gfx.Sky, shadows_on: bool) {
+fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
+    camera_position: core.Vec3, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
+    if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
     mvp := core.multiply(view_projection, item.model)
     mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
     mut shadow_flag: f32 = 0.0
@@ -91,10 +81,21 @@ fn draw_item<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
     mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
     surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    match window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, surface) {
-        .Ok => {},
-        .Err(message) => { _ := sys.eprint("storm: " + message) },
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, surface)
+}
+
+fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
+    cube: &[]f32, plane: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
+    for index in 0..items.len {
+        item := &items[index]
+        drawn := match item.shape {
+            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, eye, sky, shadows, pass),
+            .Cube => record_mesh(&mut window, cube, item, view, eye, sky, shadows, pass),
+            .Plane => record_mesh(&mut window, plane, item, view, eye, sky, shadows, pass),
+        }
+        drawn?
     }
+    .Ok
 }
 
 // The editor and the game, on whichever backend the composition root picks.
@@ -106,7 +107,8 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         .Err(message) => { _ := sys.eprint("storm: " + message); return 1 },
     }
     window.set_trace(args.flag(&argv, "--trace"))
-    print("device=" + window.device_name())
+    device := window.device_name()
+    print("device=" + device)
 
     // --capture <path> renders one frame offscreen and keeps its pixels.
     shot := args.value(&argv, "--capture")
@@ -123,42 +125,8 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     mut plane_vertices: []f32 = []
     gfx.plane(&mut plane_vertices, 40.0)
 
-    // --- scene tree: ground, a hub with three orbiting cubes, two glass panes ---
     mut graph := scenegraph.Graph::new()
-    hub := graph.create_root(core.vec3(0.0, 0.65, 0.0))
-    _ := graph.set_name(hub, "Hub")
-    ground := graph.create_root(core.vec3(0.0, 0.0, 0.0))
-    _ := graph.set_name(ground, "Ground")
-    _ := graph.set_shape(ground, .Plane)
-    _ := graph.set_material(ground, scenegraph.emissive_material(0.20, 0.21, 0.24, 1.0, 0.05, 0.85, 0.0))
-
-    gold := graph.create_child(hub, core.vec3(2.4, 0.0, 0.0))
-    copper := graph.create_child(hub, core.vec3(-1.2, 0.0, 2.1))
-    steel := graph.create_child(hub, core.vec3(-1.2, 0.0, -2.1))
-    _ := graph.set_name(gold, "Gold cube")
-    _ := graph.set_name(copper, "Copper cube")
-    _ := graph.set_name(steel, "Steel cube")
-    _ := graph.set_shape(gold, .Cube)
-    _ := graph.set_shape(copper, .Cube)
-    _ := graph.set_shape(steel, .Cube)
-    _ := graph.set_material(gold, scenegraph.emissive_material(1.00, 0.76, 0.30, 1.0, 1.0, 0.10, 0.0))
-    _ := graph.set_material(copper, scenegraph.emissive_material(0.99, 0.46, 0.28, 1.0, 1.0, 0.20, 0.0))
-    _ := graph.set_material(steel, scenegraph.emissive_material(0.80, 0.85, 0.92, 1.0, 1.0, 0.28, 0.0))
-    graph.set_rotation(gold, 0.0)
-    graph.set_rotation(copper, 2.0944)
-    graph.set_rotation(steel, 4.1888)
-
-    // Two glass panes standing in front of the orbit, drawn last and blended.
-    pane_left := graph.create_root(core.vec3(-2.7, 1.5, 2.6))
-    pane_right := graph.create_root(core.vec3(1.6, 1.3, 4.2))
-    _ := graph.set_name(pane_left, "Glass pane L")
-    _ := graph.set_name(pane_right, "Glass pane R")
-    _ := graph.set_shape(pane_left, .Cube)
-    _ := graph.set_shape(pane_right, .Cube)
-    _ := graph.set_scale(pane_left, core.vec3(1.5, 1.9, 0.05))
-    _ := graph.set_scale(pane_right, core.vec3(2.0, 1.3, 0.05))
-    _ := graph.set_material(pane_left, scenegraph.emissive_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
-    _ := graph.set_material(pane_right, scenegraph.emissive_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
+    study := gallery.build(&mut graph)
     game.spawn_orbs(&mut graph)
     glb := args.value(&argv, "--glb")
     if glb.len > 0 { _ := load_model(&mut graph, glb, core.vec3(0.0, 0.0, 4.2)) }
@@ -172,11 +140,11 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     camera.fov = 0.85
 
     // --- lighting: one sun, shared by the sky dome and every surface ---
-    sun := core.normalize(core.vec3(0.45, 0.62, 0.38))
+    sun := core.normalize(core.vec3(-0.72, 0.88, 0.58))
     mut sun_push: [f32; 4] = [sun.x, sun.y, sun.z, 3.1]
-    mut sun_color_push: [f32; 4] = [1.0, 0.94, 0.84, 1.0]
-    mut zenith_push: [f32; 4] = [0.09, 0.26, 0.56, 1.0]
-    mut horizon_push: [f32; 4] = [0.63, 0.73, 0.86, 1.0]
+    mut sun_color_push: [f32; 4] = [1.0, 0.91, 0.76, 1.0]
+    mut zenith_push: [f32; 4] = [0.13, 0.20, 0.26, 1.0]
+    mut horizon_push: [f32; 4] = [0.70, 0.61, 0.52, 1.0]
     // Sun view-projection: the light sits back along the sun direction and looks
     // at the middle of the scene through a box wide enough for the whole demo.
     light_target := core.vec3(0.0, 0.9, 0.0)
@@ -191,25 +159,19 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     environment := window.build_environment(&sky)
     if environment.is_err() { return stop(move window, environment.unwrap_err()) }
 
-    mut show_glass := !args.flag(&argv, "--no-glass")
-    mut show_shadows := !args.flag(&argv, "--no-shadows")
-    mut effects := args.flag(&argv, "--effects")
-    if !show_glass { hide_panes(&mut graph, pane_left, pane_right) }
-
-    // --- editor and game state ---
-    mut ui_state := widgets.State::new()
-    mut selected := gold
+    mut studio := editor.new(study.ring, !args.flag(&argv, "--no-glass"), !args.flag(&argv, "--no-shadows"), args.flag(&argv, "--effects"))
+    mut glass_visible := true
     mut score: i32 = 0
     mut total: i32 = game.orbs_left(&graph)
 
-    // --- editor text: --font <path>, else the platform's own monospace font ---
+    // --- editor text: --font <path>, else the platform's UI font ---
     // The glyphs are rasterized at the display's density (2 on Retina), so
     // they are sharp there and the same size everywhere: the canvas asks the
     // atlas how large they are.
     density := window.poll().scale
     font := text.find_font(args.value(&argv, "--font"))
     if font.len == 0 {
-        return stop(move window, "no monospace font found; pass --font <path>")
+        return stop(move window, "no UI font found; pass --font <path>")
     }
     face := text.load_face(font, ui.RASTER_SIZE * density)
     if !face.ok {
@@ -226,6 +188,8 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     mut canvas := ui.Canvas::new()
     mut fps: f32 = 0.0
 
+    mut mesh_revision: i64 = -1
+    mut meshes: []scenegraph.Mesh = []
     mut frames: i64 = 0
     mut previous := 0.0
     mut running := true
@@ -233,15 +197,17 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         frame := window.poll()
         if frame.closed || frame.input.down(gfx.Key.Escape) { running = false; continue }
         mut dt := if previous == 0.0 { 0.016 } else { frame.time - previous }
-        if dt > 0.1 { dt = 0.1 }
         previous = frame.time
-        if dt > 0.0 {
+        if frames > 0 && dt > 0.0 {
             instant := f32(1.0 / dt)
             fps = if fps == 0.0 { instant } else { fps * 0.9 + instant * 0.1 }
         }
 
+        if dt > 0.1 { dt = 0.1 }
+
         // Mouse look only while the right button is held.
-        camera.update(&frame.input, f32(dt), frame.input.button_down(gfx.MOUSE_RIGHT))
+        over_view := editor.in_viewport(&studio, frame.input.mouse.x, frame.input.mouse.y, f32(frame.width), f32(frame.height))
+        camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.MOUSE_RIGHT))
         if frame.input.hit(gfx.Key.R) {
             empty: []string = []
             baseline := args.aim(&empty)
@@ -249,24 +215,23 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
             camera.yaw = baseline.yaw
             camera.pitch = baseline.pitch
             camera.fov = 0.85
-            game.spawn_orbs(&mut graph)
+            game.reset_orbs(&mut graph)
             score = 0
             total = game.orbs_left(&graph)
         }
-        if frame.input.hit(gfx.Key.T) {
-            show_glass = !show_glass
-            if show_glass {
-                _ := graph.set_shape(pane_left, .Cube)
-                _ := graph.set_shape(pane_right, .Cube)
-            } else {
-                hide_panes(&mut graph, pane_left, pane_right)
+        if frame.input.hit(gfx.Key.F) { studio.focus = !studio.focus }
+        if frame.input.hit(gfx.Key.T) { studio.glass = !studio.glass }
+        if frame.input.hit(gfx.Key.G) { studio.shadows = !studio.shadows }
+        if frame.input.hit(gfx.Key.E) { studio.effects = !studio.effects }
+        if glass_visible != studio.glass {
+            for pane in [study.left, study.right] {
+                if studio.glass { _ := graph.set_shape(pane, .Cube) } else { _ := graph.remove_shape(pane) }
             }
+            glass_visible = studio.glass
         }
-        if frame.input.hit(gfx.Key.G) { show_shadows = !show_shadows }
-        if frame.input.hit(gfx.Key.E) { effects = !effects }
 
         // Animate the orbit: the hub rotates, children follow through the tree.
-        graph.set_rotation(hub, graph.local(hub).rotation_y + f32(dt) * 0.35)
+        graph.set_rotation(study.hub, graph.local(study.hub).rotation_y + f32(dt) * 0.10)
         graph.propagate()
 
         // --- the game: walk into an orb to collect it ---
@@ -277,26 +242,26 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         inv_view_projection := input.inverse_view_projection(&camera, aspect)
 
         // --- scene contents for this frame: everything the scene says is drawable ---
-        mut items := graph.drawables(camera.position)
-        game.sort_back_to_front(&mut items)
+        if mesh_revision != graph.geometry_revision() {
+            meshes = graph.mesh_snapshot()
+            mesh_revision = graph.geometry_revision()
+        }
+        mut solids: []scenegraph.Drawable = []
+        mut glass: []scenegraph.Drawable = []
+        for item in graph.drawables(camera.position) {
+            if game.casts_shadow(&item) { solids.push(item) } else { glass.push(item) }
+        }
+        game.sort_back_to_front(&mut glass)
 
-        // --- the frame graph: compiled from what the frame contains ---
-        // Pass existence is data: a toggled-off pass is not in the schedule, so
-        // the executor never reaches it. Shadow is declared first because
-        // opaque reads its map; it is recorded in its own render pass.
-        mut has_opaque := false
-        for item in items { if !game.is_transparent(&item.material) { has_opaque = true } }
-        mut has_transparent := false
-        for item in items { if game.is_transparent(&item.material) { has_transparent = true } }
         mut schedule := render.Graph::new()
-        if show_shadows && has_opaque { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
+        if studio.shadows && solids.len > 0 { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
         _ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
-        if show_shadows && has_opaque {
+        if studio.shadows && solids.len > 0 {
             _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
         } else {
             _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth"])
         }
-        if has_transparent { _ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]) }
+        if glass.len > 0 { _ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]) }
         _ := schedule.add_pass(.Overlay, "overlay", ["color"], ["color"])
         _ := schedule.add_pass(.Ui, "ui", ["color"], ["color"])
         plan := schedule.compile()
@@ -319,80 +284,62 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
                 // Lives in its own render pass, so the main pass must not be open.
                 match window.shadow_begin(&sky) {
                     .Ok => {},
-                    .Err(message) => { _ := sys.eprint("storm: " + message) },
+                    .Err(message) => { return stop(move window, message) },
                 }
-                for index in 0..items.len {
-                    if !game.is_transparent(&items[index].material) {
-                        stream := game.geometry_of(items[index], &cube_vertices, &plane_vertices)
-                        match window.shadow_mesh(&stream, &items[index].model.m) {
-                            .Ok => {},
-                            .Err(message) => { _ := sys.eprint("storm: " + message) },
-                        }
-                    }
-                }
+                drawn := record_list(&mut window, &meshes, &solids, &cube_vertices, &plane_vertices,
+                    view_projection, camera.position, &sky, studio.shadows, kind)
+                if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
                 match window.shadow_end() {
                     .Ok => {},
-                    .Err(message) => { _ := sys.eprint("storm: " + message) },
+                    .Err(message) => { return stop(move window, message) },
                 }
                 continue
             }
             if !main_pass_open {
                 match window.begin_pass() {
                     .Ok => { main_pass_open = true },
-                    .Err(message) => { _ := sys.eprint("storm: " + message); break },
+                    .Err(message) => { return stop(move window, message) },
                 }
             }
             if kind == render.PassKind.Sky {
                 match window.sky(&inv_view_projection.m, &sun_push, &zenith_push, &horizon_push) {
                     .Ok => {},
-                    .Err(message) => { _ := sys.eprint("storm: " + message) },
+                    .Err(message) => { return stop(move window, message) },
                 }
-            } else if kind == render.PassKind.Opaque {
-                for index in 0..items.len {
-                    if !game.is_transparent(&items[index].material) {
-                        stream := game.geometry_of(items[index], &cube_vertices, &plane_vertices)
-                        draw_item(&mut window, &stream, items[index], view_projection, camera.position, &sky, show_shadows)
-                    }
+            } else if kind == render.PassKind.Opaque || kind == render.PassKind.Transparent {
+                drawn := if kind == .Opaque {
+                    record_list(&mut window, &meshes, &solids, &cube_vertices, &plane_vertices, view_projection, camera.position, &sky, studio.shadows, kind)
+                } else {
+                    record_list(&mut window, &meshes, &glass, &cube_vertices, &plane_vertices, view_projection, camera.position, &sky, false, kind)
                 }
-            } else if kind == render.PassKind.Transparent {
-                for index in 0..items.len {
-                    if game.is_transparent(&items[index].material) {
-                        stream := game.geometry_of(items[index], &cube_vertices, &plane_vertices)
-                        draw_item(&mut window, &stream, items[index], view_projection, camera.position, &sky, false)
-                    }
-                }
+                if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
             } else if kind == render.PassKind.Overlay {
-                match window.overlay(f32(frame.time), if effects { 1.0 } else { 0.0 }) {
+                match window.overlay(f32(frame.time), if studio.effects { 1.0 } else { 0.0 }) {
                     .Ok => {},
-                    .Err(message) => { _ := sys.eprint("storm: " + message) },
+                    .Err(message) => { return stop(move window, message) },
                 }
             } else if kind == render.PassKind.Ui {
                 canvas.clear()
                 mouse := frame.input.mouse
-                pointer := widgets.Pointer::at(mouse.x, mouse.y, mouse.pressed != 0, mouse.buttons != 0)
-                ui_state.begin()
-                draw_editor(&mut canvas, &atlas, &mut ui_state, &pointer, &mut graph, &mut selected, &mut score, &mut total,
-                    f32(frame.width), f32(frame.height), fps, frames, plan.steps.len, items.len,
-                    show_glass, show_shadows, effects)
-                ui_state.end(&pointer)
+                pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.MOUSE_LEFT), frame.input.button_down(gfx.MOUSE_LEFT))
+                editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &pointer, mouse.scroll,
+                    f32(frame.width), f32(frame.height), fps, plan.steps.len, device, score, total)
                 quads := canvas.take()
                 match window.ui_draw(quads, [f32(frame.width), f32(frame.height)]) {
                     .Ok => {},
-                    .Err(message) => { _ := sys.eprint("storm: " + message) },
+                    .Err(message) => { return stop(move window, message) },
                 }
             }
         }
         ended := window.end()
         if ended.is_err() {
-            _ := sys.eprint("storm: " + ended.unwrap_err())
-            running = false
-            continue
+            return stop(move window, ended.unwrap_err())
         }
         frames = ended.unwrap()
         if capturing {
             match window.save_capture(shot) {
                 .Ok => { _ := sys.eprint("storm: wrote " + shot) },
-                .Err(message) => { _ := sys.eprint("storm: " + message) },
+                .Err(message) => { return stop(move window, message) },
             }
             running = false
             continue
@@ -402,190 +349,4 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     window.close()
     print("storm frames=" + frames.str())
     0
-}
-
-// Depth of a node in the tree, by following parents; roots are 0.
-fn tree_depth(graph: &scenegraph.Graph, entity: ecs.Entity) -> i32 {
-    mut depth: i32 = 0
-    mut current := entity
-    while depth < 32 {
-        parent := graph.parent_of(current)
-        match parent {
-            .None => return depth,
-            .Some(p) => { current = p; depth = depth + 1 }
-        }
-    }
-    depth
-}
-
-fn hide_panes(graph: &mut scenegraph.Graph, left: ecs.Entity, right: ecs.Entity) {
-    _ := graph.remove_shape(left)
-    _ := graph.remove_shape(right)
-}
-
-fn theme() -> widgets.Theme {
-    widgets.Theme {
-        fill: ui.rgba(0.14, 0.16, 0.20, 0.85),
-        fill_hot: ui.rgba(0.18, 0.22, 0.28, 0.9),
-        fill_active: ui.rgba(0.10, 0.35, 0.30, 0.9),
-        border: ui.rgba(0.36, 0.86, 0.96, 0.32),
-        ink: ui.rgb(0.82, 0.87, 0.93),
-        ink_dim: ui.rgb(0.52, 0.60, 0.72),
-        track: ui.rgba(1.0, 1.0, 1.0, 0.14),
-        knob: ui.rgb(0.36, 0.86, 0.96),
-    }
-}
-
-// One slider bound to a scene field: reads the live value, writes it back
-// when the widget reports a change. Returns the new value.
-fn scene_slider(ui_state: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &widgets.Pointer,
-    graph: &mut scenegraph.Graph, entity: ecs.Entity, field: scenegraph.MaterialField,
-    x: f32, y: f32, w: f32, label: string, min: f32, max: f32, t: &widgets.Theme) -> f32 {
-    mut value := graph.material_value(entity, field)
-    if ui_state.slider(&mut canvas, atlas, id, p, x, y, w, label, &mut value, min, max, t) {
-        _ := graph.set_material_value(entity, field, value)
-    }
-    value
-}
-
-fn transform_slider(ui_state: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &widgets.Pointer,
-    graph: &mut scenegraph.Graph, entity: ecs.Entity, field: scenegraph.TransformField,
-    x: f32, y: f32, w: f32, label: string, min: f32, max: f32, t: &widgets.Theme) -> f32 {
-    mut value := graph.transform_value(entity, field)
-    if ui_state.slider(&mut canvas, atlas, id, p, x, y, w, label, &mut value, min, max, t) {
-        _ := graph.set_transform_value(entity, field, value)
-    }
-    value
-}
-
-// The editor: the scene tree as it really is, the selected node's components
-// as live widgets, frame statistics, and the toggles. Everything it shows
-// comes from the scene graph; everything it changes goes back into it.
-fn draw_editor(canvas: &mut ui.Canvas, atlas: &text.Atlas, ui_state: &mut widgets.State, p: &widgets.Pointer,
-    graph: &mut scenegraph.Graph, selected: &mut ecs.Entity, score: &mut i32, total: &mut i32,
-    width: f32, height: f32, fps: f32, frames: i64, passes: i32, objects: i32,
-    glass: bool, shadows: bool, effects: bool) {
-    accent := ui.rgb(0.36, 0.86, 0.96)
-    title := ui.rgb(0.96, 0.98, 1.0)
-    dim := ui.rgb(0.52, 0.60, 0.72)
-    body := ui.rgb(0.82, 0.87, 0.93)
-    panel_fill := ui.rgba(0.06, 0.09, 0.13, 0.72)
-    panel_border := ui.rgba(0.36, 0.86, 0.96, 0.32)
-    t := theme()
-
-    // Top bar.
-    canvas.rect(0.0, 0.0, width, 64.0, &ui.rgba(0.02, 0.03, 0.05, 0.9))
-    canvas.rect(0.0, 64.0, width, 2.0, &ui.rgba(0.36, 0.86, 0.96, 0.5))
-    canvas.text(atlas, "STORM", 26.0, 14.0, TITLE_SCALE, &title)
-    canvas.text(atlas, "scene editor", 156.0, 24.0, HEADER_SCALE, &dim)
-    fps_text := i32(fps + 0.5).str() + " fps"
-    canvas.text(atlas, fps_text, width - 30.0 - ui.Canvas::text_width(atlas, fps_text, STATUS_SCALE), 20.0, STATUS_SCALE, &accent)
-
-    // Scene graph panel: every node, indented by depth, clickable.
-    px: f32 = 26.0
-    py: f32 = 92.0
-    pw: f32 = 400.0
-    nodes := graph.nodes()
-    rows: f32 = f32(nodes.len + 2) * widgets.ROW_HEIGHT
-    ph: f32 = 50.0 + rows + 46.0
-    canvas.panel(px, py, pw, ph, &panel_fill, &panel_border)
-    canvas.text(atlas, "SCENE GRAPH", px + 18.0, py + 12.0, HEADER_SCALE, &accent)
-    canvas.rect(px + 18.0, py + 50.0, pw - 36.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
-    mut row_y := py + 58.0
-    for i in 0..nodes.len {
-        entity := nodes[i]
-        depth := tree_depth(graph, entity)
-        mut name := graph.name(entity)
-        if name.len == 0 { name = "node " + entity.index.str() }
-        if graph.has_material(entity) && game.is_transparent(graph.material_at(entity)) { name = name + " (glass)" }
-        is_selected := graph.is_alive(selected) && selected.index == entity.index
-        if ui_state.row(&mut canvas, atlas, 100 + i, p, px + 10.0, row_y, pw - 20.0, name, depth, is_selected, &t) {
-            selected = entity
-        }
-        row_y = row_y + widgets.ROW_HEIGHT
-    }
-    // Add a cube in front of the camera's current target; delete the selection.
-    button_y := row_y + 8.0
-    if ui_state.button(&mut canvas, atlas, 1, p, px + 18.0, button_y, 150.0, 30.0, "+ cube", &t) {
-        fresh := graph.create_root(core.vec3(0.0, 0.7, -4.0))
-        _ := graph.set_name(fresh, "cube " + fresh.index.str())
-        _ := graph.set_shape(fresh, .Cube)
-        _ := graph.set_scale(fresh, core.vec3(0.6, 0.6, 0.6))
-        _ := graph.set_material(fresh, scenegraph.emissive_material(0.85, 0.40, 0.55, 1.0, 0.3, 0.4, 0.0))
-        selected = fresh
-    }
-    can_delete := nodes.len > 0 && graph.is_alive(selected) && selected.index != nodes[0].index
-    if ui_state.button(&mut canvas, atlas, 2, p, px + 180.0, button_y, 150.0, 30.0, "delete", &t) && can_delete {
-        if graph.destroy(selected) { selected = nodes[0] }
-    }
-
-    // Frame statistics.
-    rx := width - 446.0
-    canvas.panel(rx, py, 420.0, 186.0, &panel_fill, &panel_border)
-    canvas.text(atlas, "FRAME", rx + 18.0, py + 12.0, HEADER_SCALE, &accent)
-    canvas.rect(rx + 18.0, py + 50.0, 384.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
-    canvas.text(atlas, "fps", rx + 20.0, py + 64.0, BODY_SCALE, &dim)
-    canvas.text(atlas, i32(fps + 0.5).str(), rx + 150.0, py + 64.0, BODY_SCALE, &body)
-    canvas.text(atlas, "frame", rx + 20.0, py + 100.0, BODY_SCALE, &dim)
-    canvas.text(atlas, frames.str(), rx + 150.0, py + 100.0, BODY_SCALE, &body)
-    canvas.text(atlas, "passes", rx + 20.0, py + 136.0, BODY_SCALE, &dim)
-    canvas.text(atlas, passes.str(), rx + 150.0, py + 136.0, BODY_SCALE, &body)
-    canvas.text(atlas, "objects", rx + 220.0, py + 64.0, BODY_SCALE, &dim)
-    canvas.text(atlas, objects.str(), rx + 350.0, py + 64.0, BODY_SCALE, &body)
-    canvas.text(atlas, "orbs", rx + 220.0, py + 100.0, BODY_SCALE, &dim)
-    orbs_text := (total - score).str() + " / " + total.str()
-    canvas.text(atlas, orbs_text, rx + 350.0, py + 100.0, BODY_SCALE, &body)
-    canvas.text(atlas, "shadow 1024", rx + 220.0, py + 136.0, BODY_SCALE, &dim)
-
-    // Inspector: the selected node's live material and transform.
-    iy := py + 206.0
-    canvas.panel(rx, iy, 420.0, 372.0, &panel_fill, &panel_border)
-    if !graph.is_alive(selected) {
-        canvas.text(atlas, "INSPECTOR", rx + 18.0, iy + 12.0, HEADER_SCALE, &accent)
-        canvas.text(atlas, "nothing selected", rx + 20.0, iy + 56.0, BODY_SCALE, &dim)
-    } else {
-        mut heading := graph.name(selected)
-        if heading.len == 0 { heading = "node " + selected.index.str() }
-        canvas.text(atlas, "MATERIAL / " + heading, rx + 18.0, iy + 12.0, HEADER_SCALE, &accent)
-        canvas.rect(rx + 18.0, iy + 50.0, 384.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
-        sel := selected
-        if graph.has_material(sel) {
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 10, p, &mut graph, sel, .Metallic, rx + 20.0, iy + 62.0, 380.0, "metallic", 0.0, 1.0, &t)
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 11, p, &mut graph, sel, .Roughness, rx + 20.0, iy + 92.0, 380.0, "roughness", 0.0, 1.0, &t)
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 12, p, &mut graph, sel, .Emissive, rx + 20.0, iy + 122.0, 380.0, "emissive", 0.0, 4.0, &t)
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 13, p, &mut graph, sel, .BaseR, rx + 20.0, iy + 152.0, 380.0, "albedo r", 0.0, 1.0, &t)
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 14, p, &mut graph, sel, .BaseG, rx + 20.0, iy + 182.0, 380.0, "albedo g", 0.0, 1.0, &t)
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 15, p, &mut graph, sel, .BaseB, rx + 20.0, iy + 212.0, 380.0, "albedo b", 0.0, 1.0, &t)
-            _ := scene_slider(&mut ui_state, &mut canvas, atlas, 16, p, &mut graph, sel, .BaseA, rx + 20.0, iy + 242.0, 380.0, "alpha", 0.0, 1.0, &t)
-        } else {
-            canvas.text(atlas, "no material", rx + 20.0, iy + 62.0, BODY_SCALE, &dim)
-        }
-        canvas.rect(rx + 18.0, iy + 276.0, 384.0, 1.0, &ui.rgba(1.0, 1.0, 1.0, 0.12))
-        canvas.text(atlas, "TRANSFORM", rx + 18.0, iy + 284.0, HEADER_SCALE, &accent)
-        _ := transform_slider(&mut ui_state, &mut canvas, atlas, 20, p, &mut graph, sel, .X, rx + 20.0, iy + 312.0, 380.0, "x", -20.0, 20.0, &t)
-    }
-
-    // Bottom bar: how to move, how the game is going, and the three pass
-    // toggles as chips that name their own key.
-    by := height - 92.0
-    canvas.panel(26.0, by, width - 52.0, 66.0, &panel_fill, &panel_border)
-    canvas.text(atlas, "WASD move   Space/Ctrl up-down   Shift sprint   R reset", 46.0, by + 18.0, BODY_SCALE, &dim)
-    status := if score >= total { "all orbs collected! R to respawn" } else { "walk into the green orbs" }
-    canvas.text(atlas, status, 46.0, by + 40.0, BODY_SCALE, &if score >= total { accent } else { body })
-    // The chips sit flush with the bar's right edge, however wide the labels.
-    labels := ["T glass", "G shadows", "E effects"]
-    gap: f32 = 10.0
-    padding: f32 = 26.0
-    mut chips_width: f32 = 0.0
-    for chip in 0..3 { chips_width = chips_width + ui.Canvas::text_width(atlas, labels[chip], BODY_SCALE) + padding + gap }
-    mut chip_x := width - 26.0 - chips_width
-    for chip in 0..3 {
-        on := if chip == 0 { glass } else if chip == 1 { shadows } else { effects }
-        chip_width := ui.Canvas::text_width(atlas, labels[chip], BODY_SCALE) + padding
-        fill := if on { ui.rgba(0.10, 0.35, 0.30, 0.85) } else { ui.rgba(0.14, 0.16, 0.20, 0.85) }
-        ink := if on { ui.rgb(0.55, 0.95, 0.75) } else { ui.rgb(0.45, 0.50, 0.58) }
-        canvas.rect(chip_x, by + 16.0, chip_width, 34.0, &fill)
-        canvas.text(atlas, labels[chip], chip_x + 13.0, by + 22.0, BODY_SCALE, &ink)
-        chip_x = chip_x + chip_width + gap
-    }
 }

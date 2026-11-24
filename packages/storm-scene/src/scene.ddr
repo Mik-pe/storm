@@ -70,11 +70,12 @@ pub struct Drawable {
     model: core.Mat4,
     material: Material,
     shape: Shape,
-    // Only for Shape.Mesh; empty otherwise.
-    vertices: []f32,
+    mesh_index: i32,
     // Squared distance from the eye to the model origin, for sorting glass.
     depth: f32,
 }
+
+pub struct TreeRow { entity: ecs.Entity, depth: i32 }
 
 pub struct Graph {
     allocator: ecs.EntityAllocator,
@@ -83,6 +84,8 @@ pub struct Graph {
     worlds: ecs.Pool<WorldTransform>,
     names: ecs.Pool<Name>,
     meshes: ecs.Pool<Mesh>,
+    mesh_revision: i64,
+    tree_revision: i64,
     materials: ecs.Pool<Material>,
 }
 
@@ -117,6 +120,8 @@ impl Graph {
             worlds: ecs.Pool<WorldTransform>::new(),
             names: ecs.Pool<Name>::new(),
             meshes: ecs.Pool<Mesh>::new(),
+            mesh_revision: 0,
+            tree_revision: 0,
             materials: ecs.Pool<Material>::new(),
         }
     }
@@ -124,15 +129,17 @@ impl Graph {
     pub fn len(&self) -> i32 { self.allocator.len() }
 
     pub fn create_root(&mut self, position: core.Vec3) -> ecs.Entity {
+        self.tree_revision = self.tree_revision + 1
         entity := self.allocator.create()
         _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) })
         entity
     }
 
     pub fn create_child(&mut self, parent: ecs.Entity, position: core.Vec3) -> ecs.Entity {
-        entity := self.allocator.create()
-        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) })
-        _ := self.parents.insert(entity, Parent { entity: parent })
+        entity := self.create_root(position)
+        if self.allocator.is_alive(parent) && parent.index != entity.index {
+            _ := self.parents.insert(entity, Parent { entity: parent })
+        }
         entity
     }
 
@@ -150,6 +157,7 @@ impl Graph {
 
     pub fn set_name(&mut self, entity: ecs.Entity, move name: string) -> bool {
         if !self.allocator.is_alive(entity) { return false }
+        self.tree_revision = self.tree_revision + 1
         if self.names.contains(entity) {
             self.names.get_mut(entity).value = name
             return true
@@ -164,6 +172,7 @@ impl Graph {
 
     pub fn set_shape(&mut self, entity: ecs.Entity, shape: Shape) -> bool {
         if !self.allocator.is_alive(entity) { return false }
+        self.mesh_revision = self.mesh_revision + 1
         if self.meshes.contains(entity) {
             self.meshes.get_mut(entity).shape = shape
             return true
@@ -174,9 +183,13 @@ impl Graph {
     // Attach loaded geometry; the node becomes Shape.Mesh.
     pub fn set_mesh(&mut self, entity: ecs.Entity, move vertices: []f32) -> bool {
         if !self.allocator.is_alive(entity) { return false }
+        self.mesh_revision = self.mesh_revision + 1
         _ := self.meshes.insert(entity, Mesh { shape: .Mesh, vertices: vertices })
         true
     }
+
+    pub fn geometry_revision(&self) -> i64 { self.mesh_revision }
+    pub fn mesh_snapshot(&self) -> []Mesh { self.meshes.values().clone() }
 
     pub fn vertices(&self, entity: ecs.Entity) -> []f32 {
         if !self.meshes.contains(entity) { return [] }
@@ -192,7 +205,7 @@ impl Graph {
     pub fn remove_shape(&mut self, entity: ecs.Entity) -> bool {
         match self.meshes.remove(entity) {
             .None => false,
-            .Some(_) => true,
+            .Some(_) => { self.mesh_revision = self.mesh_revision + 1; true },
         }
     }
 
@@ -274,6 +287,41 @@ impl Graph {
         .Some(self.parents.get(entity).entity)
     }
 
+    pub fn hierarchy_revision(&self) -> i64 { self.tree_revision }
+
+    // Dense indices build the adjacency list in one pass. The explicit stack
+    // keeps deep trees iterable and puts each subtree next to its parent.
+    pub fn hierarchy(&self) -> []TreeRow {
+        mut children: []i32 = []
+        mut siblings: []i32 = []
+        mut pending: []i32 = []
+        mut depths: []i32 = []
+        count := self.locals.len()
+        for _ in 0..count { children.push(-1); siblings.push(-1); depths.push(0) }
+        for i in 0..count {
+            entity := self.locals.entities()[i]
+            if self.parents.contains(entity) {
+                parent := self.locals.dense_index(self.parents.get(entity).entity)
+                siblings[i] = children[parent]
+                children[parent] = i
+            }
+            root := count - 1 - i
+            if !self.parents.contains(self.locals.entities()[root]) { pending.push(root) }
+        }
+        mut rows: []TreeRow = []
+        while pending.len > 0 {
+            i := pending.pop()
+            rows.push(TreeRow { entity: self.locals.entities()[i], depth: depths[i] })
+            mut child := children[i]
+            while child >= 0 {
+                depths[child] = depths[i] + 1
+                pending.push(child)
+                child = siblings[child]
+            }
+        }
+        rows
+    }
+
     // Entities in creation order that have a local transform: the scene tree.
     pub fn nodes(&self) -> []ecs.Entity {
         self.locals.entities().clone()
@@ -291,6 +339,8 @@ impl Graph {
     pub fn is_alive(&self, entity: ecs.Entity) -> bool { self.allocator.is_alive(entity) }
 
     pub fn destroy(&mut self, entity: ecs.Entity) -> bool {
+        if !self.allocator.is_alive(entity) { return false }
+        self.tree_revision = self.tree_revision + 1
         // Detach children so they become roots rather than dangling links.
         mut detached: []ecs.Entity = []
         for i in 0..self.parents.len() {
@@ -300,7 +350,7 @@ impl Graph {
         }
         for child in detached { _ := self.parents.remove(child) }
         _ := self.names.remove(entity)
-        _ := self.meshes.remove(entity)
+        _ := self.remove_shape(entity)
         _ := self.materials.remove(entity)
         _ := self.worlds.remove(entity)
         _ := self.locals.remove(entity)
@@ -352,7 +402,7 @@ impl Graph {
                 model: model,
                 material: mat,
                 shape: self.meshes.at(row.a).shape,
-                vertices: self.meshes.at(row.a).vertices.clone(),
+                mesh_index: row.a,
                 depth: dx * dx + dy * dy + dz * dz,
             })
         }

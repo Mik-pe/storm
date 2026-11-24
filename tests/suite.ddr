@@ -73,10 +73,10 @@ import scene as scenegraph
     assert(args.flag(&empty, "--effects") == false)
     assert(args.value(&empty, "--capture") == "")
     eye := args.aim(&empty)
-    assert(eye.position.x == 0.0 && eye.position.y == 2.2 && eye.position.z == 9.5)
+    assert(eye.position.x == 0.0 && eye.position.y == 4.0 && eye.position.z == 10.8)
     // The baseline turn: straight ahead, tilted down. Every AE comparison
     // in dogfood.md is measured against a capture taken with these.
-    assert(eye.yaw == 0.0 && eye.pitch == -0.16)
+    assert(eye.yaw == 0.0 && eye.pitch == -0.22)
 
     mut list: []string = ["--frames", "60", "--capture", "a.ppm", "--effects", "--eye", "1.5", "-2", "3.25"]
     assert(args.frame_limit(&list) == 60)
@@ -92,7 +92,7 @@ import scene as scenegraph
     assert(args.frame_limit(&bad) == 0)
     assert(args.value(&bad, "--eye") == "1")
     short := args.aim(&bad)
-    assert(short.position.x == 0.0 && short.position.z == 9.5 && short.pitch == -0.16)
+    assert(short.position.x == 0.0 && short.position.z == 10.8 && short.pitch == -0.22)
     mut trailing: []string = ["--capture"]
     assert(args.value(&trailing, "--capture") == "")
     mut words: []string = ["--frames", "many"]
@@ -152,7 +152,7 @@ import scene as scenegraph
     assert(fixed.yaw == 0.5 && fixed.pitch == -0.25)
     mut broken: []string = ["--eye", "six", "4", "-7"]
     fallback := args.aim(&broken)
-    assert(fallback.position.z == 9.5 && fallback.yaw == 0.0 && fallback.pitch == -0.16)
+    assert(fallback.position.z == 10.8 && fallback.yaw == 0.0 && fallback.pitch == -0.22)
 }
 
 @test fn a_scene_with_orbs_spawns_counts_and_collects() {
@@ -192,8 +192,11 @@ import scene as scenegraph
     }
     assert(game.orbs_left(&graph) == 0)
     assert(graph.is_alive(ground))
-    // A respawn fills it again with fresh entities.
-    game.spawn_orbs(&mut graph)
+    // Reset also works on a partially collected or already full ring.
+    game.reset_orbs(&mut graph)
+    _ := game.collect_orbs(&mut graph, first)
+    game.reset_orbs(&mut graph)
+    game.reset_orbs(&mut graph)
     assert(game.orbs_left(&graph) == game.ORB_COUNT)
 }
 
@@ -222,16 +225,36 @@ import scene as scenegraph
     assert(items[2].entity.index == near.index)
     assert(items[0].depth > items[1].depth && items[1].depth > items[2].depth)
 
-    // Geometry follows the shape: the mesh's own stream, else the primitive's.
     _ := graph.set_mesh(solid, [1.0, 2.0, 3.0])
-    reshaped := graph.drawables(eye)
-    cube: []f32 = [9.0]
-    plane: []f32 = [7.0]
-    // drawables() is in creation order: far, near, solid.
-    mesh := game.geometry_of(&reshaped[2], &cube, &plane)
-    assert(mesh.len == 3 && mesh[0] == 1.0)
-    assert(game.geometry_of(&reshaped[0], &cube, &plane)[0] == 9.0)
-    _ := graph.set_shape(far, .Plane)
-    planar := graph.drawables(eye)
-    assert(game.geometry_of(&planar[0], &cube, &plane)[0] == 7.0)
+    assert(graph.vertices(solid)[0] == 1.0)
+}
+
+import ..src.editor as editor
+import text
+import ui
+import ui.widgets as widgets
+
+@test fn compact_editor_routes_clicks_only_to_visible_tools() {
+    mut graph := scenegraph.Graph::new()
+    first := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(first, "Turntable")
+    child := graph.create_child(first, core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(child, "Brass")
+    _ := graph.set_material(child, scenegraph.material(0.8, 0.5, 0.3, 1.0, 0.8, 0.3))
+    mut s := editor.new(first, true, true, false)
+    atlas := text.Atlas::new(16, 16)
+    mut canvas := ui.Canvas::new()
+    points := [[45, 148], [140, 24], [45, 148], [209, 24], [645, 194], [670, 24], [591, 194]]
+    mut metal: f32 = 0.0
+    for i in 0..points.len {
+        p := widgets.Pointer::at(f32(points[i][0]), f32(points[i][1]), true, true)
+        canvas.clear()
+        editor.draw(&mut s, &mut canvas, &atlas, &mut graph, &p, 0.0, 720.0, 520.0, 0.0, 6, "GPU", 0, 8)
+        if i == 0 { assert(s.selected.index == first.index) }
+        if i == 2 { assert(s.selected.index == child.index) }
+        if i == 4 { metal = graph.material_value(child, .Metallic); assert(metal != 0.8) }
+        if i == 6 { assert(s.focus && graph.material_value(child, .Metallic) == metal) }
+        up := widgets.Pointer::at(p.x, p.y, false, false)
+        editor.draw(&mut s, &mut canvas, &atlas, &mut graph, &up, 0.0, 720.0, 520.0, 0.0, 6, "GPU", 0, 8)
+    }
 }

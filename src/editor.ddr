@@ -1,0 +1,249 @@
+// The scene editor works in window points. A compact window opens one tool at a time.
+import core
+import ecs
+import .game
+import scene
+import text
+import ui
+import ui.widgets as widgets
+
+const BAR: f32 = 48.0
+const FOOT: f32 = 32.0
+const LEFT: f32 = 204.0
+const RIGHT: f32 = 236.0
+
+enum Panel { Closed, Scene, Inspector }
+
+pub struct State {
+    controls: widgets.State,
+    selected: ecs.Entity,
+    focus: bool,
+    compact_panel: Panel,
+    expand_orbs: bool,
+    tree_revision: i64,
+    rows: []scene.TreeRow,
+    orbs: i32,
+    first_node: i32,
+    inspector_scroll: f32,
+    glass: bool,
+    shadows: bool,
+    effects: bool,
+}
+
+pub fn new(selected: ecs.Entity, glass: bool, shadows: bool, effects: bool) -> State {
+    State {
+        controls: widgets.State::new(), selected: selected, focus: false, compact_panel: .Closed, expand_orbs: false,
+        tree_revision: -1, rows: [], orbs: 0,
+        first_node: 0, inspector_scroll: 0.0, glass: glass, shadows: shadows, effects: effects
+    }
+}
+
+fn label(c: &mut ui.Canvas, a: &text.Atlas, value: string, x: f32, y: f32, size: f32, ink: &ui.Color) {
+    c.text(a, value, x, y, size / ui.RASTER_SIZE, ink)
+}
+
+fn right_label(c: &mut ui.Canvas, a: &text.Atlas, value: string, right: f32, y: f32, size: f32, ink: &ui.Color) {
+    w := ui.Canvas::text_width(a, value, size / ui.RASTER_SIZE)
+    label(&mut c, a, value, right - w, y, size, ink)
+}
+
+fn surface() -> ui.Color { ui.rgb(0.105, 0.111, 0.12) }
+fn chrome() -> ui.Color { ui.rgb(0.077, 0.082, 0.092) }
+
+fn toggle(c: &mut ui.Canvas, a: &text.Atlas, p: &widgets.Pointer, t: &widgets.Theme,
+    x: f32, y: f32, width: f32, name: string, key: string, enabled: bool) -> bool {
+    hover := widgets.hit(p, x, y, width, 28.0)
+    if hover { c.rounded_rect(x - 4.0, y, width + 8.0, 28.0, 5.0, &t.fill) }
+    label(&mut c, a, name, x, y + 4.0, 14.0, &t.ink)
+    right_label(&mut c, a, key, x + width - 40.0, y + 5.0, 11.0, &t.ink_dim)
+    sx := x + width - 26.0
+    c.rounded_rect(sx, y + 7.0, 26.0, 14.0, 7.0, &if enabled { t.knob } else { t.track })
+    c.rounded_rect(sx + (if enabled { 14.0 } else { 2.0 }), y + 9.0, 10.0, 10.0, 5.0, &if enabled { surface() } else { t.ink_dim })
+    if hover && p.pressed { return !enabled }
+    enabled
+}
+
+fn refresh_tree(state: &mut State, graph: &scene.Graph) {
+    if state.tree_revision == graph.hierarchy_revision() { return }
+    state.rows.clear()
+    mut tokens: []scene.TreeRow = []
+    for row in graph.hierarchy() {
+        if game.is_orb(graph.name(row.entity)) { tokens.push(row) }
+        else { state.rows.push(row) }
+    }
+    state.orbs = tokens.len
+    if state.expand_orbs { for row in tokens { state.rows.push(row) } }
+    state.tree_revision = graph.hierarchy_revision()
+}
+
+fn hierarchy(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut scene.Graph,
+    p: &widgets.Pointer, wheel: f32, height: f32, t: &widgets.Theme) {
+    c.rect(0.0, BAR, LEFT, height - BAR - FOOT, &surface())
+    c.rect(LEFT - 1.0, BAR, 1.0, height - BAR - FOOT, &t.border)
+    label(&mut c, a, "Scene", 16.0, 62.0, 18.0, &t.ink)
+    right_label(&mut c, a, graph.len().str(), LEFT - 16.0, 66.0, 12.0, &t.ink_dim)
+    c.rect(16.0, 96.0, LEFT - 32.0, 1.0, &t.border)
+    refresh_tree(&mut state, &graph)
+    visible := i32((height - FOOT - 78.0 - 108.0) / widgets.ROW_HEIGHT)
+    if widgets.hit(p, 0.0, BAR, LEFT, height - BAR - FOOT) {
+        if wheel > 0.0 { state.first_node = state.first_node - 1 }
+        if wheel < 0.0 { state.first_node = state.first_node + 1 }
+    }
+    if state.first_node > state.rows.len - visible { state.first_node = state.rows.len - visible }
+    if state.first_node < 0 { state.first_node = 0 }
+    for i in 0..state.rows.len {
+        if i < state.first_node || i >= state.first_node + visible { continue }
+        e := state.rows[i].entity
+        y := 105.0 + f32(i - state.first_node) * widgets.ROW_HEIGHT
+        name := graph.name(e)
+        indent := if game.is_orb(name) { 1 } else if state.rows[i].depth > 3 { 3 } else { state.rows[i].depth }
+        chosen := graph.is_alive(state.selected) && state.selected.index == e.index
+        if state.controls.row(&mut c, a, 100 + e.index, p, 8.0, y, LEFT - 16.0, name, indent, chosen, t) {
+            state.selected = e
+        }
+        x := 18.0 + f32(indent) * 14.0
+        if graph.has_material(e) {
+            color := graph.material_at(e).base
+            c.rounded_rect(x, y + 10.0, 8.0, 8.0, 3.0, &ui.rgb(color.r.sqrt(), color.g.sqrt(), color.b.sqrt()))
+        } else {
+            c.rect(x, y + 13.0, 8.0, 2.0, &t.ink_dim)
+        }
+    }
+    by := height - FOOT - 72.0
+    count := state.orbs
+    if state.controls.button(&mut c, a, 3, p, 12.0, by, LEFT - 24.0, 26.0,
+        (if state.expand_orbs { "- Collectibles   " } else { "+ Collectibles   " }) + count.str(), t) {
+        state.expand_orbs = !state.expand_orbs
+        state.tree_revision = -1
+        if state.expand_orbs { state.first_node = state.rows.len } else { state.first_node = 0 }
+    }
+    if state.controls.button(&mut c, a, 1, p, 12.0, by + 34.0, 102.0, 26.0, "+ Add cube", t) {
+        fresh := graph.create_root(core.vec3(0.0, 0.72, 3.6))
+        _ := graph.set_name(fresh, "Cube " + fresh.index.str())
+        _ := graph.set_shape(fresh, .Cube)
+        _ := graph.set_material(fresh, scene.material(0.52, 0.24, 0.16, 1.0, 0.20, 0.4))
+        state.selected = fresh
+    }
+    if state.rows.len > 0 && graph.is_alive(state.selected) && state.selected.index != state.rows[0].entity.index {
+        if state.controls.button(&mut c, a, 2, p, 121.0, by + 34.0, LEFT - 133.0, 26.0, "Delete", t) {
+            _ := graph.destroy(state.selected)
+            state.selected = state.rows[0].entity
+        }
+    }
+}
+
+fn inspector(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut scene.Graph,
+    p: &widgets.Pointer, wheel: f32, width: f32, height: f32, t: &widgets.Theme) {
+    x := width - RIGHT
+    px := x + 16.0
+    w := RIGHT - 32.0
+    c.rect(x, BAR, RIGHT, height - BAR - FOOT, &surface())
+    c.rect(x, BAR, 1.0, height - BAR - FOOT, &t.border)
+    node := state.selected
+    material := graph.is_alive(node) && graph.has_material(node)
+    surface_height: f32 = if material { 0.0 } else { 220.0 }
+    max_scroll := 665.0 - surface_height - (height - FOOT)
+    if widgets.hit(p, x, BAR, RIGHT, height - BAR - FOOT) {
+        if wheel > 0.0 { state.inspector_scroll = state.inspector_scroll - 32.0 }
+        if wheel < 0.0 { state.inspector_scroll = state.inspector_scroll + 32.0 }
+    }
+    if state.inspector_scroll > max_scroll { state.inspector_scroll = max_scroll }
+    if state.inspector_scroll < 0.0 { state.inspector_scroll = 0.0 }
+    offset := state.inspector_scroll
+    label(&mut c, a, "Inspector", px, 62.0 - offset, 18.0, &t.ink)
+    c.rect(px, 96.0 - offset, w, 1.0, &t.border)
+    if graph.is_alive(node) {
+        label(&mut c, a, graph.name(node), px, 106.0 - offset, 22.0, &t.ink)
+        if material {
+            m := graph.material_at(node)
+            swatch := ui.rgb(m.base.r.sqrt(), m.base.g.sqrt(), m.base.b.sqrt())
+            label(&mut c, a, "Surface", px, 151.0 - offset, 14.0, &t.ink)
+            c.rounded_rect(width - 38.0, 156.0 - offset, 21.0, 11.0, 4.0, &swatch)
+            fields := [scene.MaterialField.Metallic, .Roughness, .Emissive, .BaseR, .BaseG, .BaseB, .BaseA]
+            names := ["Metallic", "Roughness", "Emission", "Red", "Green", "Blue", "Opacity"]
+            for i in 0..fields.len {
+                mut value := graph.material_value(node, fields[i])
+                high: f32 = if fields[i] == .Emissive { 4.0 } else { 1.0 }
+                if state.controls.slider(&mut c, a, 10 + i, p, px, 183.0 + f32(i) * 26.0 - offset, w, names[i], &mut value, 0.0, high, t) {
+                    _ := graph.set_material_value(node, fields[i], value)
+                }
+            }
+        }
+        c.rect(px, 375.0 - offset - surface_height, w, 1.0, &t.border)
+        label(&mut c, a, "Transform", px, 386.0 - offset - surface_height, 14.0, &t.ink)
+        axes := [scene.TransformField.X, .Y, .Z]
+        names := ["Position X", "Position Y", "Position Z"]
+        for i in 0..axes.len {
+            mut pos := graph.transform_value(node, axes[i])
+            if state.controls.slider(&mut c, a, 20 + i, p, px, 417.0 + f32(i) * 26.0 - offset - surface_height, w, names[i], &mut pos, -20.0, 20.0, t) {
+                _ := graph.set_transform_value(node, axes[i], pos)
+            }
+        }
+    } else { label(&mut c, a, "Select an object", px, 109.0 - offset, 14.0, &t.ink_dim) }
+    c.rect(px, 509.0 - offset - surface_height, w, 1.0, &t.border)
+    label(&mut c, a, "Rendering", px, 522.0 - offset - surface_height, 14.0, &t.ink)
+    state.glass = toggle(&mut c, a, p, t, px, 551.0 - offset - surface_height, w, "Glass", "T", state.glass)
+    state.shadows = toggle(&mut c, a, p, t, px, 582.0 - offset - surface_height, w, "Shadows", "G", state.shadows)
+    state.effects = toggle(&mut c, a, p, t, px, 613.0 - offset - surface_height, w, "Film effects", "E", state.effects)
+}
+
+pub fn in_viewport(state: &State, x: f32, y: f32, width: f32, height: f32) -> bool {
+    if y < BAR || y >= height - FOOT { return false }
+    if state.focus { return true }
+    if width >= 920.0 { return x >= LEFT && x < width - RIGHT }
+    if state.compact_panel == .Scene { return x >= LEFT }
+    if state.compact_panel == .Inspector { return x < width - RIGHT }
+    true
+}
+
+pub fn draw(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut scene.Graph, p: &widgets.Pointer,
+    wheel: f32, width: f32, height: f32, fps: f32, passes: i32, device: string, score: i32, total: i32) {
+    t := widgets.theme()
+    compact := width < 920.0
+    state.controls.begin()
+    mut content_pointer := p.clone()
+    if p.y < BAR || p.y >= height - FOOT { content_pointer = widgets.Pointer::at(-1000.0, -1000.0, false, false) }
+    if !state.focus && (!compact || state.compact_panel == .Scene) {
+        hierarchy(&mut state, &mut c, a, &mut graph, &content_pointer, wheel, height, &t)
+    }
+    if !state.focus && (!compact || state.compact_panel == .Inspector) {
+        inspector(&mut state, &mut c, a, &mut graph, &content_pointer, wheel, width, height, &t)
+    }
+    c.rect(0.0, 0.0, width, BAR, &chrome())
+    c.rect(0.0, BAR - 1.0, width, 1.0, &t.border)
+    c.rounded_rect(14.0, 12.0, 24.0, 24.0, 6.0, &t.knob)
+    c.triangle(28.0, 15.0, 19.0, 26.0, 27.0, 25.0, &chrome())
+    c.triangle(24.0, 33.0, 33.0, 22.0, 25.0, 23.0, &chrome())
+    label(&mut c, a, "Storm", 47.0, 10.0, 21.0, &t.ink)
+    if !compact {
+        c.rect(LEFT - 1.0, 11.0, 1.0, 26.0, &t.border)
+        label(&mut c, a, "Viewport", LEFT + 18.0, 13.0, 15.0, &t.ink_dim)
+        label(&mut c, a, "/   Material study", LEFT + 88.0, 13.0, 15.0, &t.ink)
+    } else if !state.focus {
+        if state.controls.button(&mut c, a, 4, p, 115.0, 10.0, 57.0, 27.0, "Scene", &t) {
+            state.compact_panel = if state.compact_panel == .Scene { Panel.Closed } else { Panel.Scene }
+        }
+        if state.controls.button(&mut c, a, 5, p, 178.0, 10.0, 76.0, 27.0, "Inspector", &t) {
+            state.compact_panel = if state.compact_panel == .Inspector { Panel.Closed } else { Panel.Inspector }
+        }
+    }
+    if state.controls.button(&mut c, a, 6, p, width - 97.0, 10.0, 83.0, 27.0, if state.focus { "Edit   F" } else { "Focus   F" }, &t) {
+        state.focus = !state.focus
+    }
+    bottom := height - FOOT
+    c.rect(0.0, bottom, width, FOOT, &chrome())
+    c.rect(0.0, bottom, width, 1.0, &t.border)
+    status := score.str() + "/" + total.str() + " collected     " + passes.str() + " passes     " + (if fps > 0.0 { i32(fps + 0.5).str() + " fps" } else { "– fps" })
+    status_x := width - 16.0 - ui.Canvas::text_width(a, status, 12.0 / ui.RASTER_SIZE)
+    device_end := 16.0 + ui.Canvas::text_width(a, device, 13.0 / ui.RASTER_SIZE)
+    if device_end + 16.0 < status_x { label(&mut c, a, device, 16.0, bottom + 6.0, 13.0, &t.ink) }
+    if width > 810.0 {
+        help := "WASD  move     RMB  look     R  reset"
+        x := if device_end > LEFT { device_end + 18.0 } else { LEFT + 18.0 }
+        if x + ui.Canvas::text_width(a, help, 12.0 / ui.RASTER_SIZE) + 16.0 < status_x {
+            label(&mut c, a, help, x, bottom + 6.0, 12.0, &t.ink_dim)
+        }
+    }
+    label(&mut c, a, status, status_x, bottom + 6.0, 12.0, &t.ink_dim)
+    state.controls.end(p)
+}

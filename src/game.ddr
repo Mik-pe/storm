@@ -1,14 +1,14 @@
 // The playable loop and the frame's draw classification, without a window.
 //
-// Eight emissive cubes stand in a ring around the orbit. Walking into one
-// collects it: the entity is destroyed and the score goes up. When the ring
-// is empty the HUD says so; R rebuilds it together with the camera.
+// Eight faceted tokens stand in a ring around the orbit. Walking into one
+// collects it: the entity is destroyed and the score goes up. The HUD counts collected tokens; R restores the ring and camera.
 //
 // This module is pure scene logic over `scene.Graph` and `scene.Drawable`:
 // no Vulkan, no window, so a test drives it exactly as a frame does.
 
 import core
 import ecs
+import gfx
 import scene as scenegraph
 
 pub const ORB_COUNT: i32 = 8
@@ -16,7 +16,25 @@ pub const ORB_RADIUS: f32 = 6.5
 pub const ORB_PICKUP: f32 = 1.4
 
 fn orb_material() -> scenegraph.Material {
-    scenegraph.emissive_material(0.35, 0.95, 0.70, 1.0, 0.0, 0.35, 0.45)
+    scenegraph.emissive_material(0.86, 0.44, 0.13, 1.0, 0.66, 0.26, 0.10)
+}
+
+fn token() -> []f32 {
+    mut vertices: []f32 = []
+    for i in 0..6 {
+        a := f32(i) * 1.04719755
+        b := f32(i + 1) * 1.04719755
+        mid := (a + b) * 0.5
+        for side in [-1.0, 1.0] {
+            n := core.normalize(core.vec3(mid.cos(), f32(side) * 0.68, mid.sin()))
+            tip := gfx.vertex(0.0, f32(side) * 0.22, 0.0, n.x, n.y, n.z, 0.5, 0.0)
+            left := gfx.vertex(0.15 * a.cos(), 0.0, 0.15 * a.sin(), n.x, n.y, n.z, 0.0, 1.0)
+            right := gfx.vertex(0.15 * b.cos(), 0.0, 0.15 * b.sin(), n.x, n.y, n.z, 1.0, 1.0)
+            if side > 0.0 { gfx.push_triangle(&mut vertices, left, tip, right) }
+            else { gfx.push_triangle(&mut vertices, right, tip, left) }
+        }
+    }
+    vertices
 }
 
 // An orb is marked by its name, exactly as `spawn_orbs` writes it: "orb <n>".
@@ -27,11 +45,10 @@ pub fn spawn_orbs(graph: &mut scenegraph.Graph) {
     for i in 0..ORB_COUNT {
         // Half a step off, so no orb starts squarely in front of the camera.
         angle := (f32(i) + 0.5) * 6.2831853 / f32(ORB_COUNT)
-        position := core.vec3(angle.cos() * ORB_RADIUS, 0.7, angle.sin() * ORB_RADIUS)
+        position := core.vec3(angle.cos() * ORB_RADIUS, 0.32, angle.sin() * ORB_RADIUS)
         orb := graph.create_root(position)
         _ := graph.set_name(orb, "orb " + i.str())
-        _ := graph.set_shape(orb, .Cube)
-        _ := graph.set_scale(orb, core.vec3(0.28, 0.28, 0.28))
+        _ := graph.set_mesh(orb, token())
         _ := graph.set_material(orb, orb_material())
     }
 }
@@ -95,12 +112,10 @@ pub fn sort_back_to_front(items: &mut []scenegraph.Drawable) {
 // ground and loaded meshes. Transparent items only blend into the main pass.
 pub fn casts_shadow(item: &scenegraph.Drawable) -> bool { !is_transparent(&item.material) }
 
-// The vertex stream a drawable is drawn with: its own when it is a loaded
-// mesh, otherwise the built-in geometry for its shape.
-pub fn geometry_of(item: &scenegraph.Drawable, cube: &[]f32, plane: &[]f32) -> []f32 {
-    match item.shape {
-        .Mesh => item.vertices.clone(),
-        .Plane => plane.clone(),
-        .Cube => cube.clone(),
+pub fn reset_orbs(graph: &mut scenegraph.Graph) {
+    nodes := graph.nodes()
+    for node in nodes {
+        if is_orb(graph.name(node)) { _ := graph.destroy(node) }
     }
+    spawn_orbs(&mut graph)
 }

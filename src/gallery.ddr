@@ -1,0 +1,157 @@
+// The material study is authored in world units. Meshes remain ordinary editable scene nodes.
+import core
+import ecs
+import gfx
+import scene
+import std.math as _
+
+const TAU: f32 = 6.2831853
+
+fn ring_point(u: f32, v: f32) -> gfx.Vertex {
+    a := u * TAU
+    b := v * TAU
+    radius := 1.29 + 0.34 * b.cos()
+    gfx.vertex(radius * a.cos(), radius * a.sin(), 0.34 * b.sin(),
+        a.cos() * b.cos(), a.sin() * b.cos(), b.sin(), u, v)
+}
+
+fn ring() -> []f32 {
+    mut out: []f32 = []
+    out.reserve(64 * 20 * 6 * gfx.VERTEX_FLOATS)
+    for i in 0..64 {
+        for j in 0..20 {
+            u := f32(i) / 64.0
+            v := f32(j) / 20.0
+            un := f32(i + 1) / 64.0
+            vn := f32(j + 1) / 20.0
+            gfx.push_quad(&mut out, ring_point(u, v), ring_point(un, v), ring_point(un, vn), ring_point(u, vn))
+        }
+    }
+    out
+}
+
+// Revolve a radial profile around Y. A band owns its slope at both ends so
+// a change in slope makes a clean bevel. Flutes also change the tangent normal.
+fn profile_point(u: f32, y: f32, radius: f32, slope_r: f32, slope_y: f32, flute: f32) -> gfx.Vertex {
+    a := u * TAU
+    ca := a.cos()
+    sa := a.sin()
+    r := radius * (1.0 + flute * (24.0 * a).cos())
+    twist := 24.0 * flute * (24.0 * a).sin() / (1.0 + flute * (24.0 * a).cos())
+    n := core.normalize(core.vec3(slope_y * (ca - twist * sa), -slope_r * (1.0 + flute * (24.0 * a).cos()), slope_y * (sa + twist * ca)))
+    gfx.vertex(r * ca, y, r * sa, n.x, n.y, n.z, u, y)
+}
+
+fn revolved(radii: []f32, heights: []f32, slices: i32, flute: f32) -> []f32 {
+    mut out: []f32 = []
+    out.reserve((radii.len - 1) * slices * 6 * gfx.VERTEX_FLOATS)
+    for j in 1..radii.len {
+        dr := radii[j] - radii[j - 1]
+        dy := heights[j] - heights[j - 1]
+        for i in 0..slices {
+            u := f32(i) / f32(slices)
+            un := f32(i + 1) / f32(slices)
+            gfx.push_quad(&mut out, profile_point(u, heights[j - 1], radii[j - 1], dr, dy, flute),
+                profile_point(u, heights[j], radii[j], dr, dy, flute),
+                profile_point(un, heights[j], radii[j], dr, dy, flute),
+                profile_point(un, heights[j - 1], radii[j - 1], dr, dy, flute))
+        }
+    }
+    out
+}
+
+fn disc(radius: f32, height: f32) -> []f32 {
+    revolved([radius - 0.04, radius, radius, radius - 0.04, 0.0], [0.0, 0.04, height - 0.04, height, height], 80, 0.0)
+}
+
+fn ball_point(u: f32, v: f32) -> gfx.Vertex {
+    a := u * TAU
+    b := (v - 0.5) * TAU * 0.5
+    x := b.cos() * a.cos()
+    y := b.sin()
+    z := b.cos() * a.sin()
+    gfx.vertex(x, y, z, x, y, z, u, 1.0 - v)
+}
+
+fn ball() -> []f32 {
+    mut out: []f32 = []
+    for j in 0..20 {
+        for i in 0..40 {
+            u := f32(i) / 40.0
+            v := f32(j) / 20.0
+            un := f32(i + 1) / 40.0
+            vn := f32(j + 1) / 20.0
+            gfx.push_quad(&mut out, ball_point(u, v), ball_point(u, vn), ball_point(un, vn), ball_point(un, v))
+        }
+    }
+    out
+}
+
+fn piece(graph: &mut scene.Graph, parent: ecs.Entity, name: string, at: core.Vec3,
+    move vertices: []f32, material: scene.Material) -> ecs.Entity {
+    node := graph.create_child(parent, at)
+    _ := graph.set_name(node, name.clone())
+    _ := graph.set_mesh(node, move vertices)
+    _ := graph.set_material(node, material)
+    node
+}
+
+fn screen(graph: &mut scene.Graph, name: string, x: f32, z: f32, turn: f32) -> ecs.Entity {
+    node := graph.create_root(core.vec3(x, 1.40, z))
+    _ := graph.set_name(node, name.clone())
+    _ := graph.set_shape(node, .Cube)
+    _ := graph.set_scale(node, core.vec3(1.03, 2.33, 0.06))
+    graph.set_rotation(node, turn)
+    _ := graph.set_material(node, scene.material(0.20, 0.48, 0.45, 0.20, 0.15, 0.20))
+    node
+}
+
+// A continuous sweep between floor and wall, like a photographic cyclorama.
+fn sweep_edge(out: &mut []f32, z0: f32, y0: f32, a0: f32, z1: f32, y1: f32, a1: f32) {
+    gfx.push_quad(&mut out, gfx.vertex(-45.0, y0, z0, 0.0, a0.cos(), a0.sin(), 0.0, 0.0),
+        gfx.vertex(45.0, y0, z0, 0.0, a0.cos(), a0.sin(), 1.0, 0.0),
+        gfx.vertex(45.0, y1, z1, 0.0, a1.cos(), a1.sin(), 1.0, 1.0),
+        gfx.vertex(-45.0, y1, z1, 0.0, a1.cos(), a1.sin(), 0.0, 1.0))
+}
+
+fn cyclorama() -> []f32 {
+    mut out: []f32 = []
+    sweep_edge(&mut out, 60.0, 0.0, 0.0, -5.8, 0.0, 0.0)
+    for i in 0..24 {
+        a := f32(i) * TAU / 96.0
+        b := f32(i + 1) * TAU / 96.0
+        sweep_edge(&mut out, -5.8 - 4.5 * a.sin(), 4.5 * (1.0 - a.cos()), a,
+            -5.8 - 4.5 * b.sin(), 4.5 * (1.0 - b.cos()), b)
+    }
+    sweep_edge(&mut out, -10.3, 4.5, TAU * 0.25, -10.3, 24.0, TAU * 0.25)
+    out
+}
+
+pub struct Study {
+    hub: ecs.Entity,
+    ring: ecs.Entity,
+    left: ecs.Entity,
+    right: ecs.Entity,
+}
+
+pub fn build(graph: &mut scene.Graph) -> Study {
+    hub := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(hub, "Turntable")
+    ground := graph.create_root(core.vec3(0.0, -0.01, 0.0))
+    _ := graph.set_name(ground, "Studio floor")
+    _ := graph.set_mesh(ground, cyclorama())
+    _ := graph.set_material(ground, scene.material(0.071, 0.135, 0.158, 1.0, 0.0, 0.80))
+    _ := piece(&mut graph, hub, "Basalt footing", core.vec3(0.0, 0.0, 0.0), disc(3.12, 0.16), scene.material(0.045, 0.047, 0.052, 1.0, 0.48, 0.35))
+    _ := piece(&mut graph, hub, "Limestone plinth", core.vec3(0.0, 0.16, 0.0), disc(3.20, 0.32), scene.material(0.54, 0.43, 0.32, 1.0, 0.03, 0.78))
+    brass := piece(&mut graph, hub, "Brass torus", core.vec3(0.42, 2.10, -0.54), ring(), scene.material(0.95, 0.48, 0.145, 1.0, 0.88, 0.24))
+    graph.set_rotation(brass, -0.36)
+    _ := piece(&mut graph, hub, "Fluted ceramic", core.vec3(-1.52, 0.48, 0.54),
+        revolved([0.47, 0.56, 0.56, 0.53, 0.39, 0.38, 0.30, 0.29, 0.0],
+            [0.0, 0.10, 1.31, 1.55, 1.72, 1.85, 1.85, 1.68, 1.68], 144, 0.045),
+        scene.material(0.019, 0.135, 0.125, 1.0, 0.25, 0.32))
+    pearl := piece(&mut graph, hub, "Porcelain sphere", core.vec3(1.23, 1.06, 1.29), ball(), scene.material(0.81, 0.74, 0.62, 1.0, 0.14, 0.27))
+    _ := graph.set_scale(pearl, core.vec3(0.58, 0.58, 0.58))
+    left := screen(&mut graph, "Glass / left", -2.58, -2.75, -0.22)
+    right := screen(&mut graph, "Glass / right", 2.41, -2.85, 0.38)
+    Study { hub: hub, ring: brass, left: left, right: right }
+}

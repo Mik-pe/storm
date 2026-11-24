@@ -204,12 +204,14 @@ impl Atlas {
     }
 }
 
-// A font to draw with: `preferred` when it exists, else the first monospace
-// font the platform ships. Every candidate is monospace, so the editor's
-// columns line up whichever one is found. "" when there is none, and an
-// empty `preferred` is simply skipped.
+// Prefer the requested face, then an installed system sans or monospace fallback.
 pub fn find_font(preferred: string) -> string {
     candidates := [preferred.clone(),
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
         "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf",
         "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
