@@ -76,13 +76,19 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`5a0a9ec`,
-  Dunder 0.12.0, låst session) omfattade **188 egna `@test`** — 43 i roten
-  och 145 i de 15 paketen — alla gröna, varje svit lika många som den har
-  `@test` (Skrifts två följer med i `storm-text` och `storm-ui`). 16 sviter
-  kördes med `dunder test` i roten och i varje `packages/*`.
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`1a7f0e2` +
+  exekutortesterna, Dunder 0.12.0, låst session) omfattade **195 egna
+  `@test`** — 45 i roten och 150 i de 15 paketen — alla gröna, varje svit
+  lika många som den har `@test` (Skrifts två följer med i roten,
+  `storm-text` och `storm-ui`). 16 sviter kördes med `dunder test` i roten
+  och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
+  `load_model`) är testbar utan fönster: vad ett pass får, när
+  mesh-kopian tas (bara när geometrin revideras — och aldrig från en
+  främmande värld med samma revisionsnummer) och att en delad mesh räknas
+  per instans (`tests/app_frame.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **16 036 ms** på `5a0a9ec` med Dunder 0.12.0. Trädet på
+  mätte **16 241 ms** på `1a7f0e2` med Dunder 0.12.0 (16 197–16 523 ms över
+  tre mätningar samma kväll). Trädet på
   `a84ade9` gav 14 900–15 100 ms med samma kompilator (`--timings`: 1 238 funktioner,
   386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av
   14,6 s), `54214f3` 6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med

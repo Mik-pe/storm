@@ -38,7 +38,7 @@ genererar dem; och paketet som eget namn. Sedan **Renderer-uppdelningen**
 
 ## Byggtid på Mikparchy
 
-Senaste mätning: 3b (textursampling, `texture.ddr` i båda backends) på **16 424 ms** med Dunder 0.12.0 på Mikparchy. Budgeten är 20 s.
+Senaste mätning: **16 197–16 523 ms** på `1a7f0e2` med Dunder 0.12.0 på Mikparchy (tre `tools/build-time.ddr` samma kväll, 16 424 ms för 3b). Budgeten är 20 s.
 
 Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Trädet på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 
