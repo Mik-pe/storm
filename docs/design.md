@@ -293,6 +293,8 @@ ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har
 
 Fysiken registrerar spelarens färdväg, riktning och kontakt med underlaget vid fast tick. Presentationen samplar samma historik på bildrutans tidpunkt. Varje tass får en stödpunkt i världen och benen hittar dit med tvåleds-IK. Stödets höjd hämtas ur gläntans trianglar eller det deformerade molnets yta. Ledernas placering och tassarnas sula och tå följer med från Blender i GLB-filens scendata. [Klippsampling och IK](../packages/storm-scene/src/animation.ddr) · [Rävens poser](../src/fox_animation.ddr) · [Steghistorik](../packages/storm-play/src/stride.ddr)
 
+Gesten vid en blomma använder samma vilotid i den interaktiva spelbilden och i en agentstyrd repris. Spelarens rörelse tonar ut gesten. Huvudets riktning och höjd följer blommans placering och storlek. Efter att benen har tagit vikten justeras nosen mot pollenet med modellens verkliga nosspets som referens. [Rävens uttryck](../src/fox_expression.ddr)
+
 `storm-mcp` håller en session per klientprocess och tar emot en renderingsfunktion från `src/main.ddr`. Agentens bildexport kör den vanliga rendergrafen mot en fristående textur. Simuleringen kan köras utan GPU. `--watch` låter ett öppet spel ta emot en sparad bana från en agent. Fönstret byter spelvärld när hela filen har validerats.
 
 Förändringar i scenträdet bygger om traverseringsordningen. Mellan ändringar uppdateras världsmatriserna i den sparade ordningen med föräldern före barnet. Rendergrafens kompilerade passordning återanvänds tills behovet av skuggpass, transparenspass eller efterbehandling ändras.

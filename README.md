@@ -58,9 +58,9 @@ Räven, gläntan och smådjuren har redigerbara Blender-original. [Räven](asset
 
 Molnbanan har en egen Blenderfil med separata scener för det vita molnet, det rosa studsmolnet och bonusfjärilen. De exporteras till `cloud.glb`, `boost_cloud.glb` och `super_butterfly.glb`. [Molnbanans Blender-original](assets/blomsterskogen/canopy.blend)
 
-Vallmo sätter ner tassarna en i taget i galoppen. Bakbenen tar vikt och skjuter ifrån, bröstet sjunker vid landning och svansens spets följer efter när hon svänger. Steglängden följer sträckan hon färdas. Ändra nyckelposer och tajming i `clips()`. [Jämför samma löpning och hopp före och efter](docs/vallmos-steg.mp4) · [Vallmos animationsklipp](src/fox_animation.ddr)
+Vallmo travar med diagonala tasspar. Skuldrorna tar emot vikten och svansens vita spets följer efter när hon vänder. Stanna ett steg framför en blomma så lutar hon sig fram och nosar två gånger. På den öppna stigen sträcker hon på sig efter en stunds vila. När hon plockar en blomma höjer hon hakan och kisar. [Jämför rörelsen med den förra versionen](docs/vallmos-steg.mp4) · [Se Vallmo nosa på Smörblomman](docs/vallmo-vid-blomman.mp4) · [Trav och hopp](src/fox_animation.ddr) · [Vila och blomgester](src/fox_expression.ddr)
 
-I `fox.blend` kan du posera 22 leder med kontrollerna `Pose · …`. Ledernas vilolägen och tassarnas kontaktpunkter finns i egenskapen `storm_rig` på samlingen **Fox · Export geometry**. Återställ kontrollerna till viloposen och kör samlingens sparade export **Storm · fox.glb** för att få med både geometri och rigg. [Vallmos poser i spelet](docs/vallmo.png)
+I `fox.blend` kan du posera 24 leder med kontrollerna `Pose · …`. Ledernas vilolägen och tassarnas kontaktpunkter finns i egenskapen `storm_rig` på samlingen **Fox · Export geometry**. Återställ kontrollerna till viloposen och kör samlingens sparade export **Storm · fox.glb** för att få med både geometri och rigg. [Vallmos poser i spelet](docs/vallmo.png)
 
 I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `WingL_` och `WingR_`. Storm animerar dem kring modellens leder.
 
