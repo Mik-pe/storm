@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "display.glsl"
 // Cook-Torrance metallic-roughness PBR with split-sum image-based lighting.
 //
 // Lighting comes from three places that all agree on the same sky model:
@@ -149,5 +151,5 @@ void main() {
 
     vec3 color = direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
     color = aces(color * 1.35);
-    out_color = vec4(pow(color, vec3(1.0 / 2.2)), vertex_base_color.a);
+    out_color = display_color(pow(color, vec3(1.0 / 2.2)), vertex_base_color.a);
 }

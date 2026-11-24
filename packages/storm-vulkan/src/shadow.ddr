@@ -349,7 +349,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 }
 
 // Writes the light matrix into the mapped uniform buffer.
-pub unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
+unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
     if r.lightMapped == ptr(0) { return false }
     _ := copy_bytes(r.lightMapped, addr(&light_vp[0]), 64)
     _ := copy_bytes(ptr(usize(r.lightMapped) + 64), addr(&light_dir_c[0]), 16)
@@ -360,6 +360,7 @@ pub unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &
 
 pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
     if r.recording == 0 || r.shadowPass == ptr(0) { return false }
+    if !set_light(&r, light_vp, light_dir_c) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
     // ClearValue is a union; the shadow pass has only a colour attachment, so

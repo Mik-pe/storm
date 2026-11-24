@@ -26,9 +26,10 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     r.postVertShader = vert_module
     r.postFragShader = frag_module
 
+    mut encoding: vk2.DisplayEncoding = zeroed()
     stages := vk2.ShaderStages {
         vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Vertex), module: r.postVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
-        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Fragment), module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
+        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Fragment), module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: device.display_encoding(r.format, &mut encoding) },
     }
 
     mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = zeroed()

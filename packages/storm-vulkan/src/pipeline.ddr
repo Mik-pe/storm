@@ -125,6 +125,8 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     mut stages := vk.ShaderStages { vertex: stage, fragment: stage }
     stages.fragment.stage = enums.shader_stage(.Fragment)
     stages.fragment.module = r.fragmentShader
+    mut encoding: vk.DisplayEncoding = zeroed()
+    stages.fragment.pSpecializationInfo = device.display_encoding(r.format, &mut encoding)
 
     // The one mesh vertex layout (position, normal, uv), declared here and
     // in the shadow pipeline from the same record.
@@ -245,6 +247,8 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     mut stages := vk.ShaderStages { vertex: stage, fragment: stage }
     stages.fragment.stage = enums.shader_stage(.Fragment)
     stages.fragment.module = r.skyFragmentShader
+    mut encoding: vk.DisplayEncoding = zeroed()
+    stages.fragment.pSpecializationInfo = device.display_encoding(r.format, &mut encoding)
 
     mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
     input.sType = 19

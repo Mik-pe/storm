@@ -243,6 +243,15 @@ pub struct PushConstantRange {
 }
 
 @c_layout
+pub struct SpecializationMapEntry { constantID: u32, offset: u32, size: usize }
+
+@c_layout
+pub struct SpecializationInfo { mapEntryCount: u32, pMapEntries: ptr, dataSize: usize, pData: ptr }
+
+@c_layout
+pub struct DisplayEncoding { entry: SpecializationMapEntry, info: SpecializationInfo, srgb: u32 }
+
+@c_layout
 pub struct PipelineShaderStageCreateInfo {
     sType: u32,
     pNext: ptr,
