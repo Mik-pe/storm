@@ -13,7 +13,8 @@
 //   dunder run                     interactive
 //   dunder run -- --frames 60      render 60 frames and exit
 //   dunder run -- --capture a.ppm  one headless frame to disk
-//   --eye x y z, --glb file, --no-glass, --no-shadows, --effects, --trace
+//   --eye x y z [--at x y z] [--yaw a] [--pitch b], --glb file, --no-glass,
+//   --no-shadows, --effects, --trace
 capability stdio
 
 import args
@@ -45,6 +46,10 @@ const BODY_SCALE: f32 = 0.8
 // MODEL_SIZE units on its longest side and resting on y = 0, so any model
 // lands in view whatever units it was authored in.
 const MODEL_SIZE: f32 = 2.4
+// A --glb model stands here: centred between the hub and the camera, clear
+// of the orbit (radius 2.4) and inside the ring of orbs (radius 6.5), on the
+// line the default camera looks down, so the capture shows the model.
+fn model_at() -> core.Vec3 { core.vec3(0.0, 0.0, 4.2) }
 fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Option<ecs.Entity> {
     document := gltf.load(path)
     mesh := gltf.load_mesh(&document)
@@ -158,13 +163,14 @@ fn main() -> i32 {
     _ := graph.set_material(pane_right, scenegraph.emissive_material(0.35, 0.80, 0.88, 0.26, 0.0, 0.05, 0.0))
     game.spawn_orbs(&mut graph)
     glb := args.value(&argv, "--glb")
-    if glb.len > 0 { _ := load_model(&mut graph, glb, core.vec3(5.4, 0.0, 0.8)) }
+    if glb.len > 0 { _ := load_model(&mut graph, glb, model_at()) }
     graph.propagate()
 
-    // --- camera ---
-    mut camera := input.Camera::new(args.eye(&argv))
-    camera.yaw = 0.0
-    camera.pitch = -0.16
+    // --- camera: where --eye stands, turned towards --at unless given a turn ---
+    start := args.aim(&argv)
+    mut camera := input.Camera::new(start.position)
+    camera.yaw = start.yaw
+    camera.pitch = start.pitch
     camera.fov = 0.85
 
     // --- lighting: one sun, shared by the sky dome and every surface ---
@@ -244,8 +250,12 @@ fn main() -> i32 {
         captured := (mouse.buttons.bit_and(input.MOUSE_RIGHT)) != 0
         camera.update(opened.window, f32(dt), captured)
         if vulkan.key_pressed(opened.window, input.KEY_R) {
-            camera = input.Camera::new(core.vec3(0.0, 2.2, 9.5))
-            camera.pitch = -0.16
+            // Back to the baseline the capture is measured against, whatever --eye said.
+            reset_args: []string = []
+            baseline := args.aim(&reset_args)
+            camera = input.Camera::new(baseline.position)
+            camera.yaw = baseline.yaw
+            camera.pitch = baseline.pitch
             camera.fov = 0.85
             game.spawn_orbs(&mut graph)
             score = 0

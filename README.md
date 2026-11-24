@@ -132,9 +132,11 @@ skriver inte. Bara glaset sorteras bakifrån-fram, för blendingens skull.
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
 - `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
   Fungerar på en låst session; det är så QA görs utan tangentbord.
-- `--eye x y z` – starta kameran på en given punkt (så `--capture` bevisar
-  orbplockningen: kameran startar inne i en orb)
-- `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på marken)
+- `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
+  (`--at x y z` ändrar målet; `--yaw a`/`--pitch b` ger en egen vinkel). Utan
+  `--eye` står kameran på baslinjen som varje pixeljämförelse mäter mot.
+- `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på
+  marken mitt framför kameran)
 - `--no-glass`, `--no-shadows`, `--effects` – startläget för de tre toggles
 - `--trace` – skriv varje inläsningssteg
 

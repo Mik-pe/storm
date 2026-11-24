@@ -64,6 +64,7 @@ struct Spin { speed: f32 }
 
 import ..src.args as args
 import ..src.game as game
+import input
 import scene as scenegraph
 
 @test fn arguments_read_a_list_not_a_process() {
@@ -71,28 +72,87 @@ import scene as scenegraph
     assert(args.frame_limit(&empty) == 0)
     assert(args.flag(&empty, "--effects") == false)
     assert(args.value(&empty, "--capture") == "")
-    eye := args.eye(&empty)
-    assert(eye.x == 0.0 && eye.y == 2.2 && eye.z == 9.5)
+    eye := args.aim(&empty)
+    assert(eye.position.x == 0.0 && eye.position.y == 2.2 && eye.position.z == 9.5)
+    // The baseline turn: straight ahead, tilted down. Every AE comparison
+    // in dogfood.md is measured against a capture taken with these.
+    assert(eye.yaw == 0.0 && eye.pitch == -0.16)
 
     mut list: []string = ["--frames", "60", "--capture", "a.ppm", "--effects", "--eye", "1.5", "-2", "3.25"]
     assert(args.frame_limit(&list) == 60)
     assert(args.flag(&list, "--effects"))
     assert(!args.flag(&list, "--no-shadows"))
     assert(args.value(&list, "--capture") == "a.ppm")
-    at := args.eye(&list)
-    assert(at.x == 1.5 && at.y == -2.0 && at.z == 3.25)
+    at := args.aim(&list)
+    assert(at.position.x == 1.5 && at.position.y == -2.0 && at.position.z == 3.25)
 
     // A non-positive or unparsable frame count, a trailing flag and a short
     // --eye all fall back to "not given" instead of half a value.
     mut bad: []string = ["--frames", "0", "--eye", "1", "2"]
     assert(args.frame_limit(&bad) == 0)
     assert(args.value(&bad, "--eye") == "1")
-    short := args.eye(&bad)
-    assert(short.x == 0.0 && short.z == 9.5)
+    short := args.aim(&bad)
+    assert(short.position.x == 0.0 && short.position.z == 9.5 && short.pitch == -0.16)
     mut trailing: []string = ["--capture"]
     assert(args.value(&trailing, "--capture") == "")
     mut words: []string = ["--frames", "many"]
     assert(args.frame_limit(&words) == 0)
+}
+
+@test fn an_eye_anywhere_turns_towards_what_it_should_show() {
+    // --eye at the default position, looking at the scene's middle: the
+    // computed turn is close to the hand-tuned baseline (within a degree of
+    // pitch), which is the sanity check that the maths matches the camera.
+    here := args.look_at(core.vec3(0.0, 2.2, 9.5), core.vec3(0.0, 0.9, 0.0))
+    assert(here.yaw == 0.0)
+    assert((here.pitch - -0.16).abs() < 0.03)
+    // Behind the scene: yaw is half a turn, still looking at the middle.
+    behind := args.look_at(core.vec3(0.0, 2.2, -9.5), core.vec3(0.0, 0.9, 0.0))
+    assert((behind.yaw - 3.14159265).abs() < 0.0001 && behind.pitch < 0.0)
+    // To the right of the scene: forward points towards -x, so yaw is -pi/2.
+    right := args.look_at(core.vec3(9.5, 0.9, 0.0), core.vec3(0.0, 0.9, 0.0))
+    assert((right.yaw - -1.5707963).abs() < 0.0001 && right.pitch == 0.0)
+    // Straight down: no horizontal distance, pitch -pi/2 and yaw kept at 0.
+    under := args.look_at(core.vec3(0.0, 5.0, 0.0), core.vec3(0.0, 0.0, 0.0))
+    assert(under.yaw == 0.0 && (under.pitch - -1.5707963).abs() < 0.0001)
+
+    // The turn round-trips through the camera's own forward vector: a camera
+    // placed by look_at looks exactly at the target. This pins args' yaw and
+    // pitch to storm-input's convention, so a change in either fails here.
+    mut targets: []core.Vec3 = [core.vec3(0.0, 0.9, 0.0), core.vec3(2.0, 3.0, -1.0), core.vec3(-4.0, 0.5, 4.0)]
+    for i in 0..targets.len {
+        mut stands: []core.Vec3 = [core.vec3(6.0, 4.0, -7.0), core.vec3(-3.0, 1.0, 8.0), core.vec3(0.5, 7.0, 0.5)]
+        for j in 0..stands.len {
+            aim := args.look_at(stands[j], targets[i])
+            mut camera := input.Camera::new(aim.position)
+            camera.yaw = aim.yaw
+            camera.pitch = aim.pitch
+            f := camera.forward()
+            d := core.normalize(core.sub(targets[i], stands[j]))
+            assert((f.x - d.x).abs() < 0.0005 && (f.y - d.y).abs() < 0.0005 && (f.z - d.z).abs() < 0.0005)
+        }
+    }
+
+    // The flags: --eye looks at --at (the middle by default), so the turn is
+    // whatever the position dictates: from (6, 4, -7) the target is at
+    // dx = -6, dz = +7, and yaw = atan2(dx, -dz) = atan2(-6, -7) - behind
+    // and to the right, not "straight back". --yaw and --pitch replace the
+    // computed turn; a bad --eye is the baseline.
+    mut around: []string = ["--eye", "6", "4", "-7"]
+    looked := args.aim(&around)
+    assert((looked.yaw - f32(math.atan2(-6.0, -7.0))).abs() < 0.0001 && looked.yaw < -2.0)
+    assert(looked.position.x == 6.0 && looked.position.y == 4.0 && looked.position.z == -7.0)
+    // --at straight down +z from the eye: forward must be (0, 0, +1), which
+    // is a half turn (yaw 0 looks down -z).
+    mut elsewhere: []string = ["--eye", "6", "4", "-7", "--at", "6", "4", "0"]
+    toward_z := args.aim(&elsewhere)
+    assert((toward_z.yaw - 3.14159265).abs() < 0.0001 && toward_z.pitch == 0.0)
+    mut turned: []string = ["--eye", "6", "4", "-7", "--yaw", "0.5", "--pitch", "-0.25"]
+    fixed := args.aim(&turned)
+    assert(fixed.yaw == 0.5 && fixed.pitch == -0.25)
+    mut broken: []string = ["--eye", "six", "4", "-7"]
+    fallback := args.aim(&broken)
+    assert(fallback.position.z == 9.5 && fallback.yaw == 0.0 && fallback.pitch == -0.16)
 }
 
 @test fn a_scene_with_orbs_spawns_counts_and_collects() {

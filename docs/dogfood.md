@@ -559,8 +559,8 @@ objects 13) utan tangentbord.
 ## Verifiering
 
 På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
-underpaketen kördes var för sig och alla 80 tester passerade (mätning
-2026-11-24: 7 rot + 73 paket, 6 743 ms byggtid): de 60 som
+underpaketen kördes var för sig och alla 81 tester passerade (mätning
+2026-11-24: 8 rot + 73 paket, 6 850 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och
 renderpass-ABI), ett som låser samtliga Vk-enum-värden Storm använder mot
 Khronos tabeller och `apply_blend` för alpha-over och skuggmax (de två äldre
@@ -622,12 +622,31 @@ migrerats till `enums.ddr` (30 structfält, 9 lokala konstanter och
 egen capture: enda skillnaden (AE 115 068) ligger i topprad, paneler och
 underkant, alltså textåtergivningen som inte ingick i IBL:s bas.
 
+**QA 2026-11-24 (låst session, fyra captures på 2256 × 1504).**
+Standardcapturen mot baslinjen från samma timme: **AE = 0** (baseline oförändrad
+efter att kamerans yaw/pitch flyttade från `main.ddr` till `args.aim`).
+`--eye 6 4 -7` gav före ändringen en tom horisont (kameran flyttades men såg
+rakt fram, AE 73 710 mot baslinjen = 2,2 % himla- och markförskjutning);
+efter att `--eye` vänder kameran mot scenens mitt syns kubarna bakifrån,
+glaset, orberna och skuggorna (AE 156 753 = 4,6 %). `--glb Fox.glb` stod
+förut på (5.4, 0, 0.8) och skars av vid högerkanten: differensmasken mot
+baslinjen sträckte sig från kolumn 1 932 till 2 252 av 2 256; på (0, 0, 4.2)
+står räven hel i mitten av bilden, på golvet, med skugga, i storlek mellan
+kuberna (`objects` 15, "model" i scengrafen). `--effects`: hörnen i himlen
+(181,201,227) → (170,189,215), mitten (203,205,211) oförändrad, inga
+inverterade områden. En visionmodell som skulle läsa effects-capturen fick
+i stället fox-capturen förbi (samma filnamn, ny konvertering) - därför står
+pixelproberna här, inte bildbeskrivningen. `--frames 5` utan capture på den
+låsta sessionen: SIGSEGV i första framen mellan `acquired image 0` och
+`render pass begun` (next-steps, kända begränsningar).
+
 **Om att räkna tester.** `dunder test` i `packages/storm-text` rapporterar
 7 passed fast paketets `tests/suite.ddr` har 5 `@test`, och `storm-ui` 9 fast
 den har 7: de två extra är samma två `@test fn` i Skrifts egen källmodul
 (`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
-`path`-beroendet. Storms egna är därför **80** = 7 rot + 73 paket (tre till i roten
+`path`-beroendet. Storms egna är därför **81** = 8 rot + 73 paket (tre till i roten
 2026-11-24: argumenttolkningen och orbspelet flyttades ur `main.ddr` till
-`src/args.ddr`/`src/game.ddr` just för att kunna testas utan fönster). En mätning
-som summerar `passed`-raden över paketen får 81 och räknar Skrifts tester som
+`src/args.ddr`/`src/game.ddr` just för att kunna testas utan fönster, och ett
+fjärde samma dag: `--eye` vänder kameran mot scenen, se QA nedan). En mätning
+som summerar `passed`-raden över paketen får 82 och räknar Skrifts tester som
 Storms; räkna `@test` i `tests/suite.ddr` i stället.

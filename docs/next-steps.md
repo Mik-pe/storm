@@ -260,8 +260,12 @@ Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#gra
   en rendering av golvet, så golvet syns inte i kuberna.
 - Ingen `vkDestroySurfaceKHR`-anrop: `vkDestroyInstance` städar ytan.
 - Fönsterläge (`--frames N` utan `--capture`) på en **låst** session avslutas
-  med SIGSEGV efter device-valet i stället för ett fel (sett 2026-11-23 på
-  oförändrad `7ae442a`; `--capture` fungerar låst). QA-punkt: hitta anropet
-  (markörer enligt `dunder-development`), rapportera "session locked" och
-  avsluta med status i stället för krasch.
+  med SIGSEGV i **första** framen (sett 2026-11-24 på `ac268f0`, spårat med
+  `--trace`): sista markören är `acquired image 0`, nästa (`render pass
+  begun`) nås aldrig — alltså faller det mellan `AcquireNextImageKHR` och
+  `CmdBeginRenderPass` i `begin_frame`. Capture-vägen går genom samma rader
+  och fungerar låst; den enda skillnaden där är `pass.framebuffer`
+  (swapchain-framebuffern i stället för capture-framebuffern). QA-punkt:
+  markör per anrop i det fönstret, rapportera "session locked" och avsluta
+  med status i stället för krasch.
 - Valideringslager aktiveras inte automatiskt.
