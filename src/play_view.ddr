@@ -6,8 +6,10 @@ import input
 import play
 import scene
 import .args
-import .woodland
 import .canopy
+import .cozy_control
+import .particles
+import .woodland
 import std.math as _
 
 pub struct View {
@@ -15,6 +17,7 @@ pub struct View {
     nodes: []ecs.Entity,
     cast: woodland.Cast,
     course: canopy.Course,
+    cozy_fx: particles.CozyEffects,
     has_goal: bool,
     player_node: i32,
     center: core.Vec3,
@@ -65,14 +68,24 @@ pub fn build(session: &play.Session) -> Result<View, string> {
     }
     cast := if session.scene.theme == .Blossom { woodland.build(&mut graph, session, &nodes)? } else { woodland.empty() }
     course := canopy.build(&mut graph, session, &nodes)?
+    cozy_fx := if session.scene.theme == .Blossom { particles.build_cozy(&mut graph) } else { particles.empty_cozy() }
     graph.propagate()
     .Ok(View {
-        course: move course, cast: move cast, graph: move graph, nodes: move nodes, has_goal: goal, player_node: player_node,
+        course: move course, cast: move cast, cozy_fx: move cozy_fx, graph: move graph, nodes: move nodes, has_goal: goal, player_node: player_node,
         center: core.scale(core.add(lo, hi), 0.5), extent: core.scale(core.sub(hi, lo), 0.5)
     })
 }
 
 pub fn sync(view: &mut View, session: &play.Session, exact: bool) {
+    idle := cozy_control.GuideVisual { active: false, target: core.vec3(0.0, 0.0, 0.0), age: 0.0 }
+    sync_guide(&mut view, session, exact, &idle)
+}
+
+pub fn is_snoozing(cozy: &play.CozyState, motion: &play.PlayerMotion, rest: &play.Rest) -> bool {
+    (cozy.sitting && cozy.sit_age >= 4.5) || (motion.grounded && motion.run_weight < 0.1 && rest.age >= 14.0)
+}
+
+pub fn sync_guide(view: &mut View, session: &play.Session, exact: bool, guide: &cozy_control.GuideVisual) {
     for i in 0..view.nodes.len {
         if session.scene.entities[i].role == .Flower {
             view.graph.set_visible(view.nodes[i], !session.collected[i])
@@ -83,6 +96,31 @@ pub fn sync(view: &mut View, session: &play.Session, exact: bool) {
     }
     woodland.animate(&mut view.graph, &view.cast, session, view.player_node, exact, &view.course)
     canopy.animate(&mut view.graph, &view.course, session, exact)
+    if session.scene.theme == .Blossom && view.player_node >= 0 {
+        fox_pos := if exact { play.position(session, view.player_node) } else { play.render_position(session, view.player_node) }
+        radius := session.scene.entities[view.player_node].size.y * 0.5
+        support_y := canopy.surface_below(&view.course, session, fox_pos.x, fox_pos.y - radius + 0.08, fox_pos.z)
+        motion := play.render_motion(session, exact)
+        rest := play.render_rest(session, exact)
+        cozy := play.render_cozy(session, exact)
+        snoozing := is_snoozing(&cozy, &motion, &rest)
+        cue := particles.CozyCue {
+            fox: fox_pos,
+            support_y: support_y,
+            grounded: motion.grounded,
+            landing_age: motion.landing_age,
+            landing_strength: motion.landing_strength,
+            pet_age: cozy.pet_age,
+            emote_age: cozy.emote_age,
+            snoozing: snoozing,
+            won: session.won,
+            guide_active: guide.active,
+            guide_pos: guide.target,
+            guide_age: guide.age,
+            boost_pos: canopy.boost_cloud_pos(&view.course, session),
+        }
+        particles.animate_cozy(&mut view.graph, &view.cozy_fx, motion.seconds, &cue)
+    }
     view.graph.propagate()
 }
 

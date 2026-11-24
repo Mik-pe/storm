@@ -10,12 +10,14 @@
 //   dunder run -- --font f.ttf     draw the editor with that font
 capability stdio
 
-import .editor
 import .args
+import .canopy
+import .cozy_control
+import .editor
 import .gallery
 import .game
-import .play_view
 import .play_ui
+import .play_view
 import .scene_file
 import play
 import core
@@ -47,13 +49,13 @@ const MODEL_SIZE: f32 = 2.4
 fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
     doc := gltf.load(path)
     model := gltf.asset(&doc)?
-    mut lo := core.vec3(0.0,0.0,0.0)
+    mut lo := core.vec3(0.0, 0.0, 0.0)
     mut hi := lo
     mut first := true
     for part in model.parts {
         for v in 0..part.vertices.len / gfx.VERTEX_FLOATS {
             i := v * gfx.VERTEX_FLOATS
-            p := core.vec3(part.vertices[i], part.vertices[i+1], part.vertices[i+2])
+            p := core.vec3(part.vertices[i], part.vertices[i + 1], part.vertices[i + 2])
             if first || p.x < lo.x { lo.x = p.x }
             if first || p.y < lo.y { lo.y = p.y }
             if first || p.z < lo.z { lo.z = p.z }
@@ -68,14 +70,14 @@ fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Resu
     if span.y > extent { extent = span.y }
     if span.z > extent { extent = span.z }
     scale := if extent > 0.0 { MODEL_SIZE / extent } else { f32(1.0) }
-    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x)*0.5*scale, at.y-lo.y*scale, at.z-(lo.z+hi.z)*0.5*scale))
+    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x) * 0.5 * scale, at.y - lo.y * scale, at.z - (lo.z + hi.z) * 0.5 * scale))
     _ := graph.set_name(base, path.clone())
-    graph.set_scale(base, core.vec3(scale,scale,scale))
+    graph.set_scale(base, core.vec3(scale, scale, scale))
     for part in model.parts {
-        node := graph.create_child(base, core.vec3(0.0,0.0,0.0))
+        node := graph.create_child(base, core.vec3(0.0, 0.0, 0.0))
         _ := graph.set_name(node, part.name.clone())
         c := part.color.clone()
-        _ := graph.set_material(node, scenegraph.material(c[0],c[1],c[2],c[3],part.metallic,part.roughness))
+        _ := graph.set_material(node, scenegraph.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness))
         _ := graph.set_mesh(node, part.vertices.clone())
     }
     .Ok
@@ -219,11 +221,15 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     forest_zenith: [f32; 4] = [0.63, 0.65, 0.86, 1.0]
     backdrop: [f32; 4] = [0.24, 0.34, 0.38, 1.0]
     mut hud := widgets.State::new()
+    mut cozy_hud := widgets.State::new()
     mut action := play_ui.Action.Idle
+    mut cozy_action := play_ui.CozyAction.None
     mut paused := false
+    mut cozy := cozy_control.new()
+    cozy_control.reset(&mut cozy, &session)
     glb := args.value(argv, "--glb")
     if glb.len > 0 {
-        match load_model(&mut graph, glb, core.vec3(0.0,0.0,4.2)) {
+        match load_model(&mut graph, glb, core.vec3(0.0, 0.0, 4.2)) {
             .Ok => {}, .Err(err) => { return stop(move window, glb + ": " + err) },
         }
     }
@@ -323,6 +329,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                                 atlas = move fresh_atlas
                             }
                             session = play.start(&level)
+                            cozy_control.reset(&mut cozy, &session)
                             game_view = match play_view.build(&session) {
                                 .Ok(view) => view, .Err(err) => { return stop(move window, err) },
                             }
@@ -340,6 +347,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         if studio.play_requested {
             studio.play_requested = false
             session = play.start(&session.scene)
+            cozy_control.reset(&mut cozy, &session)
             playing = true
             paused = false
         }
@@ -348,29 +356,73 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         mut view_camera := camera
         mut frame_sky := sky.clone()
         if playing {
-            frame_sky.horizon = backdrop.clone()
-            if session.scene.theme == .Blossom {
-                frame_sky.horizon = forest_horizon.clone()
-                frame_sky.zenith = forest_zenith.clone()
-                frame_sky.sun[3] = 2.15
-                frame_sky.diffuse_fill = 0.40
-            }
-        }
-        if playing {
             if frame.input.hit(.E) { game_grade = .Some(!game_grade.unwrap_or(session.scene.theme == .Blossom)) }
             if action == .Restart || frame.input.hit(.R) {
                 session = play.start(&session.scene)
+                cozy_control.reset(&mut cozy, &session)
                 paused = false
             }
             if action == .TogglePause || frame.input.hit(.Q) { paused = !paused }
-            controls := play_view.controls(&frame.input)
-            if !capturing {
-                if paused && action == .Step { play.step(&mut session, controls) }
-                else if !paused { _ := play.advance(&mut session, dt, controls) }
+            frame_sky.horizon = backdrop.clone()
+            blossom := session.scene.theme == .Blossom
+            if blossom {
+                if session.won {
+                    // Gently warm the meadow into a rosy-golden sunset when the bouquet is complete.
+                    frame_sky.horizon = [1.0, 0.72, 0.68, 0.12]
+                    frame_sky.zenith = [0.70, 0.62, 0.85, 1.0]
+                    frame_sky.sun_color = [1.0, 0.88, 0.70, 1.0]
+                    frame_sky.sun[3] = 2.45
+                    frame_sky.diffuse_fill = 0.45
+                } else {
+                    frame_sky.horizon = forest_horizon.clone()
+                    frame_sky.zenith = forest_zenith.clone()
+                    frame_sky.sun[3] = 2.15
+                    frame_sky.diffuse_fill = 0.40
+                }
+                match cozy_action {
+                    .Sit => play.toggle_sit(&mut session),
+                    .Emote => play.emote(&mut session),
+                    .ResetCam => cozy_control.reset_camera(&mut cozy),
+                    .None => {},
+                }
+                if !capturing {
+                    pre_area := play_view.framing(&game_view, &session, paused || capturing)
+                    pre_cam := if !custom_eye { play_view.camera_cozy(&pre_area, aspect, cozy.yaw, cozy.zoom) } else { camera }
+                    cam_adj := cozy_control.cam_adjusted(&cozy)
+                    ui_captured := play_ui.woodland_pointer_captured(f32(frame.width), f32(frame.height),
+                        paused, session.won, cam_adj, frame.input.mouse.x, frame.input.mouse.y)
+                    fox_pos := if session.player >= 0 { play.position(&session, session.body_entities[session.player]) } else { core.vec3(0.0, 0.0, 0.0) }
+                    radius := if session.player >= 0 { session.scene.entities[session.body_entities[session.player]].size.y * 0.5 } else { f32(0.4) }
+                    support_y := canopy.surface_below(&game_view.course, &session, fox_pos.x, fox_pos.y - radius + 0.08, fox_pos.z)
+                    cozy_dt := if dt > 0.1 { f32(0.1) } else if dt < 0.0 { f32(0.0) } else { f32(dt) }
+                    controls := cozy_control.update(&mut cozy, &mut session, &pre_cam, aspect, f32(frame.width), f32(frame.height),
+                        cozy_dt, &frame.input, support_y, ui_captured)
+                    if paused && action == .Step {
+                        play.step(&mut session, controls)
+                        cozy_control.sync_toasts(&mut cozy, &session)
+                    } else if !paused {
+                        _ := play.advance(&mut session, dt, controls)
+                        cozy_control.sync_toasts(&mut cozy, &session)
+                    }
+                }
+                guide := cozy_control.guide(&cozy)
+                play_view.sync_guide(&mut game_view, &session, paused || capturing, &guide)
+            } else {
+                controls := play_view.controls(&frame.input)
+                if !capturing {
+                    if paused && action == .Step { play.step(&mut session, controls) }
+                    else if !paused { _ := play.advance(&mut session, dt, controls) }
+                }
+                play_view.sync(&mut game_view, &session, paused || capturing)
             }
-            play_view.sync(&mut game_view, &session, paused || capturing)
             area := play_view.framing(&game_view, &session, paused || capturing)
-            if !custom_eye { view_camera = play_view.camera(&area, aspect) }
+            if !custom_eye {
+                view_camera = if blossom {
+                    play_view.camera_cozy(&area, aspect, cozy.yaw, cozy.zoom)
+                } else {
+                    play_view.camera(&area, aspect)
+                }
+            }
             radius := 4.0 + core.length(area.extent)
             frame_sky.light_vp = shadow_view(sun, area.center, radius).m
             frame_sky.light_dir_c[3] = core.dot(area.center, sun) + radius * 1.6
@@ -409,6 +461,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             view_camera = camera
         }
         action = .Idle
+        cozy_action = .None
         view_projection := view_camera.view_projection(aspect)
         inv_view_projection := input.inverse_view_projection(&view_camera, aspect)
 
@@ -488,9 +541,22 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                     if session.scene.theme == .Blossom {
                         action = play_ui.woodland(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
                             session.scene.name, session.flowers, session.total_flowers, session.butterflies, session.total_butterflies, paused, session.won)
+                        cozy_state := play.render_cozy(&session, paused || capturing)
+                        motion := play.render_motion(&session, paused || capturing)
+                        rest := play.render_rest(&session, paused || capturing)
+                        snoozing := play_view.is_snoozing(&cozy_state, &motion, &rest)
+                        cozy_action = play_ui.woodland_cozy(&mut cozy_hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
+                            &play_ui.CozyHudInfo {
+                                sitting: cozy_state.sitting,
+                                snoozing: snoozing,
+                                hovering_fox: cozy.hovering_fox,
+                                toast: cozy.toast_text.clone(),
+                                toast_alpha: cozy_control.toast_alpha(&cozy),
+                                cam_adjusted: cozy_control.cam_adjusted(&cozy),
+                            })
                     } else {
                         action = play_ui.draw(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
-                        session.scene.name, session.tick, paused, session.player >= 0, game_view.has_goal, session.won)
+                            session.scene.name, session.tick, paused, session.player >= 0, game_view.has_goal, session.won)
                     }
                     if scene_file.failed(&watcher) { play_ui.reload_error(&mut canvas, &atlas, f32(frame.width)) }
                 } else {

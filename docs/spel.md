@@ -8,7 +8,14 @@ För att följa agentens bygge i ett öppet fönster, spara en första bana och 
 
 ## Plocka buketten
 
-I Blomsterskogen vinner Vallmo när den femte blomman är plockad. Tre bonusfjärilar väntar ovanför marken och kan samlas både före och efter vinsten. I spelfönstret styr du med **WASD** eller **piltangenterna**. Tryck **mellanslag** för att hoppa och håll riktningen tills du är över nästa moln. Molnen bär Vallmo vid landning ovanifrån. Det rosa Studsmolnet ger automatiskt en högre studs.
+I Blomsterskogen vinner Vallmo när den femte blomman är plockad. Tre bonusfjärilar väntar ovanför marken och kan samlas både före och efter vinsten.
+
+I spelfönstret kan du spela både med tangentbord och mus:
+
+- **Gå och nosa:** Styr med **WASD** eller **piltangenterna**, eller **vänsterklicka** (och håll inne) på marken eller ett moln för att låta Vallmo tassa dit. Håll **Shift** för att strosa lugnt, eller **Shift + klicka** nära en blomma för att gå fram och nosa på den utan att plocka den.
+- **Hoppa:** Tryck **mellanslag** för att hoppa och håll riktningen tills du är över nästa moln. Molnen bär Vallmo vid landning ovanifrån, och det rosa Studsmolnet ger automatiskt en högre studs.
+- **Klappa, sitta och mysa:** Klicka på Vallmo för att klappa henne, tryck **C** (eller klicka **Sitt**) för att slå dig ner och efter en stund slumra till, och tryck **F** (eller klicka **Mys**) för ett glatt lekskutt.
+- **Kamera:** Håll **höger musknapp** och dra för att vrida kameran, använd **skrollhjulet** för att zooma in och ut, och **mittenklicka** (eller klicka **Kamera**) för att återställa vyn.
 
 ## Spela till mål med verktygen
 
