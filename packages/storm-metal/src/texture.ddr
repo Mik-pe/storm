@@ -4,6 +4,7 @@
 // one mip level (replaceRegion fills level 0 only); the sampler is shared.
 capability unsafe
 
+import gfx
 import .device as device
 import .objc as objc
 
@@ -41,12 +42,12 @@ pub unsafe fn image_of(textures: &[]Texture, id: i64) -> ptr {
 
 pub unsafe fn upload(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture, pixels: []u8, width: i32, height: i32) -> Result<i64, string> {
     if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("texture dimensions must be between 1 and 16384") }
-    if i64(pixels.len) != i64(width) * i64(height) * 4 { return .Err("texture pixels must be width x height x 4 bytes") }
+    if i64(pixels.len) != i64(width) * i64(height) * i64(gfx.TEXTURE_BYTES_PER_PIXEL) { return .Err("texture pixels must be width x height x 4 bytes") }
     mut slot := 1
     while slot < textures.len && textures[slot].image != ptr(0) { slot = slot + 1 }
     if slot == CAPACITY { return .Err("the texture table is full") }
     made := device.texture(rt, gpu, .Type2D, .RGBA8Unorm_sRGB, u64(width), u64(height), 1, .ShaderRead, .Shared)?
-    device.upload(rt, made, u64(width), u64(height), u64(width) * 4, addr(&pixels[0]))
+    device.upload(rt, made, u64(width), u64(height), u64(width) * u64(gfx.TEXTURE_BYTES_PER_PIXEL), addr(&pixels[0]))
     generation := if slot < textures.len { textures[slot].generation + 1 } else { 1 }
     if slot < textures.len {
         textures[slot] = Texture { image: made, generation: generation }

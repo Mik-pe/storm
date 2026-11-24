@@ -9,6 +9,7 @@
 // whether the format can blit and filter; without it the chain is one level).
 capability unsafe
 
+import gfx
 import .device as device
 import .enums as enums
 import .layout as vkl
@@ -302,7 +303,7 @@ unsafe fn upload_slot(r: &state.Renderer, table: &mut Table, slot: i32, pixels: 
     levels := if r.material.blit == 1 { mip_levels(width, height) } else { 1 }
     mut code := create_image(r, u32(width), u32(height), u32(levels), addr(&mut table.images[slot]), addr(&mut table.memories[slot]), addr(&mut table.views[slot]))
     if code != 0 { return code }
-    bytes := u64(width) * u64(height) * 4
+    bytes := u64(width) * u64(height) * u64(gfx.TEXTURE_BYTES_PER_PIXEL)
     mut staging := ptr(0)
     mut staging_memory := ptr(0)
     mut mapped := ptr(0)
@@ -382,7 +383,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 // Upload RGBA8 pixels as a new texture: the first free slot, or the error.
 pub unsafe fn upload(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32) -> Result<i64, string> {
     if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("texture dimensions must be between 1 and 16384") }
-    if i64(pixels.len) != i64(width) * i64(height) * 4 { return .Err("texture pixels must be width x height x 4 bytes") }
+    if i64(pixels.len) != i64(width) * i64(height) * i64(gfx.TEXTURE_BYTES_PER_PIXEL) { return .Err("texture pixels must be width x height x 4 bytes") }
     if r.material.table == ptr(0) { return .Err("textures are not available on this window") }
     slot := first_free(ref_at(r.material.table))
     if slot == CAPACITY { return .Err("the texture table is full") }
