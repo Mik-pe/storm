@@ -29,16 +29,19 @@ från registriet; `--check api`/`--check layout` för en fil). Anropet är
 (`Dependencies`, `ShaderStages`, `FrameViewport`, `vertex_input()`, de två
 tiling-konstanterna) står under `// --- Storm's own records ---` och kopieras
 oförändrade. Kvar: `enums.ddr` (34 enums som i dag pinnas av tester mot
-Khronos-tabellerna) med samma taggläsare; `state.ddr`:s `Properties`/`Limits`
-(läs ur `raw[65]`) som genererade `VkPhysicalDeviceProperties`/`Limits`/
-`MemoryProperties`; de nio egna par-posterna (`Dependencies` o.s.v.) är
+Khronos-tabellerna) med samma taggläsare; `state.ddr`:s `MemoryProperties`
+(skrivs idag ur ett rått `raw[]`-fältord i `device.ddr`) som en genererad
+`VkPhysicalDeviceMemoryProperties`; de nio egna par-posterna (`Dependencies`
+o.s.v.) är
 möjliga som raka `[T; 2]`-fält i 0.12.0 men byts inte förrän registret
-genererar dem; och paketet som eget namn. Sedan **Renderer-uppdelningen**
-(design.md §5). Instancing (5), fler ljus (7) och input (8) kommer efter det.
+genererar dem; och paketet som eget namn. Sedan **Renderer-uppdelningen**,
+kluster för kluster (design.md §3b): `depth.Depth` är gjord, nästa är `ui.Atlas`
+(11 fält, inga läsningar utanför `ui.ddr`). Instancing (5), fler ljus (7)
+och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy
 
-Senaste mätning: **16 197–16 523 ms** på `1a7f0e2` med Dunder 0.12.0 på Mikparchy (tre `tools/build-time.ddr` samma kväll, 16 424 ms för 3b). Budgeten är 20 s.
+Senaste mätning: **16 249 ms** på trädet med `depth.Depth` (Dunder 0.12.0, Mikparchy) och 16 197–16 523 ms på `1a7f0e2` (tre `tools/build-time.ddr` samma kväll, 16 424 ms för 3b). Budgeten är 20 s.
 
 Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Trädet på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 

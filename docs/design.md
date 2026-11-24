@@ -49,7 +49,9 @@
   (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
 - `state.ddr` `Renderer`: **121 fält** (var ~60 när steget skrevs; IBL,
   djup, skuggor, post, UI och headless har alla lagt till sina). Varje
-  modul tar `&mut Renderer`.
+  modul tar `&mut Renderer`. Ägarskapet är redan modulvis (varje modul har
+  sin `create`/`destroy`); fälten ligger platt. 70 av dem tillhör fem
+  kluster med en ägare och 1 är en färdig post (`depth.Depth`) — §3b.
 - **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
   returnerar `state.SetupStep` (`Ready` eller steget som föll); `device.fail(&mut r, code, step)`
   sätter `r.lastResult` och ger steget tillbaka, så en Vulkan-kod kan inte
@@ -77,8 +79,8 @@
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
   delade vertexströmmen. Den senaste kontrollen på Mikparchy (`1a7f0e2` +
-  exekutortesterna, Dunder 0.12.0, låst session) omfattade **195 egna
-  `@test`** — 45 i roten och 150 i de 15 paketen — alla gröna, varje svit
+  exekutortesterna och `depth.Depth`, Dunder 0.12.0, låst session) omfattade **196 egna
+  `@test`** — 45 i roten och 151 i de 15 paketen — alla gröna, varje svit
   lika många som den har `@test` (Skrifts två följer med i roten,
   `storm-text` och `storm-ui`). 16 sviter kördes med `dunder test` i roten
   och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
@@ -87,7 +89,8 @@
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
   per instans (`tests/app_frame.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **16 241 ms** på `1a7f0e2` med Dunder 0.12.0 (16 197–16 523 ms över
+  mätte **16 249 ms** på trädet med `depth.Depth` med Dunder 0.12.0, och
+  **16 241 ms** på `1a7f0e2` (16 197–16 523 ms över
   tre mätningar samma kväll). Trädet på
   `a84ade9` gav 14 900–15 100 ms med samma kompilator (`--timings`: 1 238 funktioner,
   386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av
@@ -270,8 +273,12 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
    (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
-   `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
-   `Renderer`-structen (121 fält) är kvar.*
+   `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade.*
+   *Andra halvan påbörjad 2026-11-24 (§3b): `depth.Depth` är det första
+   klustret som flyttade in i en post hos sin ägare (`r.depth.image`
+   i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett
+   test. `Renderer` har **121 fält**; 70 av dem hör till fem kluster som
+   redan har en ägare och bara ligger platt (§3b).*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
@@ -280,7 +287,10 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    `describe` sätter ihop `"steg (VK_…)"`. Tester: `fail` ger steget tillbaka
    och sätter koden för varje steg; varje steg har ett namn.*
 5. **Dra `ui.ddr`/`post.ddr` ur backenden.** Kvar.
-6. **Lås skrift-dependency.** Kvar.
+6. **Lås skrift-dependency.** *Status: klart — `storm-text` hämtar skrift
+   från Git med full commitidentifierare (`rev = c973a09…`) och incheckad
+   låsfil, som AGENTS.md kräver för externa paket; `path` används bara för
+   Storms egna.*
 7. **`storm-gfx` och Metal.** *Status: klart 2026-11-23 — kontraktet, en
     app generisk över backenden, och den andra implementationen, utan att
     ett paket ovanför backenden rördes utöver att byta namn från
@@ -353,9 +363,55 @@ håller sina resurser vid liv tills den är klar, så inget frigörs under GPU:n
 
 Dunders aliasregel formade koden: `f(&mut r, r.field)` vägras ("mutable
 arguments must not alias another borrow in the same call"), så de funktioner
-som *kontrollerar* tar en delad lån (`require_main(&r)`) och varje draw
+som *kontrollerar* tar ett delat lån (`require_main(&r)`) och varje draw
 binder sitt eget med delade lån, i stället för en hjälpfunktion som tar hela
 renderaren mutabelt vid sidan av en pekare in i den.
+
+## 3b. Renderer-uppdelningen, kluster för kluster
+
+Designens princip 4 ("den som skapar en resurs äger den") är redan *sann* i
+storm-vulkan — varje modul har sin `setup`/`create` och sin `destroy`, och
+tabellen nedan mäter vilka fält de rör. Det som saknas är bara formen: fälten
+ligger platt på `Renderer` med 121 namn i stället för i en post hos den
+modul som äger dem. Det är inte "1–2 dagars arbete" (§6 sa så); det är en
+mekanisk flytt per kluster, och mönstret finns redan två gånger i trädet:
+`material: texture.Material` på Vulkan-sidan och `environment: ibl.Environment`
+/ `atlas: ui.Atlas` på Metal-sidan.
+
+Mätt 2026-11-24 med ett skript som räknar `r.<fält>` per modul (kolumnen
+"utanför" är läsningar/skrivningar i andra moduler än ägaren):
+
+| Kluster | Fält | Ägare | Utanför | nästa post |
+|---|---|---|---|---|
+| depth | 3 → **1 post** | `depth.ddr` | 1 (`device.color_framebuffer` läser `view`) | `depth.Depth` — **gjord** |
+| ui | 11 | `ui.ddr` | 0 | `ui.Atlas` — samma namn som Metals |
+| post | 12 | `post.ddr` | 6 (`pipeline`, `device`, `vulkan`: `scenePass`, `compositePass`, `sceneFramebuffer`) | `post.Stage` |
+| shadow | 17 | `shadow.ddr` | 6 (`ibl`, `vulkan` binder `shadowSet`; `pipeline` läser `shadowSetLayout`) | `shadow.Shadow` |
+| ibl | 25 | `ibl.ddr` | 0 | `ibl.Environment` — samma namn som Metals |
+| capture | 5 | `headless.ddr` | 2 (`vulkan` binder `captureFramebuffer`) | `headless.Capture` |
+
+Regler som gör att flytten inte blir något att "komma ihåg":
+
+- **Posten deklareras av ägaren, inte i `state.ddr`.** `depth.ddr` äger
+  `Depth`, `texture.ddr` äger `Material`; `state.ddr` importerar dem och
+  håller `depth: depth.Depth`. Den cirkulära importen (`state ↔ depth`,
+  `state ↔ texture`) kompilerar (0.12.0, 105 moduler grönt) — ägaren
+  behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
+- **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
+  i `tests/suite.ddr` (`Depth` 24, `Material` 40, `Renderer` 6136 byte).
+  Registret allokerar `size_of(state.Renderer) + 8192`, så nästa kluster som
+  flyttar ändrar det talet — medvetet, i testet, inte genom att någon glömmer.
+- **Läsningarna utanför är gränsen, inte skälet.** Ett kluster med noll
+  utanför (ui, ibl) flyttas rakt av; ett vars handtag binds av andra moduler
+  (post: `scenePass`, `compositePass`; shadow: `shadowSet`) behåller de två
+  eller tre namnen som lämnas ut — det är vad de andra modulerna *behöver*,
+  och resten av posten blir privat.
+- **Varje kluster är en commit med AE = 0** mot capturen före. Ingen
+  klusterflytt ändrar bilden; den ändrar bara var namnen bor.
+
+Ordningen efter depth: **ui** (11 fält, 0 utanför, redan Metalls namn),
+**ibl** (25, 0 utanför), **post** (12), **shadow** (17), **capture** (5;
+`captureOn` är frame-state och stannar bland de 50 platta fälten).
 
 ## 6. Öppna frågor
 
@@ -388,8 +444,8 @@ renderaren mutabelt vid sidan av en pekare in i den.
 - **Safe-lager?** Räcker enums + `Result`, eller ska det finnas builders?
   Förslag: enums + `Result` först (klart på kontraktets nivå), builders när
   vi ser vad som är besvärligt att använda.
-- **Tidsram.** Vulkan-paketdelningen (`storm-vk`) och Renderer-uppdelningen
-  är 1–2 dagars arbete.
+- **Tidsram.** Vulkan-paketdelningen (`storm-vk`) är ett eget steg;
+  Renderer-uppdelningen är fem klusterflyttar à en commit (§3b).
 - **Subagent-orthogonalitet.** Arbetspaketen ska kunna köras parallellt i
   varsin worktree utan att krocka. Textur 3a rör vertexformatet, som nu
   ägs av `storm-gfx` men konsumeras av två backends och två shaderuppsätt-
