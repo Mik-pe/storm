@@ -1,7 +1,7 @@
 # Storm — design från första principer
 
-> Status: **levande dokument** — uppmätt 2026-11-23 mot trädet efter
-> `storm-gfx` och Metal-backenden. Skrevs efter djupbufferten, av en
+> Status: **levande dokument** — uppmätt 2026-11-24 mot trädet efter
+> `storm-gfx`, Metal-backenden och Blomsterskogen. Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
 > heltalen för hand och läste tabellen baklänges. Det här dokumentet
@@ -29,24 +29,23 @@
    är en self-test som läser pixlar och input och kan köras igen.
 7. **Plattformsvalet görs i `src/main.ddr`.** Där väljs både det interaktiva fönstret och renderaren för bildexport. Spel, editor och agentprotokoll använder samma scen och renderingskontrakt på båda plattformarna.
 
-## 1. Nuläge (mätt i koden, 2026-11-23)
+## 1. Nuläge (mätt i koden, 2026-11-24)
 
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
-  som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `trait Backend` med 18
+  som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `Vertex`, `trait Backend` med 19
   metoder (varje fallibel en `Result` som säger varför), och
-  geometrihjälparna som äger vertexformatet. Sju tester, inga med fönster.
+  geometrihjälparna som äger vertexformatet. Åtta tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
   Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
   och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Fyra
   `sType: 18` skrivs också för hand (`ui.ddr` ×2, `post.ddr` ×2) — de är
   strukturtagningsnummer, inte enums, men samma sorts tal-utan-vittne.
-- **Enums är ett eget lager:** `enums.ddr` har 33 `pub enum` och 43
-  `pub fn`: 41 konverterare/namngivna värden och två skrivare av C-poster
-  (`apply_blend`, `apply_vertex_input`); 225 anrop i paketet går genom
-  `enums.*(.Variant)`. Endast två
+- **Enums är ett eget lager:** `enums.ddr` har 34 `pub enum` och 42
+  `pub fn`: 40 konverterare/namngivna värden och två skrivare av C-poster
+  (`apply_blend`, `apply_vertex_input`). Endast två
   namngivna `u32`-konstanter lever kvar i `layout.ddr`
   (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
-- `state.ddr` `Renderer`: **131 fält** (var ~60 när steget skrevs; IBL,
+- `state.ddr` `Renderer`: **127 fält** (var ~60 när steget skrevs; IBL,
   djup, skuggor, post, UI och headless har alla lagt till sina). Varje
   modul tar `&mut Renderer`.
 - **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
@@ -54,45 +53,97 @@
   sätter `r.lastResult` och ger steget tillbaka, så en Vulkan-kod kan inte
   rapporteras utan sin plats. Hjälpare med `&Renderer` (immutable) returnerar
   koden `-> i32` och ägaren med `&mut` binder den: `code := helper(…); if code
-  != 0 { return device.fail(&mut r, code, .Step) }`. 109 `fail`-platser,
-  30 funktioner, noll `stage`-tilldelningar.
+  != 0 { return device.fail(&mut r, code, .Step) }`.
 - **Beroenden:** `storm-input -> storm-gfx` (ett `Input`-värde, ingen
   backend, inga capabilities), `storm-text -> dunder-skrift` via
   `../../../dunder-skrift` (syskonkatalog utan versionslås),
   `src/main.ddr -> storm-vulkan, storm-metal` (de enda).
-- **Ett gränssnitt, två implementationer.** Materialstudien och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den delade vertexströmmen. Metals självtest täcker både fönstret och bildexporten till en fristående textur.
+- **Spelet är fyra paket under kontraktet, inget över det.** `storm-physics`
+  (translaterande rigid bodies i meter och sekunder) beror bara på
+  `storm-core`; `storm-play` (autorerade scener, `Session` med fast tick
+  60 Hz, `Input`-värde) på `physics` och `core`; `storm-image` (PNG-utdata
+  och `preview<T>`-omslag) på stdlib; `storm-mcp` (JSON-RPC på stdio,
+  validerat mot sin egen katalog) på `play` och `image` och tar
+  renderaren som **funktionspekare** `fn(&play.Session, string) ->
+  Result<(), string>` — sammansättningsroten (`src/main.ddr: preview`) är
+  den enda som vet vilken backend som står bakom den. `src/woodland.ddr`
+  bygger Blomsterskogen ur inbäddade Blender-glTF:er (`art_asset.ddr`),
+  `src/play_view.ddr` avbildar simuleringens poser på scengrafer och
+  rör aldrig fysikvärlden, `src/play_ui.ddr` ritar HUD och pausmeny,
+  `src/scene_file.ddr` bevakar en banfil (sökvägen, inte en öppen
+  deskriptor — agentens sparande byter ut filen atomärt).
+- **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
+  och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
+  Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
+  delade vertexströmmen. Den senaste kontrollen omfattade **129 egna
+  `@test`** (132 gröna: 19 rot + 113 paket; Skrifts två följer med i
+  `storm-text` och `storm-ui`) och Metal-självtestets kontroller i ett
+  riktigt fönster.
+- **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
+  mätte **15 100–15 700 ms** på `77d9b0c` (`--timings`: 1 176 funktioner,
+  346 512 MIR-operationer, `mir_pipeline` 10,0 s). Dagen innan var samma
+  träd (`54214f3`) 6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med
+  0.11.3; skillnaden är alltså hälften kompilator, hälften spelet (fynd 70).
+  En stubb-`main` med hela manifestet bygger på 207 ms och
+  `shader.ddr`s 12 579 inbäddade SPIR-V-ord kostar 70 ms, så nästa
+  budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Lagren i storm-vulkan (4 973 rader + 2 900 genererad SPIR-V):
+Lagren i storm-vulkan (5 071 rader + 3 223 genererad `shader.ddr`):
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 194 |
-| Enums vid gränsen | `enums.ddr` | 342 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 004 |
-| App-nära kod | `ui.ddr`, `post.ddr` | 640 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 793 |
+| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 239 |
+| Enums vid gränsen | `enums.ddr` | 357 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 070 |
+| App-nära kod | `ui.ddr`, `post.ddr` | 561 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 844 |
 
-Lagren i storm-metal (2 184 rader + inbäddad Metal-källa):
+Lagren i storm-metal (2 257 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| Runtingen | `objc.ddr` | 269 |
+| Runtingen | `objc.ddr` | 280 |
 | Ramverkens värden | `enums.ddr`, `records.ddr` | 189 |
 | Fönstret och input | `appkit.ddr` | 508 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 346 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 350 |
 | Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr` | 295 |
-| Orkestrering | `metal.ddr` | 577 |
+| Orkestrering | `metal.ddr` | 635 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
 ```
-storm-gfx        kontraktet: typer, trait Backend, vertexformat. Känner ingen backend.
-    ▲        ▲
-storm-vulkan  storm-metal    implementationer av kontraktet (Linux, macOS)
-    ▲        ▲
-    └── src/main.ddr        väljer backend och fönster eller bildexport
-            src/app.ddr     bildrutans exekutor — generisk över B: gfx.Backend
+┌──────────────────────────────────────────────────────────────────────┐
+│ src/main.ddr — sammansättningens rot: väljer backend, ger storm-mcp   │
+│                 renderaren som funktion, startar app eller --mcp     │
+├──────────────────────────────────────────────────────────────────────┤
+│ src/app.ddr · editor.ddr · gallery.ddr · play_view.ddr · play_ui.ddr │  generiskt över B: gfx.Backend
+│ woodland.ddr · scene_file.ddr · art_asset.ddr                        │  (ritar, bygger scenen, äger ingen backend)
+├──────────────┬───────────────────────────────┬───────────────────────┤
+│ storm-mcp    │ storm-ui · storm-text · gltf  │ storm-input           │  paket ovanför kontraktet
+│ storm-image  │ storm-scene · storm-ecs       │                       │  (känner ingen backend)
+│ storm-play   │ storm-render · storm-core      │                       │
+│ storm-physics│                               │                       │
+├──────────────┴───────────────────────────────┴───────────────────────┤
+│ storm-gfx — kontraktet: Frame, Input, Sky, Vertex, trait Backend     │  nämner ingen backend
+├────────────────────────────────────────┬─────────────────────────────┤
+│ storm-vulkan (Linux, SDL)              │ storm-metal (macOS, AppKit) │  de två implementationerna
+└────────────────────────────────────────┴─────────────────────────────┘
 ```
+
+Två sorters kod står ovanför kontraktet, och skillnaden är värd att se.
+`src/app.ddr` och de moduler den kör är generiska över `B: gfx.Backend`
+och ritar. `storm-physics`, `storm-play`, `storm-mcp` och `storm-image`
+känner varken backend eller fönster: en `play.Session` stegas med
+`TICK_RATE` 60 Hz ur ett `play.Input`-värde och testas utan display;
+`storm-mcp` tar renderaren som funktion `fn(&play.Session, string) ->
+Result<(), string>`, och `storm-image.preview<T>` är det enda som behöver
+veta att det finns något att rendera med. `src/play_view.ddr` är bron:
+den avbildar en sessions poser på scengrafer och skriver aldrig tillbaka
+till fysiken. Beroendena är de manifests förklarar: `storm-physics ->
+core`, `storm-play -> physics, core`, `storm-mcp -> play, image`,
+`storm-image -> stdlib`, `storm-input -> core, gfx`, och de två backends
+`-> core, gfx`. Inget av dem importerar `storm-vulkan` eller
+`storm-metal`; det gör bara `src/main.ddr` (fyra rader).
 
 Det här står. Kvar till målbilden:
 
@@ -210,7 +261,7 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
    (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
    `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
-   `Renderer`-structen (131 fält) är kvar.*
+   `Renderer`-structen (127 fält) är kvar.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
