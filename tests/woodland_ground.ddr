@@ -33,13 +33,18 @@ import ..src.woodland_ground
     assert(woodland_ground.height(&w.cast.ground, &w.course, &s, 0.0, 1.0, 1.4, true) == 0.0)
     pad := w.course.pads[0]
     idx := pad.index
+    center := play.position(&s, idx)
+    top := center.y + level.entities[idx].size.y * 0.5
+    mut on_cloud := level.clone()
+    on_cloud.entities[w.player_node].position.x = center.x
+    on_cloud.entities[w.player_node].position.y = top + 0.4
+    on_cloud.entities[w.player_node].position.z = center.z
+    s = play.start(&on_cloud)
+    assert(play.render_platform(&s, true) == idx)
     s.last_cloud = idx
     s.cloud_tick = 0
     s.tick = 3
     s.accumulator = 0.5
-    s.bodies[s.player].platform = s.body_indices[idx]
-    center := play.position(&s, idx)
-    top := center.y + level.entities[idx].size.y * 0.5
     for exact in [true, false] {
         play_view.sync(&mut w, &s, exact)
         rendered := w.graph.local(pad.node)
@@ -47,4 +52,6 @@ import ..src.woodland_ground
         delta := woodland_ground.height(&w.cast.ground, &w.course, &s, center.x, center.z, top, exact)
         assert(delta < -0.01 && (top + delta - crown).abs() < 0.0001)
     }
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: true })
+    assert(play.render_platform(&s, false) == idx && play.render_platform(&s, true) == -1)
 }

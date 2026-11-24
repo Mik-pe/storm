@@ -96,14 +96,11 @@ fn pad_pose(course: &Course, s: &play.Session, index: i32, sub: f32) -> PadPose 
 }
 
 pub fn surface(course: &Course, s: &play.Session, x: f32, z: f32, support_y: f32, exact: bool) -> Option<f32> {
-    if s.player < 0 { return .None }
-    support := s.bodies[s.player].platform
-    if support < 0 { return .None }
-    index := s.body_entities[support]
+    index := play.render_platform(s, exact)
+    if index < 0 { return .None }
     e := &s.scene.entities[index]
     if !platform(e.role) { return .None }
     center := if exact { play.position(s, index) } else { play.render_position(s, index) }
-    if (center.y + e.size.y * 0.5 - support_y).abs() > 0.05 { return .None }
     pose := pad_pose(course, s, index, play.render_tick_offset(s, exact))
     lx := (x - center.x) / pose.scale.x
     lz := (z - center.z) / pose.scale.z

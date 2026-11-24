@@ -40,7 +40,7 @@ pub struct PlayerMotion {
     takeoff_age: f32, landing_age: f32, boost_age: f32, landing_strength: f32,
 }
 struct MotionTick {
-    heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, vertical_velocity: f32,
+    heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, platform: i32, vertical_velocity: f32,
     bank: f32, drive: f32,
     takeoff_tick: i64, landing_tick: i64, boost_tick: i64, landing_strength: f32,
 }
@@ -291,7 +291,7 @@ fn make_body(e: &Entity) -> physics.Body {
 
 pub fn start(scene: &Scene) -> Session {
     rest := MotionTick { heading: 0.35, walk_phase: 0.0, run_weight: 0.0, bank: 0.0, drive: 0.0,
-        grounded: false, vertical_velocity: 0.0,
+        grounded: false, platform: -1, vertical_velocity: 0.0,
         takeoff_tick: -1, landing_tick: -1, boost_tick: -1, landing_strength: 0.0 }
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
@@ -325,6 +325,10 @@ pub fn start(scene: &Scene) -> Session {
         for i in 0..session.bodies.len {
             if i != p && physics.supported_by(&session.bodies[p], &session.bodies[i]) {
                 session.bodies[p].grounded = true
+                if session.bodies[i].one_way {
+                    session.bodies[p].platform = i
+                    session.motion.platform = session.body_entities[i]
+                }
                 break
             }
         }
@@ -377,6 +381,11 @@ pub fn last_support_anchor(s: &Session, distance_back: f32) -> StrideAnchor {
 fn support_anchor(s: &Session, fraction: f64, distance_back: f32) -> StrideAnchor {
     p := stride.sample(&s.trail, fraction, distance_back)
     StrideAnchor { position: p.position, heading: p.heading, run_weight: p.weight, distance: f32(p.along) }
+}
+
+// Platform entity on the same discrete boundary as render_motion().grounded.
+pub fn render_platform(s: &Session, exact: bool) -> i32 {
+    if exact || s.tick == 0 { s.motion.platform } else { s.previous_motion.platform }
 }
 
 fn approach(from: f32, to: f32, limit: f32) -> f32 {
@@ -460,6 +469,7 @@ fn update_player(s: &mut Session, before: core.Vec3) {
     update_stride(&mut s, player.position.x - before.x, player.position.z - before.z, player.grounded)
     support := player.grounded || s.motion.boost_tick == s.tick
     stride.record(&mut s.trail, before, player.position, s.motion.heading, s.motion.run_weight, s.previous_motion.grounded, support)
+    s.motion.platform = if player.platform >= 0 { s.body_entities[player.platform] } else { -1 }
     s.motion.grounded = player.grounded
     s.motion.vertical_velocity = player.velocity.y
     if s.won && s.butterflies == s.total_butterflies { return }
@@ -518,7 +528,9 @@ pub fn step(s: &mut Session, input: Input) {
             s.motion.landing_strength = if speed > 0.0 { axis(speed / BOOST_SPEED) } else { f32(0.0) }
         }
         support := s.bodies[s.player].platform
-        if support >= 0 && support != old_platform {
+        // A spring under the spawn point releases on the first physics tick.
+        spawn_boost := s.tick == 1 && support >= 0 && s.scene.entities[s.body_entities[support]].role == .BoostCloud
+        if support >= 0 && (support != old_platform || spawn_boost) {
             index := s.body_entities[support]
             s.last_cloud = index
             s.cloud_tick = s.tick

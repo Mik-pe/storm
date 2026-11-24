@@ -1,6 +1,7 @@
 capability filesystem
 
 import ..src.play as play
+import core
 import std.json as json
 import sys
 
@@ -445,4 +446,25 @@ fn meadow() -> play.Scene {
     assert(play.upsert(&mut scene, "{\"name\":\"w\",\"shape\":\"box\",\"role\":\"super_butterfly\"}").is_ok())
     encoded := play.encode(&scene)
     assert(play.encode(&play.decode(encoded).unwrap()) == encoded)
+}
+
+@test fn spawning_on_a_cloud_has_an_immediate_support_and_only_a_spring_launches_the_fox() {
+    mut level := play.demo()
+    for index in [11, 15] {
+        pad := level.entities[index].clone()
+        level.entities[1].position = core.vec3(pad.position.x + 0.4, pad.position.y + pad.size.y * 0.5 + 0.4, pad.position.z)
+        mut s := play.start(&level)
+        assert(play.render_motion(&s, true).grounded && play.render_platform(&s, true) == index)
+        height := play.position(&s, 1).y
+        play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+        if pad.role == .Cloud {
+            assert(s.last_cloud == -1 && play.render_platform(&s, true) == index)
+            assert((play.position(&s, 1).y - height).abs() < 0.00001)
+            play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: true })
+            assert(play.render_platform(&s, false) == index && play.render_platform(&s, true) == -1)
+        } else {
+            assert(s.last_cloud == index && play.render_motion(&s, true).boost_age == 0.0)
+            assert(play.render_motion(&s, true).vertical_velocity > 8.0)
+        }
+    }
 }
