@@ -1,0 +1,418 @@
+// Cozy player ergonomics: ray-picked petting, click-to-walk, flower sniffing,
+// jump buffering, camera orbit/zoom, and Swedish whisper toasts.
+import core
+import gfx
+import input
+import play
+import std.math as math
+
+const STROLL_SPEED: f32 = 0.46
+const JUMP_BUFFER_SECONDS: f32 = 0.12
+const FOX_PET_RADIUS: f32 = 0.68
+const FOX_PET_OFFSET_Y: f32 = 0.18
+const ARRIVE_RADIUS: f32 = 0.18
+const SNIFF_ARRIVE_RADIUS: f32 = 0.06
+const TAPER_RADIUS: f32 = 1.1
+const SNIFF_DISTANCE: f32 = 0.95
+const FLOWER_RAY_RADIUS: f32 = 0.65
+const FLOWER_XZ_RADIUS: f32 = 1.25
+const ORBIT_SENSITIVITY: f32 = 0.0055
+const ZOOM_STEP: f32 = 0.07
+const MIN_ZOOM: f32 = 0.62
+const MAX_ZOOM: f32 = 1.38
+const CAM_DAMP_RATE: f32 = 12.0
+const TOAST_SECONDS: f32 = 2.6
+const TOAST_FADE: f32 = 0.45
+
+pub struct GuideVisual { active: bool, target: core.Vec3, age: f32 }
+
+pub struct CozyControl {
+    has_target: bool,
+    target: core.Vec3,
+    target_age: f32,
+    dragging_walk: bool,
+    has_face: bool,
+    face_target: core.Vec3,
+    jump_buffer: f32,
+    yaw: f32,
+    target_yaw: f32,
+    zoom: f32,
+    target_zoom: f32,
+    hovering_fox: bool,
+    toast_text: string,
+    toast_timer: f32,
+    toast_duration: f32,
+    last_flowers: i32,
+    last_butterflies: i32,
+    last_won: bool,
+    last_pet_tick: i64,
+    last_emote_tick: i64,
+    last_sitting: bool,
+    last_cloud: i32,
+}
+
+fn clamp(value: f32, lo: f32, hi: f32) -> f32 {
+    if value < lo { return lo }
+    if value > hi { return hi }
+    value
+}
+
+pub fn new() -> CozyControl {
+    zero := core.vec3(0.0, 0.0, 0.0)
+    CozyControl {
+        has_target: false, target: zero, target_age: 0.0, dragging_walk: false,
+        has_face: false, face_target: zero, jump_buffer: 0.0,
+        yaw: 0.0, target_yaw: 0.0, zoom: 1.0, target_zoom: 1.0, hovering_fox: false,
+        toast_text: "", toast_timer: 0.0, toast_duration: 0.0,
+        last_flowers: 0, last_butterflies: 0, last_won: false,
+        last_pet_tick: -1, last_emote_tick: -1, last_sitting: false, last_cloud: -1,
+    }
+}
+
+pub fn reset(c: &mut CozyControl, session: &play.Session) {
+    c.has_target = false
+    c.target = core.vec3(0.0, 0.0, 0.0)
+    c.target_age = 0.0
+    c.dragging_walk = false
+    c.has_face = false
+    c.face_target = core.vec3(0.0, 0.0, 0.0)
+    c.jump_buffer = 0.0
+    c.hovering_fox = false
+    c.toast_text = ""
+    c.toast_timer = 0.0
+    c.toast_duration = 0.0
+    c.last_flowers = session.flowers
+    c.last_butterflies = session.butterflies
+    c.last_won = session.won
+    c.last_pet_tick = session.pet_tick
+    c.last_emote_tick = session.emote_tick
+    c.last_sitting = session.cozy_sitting
+    c.last_cloud = session.last_cloud
+}
+
+pub fn reset_camera(c: &mut CozyControl) {
+    c.target_yaw = 0.0
+    c.target_zoom = 1.0
+}
+
+pub fn cam_adjusted(c: &CozyControl) -> bool {
+    c.target_yaw.abs() > 0.01 || (c.target_zoom - 1.0).abs() > 0.01
+}
+
+pub fn guide(c: &CozyControl) -> GuideVisual {
+    GuideVisual { active: c.has_target, target: c.target, age: c.target_age }
+}
+
+pub fn show_toast(c: &mut CozyControl, text: string, duration: f32) {
+    if text.len == 0 || duration <= 0.0 { return }
+    c.toast_text = text.clone()
+    c.toast_duration = duration
+    c.toast_timer = duration
+}
+
+pub fn toast_alpha(c: &CozyControl) -> f32 {
+    if c.toast_text.len == 0 || c.toast_timer <= 0.0 || c.toast_duration <= 0.0 { return 0.0 }
+    clamp(c.toast_timer / TOAST_FADE, 0.0, 1.0)
+}
+
+// Reconstruct a world-space ray matching core.perspective() where screen y=0 is top.
+pub fn pick_ray(cam: &input.Camera, aspect: f32, width: f32, height: f32, mx: f32, my: f32) -> core.Vec3 {
+    forward := cam.forward()
+    if width <= 0.0 || height <= 0.0 { return forward }
+    safe_aspect := if aspect > 0.0 { aspect } else { width / height }
+    nx := 2.0 * mx / width - 1.0
+    ny := 1.0 - 2.0 * my / height
+    tan_half := (cam.fov * 0.5).tan()
+    right := cam.right()
+    up := core.cross(right, forward)
+    core.normalize(core.add(forward, core.add(core.scale(right, nx * safe_aspect * tan_half), core.scale(up, ny * tan_half))))
+}
+
+pub fn ray_sphere(origin: core.Vec3, dir: core.Vec3, center: core.Vec3, radius: f32) -> bool {
+    if radius <= 0.0 { return false }
+    oc := core.sub(origin, center)
+    b := core.dot(oc, dir)
+    c := core.dot(oc, oc) - radius * radius
+    disc := b * b - c
+    disc >= 0.0 && (-b + disc.sqrt()) >= 0.0
+}
+
+pub fn ray_plane_y(origin: core.Vec3, dir: core.Vec3, plane_y: f32) -> Option<core.Vec3> {
+    if dir.y.abs() <= 0.001 { return .None }
+    t := (plane_y - origin.y) / dir.y
+    if t <= 0.0 || t > 120.0 { return .None }
+    .Some(core.add(origin, core.scale(dir, t)))
+}
+
+fn clamp_to_bounds(point: core.Vec3, bounds: &Option<play.Bounds>) -> core.Vec3 {
+    match bounds {
+        .Some(b) => core.vec3(clamp(point.x, b.min_x, b.max_x), point.y, clamp(point.z, b.min_z, b.max_z)),
+        .None => point,
+    }
+}
+
+fn nearest_uncollected_flower(session: &play.Session, origin: core.Vec3, dir: core.Vec3,
+    hit: core.Vec3, support_y: f32) -> Option<core.Vec3> {
+    mut best_index := -1
+    mut best_score: f32 = 1.0e20
+    for i in 0..session.scene.entities.len {
+        item := &session.scene.entities[i]
+        if item.role != .Flower || session.collected[i] { continue }
+        if (item.position.y - support_y).abs() > 1.4 { continue }
+        dx := hit.x - item.position.x
+        dz := hit.z - item.position.z
+        xz_sq := dx * dx + dz * dz
+        on_bloom := ray_sphere(origin, dir, item.position, FLOWER_RAY_RADIUS)
+        if !on_bloom && xz_sq > FLOWER_XZ_RADIUS * FLOWER_XZ_RADIUS { continue }
+        score := if on_bloom { xz_sq * 0.25 } else { xz_sq }
+        if best_index < 0 || score < best_score {
+            best_index = i
+            best_score = score
+        }
+    }
+    if best_index < 0 { return .None }
+    .Some(session.scene.entities[best_index].position)
+}
+
+fn sniff_point(player_pos: core.Vec3, flower_pos: core.Vec3, support_y: f32, bounds: &Option<play.Bounds>) -> core.Vec3 {
+    dx := player_pos.x - flower_pos.x
+    dz := player_pos.z - flower_pos.z
+    dist := (dx * dx + dz * dz).sqrt()
+    nx := if dist > 0.001 { dx / dist } else { f32(0.0) }
+    nz := if dist > 0.001 { dz / dist } else { f32(1.0) }
+    clamp_to_bounds(core.vec3(flower_pos.x + nx * SNIFF_DISTANCE, support_y, flower_pos.z + nz * SNIFF_DISTANCE), bounds)
+}
+
+fn flower_toast(count: i32) -> string {
+    if count == 1 { return "Första blomman i buketten!" }
+    if count == 2 { return "Två fina blommor funna!" }
+    if count == 3 { return "Tre blommor doftar ljuvligt!" }
+    if count == 4 { return "Snart är hela buketten klar!" }
+    "En ny blomma plockad!"
+}
+
+fn butterfly_toast(butterflies: i32, total: i32, won: bool) -> string {
+    if won && butterflies >= total { return "Alla skogens vänner firar med dig!" }
+    if butterflies >= total { return "Alla superfjärilar hittade!" }
+    if butterflies == 1 { return "En gyllene superfjäril!" }
+    "Ännu en fjäril svävar med!"
+}
+
+pub fn sync_toasts(c: &mut CozyControl, session: &play.Session) {
+    if session.flowers < c.last_flowers || session.butterflies < c.last_butterflies || (!session.won && c.last_won) {
+        reset(&mut c, session)
+        return
+    }
+    if session.won && !c.last_won {
+        msg := if session.total_butterflies > 0 && session.butterflies < session.total_butterflies {
+            "Buketten är klar! Fjärilar väntar i kronorna."
+        } else { "Hela buketten blommar! Så mysigt!" }
+        show_toast(&mut c, msg, TOAST_SECONDS + 0.6)
+    } else if session.butterflies > c.last_butterflies {
+        show_toast(&mut c, butterfly_toast(session.butterflies, session.total_butterflies, session.won), TOAST_SECONDS)
+    } else if session.flowers > c.last_flowers {
+        show_toast(&mut c, flower_toast(session.flowers), TOAST_SECONDS)
+    } else if session.pet_tick != c.last_pet_tick && session.pet_tick >= 0 {
+        show_toast(&mut c, "Vallmo myser av klappen!", TOAST_SECONDS)
+    } else if session.emote_tick != c.last_emote_tick && session.emote_tick >= 0 {
+        show_toast(&mut c, "Vallmo viftar glatt på svansen!", TOAST_SECONDS)
+    } else if session.cozy_sitting && !c.last_sitting {
+        show_toast(&mut c, "Vallmo slår sig ner i gräset", TOAST_SECONDS)
+    } else if session.last_cloud != c.last_cloud && session.last_cloud >= 0 && session.last_cloud < session.scene.entities.len {
+        if session.scene.entities[session.last_cloud].role == .BoostCloud {
+            show_toast(&mut c, "Studs upp mot trädtopparna!", TOAST_SECONDS)
+        }
+    }
+    c.last_flowers = session.flowers
+    c.last_butterflies = session.butterflies
+    c.last_won = session.won
+    c.last_pet_tick = session.pet_tick
+    c.last_emote_tick = session.emote_tick
+    c.last_sitting = session.cozy_sitting
+    c.last_cloud = session.last_cloud
+}
+
+fn clear_walk(c: &mut CozyControl) {
+    c.has_target = false
+    c.dragging_walk = false
+    c.has_face = false
+}
+
+fn damp_camera(c: &mut CozyControl, dt: f32, frame_input: &gfx.Input, ui_captured: bool) {
+    if !ui_captured {
+        if frame_input.button_down(gfx.MOUSE_RIGHT) {
+            c.target_yaw += frame_input.mouse.dx * ORBIT_SENSITIVITY
+        }
+        if frame_input.mouse.scroll != 0.0 {
+            c.target_zoom = clamp(c.target_zoom - frame_input.mouse.scroll * ZOOM_STEP, MIN_ZOOM, MAX_ZOOM)
+        }
+        if frame_input.button_hit(gfx.MOUSE_MIDDLE) {
+            reset_camera(&mut c)
+        }
+    }
+    if dt > 0.0 {
+        alpha := f32(1.0 - math.exp(f64(-CAM_DAMP_RATE * dt)))
+        c.yaw += (c.target_yaw - c.yaw) * alpha
+        c.zoom += (c.target_zoom - c.zoom) * alpha
+    }
+}
+
+fn keyboard_move(frame_input: &gfx.Input, yaw: f32) -> Option<(f32, f32)> {
+    mut kx: f32 = 0.0
+    mut kz: f32 = 0.0
+    if frame_input.down(.A) || frame_input.down(.Left) { kx -= 1.0 }
+    if frame_input.down(.D) || frame_input.down(.Right) { kx += 1.0 }
+    if frame_input.down(.W) || frame_input.down(.Up) { kz -= 1.0 }
+    if frame_input.down(.S) || frame_input.down(.Down) { kz += 1.0 }
+    if kx == 0.0 && kz == 0.0 { return .None }
+    stroll := frame_input.down(.Shift)
+    if yaw == 0.0 && !stroll { return .Some((kx, kz)) }
+    len := (kx * kx + kz * kz).sqrt()
+    if len > 1.0 { kx /= len; kz /= len }
+    mut wx := kx
+    mut wz := kz
+    if yaw != 0.0 {
+        cs := yaw.cos()
+        sn := yaw.sin()
+        wx = kx * cs - kz * sn
+        wz = kx * sn + kz * cs
+    }
+    if stroll {
+        wx *= STROLL_SPEED
+        wz *= STROLL_SPEED
+    }
+    .Some((wx, wz))
+}
+
+fn follow_target(c: &mut CozyControl, session: &play.Session, player_pos: core.Vec3, stroll: bool) -> (f32, f32) {
+    if c.has_target {
+        dx := c.target.x - player_pos.x
+        dz := c.target.z - player_pos.z
+        dist := (dx * dx + dz * dz).sqrt()
+        arrive := if c.has_face { SNIFF_ARRIVE_RADIUS } else { ARRIVE_RADIUS }
+        if dist <= arrive {
+            c.has_target = false
+        } else {
+            u := clamp((dist - arrive) / (TAPER_RADIUS - arrive), 0.0, 1.0)
+            taper := STROLL_SPEED + (1.0 - STROLL_SPEED) * u
+            mut speed := if stroll { STROLL_SPEED } else { taper }
+            if c.has_face && dist < ARRIVE_RADIUS { speed = 0.30 }
+            return ((dx / dist) * speed, (dz / dist) * speed)
+        }
+    }
+    if c.has_face {
+        fx := c.face_target.x - player_pos.x
+        fz := c.face_target.z - player_pos.z
+        flen := (fx * fx + fz * fz).sqrt()
+        if flen > 0.001 {
+            nx := fx / flen
+            nz := fz / flen
+            hx := session.motion.heading.sin()
+            hz := session.motion.heading.cos()
+            if hx * nx + hz * nz < 0.992 { return (nx * 0.005, nz * 0.005) }
+        }
+        c.has_face = false
+    }
+    (0.0, 0.0)
+}
+
+pub fn update(c: &mut CozyControl, session: &mut play.Session, cam: &input.Camera,
+    aspect: f32, width: f32, height: f32, dt: f32, frame_input: &gfx.Input,
+    player_support_y: f32, ui_captured: bool) -> play.Input {
+    safe_dt := if dt.is_finite() && dt > 0.0 { dt } else { f32(0.0) }
+    if c.toast_timer > 0.0 {
+        c.toast_timer -= safe_dt
+        if c.toast_timer <= 0.0 {
+            c.toast_timer = 0.0
+            c.toast_text = ""
+        }
+    }
+    if c.jump_buffer > 0.0 {
+        c.jump_buffer -= safe_dt
+        if c.jump_buffer < 0.0 { c.jump_buffer = 0.0 }
+    }
+    if c.has_target { c.target_age += safe_dt }
+
+    // Cancel any active walk target if sitting was activated externally (e.g. HUD button).
+    if session.cozy_sitting && !c.last_sitting { clear_walk(&mut c) }
+
+    damp_camera(&mut c, safe_dt, frame_input, ui_captured)
+
+    has_player := session.player >= 0
+    player_pos := if has_player { session.bodies[session.player].position } else { core.vec3(0.0, 0.0, 0.0) }
+    grounded := has_player && session.bodies[session.player].grounded
+
+    ray := pick_ray(cam, aspect, width, height, frame_input.mouse.x, frame_input.mouse.y)
+    fox_center := core.add(player_pos, core.vec3(0.0, FOX_PET_OFFSET_Y, 0.0))
+    c.hovering_fox = !ui_captured && has_player && ray_sphere(cam.position, ray, fox_center, FOX_PET_RADIUS)
+
+    left_hit := frame_input.button_hit(gfx.MOUSE_LEFT)
+    left_down := frame_input.button_down(gfx.MOUSE_LEFT)
+    if !left_down { c.dragging_walk = false }
+
+    mut petted := false
+    if left_hit && !ui_captured && c.hovering_fox {
+        play.pet(&mut session)
+        clear_walk(&mut c)
+        petted = true
+    }
+
+    if has_player && !ui_captured && !petted && (left_hit || (left_down && c.dragging_walk)) {
+        match ray_plane_y(cam.position, ray, player_support_y) {
+            .Some(hit) => {
+                mut dest := clamp_to_bounds(hit, &session.scene.bounds)
+                dest.y = player_support_y
+                mut face := core.vec3(0.0, 0.0, 0.0)
+                mut set_face := false
+                if frame_input.down(.Shift) {
+                    match nearest_uncollected_flower(session, cam.position, ray, hit, player_support_y) {
+                        .Some(flower_pos) => {
+                            dest = sniff_point(player_pos, flower_pos, player_support_y, &session.scene.bounds)
+                            face = flower_pos
+                            set_face = true
+                        },
+                        .None => {},
+                    }
+                }
+                if left_hit || !c.has_target { c.target_age = 0.0 }
+                c.has_target = true
+                c.target = dest
+                c.has_face = set_face
+                c.face_target = face
+                if left_hit { c.dragging_walk = true }
+            },
+            .None => {},
+        }
+    }
+
+    if frame_input.hit(.C) {
+        play.toggle_sit(&mut session)
+        if session.cozy_sitting { clear_walk(&mut c) }
+    }
+    if frame_input.hit(.F) { play.emote(&mut session) }
+    if frame_input.hit(.Space) { c.jump_buffer = JUMP_BUFFER_SECONDS }
+
+    mut jump := false
+    if c.jump_buffer > 0.0 && grounded {
+        jump = true
+        c.jump_buffer = 0.0
+    }
+
+    sync_toasts(&mut c, session)
+
+    match keyboard_move(frame_input, c.yaw) {
+        .Some(move_xz) => {
+            clear_walk(&mut c)
+            (wx, wz) := move_xz
+            return play.Input { x: wx, z: wz, jump: jump }
+        },
+        .None => {},
+    }
+
+    if has_player && (c.has_target || c.has_face) {
+        (wx, wz) := follow_target(&mut c, session, player_pos, frame_input.down(.Shift))
+        return play.Input { x: wx, z: wz, jump: jump }
+    }
+
+    play.Input { x: 0.0, z: 0.0, jump: jump }
+}

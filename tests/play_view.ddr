@@ -85,3 +85,31 @@ import ..src.play_view as view
     crown := view.framing(&world, &s, true)
     assert(ground.climb == 0.0 && crown.climb == 1.0 && crown.center.y > ground.center.y + 3.0)
 }
+
+@test fn camera_cozy_orbits_and_zooms_around_framing_center_while_preserving_default() {
+    level := play.demo()
+    s := play.start(&level)
+    world := view.build(&s).unwrap()
+    area := view.framing(&world, &s, true)
+    aspect: f32 = 1.6
+    base := view.camera(&area, aspect)
+    identity := view.camera_cozy(&area, aspect, 0.0, 1.0)
+    assert(identity.position.x == base.position.x && identity.position.y == base.position.y && identity.position.z == base.position.z)
+    assert(identity.yaw == base.yaw && identity.pitch == base.pitch && identity.fov == base.fov)
+
+    base_offset := core.sub(base.position, area.center)
+    base_dist := core.length(base_offset)
+    orbited := view.camera_cozy(&area, aspect, 0.85, 1.0)
+    orbit_offset := core.sub(orbited.position, area.center)
+    assert((core.length(orbit_offset) - base_dist).abs() < 0.001)
+    assert((orbit_offset.y - base_offset.y).abs() < 0.001)
+    assert((orbited.yaw - 0.85).abs() < 0.001)
+    assert(core.dot(orbited.forward(), core.normalize(core.scale(orbit_offset, -1.0))) > 0.9999)
+
+    closer := view.camera_cozy(&area, aspect, -0.4, 0.65)
+    assert((core.length(core.sub(closer.position, area.center)) - base_dist * 0.65).abs() < 0.002)
+    assert(core.dot(closer.forward(), core.normalize(core.sub(area.center, closer.position))) > 0.9999)
+
+    farther := view.camera_cozy(&area, aspect, 0.0, 1.35)
+    assert((core.length(core.sub(farther.position, area.center)) - base_dist * 1.35).abs() < 0.002)
+}
