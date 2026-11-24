@@ -85,15 +85,9 @@ import ..src.state as state
     }
 }
 
-@test fn capture_layout_honors_offset_padding_and_allocation_bounds() {
-    mut layout: vk.SubresourceLayout = unsafe { zeroed() }
-    layout.offset = 16
-    layout.rowPitch = 256
-    assert(headless.capture_layout_fits(4, 2, &layout, 288))
-    assert(!headless.capture_layout_fits(4, 2, &layout, 287))
-    assert(!headless.capture_layout_fits(4, 1, &layout, 15))
-    layout.rowPitch = 15
-    assert(!headless.capture_layout_fits(4, 1, &layout, 288))
+@test fn capture_buffer_has_four_bytes_per_pixel_including_odd_widths() {
+    assert(headless.readback_size(719, 451) == 1297076)
+    assert(headless.readback_size(8192, 8192) == 268435456)
 }
 
 @test fn depth_clear_packs_the_depth_stencil_union() {
@@ -205,7 +199,9 @@ import ..src.state as state
     assert(enums.image_usage(.ColorAttachment) == 16 && enums.image_usage(.DepthStencilAttachment) == 32)
     assert(enums.buffer_usage(.TransferSrc) == 1 && enums.buffer_usage(.UniformBuffer) == 16)
     assert(enums.buffer_usage(.VertexBuffer) == 128)
-    assert(enums.image_create(.CubeCompatible) == 4)
+    assert(enums.image_create(.CubeCompatible) == 16)
+    assert(enums.command_pool_flag(.ResetCommandBuffer) == 2)
+    assert(enums.pipeline_stage(.Host) == 16384)
     assert(enums.descriptor_pool(.FreeDescriptorSet) == 2)
     assert(enums.fence(.Signaled) == 1)
     assert(enums.color_component(.RGBA) == 15)

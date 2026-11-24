@@ -226,7 +226,7 @@ unsafe fn write_image(r: &state.Renderer, set: ptr, binding: u32, sampler: ptr, 
 }
 
 // Image barrier over all 6 layers of the given mip range.
-unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, old_layout: u32, new_layout: u32,
+unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, layer_count: u32, old_layout: u32, new_layout: u32,
     src_access: u32, dst_access: u32, src_stage: u32, dst_stage: u32) {
     mut b: vk.ImageMemoryBarrier = zeroed()
     b.sType = 45
@@ -241,7 +241,7 @@ unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_c
     b.subresourceRange.baseMipLevel = base_mip
     b.subresourceRange.levelCount = mip_count
     b.subresourceRange.baseArrayLayer = 0
-    b.subresourceRange.layerCount = 6
+    b.subresourceRange.layerCount = layer_count
     r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut b))
 }
 
@@ -308,7 +308,7 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
     // pointer into mapped memory does not reach the GPU here).
     _ := copy_bytes(mapped, addr(&words[0]), bytes)
 
-    barrier(&r, cmd, r.brdfImage, 0, 1, 0, enums.image_layout(.TransferDstOptimal), 0, 4096, 1, 4096)
+    barrier(&r, cmd, r.brdfImage, 0, 1, 1, 0, enums.image_layout(.TransferDstOptimal), 0, 4096, 1, 4096)
     mut copy: vk.BufferImageCopy = zeroed()
     copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
     copy.imageSubresource.mipLevel = 0
@@ -318,7 +318,7 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
     copy.imageExtent.height = LUT_SIZE
     copy.imageExtent.depth = 1
     r.api.CmdCopyBufferToImage(cmd, staging.buffer, r.brdfImage, enums.image_layout(.TransferDstOptimal), 1, addr(&copy))
-    barrier(&r, cmd, r.brdfImage, 0, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 4096, 32, 4096, 128)
+    barrier(&r, cmd, r.brdfImage, 0, 1, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 4096, 32, 4096, 128)
     staging
 }
 
@@ -581,7 +581,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     // source (the attachment's finalLayout already set SHADER_READ_ONLY;
     // this adds the execution dependency).
     for mip in 1..i32(ENV_MIPS) {
-        barrier(&r, cmd, env.image, u32(mip - 1), 1, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
+        barrier(&r, cmd, env.image, u32(mip - 1), 1, 6, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
         for face in 0..6 {
             convolve_push(&mut push, face, f32(mip) / f32(ENV_MIPS - 1))
             index := mip * 6 + face
@@ -596,7 +596,7 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
         draw_face(&r, cmd, irradiance_pipeline, pipeline_layout, pass,
             irradiance_framebuffers[face], sets[0], IRRADIANCE_SIZE, &push)
     }
-    barrier(&r, cmd, irradiance.image, 0, 1, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
+    barrier(&r, cmd, irradiance.image, 0, 1, 6, enums.image_layout(.ShaderReadOnlyOptimal), enums.image_layout(.ShaderReadOnlyOptimal), 256, 32, 1024, 128)
 
     code = r.api.EndCommandBuffer(cmd)
     if code != 0 { return device.fail(&mut r, code, .Environment) }

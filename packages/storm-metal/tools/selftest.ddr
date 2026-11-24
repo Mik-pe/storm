@@ -483,6 +483,39 @@ fn frame_checks(failures: &mut i32) {
     window.close()
 }
 
+fn preview_checks(failures: &mut i32) {
+    for run in 0..2 {
+        width := 192 + run * 11
+        height := 128 + run * 7
+        opened := metal.open_preview("Agent preview", width, height)
+        if opened.is_err() {
+            say(opened.unwrap_err())
+            expect(&mut failures, "a preview can be created and recreated after close", false)
+            return
+        }
+        mut preview := opened.unwrap()
+        frame := preview.poll()
+        unsafe {
+            expect(&mut failures, "a preview has no application, window, or presentation layer",
+                preview.window.application == ptr(0) && preview.window.window == ptr(0) && preview.window.layer == ptr(0))
+        }
+        expect(&mut failures, "a preview reports its requested pixels and empty input",
+            !frame.closed && frame.scale == 1.0 && frame.width == width && frame.height == height &&
+            frame.input.held == 0 && frame.input.pressed == 0 && frame.input.mouse.buttons == 0)
+        expect(&mut failures, "an offscreen frame can finish without a presentation drawable",
+            preview.begin().is_ok() && preview.begin_pass().is_ok() && preview.end().is_ok())
+        drawn := preview.capture_next().is_ok() && preview.begin().is_ok() && preview.begin_pass().is_ok() &&
+            preview.ui_atlas([255], 1, 1).is_ok() &&
+            preview.ui_draw(corners(f32(width), f32(height)), [f32(width), f32(height)]).is_ok() && preview.end().is_ok()
+        expect(&mut failures, "the preview renders and saves its own color texture", drawn && preview.save_capture(capture_path()).is_ok())
+        captured := read_capture()
+        expect(&mut failures, "preview pixels have the right dimensions, channels and orientation",
+            captured.ok && captured.width == width && captured.height == height &&
+            is_blue(under(&captured, 20.0, 20.0, 1.0)) && is_green(under(&captured, f32(width) - 20.0, f32(height) - 20.0, 1.0)))
+        preview.close()
+    }
+}
+
 fn main() -> i32 {
     if report().len == 0 && !sys.mkdir("build").ok && !sys.metadata("build").ok {
         _ := sys.eprint("selftest: cannot make the build directory for captures\n")
@@ -490,6 +523,7 @@ fn main() -> i32 {
     }
     started := sys.now_ms()
     mut failures: i32 = 0
+    preview_checks(&mut failures)
     input_checks(&mut failures)
     frame_checks(&mut failures)
     _ := sys.remove_file(capture_path())

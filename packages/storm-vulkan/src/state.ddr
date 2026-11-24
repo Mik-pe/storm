@@ -94,7 +94,8 @@ pub struct Renderer {
     commands: [ptr; 2],
     fences: [ptr; 2],
     image_available: [ptr; 2],
-    render_finished: [ptr; 2],
+    // Presentation owns its wait semaphore until the same image is acquired again.
+    render_finished: [ptr; 8],
     current: i32,
     swapchain: ptr,
     format: u32,
@@ -205,17 +206,11 @@ pub struct Renderer {
     pendingClear: [u64; 4],
     lastResult: i32,
     imageIndex: i32,
-    // Headless capture: offscreen render target plus a mapped linear copy.
-    offscreenImage: ptr,
-    offscreenView: ptr,
-    offscreenPass: ptr,
-    offscreenFramebuffer: ptr,
-    linearImage: ptr,
-    linearMemory: ptr,
-    linearMapped: ptr,
-    captureWidth: u32,
-    captureHeight: u32,
-    capturePitch: u64,
+    // Capture is rendered on the GPU, then copied into a tightly packed mapped buffer.
+    captureImage: ptr,
+    captureView: ptr,
+    captureMemory: ptr,
+    readback: Buffer,
     captureOn: i32,
     // Append cursor for the shared vertex buffer: every recorded draw keeps its
     // own slice, so later uploads cannot overwrite earlier geometry.

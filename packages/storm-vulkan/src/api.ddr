@@ -8,6 +8,7 @@ import std.dl as dl
 pub struct Api {
     CreateInstance: extern fn(ptr, ptr, ptr) -> i32,
     DestroyInstance: extern fn(ptr, ptr),
+    DestroySurfaceKHR: extern fn(ptr, ptr, ptr),
     EnumeratePhysicalDevices: extern fn(ptr, ptr, ptr) -> i32,
     GetPhysicalDeviceProperties: extern fn(ptr, ptr),
     GetPhysicalDeviceFormatProperties: extern fn(ptr, u32, ptr),
@@ -71,8 +72,8 @@ pub struct Api {
     CmdDraw: extern fn(ptr, u32, u32, u32, u32),
     CmdPushConstants: extern fn(ptr, ptr, u32, u32, u32, ptr),
     CmdPipelineBarrier: extern fn(ptr, u32, u32, u32, u32, ptr, u32, ptr, u32, ptr),
+    CmdCopyImageToBuffer: extern fn(ptr, ptr, u32, ptr, u32, ptr),
     CmdCopyBufferToImage: extern fn(ptr, ptr, ptr, u32, u32, ptr),
-    GetImageSubresourceLayout: extern fn(ptr, ptr, ptr, ptr),
     QueueSubmit: extern fn(ptr, u32, ptr, ptr) -> i32,
     CreateSampler: extern fn(ptr, ptr, ptr, ptr) -> i32,
     DestroySampler: extern fn(ptr, ptr, ptr),
@@ -87,8 +88,40 @@ pub struct Api {
 }
 
 // Resolve every entry point up front; a missing symbol fails the whole load.
-pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
+pub unsafe fn load(api: &mut Api, library: ptr, windowed: bool) -> bool {
     mut symbol := ptr(0)
+    if windowed {
+        symbol = dl.symbol(library, cstr("vkDestroySurfaceKHR"))
+        if symbol == ptr(0) { return false }
+        api.DestroySurfaceKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfaceSupportKHR"))
+        if symbol == ptr(0) { return false }
+        api.GetPhysicalDeviceSurfaceSupportKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfaceCapabilitiesKHR"))
+        if symbol == ptr(0) { return false }
+        api.GetPhysicalDeviceSurfaceCapabilitiesKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfaceFormatsKHR"))
+        if symbol == ptr(0) { return false }
+        api.GetPhysicalDeviceSurfaceFormatsKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfacePresentModesKHR"))
+        if symbol == ptr(0) { return false }
+        api.GetPhysicalDeviceSurfacePresentModesKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkCreateSwapchainKHR"))
+        if symbol == ptr(0) { return false }
+        api.CreateSwapchainKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkGetSwapchainImagesKHR"))
+        if symbol == ptr(0) { return false }
+        api.GetSwapchainImagesKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkAcquireNextImageKHR"))
+        if symbol == ptr(0) { return false }
+        api.AcquireNextImageKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkQueuePresentKHR"))
+        if symbol == ptr(0) { return false }
+        api.QueuePresentKHR = ffi_fn(symbol)
+        symbol = dl.symbol(library, cstr("vkDestroySwapchainKHR"))
+        if symbol == ptr(0) { return false }
+        api.DestroySwapchainKHR = ffi_fn(symbol)
+    }
     symbol = dl.symbol(library, cstr("vkCreateInstance"))
     if symbol == ptr(0) { return false }
     api.CreateInstance = ffi_fn(symbol)
@@ -110,18 +143,6 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceQueueFamilyProperties"))
     if symbol == ptr(0) { return false }
     api.GetPhysicalDeviceQueueFamilyProperties = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfaceSupportKHR"))
-    if symbol == ptr(0) { return false }
-    api.GetPhysicalDeviceSurfaceSupportKHR = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfaceCapabilitiesKHR"))
-    if symbol == ptr(0) { return false }
-    api.GetPhysicalDeviceSurfaceCapabilitiesKHR = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfaceFormatsKHR"))
-    if symbol == ptr(0) { return false }
-    api.GetPhysicalDeviceSurfaceFormatsKHR = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkGetPhysicalDeviceSurfacePresentModesKHR"))
-    if symbol == ptr(0) { return false }
-    api.GetPhysicalDeviceSurfacePresentModesKHR = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkCreateDevice"))
     if symbol == ptr(0) { return false }
     api.CreateDevice = ffi_fn(symbol)
@@ -179,18 +200,6 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkCreateImageView"))
     if symbol == ptr(0) { return false }
     api.CreateImageView = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkCreateSwapchainKHR"))
-    if symbol == ptr(0) { return false }
-    api.CreateSwapchainKHR = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkGetSwapchainImagesKHR"))
-    if symbol == ptr(0) { return false }
-    api.GetSwapchainImagesKHR = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkAcquireNextImageKHR"))
-    if symbol == ptr(0) { return false }
-    api.AcquireNextImageKHR = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkQueuePresentKHR"))
-    if symbol == ptr(0) { return false }
-    api.QueuePresentKHR = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkCreateSemaphore"))
     if symbol == ptr(0) { return false }
     api.CreateSemaphore = ffi_fn(symbol)
@@ -230,9 +239,6 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkDestroyRenderPass"))
     if symbol == ptr(0) { return false }
     api.DestroyRenderPass = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkDestroySwapchainKHR"))
-    if symbol == ptr(0) { return false }
-    api.DestroySwapchainKHR = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkDestroyCommandPool"))
     if symbol == ptr(0) { return false }
     api.DestroyCommandPool = ffi_fn(symbol)
@@ -281,15 +287,15 @@ pub unsafe fn load(api: &mut Api, library: ptr) -> bool {
     symbol = dl.symbol(library, cstr("vkCmdPushConstants"))
     if symbol == ptr(0) { return false }
     api.CmdPushConstants = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCmdCopyImageToBuffer"))
+    if symbol == ptr(0) { return false }
+    api.CmdCopyImageToBuffer = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkCmdCopyBufferToImage"))
     if symbol == ptr(0) { return false }
     api.CmdCopyBufferToImage = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkCmdPipelineBarrier"))
     if symbol == ptr(0) { return false }
     api.CmdPipelineBarrier = ffi_fn(symbol)
-    symbol = dl.symbol(library, cstr("vkGetImageSubresourceLayout"))
-    if symbol == ptr(0) { return false }
-    api.GetImageSubresourceLayout = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkQueueSubmit"))
     if symbol == ptr(0) { return false }
     api.QueueSubmit = ffi_fn(symbol)

@@ -330,5 +330,8 @@ pub unsafe fn setup_frames_only(r: &mut state.Renderer) -> state.SetupStep {
 }
 
 pub unsafe fn destroy_framebuffers(r: &mut state.Renderer) {
-    for i in 0..r.imageCount { r.api.DestroyFramebuffer(r.device, r.framebuffers[i], ptr(0)) }
+    for i in 0..r.imageCount {
+        r.api.DestroyFramebuffer(r.device, r.framebuffers[i], ptr(0))
+        r.framebuffers[i] = ptr(0)
+    }
 }

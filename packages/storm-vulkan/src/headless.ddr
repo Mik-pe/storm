@@ -1,134 +1,132 @@
-capability unsafe, filesystem, stdio
+capability unsafe, filesystem
 
-import std.bytes as b
+import std.bytes as bytes
 import std.sys as sys
 import .device as device
 import .enums as enums
 import .layout as vk
 import .state as state
 
-// Headless frame capture.
-//
-// The scene renders into the shared offscreen image and the post pass writes
-// the finished frame into this linear, host-visible colour image. The pixels
-// are then read straight out of mapped memory.
+pub fn readback_size(width: u32, height: u32) -> u64 { u64(width) * u64(height) * 4 }
 
-unsafe fn make_image(r: &state.Renderer, format: u32, width: u32, height: u32, tiling: u32, usage: u32, flags: i32, image_out: ptr, memory_out: ptr, size_out: ptr) -> i32 {
-    info := device.image_2d_info(format, width, height, tiling, usage)
-    mut image := ptr(0)
-    mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
-    if code != 0 { return code }
-    mut req: [u64; 3] = [0; 3]
-    r.api.GetImageMemoryRequirements(r.device, image, addr(&mut req[0]))
-    if req[0] == 0 { return -13 }
-    mut requirements: vk.MemoryRequirements = zeroed()
-    requirements.size = req[0]
-    requirements.alignment = req[1]
-    requirements.memoryTypeBits = u32(req[2])
-    mut memory := ptr(0)
-    code = device.allocate(&r, &requirements, flags, addr(&mut memory))
-    if code != 0 { return code }
-    code = r.api.BindImageMemory(r.device, image, memory, 0)
-    if code != 0 { return code }
-    mut size_slot := req[0]
-    store_u64(size_out, size_slot)
-    store_ptr(image_out, image)
-    store_ptr(memory_out, memory)
-    0
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    r.api.DestroyFramebuffer(r.device, r.captureFramebuffer, ptr(0))
+    r.api.DestroyImageView(r.device, r.captureView, ptr(0))
+    r.api.DestroyImage(r.device, r.captureImage, ptr(0))
+    r.api.FreeMemory(r.device, r.captureMemory, ptr(0))
+    if r.readback.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.readback.memory) }
+    r.api.DestroyBuffer(r.device, r.readback.handle, ptr(0))
+    r.api.FreeMemory(r.device, r.readback.memory, ptr(0))
+    r.captureFramebuffer = ptr(0)
+    r.captureView = ptr(0)
+    r.captureImage = ptr(0)
+    r.captureMemory = ptr(0)
+    r.readback = zeroed()
+    r.captureOn = 0
 }
 
-unsafe fn make_view(r: &state.Renderer, image: ptr, format: u32) -> ptr {
+// The color attachment uses optimal tiling, including on devices that cannot
+// render into a linear image. Transfer into a tightly packed coherent buffer.
+unsafe fn create(r: &mut state.Renderer) -> i32 {
+    info := device.image_2d_info(r.format, r.width, r.height, enums.image_tiling(.Optimal), enums.image_usage(.ColorAttachmentTransferSrc))
+    mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut r.captureImage))
+    if code != 0 { return code }
+    mut req: vk.MemoryRequirements = zeroed()
+    r.api.GetImageMemoryRequirements(r.device, r.captureImage, addr(&mut req))
+    mut memory := ptr(0)
+    code = device.allocate(&r, &req, 0, addr(&mut memory))
+    r.captureMemory = memory
+    if code != 0 { return code }
+    code = r.api.BindImageMemory(r.device, r.captureImage, r.captureMemory, 0)
+    if code != 0 { return code }
     mut view: vk.ImageViewCreateInfo = zeroed()
     view.sType = 15
-    view.image = image
+    view.image = r.captureImage
     view.viewType = enums.image_view_type(.Type2D)
-    view.format = format
+    view.format = r.format
     view.subresourceRange.aspectMask = enums.image_aspect(.Color)
     view.subresourceRange.levelCount = 1
     view.subresourceRange.layerCount = 1
-    mut handle := ptr(0)
-    if r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut handle)) != 0 { return ptr(0) }
-    handle
-}
-
-pub fn capture_layout_fits(width: u32, height: u32, layout: &vk.SubresourceLayout, allocation: u64) -> bool {
-    row := u64(width) * 4
-    if width == 0 || height == 0 || layout.rowPitch < row || layout.offset > allocation { return false }
-    available := allocation - layout.offset
-    if available < row { return false }
-    u64(height - 1) <= (available - row) / layout.rowPitch
+    code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.captureView))
+    if code != 0 { return code }
+    views := [r.captureView, r.depthView]
+    mut framebuffer: vk.FramebufferCreateInfo = zeroed()
+    framebuffer.sType = 37
+    framebuffer.renderPass = r.renderPass
+    framebuffer.attachmentCount = 2
+    framebuffer.pAttachments = addr(&views[0])
+    framebuffer.width = r.width
+    framebuffer.height = r.height
+    framebuffer.layers = 1
+    code = r.api.CreateFramebuffer(r.device, addr(&framebuffer), ptr(0), addr(&mut r.captureFramebuffer))
+    if code != 0 { return code }
+    mut buffer: vk.BufferCreateInfo = zeroed()
+    buffer.sType = 12
+    buffer.size = readback_size(r.width, r.height)
+    buffer.usage = enums.buffer_usage(.TransferDst)
+    buffer.sharingMode = enums.sharing_mode(.Exclusive)
+    code = r.api.CreateBuffer(r.device, addr(&buffer), ptr(0), addr(&mut r.readback.handle))
+    if code != 0 { return code }
+    r.api.GetBufferMemoryRequirements(r.device, r.readback.handle, addr(&mut req))
+    memory = ptr(0)
+    code = device.allocate(&r, &req, 6, addr(&mut memory))
+    r.readback.memory = memory
+    if code != 0 { return code }
+    code = r.api.BindBufferMemory(r.device, r.readback.handle, r.readback.memory, 0)
+    if code != 0 { return code }
+    r.readback.capacity = buffer.size
+    r.api.MapMemory(r.device, r.readback.memory, 0, buffer.size, 0, addr(&mut r.readback.mapped))
 }
 
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
-    if r.width == 0 || r.height == 0 { return .CaptureTarget }
-    if !enums.format_has_bytes(r.format) { return .CaptureTarget }
-    mut target := ptr(0)
-    mut target_memory := ptr(0)
-    mut target_size: [u64; 1] = [0]
-    // LINEAR so its memory can be mapped and read straight back.
-    mut code := make_image(&r, r.format, r.width, r.height, vk.IMAGE_TILING_LINEAR, 17, 6, addr(&mut target), addr(&mut target_memory), addr(&mut target_size[0]))
-    if code != 0 { return device.fail(&mut r, code, .CaptureTarget) }
-    view := make_view(&r, target, r.format)
-    if view == ptr(0) { return .CaptureTarget }
-
-    mut views: [ptr; 2] = [view, r.depthView]
-    mut fbi: vk.FramebufferCreateInfo = zeroed()
-    fbi.sType = 37
-    fbi.renderPass = r.renderPass
-    fbi.attachmentCount = 2
-    fbi.pAttachments = addr(&views[0])
-    fbi.width = r.width
-    fbi.height = r.height
-    fbi.layers = 1
-    mut framebuffer := ptr(0)
-    code = r.api.CreateFramebuffer(r.device, addr(&fbi), ptr(0), addr(&mut framebuffer))
-    if code != 0 { return device.fail(&mut r, code, .CaptureTarget) }
-
-    mut mapped := ptr(0)
-    code = r.api.MapMemory(r.device, target_memory, 0, target_size[0], 0, addr(&mut mapped))
-    if code != 0 { return device.fail(&mut r, code, .CaptureTarget) }
-    mut sub: [u32; 3] = [1, 0, 0]
-    mut layout: vk.SubresourceLayout = zeroed()
-    r.api.GetImageSubresourceLayout(r.device, target, addr(&mut sub[0]), addr(&mut layout))
-    if !capture_layout_fits(r.width, r.height, &layout, target_size[0]) { return .CaptureTarget }
-
-    r.linearImage = target
-    r.linearMemory = target_memory
-    r.linearMapped = ptr(usize(mapped) + usize(layout.offset))
-    r.captureFramebuffer = framebuffer
-    r.captureWidth = r.width
-    r.captureHeight = r.height
-    r.capturePitch = layout.rowPitch
-    _ := sys.eprint("capture: ready " + r.width.str() + "x" + r.height.str() + " pitch=" + layout.rowPitch.str())
+    if r.width == 0 || r.height == 0 || !enums.format_has_bytes(r.format) { return .CaptureTarget }
+    result := create(&mut r)
+    if result != 0 {
+        destroy(&mut r)
+        return device.fail(&mut r, result, .CaptureTarget)
+    }
     .Ready
 }
 
-// Binary PPM (P6) at native resolution.
+pub unsafe fn copy_to_host(r: &state.Renderer) {
+    cmd := r.commands[r.current]
+    mut transfer: vk.ImageMemoryBarrier = zeroed()
+    transfer.sType = 45
+    transfer.srcAccessMask = enums.access(.ColorAttachmentWrite)
+    transfer.dstAccessMask = enums.access(.TransferRead)
+    transfer.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
+    transfer.newLayout = enums.image_layout(.TransferSrcOptimal)
+    transfer.srcQueueFamilyIndex = 4294967295
+    transfer.dstQueueFamilyIndex = 4294967295
+    transfer.image = r.captureImage
+    transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    transfer.subresourceRange.levelCount = 1
+    transfer.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.ColorAttachmentOutput), enums.pipeline_stage(.Transfer),
+        0, 0, ptr(0), 0, ptr(0), 1, addr(&transfer))
+    mut copy: vk.BufferImageCopy = zeroed()
+    copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
+    copy.imageSubresource.layerCount = 1
+    copy.imageExtent.width = r.width
+    copy.imageExtent.height = r.height
+    copy.imageExtent.depth = 1
+    r.api.CmdCopyImageToBuffer(cmd, r.captureImage, enums.image_layout(.TransferSrcOptimal), r.readback.handle, 1, addr(&copy))
+    host := vk.MemoryBarrier { sType: 46, pNext: ptr(0), srcAccessMask: enums.access(.TransferWrite), dstAccessMask: enums.access(.HostRead) }
+    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Host), 0, 1, addr(&host), 0, ptr(0), 0, ptr(0))
+}
+
 pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
-    if r.linearMapped == ptr(0) { return false }
-    width := i32(r.captureWidth)
-    height := i32(r.captureHeight)
-    pitch := usize(r.capturePitch)
+    if r.captureOn != 2 || r.readback.mapped == ptr(0) { return false }
     red := if enums.format_is_bgra(r.format) { usize(2) } else { usize(0) }
     blue := usize(2) - red
     mut out: []u8 = []
-    b.append_utf8(&mut out, "P6\n" + width.str() + " " + height.str() + "\n255\n")
-    mut y := 0
-    while y < height {
-        row := usize(y) * pitch
-        mut x := 0
-        while x < width {
-            offset := row + usize(x) * 4
-            out.push(load_u8(ptr(usize(r.linearMapped) + offset + red)))
-            out.push(load_u8(ptr(usize(r.linearMapped) + offset + 1)))
-            out.push(load_u8(ptr(usize(r.linearMapped) + offset + blue)))
-            x = x + 1
-        }
-        y = y + 1
+    out.reserve(i32(r.width * r.height * 3) + 32)
+    bytes.append_utf8(&mut out, "P6\n" + r.width.str() + " " + r.height.str() + "\n255\n")
+    for pixel in 0..i32(r.width * r.height) {
+        at := usize(r.readback.mapped) + usize(pixel) * 4
+        out.push(load_u8(ptr(at + red)))
+        out.push(load_u8(ptr(at + 1)))
+        out.push(load_u8(ptr(at + blue)))
     }
-    _ := sys.eprint("capture: writing " + out.len.str() + " bytes")
-    match sys.write_bytes(path, &out) {
-        .Ok(_) => true,
-        .Err(_) => false,
-    }
+    sys.write_bytes(path, &out).is_ok()
 }

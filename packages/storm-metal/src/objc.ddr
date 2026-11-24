@@ -77,11 +77,12 @@ unsafe fn framework(path: ptr, name: string) -> Result<ptr, string> {
     .Ok(handle)
 }
 
-// Resolve the runtime and load the frameworks Storm draws with: Foundation
-// (strings), QuartzCore (the layer), AppKit (the window), Metal (the GPU).
-// The handles live as long as the process and are never closed.
-pub unsafe fn load() -> Result<Runtime, string> {
+// A preview needs Foundation and Metal. Cache the process-lifetime handles
+// so opening another renderer does not acquire another library reference.
+pub unsafe fn load_metal() -> Result<Runtime, string> {
     mut rt: Runtime = zeroed()
+    install(&mut rt, ref_at(runtime_address()))
+    if rt.metal != ptr(0) { return .Ok(rt) }
     objc := dl.open(cstr("/usr/lib/libobjc.A.dylib"), 2)
     if objc == ptr(0) { return .Err("the Objective-C runtime could not be loaded") }
     rt.getClass = ffi_fn(symbol(objc, cstr("objc_getClass"))?)
@@ -95,10 +96,20 @@ pub unsafe fn load() -> Result<Runtime, string> {
     rt.addMethod = symbol(objc, cstr("class_addMethod"))?
     rt.registerClassPair = ffi_fn(symbol(objc, cstr("objc_registerClassPair"))?)
     _ := framework(cstr("/System/Library/Frameworks/Foundation.framework/Foundation"), "Foundation")?
-    _ := framework(cstr("/System/Library/Frameworks/QuartzCore.framework/QuartzCore"), "QuartzCore")?
-    _ := framework(cstr("/System/Library/Frameworks/AppKit.framework/AppKit"), "AppKit")?
     rt.metal = framework(cstr("/System/Library/Frameworks/Metal.framework/Metal"), "Metal")?
     install(ref_at(runtime_address()), &rt)
+    .Ok(rt)
+}
+
+// Window and layer classes are only needed by a visible application.
+pub unsafe fn load() -> Result<Runtime, string> {
+    rt := load_metal()?
+    if rt.getClass(cstr("CAMetalLayer")) == ptr(0) {
+        _ := framework(cstr("/System/Library/Frameworks/QuartzCore.framework/QuartzCore"), "QuartzCore")?
+    }
+    if rt.getClass(cstr("NSApplication")) == ptr(0) {
+        _ := framework(cstr("/System/Library/Frameworks/AppKit.framework/AppKit"), "AppKit")?
+    }
     .Ok(rt)
 }
 

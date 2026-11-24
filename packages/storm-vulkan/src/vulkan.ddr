@@ -52,13 +52,15 @@ unsafe fn release(address: ptr)
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
-unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32) -> state.SetupStep {
+unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32, windowed: bool) -> state.SetupStep {
     r.width = u32(width)
     r.height = u32(height)
     r.frameIndex = 0
     r.current = 0
-    if !sdl.open(&mut r.window, title, width, height) { return .Window }
+    if windowed && !sdl.open(&mut r.window, title, width, height) { return .Window }
     mut step := device.setup(&mut r)
+    if step != .Ready { return step }
+    step = depth.create(&mut r, r.width, r.height)
     if step != .Ready { return step }
     step = shadow.setup(&mut r)
     if step != .Ready { return step }
@@ -67,8 +69,6 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     step = post.setup(&mut r)
     if step != .Ready { return step }
     step = ui.setup(&mut r)
-    if step != .Ready { return step }
-    step = depth.create(&mut r, r.width, r.height)
     if step != .Ready { return step }
     step = device.setup_frames(&mut r)
     if step != .Ready { return step }
@@ -79,12 +79,12 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
 // The live renderer behind a handle, or null for one that has expired.
 unsafe fn renderer(window: Window) -> ptr { active(ref_at(registry_address()), window) }
 
-unsafe fn bootstrap(r: &mut state.Renderer, loader: ptr) -> bool {
+unsafe fn bootstrap(r: &mut state.Renderer, loader: ptr, windowed: bool) -> bool {
     r.loader = loader
-    api.load(&mut r.api, loader)
+    api.load(&mut r.api, loader, windowed)
 }
 
-unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32) -> Result<Window, string> {
+unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32, windowed: bool) -> Result<Window, string> {
     if width < 1 || width > 8192 || height < 1 || height > 8192 {
         return .Err("window dimensions must be between 1 and 8192")
     }
@@ -96,15 +96,15 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
         release(address)
         return .Err("Vulkan loader is unavailable")
     }
-    if !bootstrap(ref_at(address), loader) {
+    if !bootstrap(ref_at(address), loader, windowed) {
         _ := dl.close(loader)
         release(address)
         return .Err("Vulkan loader is missing required entry points")
     }
-    mut failed := initialize(ref_at(address), title, width, height)
+    mut failed := initialize(ref_at(address), title, width, height, windowed)
     if failed != .Ready {
         failure := describe(ref_at(address), failed)
-        device.destroy(ref_at(address))
+        _ := teardown(ref_at(address))
         _ := dl.close(loader)
         release(address)
         return .Err("Vulkan initialization failed at " + failure)
@@ -115,7 +115,11 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
 }
 
 pub fn open(title: string, width: i32, height: i32) -> Result<Window, string> {
-    unsafe { open_renderer(ref_at(registry_address()), title, width, height) }
+    unsafe { open_renderer(ref_at(registry_address()), title, width, height, true) }
+}
+
+pub fn open_preview(title: string, width: i32, height: i32) -> Result<Window, string> {
+    unsafe { open_renderer(ref_at(registry_address()), title, width, height, false) }
 }
 
 unsafe fn active(registry: &Registry, window: Window) -> ptr {
@@ -137,7 +141,7 @@ unsafe fn name(r: &state.Renderer) -> string {
 }
 
 unsafe fn capture_next_at(r: &mut state.Renderer) -> bool {
-    if headless.setup(&mut r) != .Ready { return false }
+    if r.captureFramebuffer == ptr(0) && headless.setup(&mut r) != .Ready { return false }
     r.captureOn = 1
     true
 }
@@ -151,6 +155,10 @@ fn trace_step(r: &state.Renderer, message: string) {
 }
 
 unsafe fn next_frame(r: &mut state.Renderer) -> gfx.Frame {
+    if r.window.handle == ptr(0) {
+        return gfx.Frame { closed: false, width: i32(r.width), height: i32(r.height), scale: 1.0,
+            time: f64(sys.now_ms()) / 1000.0, resized: false, input: gfx.Input::empty() }
+    }
     sdl.poll(&mut r.window)
     gfx.Frame {
         closed: r.window.closed != 0,
@@ -188,15 +196,20 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     waited := r.api.WaitForFences(r.device, u32(r.fences.len), addr(&mut r.fences[0]), 1, 18446744073709551615)
     if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed" } }
     mut image_index: u32 = 0
-    acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
-        r.image_available[slot], ptr(0), addr(&mut image_index))
-    if enums.is_out_of_date(acquired) {
-        failed := recreate(&mut r)
-        if failed != .Ready { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated at " + describe(&r, failed) } }
-        return BeginResult { ok: false, error: "swapchain recreated; retry the frame" }
+    if r.surface == ptr(0) && r.captureOn != 1 {
+        return BeginResult { ok: false, error: "offscreen rendering requires capture_next" }
     }
-    if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
-    trace_step(&r, "acquired image " + i32(image_index).str())
+    if r.captureOn != 1 {
+        acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
+            r.image_available[slot], ptr(0), addr(&mut image_index))
+        if enums.is_out_of_date(acquired) {
+            failed := recreate(&mut r)
+            if failed != .Ready { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated at " + describe(&r, failed) } }
+            return BeginResult { ok: false, error: "swapchain recreated; retry the frame" }
+        }
+        if acquired != 0 { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
+        trace_step(&r, "acquired image " + i32(image_index).str())
+    }
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
     _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
     // Per-frame cursors: every stream is appended anew, by the frame itself.
@@ -304,10 +317,11 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     if r.recording == 0 { return draw_error(r.frameIndex, "end without begin") }
     slot := r.current
     r.api.CmdEndRenderPass(r.commands[slot])
-    if r.captureOn != 1 {
-        // The scene pass leaves the image in COLOR_ATTACHMENT_OPTIMAL because
-        // the capture path reads it straight back. Presentation needs its own
-        // layout, so transition explicitly before submitting.
+    if r.captureOn == 1 {
+        headless.copy_to_host(&r)
+    } else {
+        // The same scene pass writes every target. A swapchain image must be
+        // transitioned for the presentation engine.
         mut barrier: vk.ImageMemoryBarrier = zeroed()
         barrier.sType = 45
         barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
@@ -320,7 +334,8 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
         barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
         barrier.subresourceRange.levelCount = 1
         barrier.subresourceRange.layerCount = 1
-        r.api.CmdPipelineBarrier(r.commands[slot], 1024, 4096, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
+        r.api.CmdPipelineBarrier(r.commands[slot], enums.pipeline_stage(.ColorAttachmentOutput), enums.pipeline_stage(.BottomOfPipe),
+            0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
     }
     if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
         r.recording = 0
@@ -328,14 +343,16 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     }
     mut submit_info: vk.SubmitInfo = zeroed()
     submit_info.sType = 4
-    wait_stage: u32 = 1024
-    submit_info.waitSemaphoreCount = 1
-    submit_info.pWaitSemaphores = addr(&r.image_available[slot])
-    submit_info.pWaitDstStageMask = addr(&wait_stage)
+    wait_stage := enums.pipeline_stage(.ColorAttachmentOutput)
+    if r.captureOn != 1 {
+        submit_info.waitSemaphoreCount = 1
+        submit_info.pWaitSemaphores = addr(&r.image_available[slot])
+        submit_info.pWaitDstStageMask = addr(&wait_stage)
+        submit_info.signalSemaphoreCount = 1
+        submit_info.pSignalSemaphores = addr(&r.render_finished[r.imageIndex])
+    }
     submit_info.commandBufferCount = 1
     submit_info.pCommandBuffers = addr(&r.commands[slot])
-    submit_info.signalSemaphoreCount = 1
-    submit_info.pSignalSemaphores = addr(&r.render_finished[slot])
     trace_step(&r, "submit")
     if r.api.QueueSubmit(r.queue, 1, addr(&submit_info), r.fences[slot]) != 0 {
         r.recording = 0
@@ -343,7 +360,10 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     }
     if r.captureOn == 1 {
         // Offscreen frames are read back from mapped memory; nothing to present.
-        _ := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
+        if r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615) != 0 {
+            r.recording = 0
+            return draw_error(r.frameIndex, "waiting for capture readback failed")
+        }
         r.captureOn = 2
         r.recording = 0
         r.current = (r.current + 1) % 2
@@ -352,9 +372,9 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     }
     mut image_index := u32(r.imageIndex)
     mut present: vk.PresentInfoKHR = zeroed()
-    present.sType = 1000001002
+    present.sType = 1000001001
     present.waitSemaphoreCount = 1
-    present.pWaitSemaphores = addr(&r.render_finished[slot])
+    present.pWaitSemaphores = addr(&r.render_finished[r.imageIndex])
     present.swapchainCount = 1
     present.pSwapchains = addr(&r.swapchain)
     present.pImageIndices = addr(&mut image_index)
@@ -383,6 +403,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
 unsafe fn recreate(r: &mut state.Renderer) -> state.SetupStep {
     _ := r.api.DeviceWaitIdle(r.device)
     pipeline.destroy_framebuffers(&mut r)
+    headless.destroy(&mut r)
     depth.destroy(&mut r)
     device.destroy_swapchain(&mut r)
     mut step := device.setup_swapchain_only(&mut r)
@@ -571,6 +592,12 @@ impl gfx.Backend for Window {
 // ---- Teardown ----
 
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
+    if r.device != ptr(0) {
+        _ := r.api.DeviceWaitIdle(r.device)
+        pipeline.destroy_framebuffers(&mut r)
+        headless.destroy(&mut r)
+        shadow.destroy(&mut r)
+    }
     post.destroy(&mut r)
     ui.destroy(&mut r)
     ibl.destroy(&mut r)

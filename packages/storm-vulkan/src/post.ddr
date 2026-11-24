@@ -129,6 +129,9 @@ pub unsafe fn draw(r: &mut state.Renderer, time: f32, amount: f32) -> bool {
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.device == ptr(0) { return }
+    r.api.DestroyShaderModule(r.device, r.postVertShader, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.postFragShader, ptr(0))
     if r.postPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.postPipeline, ptr(0)) }
     if r.postPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.postPipelineLayout, ptr(0)) }
 }

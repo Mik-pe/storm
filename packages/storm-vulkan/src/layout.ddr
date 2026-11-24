@@ -110,9 +110,6 @@ pub struct ImageViewCreateInfo {
 pub struct ComponentMapping { r: u32, g: u32, b: u32, a: u32 }
 
 @c_layout
-pub struct SubresourceLayout { offset: u64, size: u64, rowPitch: u64, arrayPitch: u64, depthPitch: u64 }
-
-@c_layout
 pub struct ImageSubresourceRange {
     aspectMask: u32,
     baseMipLevel: u32,
@@ -575,6 +572,9 @@ pub struct BufferImageCopy {
     imageOffset: Offset3D,
     imageExtent: Extent3D,
 }
+
+@c_layout
+pub struct MemoryBarrier { sType: u32, pNext: ptr, srcAccessMask: u32, dstAccessMask: u32 }
 
 @c_layout
 pub struct ImageMemoryBarrier {

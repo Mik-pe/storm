@@ -57,6 +57,8 @@ pub enum Pass { None = 0, Shadow = 1, Main = 2 }
 pub struct Renderer {
     objc: objc.Runtime,
     window: appkit.Window,
+    // An offscreen renderer owns its color texture instead of borrowing a drawable.
+    preview_target: ptr,
     // The device's objects, in the order they were made.
     device: ptr,
     queue: ptr,
@@ -97,13 +99,18 @@ pub struct Renderer {
 }
 
 pub fn open(title: string, width: i32, height: i32) -> Result<Renderer, string> {
-    unsafe { open_renderer(title, width, height) }
+    unsafe { open_renderer(title, width, height, false) }
+}
+
+// The preview size is in pixels. No application, window, or layer is created.
+pub fn open_preview(title: string, width: i32, height: i32) -> Result<Renderer, string> {
+    unsafe { open_renderer(title, width, height, true) }
 }
 
 unsafe fn empty() -> Renderer {
     Renderer {
         objc: zeroed(),
-        window: appkit.empty(),
+        window: appkit.empty(), preview_target: ptr(0),
         device: ptr(0), queue: ptr(0), library: ptr(0),
         mesh_pipeline: device.no_pipeline(), glass_pipeline: device.no_pipeline(), sky_pipeline: device.no_pipeline(),
         shadow_pipeline: device.no_pipeline(), overlay_pipeline: device.no_pipeline(),
@@ -120,18 +127,18 @@ unsafe fn empty() -> Renderer {
     }
 }
 
-unsafe fn open_renderer(title: string, width: i32, height: i32) -> Result<Renderer, string> {
+unsafe fn open_renderer(title: string, width: i32, height: i32, preview: bool) -> Result<Renderer, string> {
     if width < 1 || width > 8192 || height < 1 || height > 8192 {
         return .Err("window dimensions must be between 1 and 8192")
     }
-    runtime := objc.load()?
+    runtime := if preview { objc.load_metal()? } else { objc.load()? }
     pool := runtime.poolPush()
-    outcome := create(runtime, title, width, height)
+    outcome := create(runtime, title, width, height, preview)
     runtime.poolPop(pool)
     outcome
 }
 
-unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32) -> Result<Renderer, string> {
+unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32, preview: bool) -> Result<Renderer, string> {
     // MTLCreateSystemDefaultDevice: the one C function Storm needs from Metal.
     create_device: extern fn() -> ptr = ffi_fn(dl.symbol(runtime.metal, cstr("MTLCreateSystemDefaultDevice")))
     chosen := create_device()
@@ -139,7 +146,7 @@ unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32) 
     mut made := empty()
     made.objc = runtime
     made.device = chosen
-    outcome := prepare(&mut made, title, width, height)
+    outcome := prepare(&mut made, title, width, height, preview)
     if outcome.is_err() {
         destroy(&mut made)
         return .Err(outcome.unwrap_err())
@@ -149,8 +156,14 @@ unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32) 
 
 // Everything a renderer holds, in the order `close` releases it. Either all
 // of it is made, or what was made is released and the reason comes back.
-unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32) -> Result<(), string> {
-    r.window = appkit.open(&r.objc, title, width, height, r.device)?
+unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, preview: bool) -> Result<(), string> {
+    if preview {
+        r.width = u64(width)
+        r.height = u64(height)
+        r.preview_target = device.texture(&r.objc, r.device, .Type2D, .BGRA8Unorm, r.width, r.height, 1, .RenderTarget, .Shared)?
+    } else {
+        r.window = appkit.open(&r.objc, title, width, height, r.device)?
+    }
     r.queue = objc.send(&r.objc, r.device, cstr("newCommandQueue"))
     if r.queue == ptr(0) { return .Err("the device could not make a command queue") }
     r.library = library(r)?
@@ -227,11 +240,15 @@ unsafe fn retire(r: &mut Renderer) -> Result<(), string> {
 unsafe fn record_begin(r: &mut Renderer) -> Result<(), string> {
     if r.pool != ptr(0) { return .Err("a frame is already being recorded") }
     retire(&mut r)?
-    appkit.sync(&r.objc, &r.window)
     r.pool = r.objc.poolPush()
-    r.drawable = objc.send(&r.objc, r.window.layer, cstr("nextDrawable"))
-    if r.drawable == ptr(0) { return refuse(&mut r, "the window offered no drawable to render into") }
-    r.target = objc.send(&r.objc, r.drawable, cstr("texture"))
+    if r.preview_target != ptr(0) {
+        r.target = r.preview_target
+    } else {
+        appkit.sync(&r.objc, &r.window)
+        r.drawable = objc.send(&r.objc, r.window.layer, cstr("nextDrawable"))
+        if r.drawable == ptr(0) { return refuse(&mut r, "the window offered no drawable to render into") }
+        r.target = objc.send(&r.objc, r.drawable, cstr("texture"))
+    }
     width := objc.number(&r.objc, r.target, cstr("width"))
     height := objc.number(&r.objc, r.target, cstr("height"))
     if r.depth_buffer == ptr(0) || width != r.width || height != r.height {
@@ -424,7 +441,7 @@ unsafe fn read_pixels(r: &mut Renderer) -> Result<(), string> {
 
 // Show the frame, or keep its pixels when it is a capture.
 unsafe fn finish(r: &mut Renderer) -> Result<(), string> {
-    if r.capturing == 0 { objc.tell_to(&r.objc, r.command_buffer, cstr("presentDrawable:"), r.drawable) }
+    if r.capturing == 0 && r.drawable != ptr(0) { objc.tell_to(&r.objc, r.command_buffer, cstr("presentDrawable:"), r.drawable) }
     r.submitted = objc.send(&r.objc, r.command_buffer, cstr("retain"))
     objc.tell(&r.objc, r.command_buffer, cstr("commit"))
     if r.capturing == 1 {
@@ -464,7 +481,7 @@ unsafe fn destroy(r: &mut Renderer) {
     ibl.destroy(&r.objc, &mut r.environment)
     for owned in [r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
         r.overlay_pipeline.state, r.shadow_pipeline.state, r.sky_pipeline.state, r.glass_pipeline.state, r.mesh_pipeline.state,
-        r.library, r.queue] {
+        r.library, r.queue, r.preview_target] {
         if owned != ptr(0) { r.objc.release(owned) }
     }
     r.depth_buffer = ptr(0)
@@ -480,6 +497,7 @@ unsafe fn destroy(r: &mut Renderer) {
     r.mesh_pipeline = device.no_pipeline()
     r.library = ptr(0)
     r.queue = ptr(0)
+    r.preview_target = ptr(0)
     appkit.close(&r.objc, &mut r.window)
     if r.device != ptr(0) {
         r.objc.release(r.device)
@@ -499,7 +517,15 @@ impl Renderer {
 
 impl gfx.Backend for Renderer {
     fn poll(&mut self) -> gfx.Frame {
-        unsafe { appkit.poll(&self.objc, &mut self.window) }
+        unsafe {
+            if self.preview_target != ptr(0) {
+                return gfx.Frame {
+                    closed: false, width: i32(self.width), height: i32(self.height), scale: 1.0,
+                    time: f64(sys.now_ms()) / 1000.0, resized: false, input: gfx.Input::empty(),
+                }
+            }
+            appkit.poll(&self.objc, &mut self.window)
+        }
     }
 
     fn device_name(&self) -> string {
@@ -511,7 +537,7 @@ impl gfx.Backend for Renderer {
     }
 
     fn capture_next(&mut self) -> Result<(), string> {
-        unsafe { appkit.readable_drawables(&self.objc, &self.window, true) }
+        unsafe { if self.preview_target == ptr(0) { appkit.readable_drawables(&self.objc, &self.window, true) } }
         self.capturing = 1
         .Ok
     }
@@ -571,7 +597,10 @@ impl gfx.Backend for Renderer {
     }
 
     fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> {
-        unsafe { ui.upload(&self.objc, &self.atlas, &pixels, width, height) }
+        unsafe {
+            retire(&mut self)?
+            return ui.upload(&self.objc, &self.atlas, &pixels, width, height)
+        }
     }
 
     fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string> {

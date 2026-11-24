@@ -341,7 +341,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     to_transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_transfer.subresourceRange.levelCount = 1
     to_transfer.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, 1, 4096, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_transfer))
+    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.FragmentShader), enums.pipeline_stage(.Transfer), 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_transfer))
 
     mut copy: vk2.BufferImageCopy = zeroed()
     copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
@@ -351,7 +351,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     copy.imageExtent.width = u32(width)
     copy.imageExtent.height = u32(height)
     copy.imageExtent.depth = 1
-    r.api.CmdCopyBufferToImage(cmd, staging, r.uiAtlasImage, 3, 1, addr(&mut copy))
+    r.api.CmdCopyBufferToImage(cmd, staging, r.uiAtlasImage, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
 
     mut to_sample: vk2.ImageMemoryBarrier = zeroed()
     to_sample.sType = 45
@@ -407,6 +407,12 @@ pub unsafe fn reset(r: &mut state.Renderer) {
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.device == ptr(0) { return }
+    r.api.DestroyShaderModule(r.device, r.uiVertShader, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.uiFragShader, ptr(0))
+    if r.uiVertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.uiVertex.memory) }
+    r.api.DestroyBuffer(r.device, r.uiVertex.handle, ptr(0))
+    r.api.FreeMemory(r.device, r.uiVertex.memory, ptr(0))
     if r.uiPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.uiPipeline, ptr(0)) }
     if r.uiPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.uiPipelineLayout, ptr(0)) }
     if r.uiSampler != ptr(0) { r.api.DestroySampler(r.device, r.uiSampler, ptr(0)) }
@@ -414,4 +420,5 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.uiPool != ptr(0) { r.api.DestroyDescriptorPool(r.device, r.uiPool, ptr(0)) }
     if r.uiAtlasView != ptr(0) { r.api.DestroyImageView(r.device, r.uiAtlasView, ptr(0)) }
     if r.uiAtlasImage != ptr(0) { r.api.DestroyImage(r.device, r.uiAtlasImage, ptr(0)) }
+    r.api.FreeMemory(r.device, r.uiAtlasMemory, ptr(0))
 }

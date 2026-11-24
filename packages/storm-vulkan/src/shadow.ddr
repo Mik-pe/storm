@@ -238,7 +238,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 
     // light_vp(64) + model(64) + light_dir_c(16) = 144 bytes.
     mut push_range: vk.PushConstantRange = zeroed()
-    push_range.stageFlags = enums.shader_stage(.VertexFragment)
+    push_range.stageFlags = enums.shader_stage(.Vertex)
     push_range.size = 144
     mut layout_info2: vk.PipelineLayoutCreateInfo = zeroed()
     layout_info2.sType = 30
@@ -418,4 +418,23 @@ pub unsafe fn bind(r: &state.Renderer) -> bool {
     if r.shadowSet == ptr(0) { return false }
     r.api.CmdBindDescriptorSets(r.commands[r.current], 0, r.pipelineLayout, 0, 1, addr(&r.shadowSet), 0, ptr(0))
     true
+}
+
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    r.api.DestroyPipeline(r.device, r.shadowPipeline, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.shadowVertShader, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.shadowFragShader, ptr(0))
+    r.api.DestroyPipelineLayout(r.device, r.shadowPipelineLayout, ptr(0))
+    r.api.DestroyDescriptorPool(r.device, r.shadowPool, ptr(0))
+    r.api.DestroyDescriptorSetLayout(r.device, r.shadowSetLayout, ptr(0))
+    r.api.DestroyFramebuffer(r.device, r.shadowFramebuffer, ptr(0))
+    r.api.DestroyRenderPass(r.device, r.shadowPass, ptr(0))
+    r.api.DestroySampler(r.device, r.shadowSampler, ptr(0))
+    r.api.DestroyImageView(r.device, r.shadowView, ptr(0))
+    r.api.DestroyImage(r.device, r.shadowImage, ptr(0))
+    r.api.FreeMemory(r.device, r.shadowMemory, ptr(0))
+    if r.lightMapped != ptr(0) { r.api.UnmapMemory(r.device, r.lightMemory) }
+    r.api.DestroyBuffer(r.device, r.lightBuffer, ptr(0))
+    r.api.FreeMemory(r.device, r.lightMemory, ptr(0))
 }

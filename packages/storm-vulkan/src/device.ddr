@@ -23,15 +23,17 @@ unsafe fn create_instance(r: &mut state.Renderer) -> state.SetupStep {
     info.pApplicationInfo = addr(&app)
     // SDL knows which platform surface extensions the window needs.
     mut count: u32 = 0
-    if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), ptr(0)) == 0 { return .Instance }
-    if count == 0 || count > 16 { return .Instance }
     mut names: [ptr; 16] = [ptr(0); 16]
-    if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), addr(&mut names[0])) == 0 { return .Instance }
-    info.enabledExtensionCount = count
-    info.ppEnabledExtensionNames = addr(&names[0])
+    if r.window.handle != ptr(0) {
+        if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), ptr(0)) == 0 { return .Instance }
+        if count == 0 || count > 16 { return .Instance }
+        if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), addr(&mut names[0])) == 0 { return .Instance }
+        info.enabledExtensionCount = count
+        info.ppEnabledExtensionNames = addr(&names[0])
+    }
     mut code := r.api.CreateInstance(addr(&info), ptr(0), addr(&mut r.instance))
     if code != 0 { return fail(&mut r, code, .Instance) }
-    if r.window.CreateSurface(r.window.handle, r.instance, addr(&mut r.surface)) == 0 { return .Instance }
+    if r.window.handle != ptr(0) && r.window.CreateSurface(r.window.handle, r.instance, addr(&mut r.surface)) == 0 { return .Instance }
     .Ready
 }
 
@@ -98,11 +100,13 @@ unsafe fn pick_queue(r: &mut state.Renderer) -> state.SetupStep {
     mut family := 0
     while family < i32(count) {
         graphics := i32(families[family * 6]).bit_and(1) != 0
-        mut present: u32 = 0
+        mut present: u32 = 1
         // The query itself can fail (e.g. ERROR_SURFACE_LOST_KHR); that is not
         // "this family cannot present", so report the code instead of skipping.
-        code := r.api.GetPhysicalDeviceSurfaceSupportKHR(r.physical, u32(family), r.surface, addr(&mut present))
-        if code != 0 { return fail(&mut r, code, .QueueFamily) }
+        if r.surface != ptr(0) {
+            code := r.api.GetPhysicalDeviceSurfaceSupportKHR(r.physical, u32(family), r.surface, addr(&mut present))
+            if code != 0 { return fail(&mut r, code, .QueueFamily) }
+        }
         if graphics && present != 0 && families[family * 6 + 1] > 0 { break }
         family = family + 1
     }
@@ -123,14 +127,16 @@ unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
     device.sType = 3
     device.queueCreateInfoCount = 1
     device.pQueueCreateInfos = addr(&q)
-    device.enabledExtensionCount = 1
-    device.ppEnabledExtensionNames = addr(&swapchain)
+    if r.surface != ptr(0) {
+        device.enabledExtensionCount = 1
+        device.ppEnabledExtensionNames = addr(&swapchain)
+    }
     mut code := r.api.CreateDevice(r.physical, addr(&device), ptr(0), addr(&mut r.device))
     if code != 0 { return fail(&mut r, code, .Device) }
     r.api.GetDeviceQueue(r.device, r.family, 0, addr(&mut r.queue))
     mut pool: vk.CommandPoolCreateInfo = zeroed()
     pool.sType = 39
-    pool.flags = enums.descriptor_pool(.FreeDescriptorSet)
+    pool.flags = enums.command_pool_flag(.ResetCommandBuffer)
     pool.queueFamilyIndex = r.family
     code = r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool))
     if code != 0 { return fail(&mut r, code, .Device) }
@@ -223,6 +229,10 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> state.SetupStep {
         view.subresourceRange.aspectMask = enums.image_aspect(.Color)
         view.subresourceRange.levelCount = 1
         view.subresourceRange.layerCount = 1
+        mut semaphore: vk.SemaphoreCreateInfo = zeroed()
+        semaphore.sType = 9
+        code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut r.render_finished[i]))
+        if code != 0 { return fail(&mut r, code, .FrameSync) }
         code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.views[i]))
         if code != 0 { return fail(&mut r, code, .Swapchain) }
     }
@@ -239,6 +249,10 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if step != .Ready { return step }
     step = create_device(&mut r)
     if step != .Ready { return step }
+    if r.surface == ptr(0) {
+        r.format = enums.format(.R8G8B8A8_UNORM)
+        return .Ready
+    }
     step = pick_format(&mut r)
     if step != .Ready { return step }
     create_swapchain(&mut r)
@@ -251,7 +265,12 @@ pub unsafe fn setup_swapchain_only(r: &mut state.Renderer) -> state.SetupStep {
 
 pub unsafe fn destroy_swapchain(r: &mut state.Renderer) {
     _ := r.api.DeviceWaitIdle(r.device)
-    for i in 0..r.imageCount { r.api.DestroyImageView(r.device, r.views[i], ptr(0)) }
+    for i in 0..r.imageCount {
+        r.api.DestroyImageView(r.device, r.views[i], ptr(0))
+        r.api.DestroySemaphore(r.device, r.render_finished[i], ptr(0))
+        r.views[i] = ptr(0)
+        r.render_finished[i] = ptr(0)
+    }
     if r.swapchain != ptr(0) { r.api.DestroySwapchainKHR(r.device, r.swapchain, ptr(0)) }
     r.swapchain = ptr(0)
     r.imageCount = 0
@@ -267,10 +286,10 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
         for i in 0..2 {
             r.api.DestroyFence(r.device, r.fences[i], ptr(0))
             r.api.DestroySemaphore(r.device, r.image_available[i], ptr(0))
-            r.api.DestroySemaphore(r.device, r.render_finished[i], ptr(0))
         }
         r.api.DestroyPipeline(r.device, r.pipeline, ptr(0))
         r.api.DestroyPipeline(r.device, r.skyPipeline, ptr(0))
+        r.api.DestroyPipeline(r.device, r.transparentPipeline, ptr(0))
         r.api.DestroyPipelineLayout(r.device, r.pipelineLayout, ptr(0))
         r.api.DestroyPipelineLayout(r.device, r.skyPipelineLayout, ptr(0))
         r.api.DestroyShaderModule(r.device, r.vertexShader, ptr(0))
@@ -281,7 +300,8 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
         if r.pool != ptr(0) { r.api.DestroyCommandPool(r.device, r.pool, ptr(0)) }
         r.api.DestroyDevice(r.device, ptr(0))
     }
-    if r.surface != ptr(0) { r.api.DestroyInstance(r.instance, ptr(0)) }
+    if r.surface != ptr(0) { r.api.DestroySurfaceKHR(r.instance, r.surface, ptr(0)) }
+    if r.instance != ptr(0) { r.api.DestroyInstance(r.instance, ptr(0)) }
 }
 
 // Returns the VkResult of vkAllocateMemory, or VK_ERROR_UNKNOWN (-13) when no
@@ -318,7 +338,7 @@ pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.
     mut info: vk.BufferCreateInfo = zeroed()
     info.sType = 12
     info.size = bytes
-    info.usage = enums.image_usage(.ColorAttachment)
+    info.usage = enums.buffer_usage(.VertexBuffer)
     info.sharingMode = enums.sharing_mode(.Exclusive)
     mut handle := ptr(0)
     mut code := r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle))
@@ -362,22 +382,19 @@ pub unsafe fn setup_frames(r: &mut state.Renderer) -> state.SetupStep {
     for i in 0..2 {
         r.commands[i] = commands[i]
         mut fence: vk.FenceCreateInfo = zeroed()
-        fence.sType = 11
+        fence.sType = 8
         fence.flags = enums.fence(.Signaled)
         mut created := ptr(0)
         code = r.api.CreateFence(r.device, addr(&fence), ptr(0), addr(&mut created))
         if code != 0 { return fail(&mut r, code, .FrameSync) }
         r.fences[i] = created
+        if r.surface == ptr(0) { continue }
         mut semaphore: vk.SemaphoreCreateInfo = zeroed()
-        semaphore.sType = 10
+        semaphore.sType = 9
         mut available := ptr(0)
         code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut available))
         if code != 0 { return fail(&mut r, code, .FrameSync) }
         r.image_available[i] = available
-        mut finished := ptr(0)
-        code = r.api.CreateSemaphore(r.device, addr(&semaphore), ptr(0), addr(&mut finished))
-        if code != 0 { return fail(&mut r, code, .FrameSync) }
-        r.render_finished[i] = finished
     }
     .Ready
 }
