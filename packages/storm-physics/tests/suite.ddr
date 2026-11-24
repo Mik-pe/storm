@@ -30,6 +30,28 @@ fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.002 }
     assert(!bodies[0].grounded && bodies[0].velocity.y > 3.0)
 }
 
+@test fn initial_support_uses_the_contact_normal_relative_speed_and_actual_platform_footprint() {
+    mut slab := floor()
+    mut ball := physics.sphere(core.vec3(0.0, 0.5, 0.0), 0.5, 1.0)
+    assert(physics.supported_by(&ball, &slab))
+    ball.velocity.y = 3.0
+    assert(!physics.supported_by(&ball, &slab))
+    ball.velocity.y = -3.0
+    assert(!physics.supported_by(&ball, &slab))
+    ball.velocity.y = 0.0
+    ball.position = core.vec3(8.5, -0.5, 0.0)
+    assert(!physics.supported_by(&ball, &slab))
+    slab.one_way = true
+    ball.position = core.vec3(8.15, 0.5, 0.0)
+    assert(!physics.supported_by(&ball, &slab))
+    crate := physics.box_body(ball.position, core.vec3(0.4, 0.5, 0.4), 1.0)
+    assert(physics.supported_by(&crate, &slab))
+    ball.position.x = 7.9
+    assert(physics.supported_by(&ball, &slab))
+    ball.position.y = 0.45
+    assert(!physics.supported_by(&ball, &slab))
+}
+
 @test fn spheres_exchange_momentum_in_an_elastic_impact() {
     mut bodies: []physics.Body = [physics.sphere(core.vec3(-0.51, 0.0, 0.0), 0.5, 1.0),
         physics.sphere(core.vec3(0.51, 0.0, 0.0), 0.5, 3.0)]
@@ -93,4 +115,36 @@ fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.002 }
             assert(initial[i].position.y == replay[i].position.y && initial[i].velocity.x == replay[i].velocity.x)
         }
     }
+}
+
+@test fn one_way_faces_admit_from_below_and_the_side_then_catch_a_rapid_descent() {
+    mut pad := physics.box_body(core.vec3(0.0, 1.0, 0.0), core.vec3(1.0, 0.01, 1.0), 0.0)
+    pad.one_way = true
+    mut bodies: []physics.Body = [pad, physics.sphere(core.vec3(0.0, 0.5, 0.0), 0.1, 1.0)]
+    bodies[1].velocity.y = 100.0
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(bodies[1].position.y > 2.0 && bodies[1].platform == -1)
+    bodies[1].velocity.y = -800.0
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(near(bodies[1].position.y, 1.11) && bodies[1].grounded && bodies[1].platform == 0)
+    assert(near(bodies[1].landing_point.y, 1.01))
+    bodies[1].position = core.vec3(-1.5, 1.0, 0.0)
+    bodies[1].velocity = core.vec3(60.0, 0.0, 0.0)
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(near(bodies[1].position.x, -0.5) && near(bodies[1].position.y, 1.0) && bodies[1].platform == -1)
+}
+
+@test fn one_way_faces_choose_the_first_crossing_and_do_not_catch_a_near_miss() {
+    mut low := physics.box_body(core.vec3(0.0, 0.9, 0.0), core.vec3(1.0, 0.1, 1.0), 0.0)
+    low.one_way = true
+    mut high := low.clone()
+    high.position.y = 1.05
+    mut bodies: []physics.Body = [low, high, physics.sphere(core.vec3(0.0, 1.7, 0.0), 0.1, 1.0)]
+    bodies[2].velocity.y = -900.0
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(bodies[2].platform == 1 && near(bodies[2].position.y, 1.25))
+    bodies[2].position = core.vec3(1.2, 1.7, 0.0)
+    bodies[2].velocity.y = -900.0
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(bodies[2].platform == -1 && bodies[2].position.y < 0.0 && !bodies[2].grounded)
 }

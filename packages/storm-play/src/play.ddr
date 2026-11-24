@@ -13,9 +13,12 @@ pub const MAX_ENTITIES: i32 = 128
 pub const TICK_RATE: i32 = 60
 pub const TICK_SECONDS: f64 = 1.0 / 60.0
 const MAX_CATCHUP: i32 = 8
+const RUN_SPEED: f32 = 4.5
+const BOOST_SPEED: f32 = 8.2
+const TAU: f32 = 6.2831853
 
 pub enum Shape { Box, Sphere }
-pub enum Role { Prop, Player, Goal, Flower, Collider }
+pub enum Role { Prop, Player, Goal, Flower, Collider, Cloud, BoostCloud, SuperButterfly }
 pub enum Theme { Plain, Blossom }
 pub struct Bounds { min_x: f32, min_z: f32, max_x: f32, max_z: f32 }
 struct Sensor { entity_index: i32, body: physics.Body }
@@ -27,11 +30,22 @@ pub struct Entity {
 
 pub struct Scene { name: string, gravity: core.Vec3, theme: Theme, bounds: Option<Bounds>, entities: []Entity }
 pub struct Input { x: f32, z: f32, jump: bool }
+pub struct PlayerMotion {
+    seconds: f32, heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, vertical_velocity: f32,
+    takeoff_age: f32, landing_age: f32, boost_age: f32, landing_strength: f32,
+}
+struct MotionTick {
+    heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, vertical_velocity: f32,
+    takeoff_tick: i64, landing_tick: i64, boost_tick: i64, landing_strength: f32,
+}
 pub struct Session {
     scene: Scene, tick: i64, won: bool, contacts: i32, player: i32,
     bodies: []physics.Body, body_indices: []i32, sensors: []Sensor,
     collected: []bool, flowers: i32, total_flowers: i32, last_flower: i32, picked_tick: i64,
+    butterflies: i32, total_butterflies: i32, last_butterfly: i32, butterfly_tick: i64,
+    last_cloud: i32, cloud_tick: i64, cloud_origin: core.Vec3, body_entities: []i32, has_goal: bool,
     heading: f32, walk_phase: f32, walking: bool,
+    motion: MotionTick, previous_motion: MotionTick,
     previous: []core.Vec3, accumulator: f64, jump_pending: bool,
 }
 
@@ -55,7 +69,7 @@ pub fn demo() -> Scene {
     scene.entities.push(entity("Vallmo", .Sphere, .Player, core.vec3(0.0, 0.4, 1.0), core.vec3(0.8, 0.8, 0.8),
         1.0, core.vec3(0.95, 0.31, 0.075)))
     names := ["Smörblomma", "Blåklocka", "Prästkrage", "Skogsviol", "Gullviva"]
-    positions := [core.vec3(-2.0, 0.45, 1.1), core.vec3(2.0, 0.45, 0.1),
+    positions := [core.vec3(-2.15, 0.45, 1.55), core.vec3(2.0, 0.45, 0.1),
         core.vec3(-2.8, 0.45, -1.75), core.vec3(-1.05, 0.45, -2.45), core.vec3(3.4, 0.45, -2.0)]
     colors := [core.vec3(0.98, 0.69, 0.15), core.vec3(0.36, 0.41, 0.91), core.vec3(0.98, 0.93, 0.82),
         core.vec3(0.69, 0.37, 0.83), core.vec3(0.99, 0.57, 0.20)]
@@ -68,17 +82,36 @@ pub fn demo() -> Scene {
         scene.entities.push(entity("Stam " + (i + 1).str(), .Box, .Collider, trunks[i], core.vec3(0.56, 2.6, 0.56),
             0.0, core.vec3(0.0, 0.0, 0.0)))
     }
+    tops := [core.vec3(-1.85, 0.88, 0.48), core.vec3(-2.60, 1.66, 0.20),
+        core.vec3(-3.36, 2.12, -1.06), core.vec3(-1.80, 1.72, -1.68),
+        core.vec3(-0.20, 1.70, -1.68), core.vec3(1.55, 3.76, -1.50)]
+    clouds := ["Daggmolnet", "Körsbärsmolnet", "Västra vilan", "Sidenmolnet", "Studsmolnet", "Kronbalkongen"]
+    for i in 0..tops.len {
+        pad := if i == 4 { Role.BoostCloud } else { Role.Cloud }
+        tint := if i == 4 { core.vec3(0.98, 0.32, 0.60) } else { core.vec3(0.86, 0.91, 1.0) }
+        scene.entities.push(entity(clouds[i], .Box, pad, core.sub(tops[i], core.vec3(0.0, 0.14, 0.0)),
+            core.vec3(if i == 5 { 1.8 } else { 1.48 }, 0.28, 1.32), 0.0, tint))
+    }
+    wings := ["Guldvinge", "Sidenvinge", "Kronvinge"]
+    perches := [core.vec3(-3.38, 2.84, -0.91), core.vec3(-1.79, 3.28, -1.73), core.vec3(2.08, 4.47, -1.56)]
+    wing_colors := [core.vec3(1.0, 0.68, 0.18), core.vec3(0.54, 0.37, 0.94), core.vec3(0.16, 0.8, 0.73)]
+    for i in 0..wings.len {
+        scene.entities.push(entity(wings[i], .Sphere, .SuperButterfly, perches[i], core.vec3(0.60, 0.60, 0.60), 0.0, wing_colors[i]))
+    }
     scene
 }
 
 fn role_name(role: Role) -> string {
-    match role { .Player => "player", .Goal => "goal", .Flower => "flower", .Collider => "collider", .Prop => "prop" }
+    match role { .Player => "player", .Goal => "goal", .Flower => "flower", .Collider => "collider", .Prop => "prop",
+        .Cloud => "cloud", .BoostCloud => "boost_cloud", .SuperButterfly => "super_butterfly" }
 }
 
 fn read_role(value: string) -> Result<Role, string> {
     match value {
         "prop" => .Ok(.Prop), "player" => .Ok(.Player), "goal" => .Ok(.Goal), "flower" => .Ok(.Flower),
-        "collider" => .Ok(.Collider), _ => .Err("role must be prop, player, goal, flower or collider"),
+        "collider" => .Ok(.Collider), "cloud" => .Ok(.Cloud), "boost_cloud" => .Ok(.BoostCloud),
+        "super_butterfly" => .Ok(.SuperButterfly),
+        _ => .Err("role must be prop, player, goal, flower, collider, cloud, boost_cloud or super_butterfly"),
     }
 }
 
@@ -103,8 +136,9 @@ fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
     if mass < 0.0 || (mass > 0.0 && mass < 0.001) { return .Err("mass must be zero or at least 0.001") }
     if mass == 0.0 && (velocity.x != 0.0 || velocity.y != 0.0 || velocity.z != 0.0) { return .Err("a static entity cannot have initial velocity") }
     if role == .Collider && mass != 0.0 { return .Err("a collider must have zero mass") }
+    if (role == .Cloud || role == .BoostCloud) && (mass != 0.0 || shape != .Box) { return .Err("a cloud requires a static box") }
     if role == .Player && mass == 0.0 { return .Err("a player requires positive mass") }
-    if (role == .Goal || role == .Flower) && mass != 0.0 { return .Err("a sensor must have zero mass") }
+    if (role == .Goal || role == .Flower || role == .SuperButterfly) && mass != 0.0 { return .Err("a sensor must have zero mass") }
     if color.x < 0.0 || color.y < 0.0 || color.z < 0.0 || color.x > 1.0 || color.y > 1.0 || color.z > 1.0 { return .Err("color components must be in [0,1]") }
     if friction < 0.0 || friction > 1.0 || restitution < 0.0 || restitution > 1.0 { return .Err("friction and restitution must be in [0,1]") }
     .Ok(Entity { name: name, shape: shape, role: role, position: pos, size: size,
@@ -242,6 +276,7 @@ pub fn save(scene: &Scene, path: string) -> Result<(), string> {
 fn make_body(e: &Entity) -> physics.Body {
     mut body := if e.shape == .Sphere { physics.sphere(e.position, e.size.x * 0.5, e.mass) }
         else { physics.box_body(e.position, core.scale(e.size, 0.5), e.mass) }
+    body.one_way = e.role == .Cloud || e.role == .BoostCloud
     body.velocity = e.velocity
     body.friction = e.friction
     body.restitution = e.restitution
@@ -249,11 +284,15 @@ fn make_body(e: &Entity) -> physics.Body {
 }
 
 pub fn start(scene: &Scene) -> Session {
+    rest := MotionTick { heading: 0.35, walk_phase: 0.0, run_weight: 0.0, grounded: false, vertical_velocity: 0.0,
+        takeoff_tick: -1, landing_tick: -1, boost_tick: -1, landing_strength: 0.0 }
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
         bodies: [], body_indices: [], sensors: [], accumulator: 0.0, jump_pending: false,
         collected: [], flowers: 0, total_flowers: 0, last_flower: -1, picked_tick: -1,
-        heading: 0.35, walk_phase: 0.0, walking: false,
+        butterflies: 0, total_butterflies: 0, last_butterfly: -1, butterfly_tick: -1,
+        last_cloud: -1, cloud_tick: -1, cloud_origin: core.vec3(0.0, 0.0, 0.0), body_entities: [], has_goal: false,
+        heading: rest.heading, walk_phase: 0.0, walking: false, motion: rest, previous_motion: rest,
     }
     for i in 0..scene.entities.len {
         item := &scene.entities[i]
@@ -261,14 +300,29 @@ pub fn start(scene: &Scene) -> Session {
         session.previous.push(item.position)
         session.collected.push(false)
         if item.role == .Flower { session.total_flowers += 1 }
-        if item.role == .Goal || item.role == .Flower {
+        if item.role == .SuperButterfly { session.total_butterflies += 1 }
+        if item.role == .Goal { session.has_goal = true }
+        if item.role == .Goal || item.role == .Flower || item.role == .SuperButterfly {
             session.body_indices.push(-1)
             session.sensors.push(Sensor { entity_index: i, body: body })
         } else {
             if item.role == .Player { session.player = session.bodies.len }
             session.body_indices.push(session.bodies.len)
+            session.body_entities.push(i)
             session.bodies.push(body)
         }
+    }
+    if session.player >= 0 {
+        p := session.player
+        for i in 0..session.bodies.len {
+            if i != p && physics.supported_by(&session.bodies[p], &session.bodies[i]) {
+                session.bodies[p].grounded = true
+                break
+            }
+        }
+        session.motion.grounded = session.bodies[p].grounded
+        session.motion.vertical_velocity = session.bodies[p].velocity.y
+        session.previous_motion = session.motion
     }
     session
 }
@@ -282,6 +336,52 @@ pub fn position(s: &Session, index: i32) -> core.Vec3 {
 pub fn render_position(s: &Session, index: i32) -> core.Vec3 {
     before := s.previous[index]
     core.add(before, core.scale(core.sub(position(s, index), before), f32(s.accumulator)))
+}
+
+pub fn render_tick_offset(s: &Session, exact: bool) -> f32 {
+    if exact || s.tick == 0 { return 0.0 }
+    f32(s.accumulator - 1.0)
+}
+
+fn near_angle(from: f32, to: f32) -> f32 {
+    d := to - from
+    d - ((d + TAU * 0.5) / TAU).floor() * TAU
+}
+
+fn approach(from: f32, to: f32, limit: f32) -> f32 {
+    if to > from + limit { return from + limit }
+    if to < from - limit { return from - limit }
+    to
+}
+
+fn event_age(tick: i64, event: i64, fraction: f64) -> f32 {
+    if event < 0 { return -1.0 }
+    f32((f64(tick - event) + fraction) * TICK_SECONDS)
+}
+
+// Continuous values share the position interpolation clock. Contacts and impulses
+// become visible at their fixed-tick boundary, including in multi-tick frames.
+pub fn render_motion(s: &Session, exact: bool) -> PlayerMotion {
+    current := s.motion
+    at_tick := exact || s.tick == 0
+    from := if at_tick { current } else { s.previous_motion }
+    tick := if at_tick { s.tick } else { s.tick - 1 }
+    fraction := if at_tick { f64(0.0) } else { s.accumulator }
+    t := f32(fraction)
+    // An impulse is instantaneous. Keep sampling the incoming trajectory until
+    // the first sample at the tick that registered the impact or takeoff.
+    impulse := current.takeoff_tick == s.tick || current.landing_tick == s.tick
+    dy := if !impulse { current.vertical_velocity - from.vertical_velocity }
+        else if from.grounded { f32(0.0) } else { s.scene.gravity.y * f32(TICK_SECONDS) }
+    PlayerMotion {
+        seconds: f32((f64(tick) + fraction) * TICK_SECONDS),
+        heading: from.heading + near_angle(from.heading, current.heading) * t,
+        walk_phase: from.walk_phase + near_angle(from.walk_phase, current.walk_phase) * t,
+        run_weight: from.run_weight + (current.run_weight - from.run_weight) * t,
+        grounded: from.grounded, vertical_velocity: from.vertical_velocity + dy * t,
+        takeoff_age: event_age(tick, from.takeoff_tick, fraction), landing_age: event_age(tick, from.landing_tick, fraction),
+        boost_age: event_age(tick, from.boost_tick, fraction), landing_strength: from.landing_strength,
+    }
 }
 
 fn axis(value: f32) -> f32 {
@@ -308,45 +408,85 @@ fn update_player(s: &mut Session, before: core.Vec3) {
     if distance > 0.00001 { s.heading = f32(math.atan2(f64(dx), f64(dz))) }
     if s.walking {
         s.walk_phase += distance * 5.0
-        if s.walk_phase >= 6.2831853 { s.walk_phase -= (s.walk_phase / 6.2831853).floor() * 6.2831853 }
+        if s.walk_phase >= TAU { s.walk_phase -= (s.walk_phase / TAU).floor() * TAU }
     }
-    if s.won { return }
+    s.motion.walk_phase = s.walk_phase
+    turn := near_angle(s.motion.heading, s.heading)
+    s.motion.heading = near_angle(0.0, s.motion.heading + approach(0.0, turn, 16.0 * f32(TICK_SECONDS)))
+    weight := if s.walking { axis(distance / (RUN_SPEED * f32(TICK_SECONDS))) } else { f32(0.0) }
+    s.motion.run_weight = approach(s.motion.run_weight, weight, 8.0 * f32(TICK_SECONDS))
+    s.motion.grounded = player.grounded
+    s.motion.vertical_velocity = player.velocity.y
+    if s.won && s.butterflies == s.total_butterflies { return }
     mut at_goal := false
     for i in 0..s.sensors.len {
         sensor := &s.sensors[i]
         index := sensor.entity_index
         if s.collected[index] || !physics.overlap(player, &sensor.body) { continue }
-        if s.scene.entities[index].role == .Goal { at_goal = true }
-        else {
+        role := s.scene.entities[index].role
+        if role == .Goal { at_goal = true }
+        else if role == .SuperButterfly {
+            s.collected[index] = true
+            s.butterflies += 1
+            s.last_butterfly = index
+            s.butterfly_tick = s.tick
+        } else {
             s.collected[index] = true
             s.flowers += 1
             s.last_flower = index
             s.picked_tick = s.tick
         }
     }
-    has_goal := s.sensors.len > s.total_flowers
-    s.won = s.flowers == s.total_flowers && (at_goal || (!has_goal && s.flowers > 0))
+    if !s.won {
+        if s.has_goal || s.total_flowers > 0 {
+            s.won = s.flowers == s.total_flowers && (!s.has_goal || at_goal)
+        } else { s.won = s.total_butterflies > 0 && s.butterflies == s.total_butterflies }
+    }
 }
 
 pub fn step(s: &mut Session, input: Input) {
+    s.previous_motion = s.motion
     for i in 0..s.body_indices.len { s.previous[i] = position(&s, i) }
     mut before := core.vec3(0.0, 0.0, 0.0)
+    mut old_platform := -1
     if s.player >= 0 {
+        old_platform = s.bodies[s.player].platform
         before = s.bodies[s.player].position
         x := axis(input.x)
         z := axis(input.z)
         length := (x * x + z * z).sqrt()
-        speed := if length > 1.0 { f32(4.5) / length } else { f32(4.5) }
+        speed := if length > 1.0 { RUN_SPEED / length } else { RUN_SPEED }
         s.bodies[s.player].velocity.x = x * speed
         s.bodies[s.player].velocity.z = z * speed
         if (input.jump || s.jump_pending) && s.bodies[s.player].grounded {
             s.bodies[s.player].velocity.y = 5.6
+            s.motion.takeoff_tick = s.tick + 1
         }
     }
     s.jump_pending = false
     s.contacts = physics.step(&mut s.bodies, s.scene.gravity, f32(TICK_SECONDS))
     s.tick += 1
-    if s.player >= 0 { update_player(&mut s, before) }
+    if s.player >= 0 {
+        if !s.previous_motion.grounded && s.bodies[s.player].grounded {
+            s.motion.landing_tick = s.tick
+            speed := -(s.previous_motion.vertical_velocity + s.scene.gravity.y * f32(TICK_SECONDS))
+            s.motion.landing_strength = if speed > 0.0 { axis(speed / BOOST_SPEED) } else { f32(0.0) }
+        }
+        support := s.bodies[s.player].platform
+        if support >= 0 && support != old_platform {
+            index := s.body_entities[support]
+            s.last_cloud = index
+            s.cloud_tick = s.tick
+            s.cloud_origin = s.bodies[s.player].landing_point
+            if s.scene.entities[index].role == .BoostCloud {
+                s.bodies[s.player].velocity.y = BOOST_SPEED
+                s.bodies[s.player].grounded = false
+                s.motion.boost_tick = s.tick
+                s.motion.takeoff_tick = s.tick
+            }
+        }
+        update_player(&mut s, before)
+    }
 }
 
 // The accumulator is in ticks. Preserve sub-tick time and a jump edge until a tick consumes it.
@@ -374,6 +514,13 @@ pub fn state_json(s: &Session) -> string {
     w.key("total_flowers"); w.integer(i64(s.total_flowers))
     w.key("last_flower"); w.integer(i64(s.last_flower))
     w.key("picked_tick"); w.integer(s.picked_tick)
+    w.key("butterflies"); w.integer(i64(s.butterflies))
+    w.key("total_butterflies"); w.integer(i64(s.total_butterflies))
+    w.key("last_butterfly"); w.integer(i64(s.last_butterfly))
+    w.key("butterfly_tick"); w.integer(s.butterfly_tick)
+    w.key("last_cloud"); w.integer(i64(s.last_cloud))
+    w.key("cloud_tick"); w.integer(s.cloud_tick)
+    codec.vector_field(&mut w, "cloud_origin", s.cloud_origin)
     w.key("heading"); w.decimal(f64(s.heading))
     w.key("walk_phase"); w.decimal(f64(s.walk_phase))
     w.key("walking"); w.boolean(s.walking)

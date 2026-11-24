@@ -135,3 +135,44 @@ fn data(d: &json.Doc) -> i32 { d.field(d.field(d.root, "result"), "structuredCon
     reset := call(&mut server, "storm_reset", "{}")
     assert(reset.get_i64(data(&reset), "flowers") == .Some(0) && reset.get_bool(data(&reset), "won") == .Some(false))
 }
+
+@test fn authored_clouds_and_overlapping_butterflies_round_trip_through_agent_tools() {
+    mut server := ready()
+    scene := r#"""
+{"scene":{"version":1,"name":"Cloud meadow","theme":"blossom","entities":[
+  {"name":"Ground","shape":"box","role":"collider","position":[0,-0.25,0],"size":[20,0.5,12]},
+  {"name":"Player","shape":"sphere","role":"player","position":[0,0.4,0],"size":[0.8,0.8,0.8],"mass":1},
+  {"name":"Blue","shape":"sphere","role":"super_butterfly","position":[0,0.4,0]},
+  {"name":"Pink","shape":"box","role":"super_butterfly","position":[0,0.4,0]},
+  {"name":"Spring","shape":"box","role":"boost_cloud","position":[0,1,0],"size":[2,0.2,2]},
+  {"name":"Cloud","shape":"box","role":"cloud","position":[3,1,0],"size":[2,0.2,2]},
+  {"name":"Flower","shape":"sphere","role":"flower","position":[8,0.4,0]}
+]}}
+"""#
+    created := call(&mut server, "storm_set_scene", scene)
+    assert(!failed(&created))
+    authored := call(&mut server, "storm_inspect", "{\"view\":\"scene\"}")
+    doc := authored.raw_json(data(&authored))
+    restored := call(&mut server, "storm_set_scene", "{\"scene\":" + doc + "}")
+    assert(!failed(&restored))
+    same := call(&mut server, "storm_inspect", "{\"view\":\"scene\"}")
+    assert(same.raw_json(data(&same)) == doc)
+    landed := call(&mut server, "storm_step", "{\"ticks\":4}")
+    runtime := data(&landed)
+    assert(landed.get_i64(runtime, "butterflies") == .Some(2) && landed.get_i64(runtime, "total_butterflies") == .Some(2))
+    last := landed.get_i64(runtime, "last_butterfly").unwrap_or(-1)
+    assert(last >= 2 && last <= 3 && landed.get_i64(runtime, "butterfly_tick") == .Some(1))
+    bodies := landed.field(runtime, "entities")
+    assert(landed.get_bool(landed.at(bodies, 1), "grounded") == .Some(true))
+    assert(landed.get_bool(landed.at(bodies, 2), "collected") == .Some(true) && landed.get_bool(landed.at(bodies, 3), "collected") == .Some(true))
+    bounced := call(&mut server, "storm_step", "{\"jump\":true,\"ticks\":65}")
+    progress := data(&bounced)
+    assert(bounced.get_i64(progress, "last_cloud") == .Some(4))
+    assert(bounced.get_i64(progress, "cloud_tick").unwrap_or(-1) > 4)
+    assert(bounced.count(bounced.field(progress, "cloud_origin")) == 3)
+    assert(bounced.get_i64(progress, "butterflies") == .Some(2))
+    invalid := call(&mut server, "storm_upsert", "{\"entity\":{\"name\":\"Spring\",\"shape\":\"sphere\",\"role\":\"boost_cloud\"}}")
+    assert(failed(&invalid))
+    kept := call(&mut server, "storm_inspect", "{}")
+    assert(kept.raw_json(data(&kept)) == bounced.raw_json(progress))
+}

@@ -62,7 +62,7 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
         walk(&mut s, 0.0, 0.0, 3)
         assert(s.picked_tick == picked && s.flowers == i + 1)
     }
-    assert(s.won && !s.walking && s.tick == 249)
+    assert(s.won && !s.walking && s.tick == 249 && s.butterflies == 0)
     assert(play.encode(&s.scene) == source)
     reset := play.start(&s.scene)
     assert(reset.tick == 0 && !reset.won && reset.flowers == 0 && reset.picked_tick == -1)
@@ -96,7 +96,7 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
 
 @test fn the_forest_trunk_stops_the_runner_until_she_turns_back() {
     mut original := play.demo()
-    assert(original.entities.len == 11 && original.entities[7].role == .Collider)
+    assert(original.entities[7].role == .Collider && original.entities[7].name == "Stam 1")
     assert(play.upsert(&mut original, "{\"name\":\"Stam 1\",\"role\":\"collider\",\"shape\":\"box\",\"mass\":1}").is_err())
     mut s := play.start(&play.decode(play.encode(&original)).unwrap())
     walk(&mut s, 0.0, -1.0, 35)
@@ -174,4 +174,162 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     assert(play.save(&scene, path).is_err())
     assert(play.encode(&play.load(path).unwrap()) == before)
     assert(sys.remove_file(path).ok)
+}
+
+@test fn motion_samples_real_takeoff_impact_and_reset_on_the_position_clock() {
+    scene := play.demo()
+    mut s := play.start(&scene)
+    spawn := play.render_motion(&s, true)
+    assert(spawn.seconds == 0.0 && spawn.grounded && spawn.takeoff_age < 0.0 && spawn.landing_age < 0.0)
+    assert(play.render_tick_offset(&s, false) == 0.0)
+    play.step(&mut s, command(0.0, true))
+    leap := play.render_motion(&s, true)
+    assert(leap.takeoff_age == 0.0 && !leap.grounded && leap.vertical_velocity > 5.0 && leap.boost_age < 0.0)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 0)
+    approach := play.render_motion(&s, false)
+    assert(play.render_tick_offset(&s, false) == -0.5 && play.render_tick_offset(&s, true) == 0.0)
+    assert(approach.takeoff_age < 0.0 && approach.grounded && approach.vertical_velocity == 0.0)
+    assert((approach.seconds - f32(play.TICK_SECONDS * 0.5)).abs() < 0.000001)
+    play.step(&mut s, command(0.0, true))
+    flight := play.render_motion(&s, false)
+    assert(!flight.grounded && flight.takeoff_age == approach.seconds && flight.vertical_velocity < leap.vertical_velocity)
+    mut impacts := 0
+    for _ in 0..100 {
+        play.step(&mut s, command(0.0, false))
+        impact := play.render_motion(&s, true)
+        if impact.landing_age == 0.0 {
+            impacts += 1
+            assert(impact.grounded && impact.landing_strength > 0.60 && impact.landing_strength < 0.75)
+            incoming := play.render_motion(&s, false)
+            assert(!incoming.grounded && incoming.landing_age < 0.0 && incoming.vertical_velocity < -5.0)
+        }
+    }
+    assert(impacts == 1 && play.render_motion(&s, true).boost_age < 0.0)
+    reset := play.render_motion(&play.start(&scene), false)
+    assert(reset.takeoff_age < 0.0 && reset.landing_age < 0.0 && reset.landing_strength == 0.0 && reset.seconds == 0.0)
+}
+
+@test fn visual_turns_walk_cycles_and_run_weight_interpolate_from_real_displacement() {
+    scene := play.demo()
+    mut s := play.start(&scene)
+    walk(&mut s, 0.01, -1.0, 1)
+    start := play.render_motion(&s, true)
+    assert(start.heading > 0.35 && start.heading < 0.7 && start.run_weight > 0.0 && start.run_weight < 0.2)
+    walk(&mut s, 0.01, -1.0, 15)
+    before := play.render_motion(&s, true)
+    assert(before.heading > 3.10 && before.run_weight > 0.95 && before.walk_phase > 5.5)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 1.5, play.Input { x: -0.01, z: -1.0, jump: false }) == 1)
+    middle := play.render_motion(&s, false)
+    after := play.render_motion(&s, true)
+    assert(middle.heading.abs() > 3.12 && after.heading < -3.10)
+    assert(after.walk_phase < 0.3 && middle.walk_phase > before.walk_phase && middle.walk_phase < 6.30)
+    play.step(&mut s, command(0.0, false))
+    stop := play.render_motion(&s, true)
+    assert(stop.run_weight > 0.7 && stop.run_weight < after.run_weight && stop.walk_phase == after.walk_phase)
+    walk(&mut s, 0.0, 0.0, 8)
+    assert(play.render_motion(&s, true).run_weight == 0.0)
+}
+
+fn fly(s: &mut play.Session, x: f32, z: f32, jump: bool, ticks: i32, realtime: bool) {
+    mut i := 0
+    while i < ticks {
+        input := play.Input { x: x, z: z, jump: i == 0 && jump }
+        if !realtime { play.step(&mut s, input) }
+        else if i % 3 == 1 && i + 1 < ticks {
+            assert(play.advance(&mut s, play.TICK_SECONDS * 2.0, input) == 2)
+            i += 1
+        } else {
+            assert(play.advance(&mut s, play.TICK_SECONDS * 0.4, input) == 0)
+            assert(play.advance(&mut s, play.TICK_SECONDS * 0.6, play.Input { x: x, z: z, jump: false }) == 1)
+        }
+        i += 1
+    }
+}
+
+fn climb_to_pink(s: &mut play.Session, realtime: bool) {
+    fly(&mut s, 0.0, 0.0, false, 2, realtime)
+    directions := [[-1.0, 0.04], [-1.0, -0.63], [-0.60, -1.0], [1.0, -0.40], [1.0, 0.0]]
+    runs := [17, 21, 20, 23, 21]
+    waits := [51, 54, 55, 57, 47]
+    for i in 0..runs.len {
+        fly(&mut s, f32(directions[i][0]), f32(directions[i][1]), true, runs[i], realtime)
+        fly(&mut s, 0.0, 0.0, false, waits[i], realtime)
+        assert(s.last_cloud == 11 + i)
+        if i < 4 { assert(s.bodies[s.player].grounded) }
+        if i == 2 { assert(s.butterflies == 1 && s.collected[17]) }
+        if i == 3 { assert(s.butterflies == 2 && s.collected[18]) }
+    }
+}
+
+@test fn real_inputs_climb_the_clouds_bounce_to_the_crown_and_replay_across_frame_rates() {
+    scene := play.demo()
+    mut expected := ""
+    for realtime in [false, true] {
+        mut s := play.start(&play.decode(play.encode(&scene)).unwrap())
+        assert(s.total_butterflies == 3 && s.last_cloud == -1 && s.cloud_tick == -1)
+        climb_to_pink(&mut s, realtime)
+        assert(s.tick == 368 && s.cloud_tick == s.tick && s.cloud_origin.y == 1.7 && s.last_cloud == 15)
+        assert(!s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
+        spring := play.render_motion(&s, true)
+        assert(spring.boost_age == 0.0 && spring.takeoff_age == 0.0 && spring.landing_age == 0.0)
+        assert(!spring.grounded && spring.vertical_velocity == 8.2 && spring.landing_strength > 0.5)
+        fly(&mut s, 1.0, 0.11, false, 24, realtime)
+        assert(s.cloud_tick == 368 && play.position(&s, 1).y > 4.5)
+        fly(&mut s, 0.0, 0.0, false, 90, realtime)
+        assert(s.tick == 482 && s.last_cloud == 16 && s.bodies[s.player].grounded)
+        perch := play.render_motion(&s, true)
+        assert(perch.grounded && perch.boost_age == f32((482.0 - 368.0) / 60.0) && perch.landing_age < perch.boost_age)
+        assert(s.butterflies == 3 && s.last_butterfly == 19 && s.collected[19] && !s.won)
+        if realtime { assert(play.state_json(&s) == expected) } else { expected = play.state_json(&s) }
+        reset := play.start(&s.scene)
+        assert(reset.butterflies == 0 && reset.butterfly_tick == -1 && reset.last_butterfly == -1 && !reset.collected[19])
+        assert(reset.last_cloud == -1 && reset.cloud_tick == -1 && reset.tick == 0)
+        assert(play.render_motion(&reset, false).boost_age < 0.0)
+    }
+}
+
+@test fn an_ordinary_jump_from_the_pink_pad_cannot_reach_the_crown() {
+    mut scene := play.demo()
+    scene.entities[15].role = .Cloud
+    mut s := play.start(&scene)
+    climb_to_pink(&mut s, false)
+    assert(s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 0.0)
+    fly(&mut s, 1.0, 0.11, true, 24, false)
+    fly(&mut s, 0.0, 0.0, false, 90, false)
+    assert(s.butterflies == 2 && !s.collected[19] && s.last_cloud != 16)
+}
+
+@test fn butterflies_remain_collectible_after_bouquet_win_and_can_be_a_standalone_goal() {
+    mut scene := play.empty("Garden")
+    assert(play.upsert(&mut scene, "{\"name\":\"ground\",\"shape\":\"box\",\"size\":[10,1,10],\"position\":[0,-0.5,0]}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"player\",\"role\":\"player\",\"shape\":\"sphere\",\"mass\":1,\"position\":[0,0.5,0]}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"wing\",\"role\":\"super_butterfly\",\"shape\":\"sphere\",\"position\":[2.4,0.5,0]}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"flower\",\"role\":\"flower\",\"shape\":\"sphere\",\"position\":[0,0.5,0]}").is_ok())
+    mut bouquet := play.start(&scene)
+    walk(&mut bouquet, 0.0, 0.0, 1)
+    assert(bouquet.won && bouquet.flowers == 1 && bouquet.butterflies == 0)
+    walk(&mut bouquet, 1.0, 0.0, 30)
+    assert(bouquet.won && bouquet.butterflies == 1 && bouquet.last_butterfly == 2)
+    picked := bouquet.butterfly_tick
+    walk(&mut bouquet, 0.0, 0.0, 4)
+    assert(bouquet.butterflies == 1 && bouquet.butterfly_tick == picked)
+    assert(play.remove(&mut scene, "flower").is_ok())
+    mut solo := play.start(&scene)
+    walk(&mut solo, 0.0, 0.0, 1)
+    assert(!solo.won)
+    walk(&mut solo, 1.0, 0.0, 30)
+    assert(solo.won && solo.butterflies == solo.total_butterflies)
+}
+
+@test fn cloud_authoring_requires_a_static_box_and_butterflies_are_static_sensors() {
+    mut scene := play.empty("Clouds")
+    for role in ["cloud", "boost_cloud"] {
+        assert(play.upsert(&mut scene, "{\"name\":\"pad\",\"shape\":\"sphere\",\"role\":\"" + role + "\"}").is_err())
+        assert(play.upsert(&mut scene, "{\"name\":\"pad\",\"shape\":\"box\",\"role\":\"" + role + "\",\"mass\":1}").is_err())
+        assert(play.upsert(&mut scene, "{\"name\":\"pad\",\"shape\":\"box\",\"role\":\"" + role + "\"}").is_ok())
+    }
+    assert(play.upsert(&mut scene, "{\"name\":\"w\",\"shape\":\"sphere\",\"role\":\"super_butterfly\",\"mass\":2}").is_err())
+    assert(play.upsert(&mut scene, "{\"name\":\"w\",\"shape\":\"box\",\"role\":\"super_butterfly\"}").is_ok())
+    encoded := play.encode(&scene)
+    assert(play.encode(&play.decode(encoded).unwrap()) == encoded)
 }

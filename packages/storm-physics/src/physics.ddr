@@ -14,6 +14,7 @@ pub struct Body {
     restitution: f32,
     friction: f32,
     grounded: bool,
+    one_way: bool, platform: i32, landing_point: core.Vec3,
 }
 
 fn lesser(a: f32, b: f32) -> f32 { if a < b { return a }; b }
@@ -27,6 +28,7 @@ fn body(shape: Shape, position: core.Vec3, half: core.Vec3, mass: f32) -> Body {
         velocity: core.vec3(0.0, 0.0, 0.0),
         inverse_mass: if mass > 0.0 { 1.0 / mass } else { 0.0 },
         restitution: 0.0, friction: 0.55, grounded: false,
+        one_way: false, platform: -1, landing_point: core.vec3(0.0, 0.0, 0.0),
     }
 }
 
@@ -97,6 +99,26 @@ fn contact(a: &Body, b: &Body) -> Option<Contact> {
 
 pub fn overlap(a: &Body, b: &Body) -> bool {
     contact(a, b).is_some()
+}
+
+fn over_platform(b: &Body, slab: &Body, x: f32, z: f32) -> bool {
+    // A sphere touches at its bottom point, a box across its bottom face.
+    reach_x := if b.shape == .Box { b.half_extents.x } else { 0.0 }
+    reach_z := if b.shape == .Box { b.half_extents.z } else { 0.0 }
+    (x - slab.position.x).abs() <= slab.half_extents.x + reach_x &&
+        (z - slab.position.z).abs() <= slab.half_extents.z + reach_z
+}
+
+pub fn supported_by(b: &Body, support: &Body) -> bool {
+    relative := core.sub(b.velocity, support.velocity)
+    if support.one_way {
+        gap := b.position.y - b.half_extents.y - (support.position.y + support.half_extents.y)
+        return relative.y.abs() <= 0.15 && gap.abs() <= 0.0002 && over_platform(b, support, b.position.x, b.position.z)
+    }
+    match contact(support, b) {
+        .Some(hit) => hit.normal.y > 0.5 && core.dot(relative, hit.normal).abs() <= 0.15,
+        .None => false,
+    }
 }
 
 fn resolve(bodies: &mut []Body, i: i32, j: i32, hit: &Contact) -> bool {
@@ -181,6 +203,36 @@ fn subdivisions(bodies: &[]Body, gravity: core.Vec3, dt: f32) -> i32 {
     count
 }
 
+// A platform has only a top face. Sweep the foot to that height so fast falls
+// land even when a body crosses the entire box between two integration points.
+fn land(bodies: &mut []Body, index: i32, before: core.Vec3, platforms: &[]i32) -> bool {
+    b := &bodies[index]
+    if platforms.len == 0 || b.velocity.y > 0.0 { return false }
+    start := before.y - b.half_extents.y
+    end := b.position.y - b.half_extents.y
+    mut chosen := -1
+    mut point := core.vec3(0.0, 0.0, 0.0)
+    for j in 0..platforms.len {
+        id := platforms[j]
+        slab := &bodies[id]
+        top := slab.position.y + slab.half_extents.y
+        if start < top - 0.0002 || end > top || (chosen >= 0 && top <= point.y) { continue }
+        t := if start > end { clamp((start - top) / (start - end), 0.0, 1.0) } else { 1.0 }
+        x := before.x + (b.position.x - before.x) * t
+        z := before.z + (b.position.z - before.z) * t
+        if !over_platform(b, slab, x, z) { continue }
+        chosen = id
+        point = core.vec3(x, top, z)
+    }
+    if chosen < 0 { return false }
+    bodies[index].position.y = point.y + bodies[index].half_extents.y
+    _ := resolve(&mut bodies, chosen, index, &Contact { normal: core.vec3(0.0, 1.0, 0.0), depth: 0.0 })
+    bodies[index].grounded = bodies[index].velocity.y <= 0.15
+    bodies[index].platform = chosen
+    bodies[index].landing_point = point
+    true
+}
+
 // Advance a simulation tick and return the number of contact pairs at its end.
 pub fn step(bodies: &mut []Body, gravity: core.Vec3, dt: f32) -> i32 {
     if !dt.is_finite() || dt <= 0.0 || bodies.len == 0 { return 0 }
@@ -188,15 +240,21 @@ pub fn step(bodies: &mut []Body, gravity: core.Vec3, dt: f32) -> i32 {
     h := dt / f32(count)
     mut order: []i32 = []
     order.reserve(bodies.len)
-    for i in 0..bodies.len { order.push(i) }
+    mut platforms: []i32 = []
+    for i in 0..bodies.len {
+        bodies[i].platform = -1
+        if bodies[i].one_way && bodies[i].inverse_mass == 0.0 { platforms.push(i) } else { order.push(i) }
+    }
     mut pairs: []Pair = []
     mut contacts := 0
     for substep in 0..count {
         for i in 0..bodies.len {
             bodies[i].grounded = false
             if bodies[i].inverse_mass == 0.0 { continue }
+            before := bodies[i].position
             bodies[i].velocity = core.add(bodies[i].velocity, core.scale(gravity, h))
             bodies[i].position = core.add(bodies[i].position, core.scale(bodies[i].velocity, h))
+            if land(&mut bodies, i, before, platforms) && substep + 1 == count { contacts += 1 }
         }
         candidates(bodies, &mut order, &mut pairs)
         for _iteration in 0..8 {
