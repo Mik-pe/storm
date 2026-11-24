@@ -3,6 +3,7 @@ capability unsafe
 import .api as vk
 import .layout as vkl
 import .sdl as sdl
+import .texture as texture
 
 @c_layout
 pub struct Buffer {
@@ -48,7 +49,7 @@ pub const MESH_PUSH_BYTES: u32 = 240
 pub enum SetupStep {
     Ready, Window, Instance, PhysicalDevice, QueueFamily, Device, Format, Swapchain,
     Shadow, Pipeline, PostProcess, Ui, DepthBuffer, FrameSync, VertexBuffer,
-    Environment, CaptureTarget,
+    Environment, CaptureTarget, Texture,
 }
 
 impl SetupStep {
@@ -71,6 +72,7 @@ impl SetupStep {
             .VertexBuffer => "vertex buffer",
             .Environment => "environment maps",
             .CaptureTarget => "capture target",
+            .Texture => "material textures",
         }
     }
 }
@@ -201,6 +203,9 @@ pub struct Renderer {
     uiVertShader: ptr,
     uiFragShader: ptr,
     vertex: Buffer,
+    meshSetLayouts: [ptr; 2],
+    // Material textures (texture.ddr): set 1 of the mesh pipeline.
+    material: texture.Material,
     window: sdl.Window,
     frameIndex: i64,
     trace: u32,

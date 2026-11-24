@@ -30,6 +30,7 @@ import .shadow as shadow
 import .ui as ui
 import .sdl as sdl
 import .state as state
+import .texture as texture
 
 // A live renderer, by generation: the handle is a plain value the
 // application can copy, and an expired one is refused, never followed.
@@ -63,6 +64,8 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     step = depth.create(&mut r, r.width, r.height)
     if step != .Ready { return step }
     step = shadow.setup(&mut r)
+    if step != .Ready { return step }
+    step = texture.setup(&mut r)
     if step != .Ready { return step }
     step = pipeline.setup(&mut r)
     if step != .Ready { return step }
@@ -307,7 +310,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 }
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, blended: bool) -> DrawResult {
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, texture_id: i64, blended: bool) -> DrawResult {
     if r.pass != state.PASS_DIRECT && r.pass != state.PASS_FILTERED { return draw_error(r.frameIndex, "mesh requires an open scene") }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
@@ -341,6 +344,8 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     } else {
         r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
     }
+    material_set := texture.set_of(ref_at(r.material.table), texture_id)
+    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.pipelineLayout, 1, 1, addr(&material_set), 0, ptr(0))
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, enums.shader_stage(.VertexFragment), 0, state.MESH_PUSH_BYTES, addr(&push[0]))
     r.api.CmdDraw(r.commands[slot], u32(vertices.len / gfx.VERTEX_FLOATS), 1, 0, 0)
@@ -571,11 +576,29 @@ impl gfx.Backend for Window {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, texture: gfx.Texture, surface: gfx.Surface) -> Result<(), string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, surface == gfx.Surface.Blended))
+            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, texture.id, surface == gfx.Surface.Blended))
+        }
+    }
+
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32) -> Result<gfx.Texture, string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            match texture.upload(ref_at(address), pixels, width, height) {
+                .Ok(id) => .Ok(gfx.Texture { id: id }),
+                .Err(message) => .Err(message),
+            }
+        }
+    }
+
+    fn free_texture(&mut self, handle: gfx.Texture) {
+        unsafe {
+            address := renderer(self.clone())
+            if address != ptr(0) { texture.free(ref_at(address), handle.id) }
         }
     }
 
@@ -635,6 +658,7 @@ unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     post.destroy(&mut r)
     ui.destroy(&mut r)
     ibl.destroy(&mut r)
+    texture.destroy(&mut r)
     depth.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)

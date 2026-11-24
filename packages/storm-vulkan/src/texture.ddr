@@ -1,0 +1,430 @@
+// Material textures: a table of uploaded 2D images, each with its own
+// descriptor set for set 1 of the mesh pipeline, sharing one sampler.
+//
+// A texture handle is a value, `generation << 16 | slot + 1`; slot 0 is a white
+// 1x1 fallback that handle 0 always resolves to, so a draw without a texture
+// takes the same shader path as one with it and nothing branches per draw.
+// Every upload is a one-time command buffer: copy into level 0, then blit
+// level i-1 into level i for the rest of the chain (the device is asked
+// whether the format can blit and filter; without it the chain is one level).
+capability unsafe
+
+import .device as device
+import .enums as enums
+import .layout as vkl
+import .state as state
+
+pub const CAPACITY: i32 = 64
+
+// BLIT_SRC (bit 10), BLIT_DST (bit 11) and SAMPLED_IMAGE_FILTER_LINEAR (bit 15)
+// of VkFormatFeatureFlagBits, for the optimal-tiling features of a format.
+pub const FEATURE_BLIT_SRC: u32 = 1024
+pub const FEATURE_BLIT_DST: u32 = 2048
+pub const FEATURE_LINEAR_FILTER: u32 = 32768
+
+// Parallel arrays rather than an array of records: a C layout cannot hold an
+// array of another C layout (E5003). Slot 0 is the fallback and is never
+// freed. The table is zeroed with the renderer: a null image marks a free
+// slot.
+@c_layout
+pub struct Table {
+    images: [ptr; 64],
+    memories: [ptr; 64],
+    views: [ptr; 64],
+    sets: [ptr; 64],
+    generations: [i64; 64],
+}
+
+// Everything set 1 of the mesh pipeline owns: one sampler every texture
+// shares, the layout, the pool the sets come from, the table (its own
+// allocation, so a helper can hold `&mut` to it beside a shared `&Renderer`),
+// and whether this device can build the mip chain by blit (1) or not (0).
+// All zeroed with the renderer; setup fills it, destroy empties it.
+@c_layout
+pub struct Material {
+    sampler: ptr,
+    setLayout: ptr,
+    pool: ptr,
+    table: ptr,
+    blit: u32,
+}
+
+@extern("c", "calloc")
+unsafe fn allocate(count: usize, bytes: usize) -> ptr
+@extern("c", "free")
+unsafe fn release(address: ptr)
+@extern("c", "memcpy")
+unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
+
+// The slot a handle names, or -1 for the zero handle.
+pub fn slot_of(id: i64) -> i32 { i32(id.bit_and(0xFFFF)) - 1 }
+
+pub fn generation_of(id: i64) -> i64 { id.shr(16) }
+
+pub fn handle(slot: i32, generation: i64) -> i64 { generation.shl(16).bit_or(i64(slot + 1)) }
+
+// Levels in a full mip chain for a width x height image, the larger side
+// halved until it is one texel: 1 for 1x1, 2 for 2x2, 11 for 1920.
+pub fn mip_levels(width: i32, height: i32) -> i32 {
+    mut side := if width > height { width } else { height }
+    mut levels := 1
+    while side > 1 {
+        side = side / 2
+        levels = levels + 1
+    }
+    levels
+}
+
+// Width or height of mip `level`: half per level, never below one texel.
+pub fn mip_size(size: i32, level: i32) -> i32 {
+    mut value := size
+    mut i := 0
+    while i < level && value > 1 {
+        value = value / 2
+        i = i + 1
+    }
+    if value < 1 { 1 } else { value }
+}
+
+// The first slot without an image, or CAPACITY when the table is full.
+pub unsafe fn first_free(table: &Table) -> i32 {
+    mut slot := 1
+    while slot < CAPACITY && table.images[slot] != ptr(0) { slot = slot + 1 }
+    slot
+}
+
+// Whether a handle still names a live texture (its slot's generation matches
+// and the slot holds an image).
+pub unsafe fn live(table: &Table, id: i64) -> bool {
+    slot := slot_of(id)
+    if slot < 1 || slot >= CAPACITY { return false }
+    table.generations[slot] == generation_of(id) && table.images[slot] != ptr(0)
+}
+
+// Whether a slot holds an image.
+pub unsafe fn occupied(table: &Table, slot: i32) -> bool { table.images[slot] != ptr(0) }
+
+// Move a slot to its next generation and hand back the handle that names it.
+pub unsafe fn claim(table: &mut Table, slot: i32) -> i64 {
+    table.generations[slot] = table.generations[slot] + 1
+    handle(slot, table.generations[slot])
+}
+
+// The descriptor set of the texture a handle names: the fallback for 0 or for
+// a handle whose generation no longer matches (a freed texture draws white,
+// it does not draw garbage).
+pub unsafe fn set_of(table: &Table, id: i64) -> ptr {
+    if id == 0 { return table.sets[0] }
+    slot := slot_of(id)
+    if slot < 1 || slot >= CAPACITY { return table.sets[0] }
+    if table.generations[slot] != generation_of(id) || table.images[slot] == ptr(0) { return table.sets[0] }
+    table.sets[slot]
+}
+
+unsafe fn bind_sampler(r: &state.Renderer, set: ptr, view: ptr) {
+    image := vkl.DescriptorImageInfo { sampler: r.material.sampler, imageView: view, imageLayout: enums.image_layout(.ShaderReadOnlyOptimal) }
+    mut write: vkl.WriteDescriptorSet = zeroed()
+    write.sType = 35
+    write.dstSet = set
+    write.descriptorCount = 1
+    write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
+    write.pImageInfo = addr(&image)
+    r.api.UpdateDescriptorSets(r.device, 1, addr(&write), 0, ptr(0))
+}
+
+// Image barrier over the given mip range of a single-layer image.
+unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, old_layout: u32, new_layout: u32,
+    src_access: u32, dst_access: u32, src_stage: u32, dst_stage: u32) {
+    mut b: vkl.ImageMemoryBarrier = zeroed()
+    b.sType = 45
+    b.srcAccessMask = src_access
+    b.dstAccessMask = dst_access
+    b.oldLayout = old_layout
+    b.newLayout = new_layout
+    b.srcQueueFamilyIndex = 4294967295
+    b.dstQueueFamilyIndex = 4294967295
+    b.image = image
+    b.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    b.subresourceRange.baseMipLevel = base_mip
+    b.subresourceRange.levelCount = mip_count
+    b.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut b))
+}
+
+// Allocate and begin a one-time command buffer from the renderer's pool.
+unsafe fn begin(r: &state.Renderer, cmd_out: ptr) -> i32 {
+    mut alloc: vkl.CommandBufferAllocateInfo = zeroed()
+    alloc.sType = 40
+    alloc.commandPool = r.pool
+    alloc.level = 0
+    alloc.commandBufferCount = 1
+    mut cmd := ptr(0)
+    mut code := r.api.AllocateCommandBuffers(r.device, addr(&alloc), addr(&mut cmd))
+    if code != 0 { return code }
+    mut info: vkl.CommandBufferBeginInfo = zeroed()
+    info.sType = 42
+    info.flags = enums.command_buffer_usage(.OneTimeSubmit)
+    code = r.api.BeginCommandBuffer(cmd, addr(&info))
+    if code != 0 { return code }
+    store_ptr(cmd_out, cmd)
+    0
+}
+
+// Submit the one-time buffer, wait for it, and free it.
+unsafe fn finish(r: &state.Renderer, cmd: ptr) -> i32 {
+    mut submit: vkl.SubmitInfo = zeroed()
+    submit.sType = 4
+    submit.commandBufferCount = 1
+    submit.pCommandBuffers = addr(&cmd)
+    mut code := r.api.QueueSubmit(r.queue, 1, addr(&submit), ptr(0))
+    if code != 0 { return code }
+    code = r.api.QueueWaitIdle(r.queue)
+    _ := r.api.FreeCommandBuffers(r.device, r.pool, 1, addr(&cmd))
+    code
+}
+
+// A host-visible buffer of `bytes` holding what a texture upload copies from.
+// The handles are written through the out-parameters, the way the entry
+// points hand theirs back.
+unsafe fn staging_buffer(r: &state.Renderer, bytes: u64, buffer_out: ptr, memory_out: ptr, mapped_out: ptr) -> i32 {
+    mut info: vkl.BufferCreateInfo = zeroed()
+    info.sType = 12
+    info.size = bytes
+    info.usage = enums.buffer_usage(.TransferSrc)
+    info.sharingMode = enums.sharing_mode(.Exclusive)
+    mut buffer := ptr(0)
+    mut code := r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut buffer))
+    if code != 0 { return code }
+    mut requirements: vkl.MemoryRequirements = zeroed()
+    r.api.GetBufferMemoryRequirements(r.device, buffer, addr(&mut requirements))
+    mut memory := ptr(0)
+    code = device.allocate(r, &requirements, 6, addr(&mut memory))
+    if code != 0 { return code }
+    code = r.api.BindBufferMemory(r.device, buffer, memory, 0)
+    if code != 0 { return code }
+    mut mapped := ptr(0)
+    code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
+    if code != 0 { return code }
+    store_ptr(buffer_out, buffer)
+    store_ptr(memory_out, memory)
+    store_ptr(mapped_out, mapped)
+    0
+}
+
+unsafe fn release_staging(r: &state.Renderer, buffer: ptr, memory: ptr) {
+    _ := r.api.UnmapMemory(r.device, memory)
+    r.api.DestroyBuffer(r.device, buffer, ptr(0))
+    r.api.FreeMemory(r.device, memory, ptr(0))
+}
+
+// Create a single-layer RGBA8 sRGB image with `levels` mips, allocate and
+// bind its memory, and make the view over the whole chain.
+unsafe fn create_image(r: &state.Renderer, width: u32, height: u32, levels: u32, image_out: ptr, memory_out: ptr, view_out: ptr) -> i32 {
+    mut info: vkl.ImageCreateInfo = zeroed()
+    info.sType = 14
+    info.imageType = 1
+    info.format = enums.format(.R8G8B8A8_SRGB)
+    info.extent = vkl.Extent3D { width: width, height: height, depth: 1 }
+    info.mipLevels = levels
+    info.arrayLayers = 1
+    info.samples = enums.samples(.Type1)
+    info.tiling = enums.image_tiling(.Optimal)
+    info.usage = enums.image_usage(.TransferSrcTransferDstSampled)
+    mut image := ptr(0)
+    mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
+    if code != 0 { return code }
+    mut requirements: vkl.MemoryRequirements = zeroed()
+    r.api.GetImageMemoryRequirements(r.device, image, addr(&mut requirements))
+    mut memory := ptr(0)
+    code = device.allocate(r, &requirements, 0, addr(&mut memory))
+    if code != 0 { return code }
+    code = r.api.BindImageMemory(r.device, image, memory, 0)
+    if code != 0 { return code }
+    mut view: vkl.ImageViewCreateInfo = zeroed()
+    view.sType = 15
+    view.image = image
+    view.viewType = 1
+    view.format = enums.format(.R8G8B8A8_SRGB)
+    view.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    view.subresourceRange.levelCount = levels
+    view.subresourceRange.layerCount = 1
+    mut view_handle := ptr(0)
+    code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut view_handle))
+    if code != 0 { return code }
+    store_ptr(image_out, image)
+    store_ptr(memory_out, memory)
+    store_ptr(view_out, view_handle)
+    0
+}
+
+// Record the upload of `pixels` (RGBA8, width x height) into `image`: copy
+// into level 0, then blit each next level from the one before it when the
+// device can, and leave every level readable by the fragment shader.
+unsafe fn record_upload(r: &state.Renderer, cmd: ptr, staging: ptr, image: ptr, width: i32, height: i32, levels: i32, can_blit: bool) {
+    barrier(r, cmd, image, 0, u32(levels), enums.image_layout(.Undefined), enums.image_layout(.TransferDstOptimal), 0, enums.access(.TransferWrite), enums.pipeline_stage(.TopOfPipe), enums.pipeline_stage(.Transfer))
+    mut copy: vkl.BufferImageCopy = zeroed()
+    copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
+    copy.imageSubresource.layerCount = 1
+    copy.imageExtent.width = u32(width)
+    copy.imageExtent.height = u32(height)
+    copy.imageExtent.depth = 1
+    r.api.CmdCopyBufferToImage(cmd, staging, image, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
+    // Level 0 becomes a blit source whether or not a blit follows, so the
+    // final barrier below has one layout to come from.
+    barrier(r, cmd, image, 0, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.TransferSrcOptimal), enums.access(.TransferWrite), enums.access(.TransferRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Transfer))
+    if levels > 1 && can_blit {
+        // Every later level is written by the blit from the one before it,
+        // then becomes a source itself.
+        mut level := 1
+        while level < levels {
+            mut blit: vkl.ImageBlit = zeroed()
+            blit.srcSubresource.aspectMask = enums.image_aspect(.Color)
+            blit.srcSubresource.mipLevel = u32(level - 1)
+            blit.srcSubresource.layerCount = 1
+            blit.dstSubresource.aspectMask = enums.image_aspect(.Color)
+            blit.dstSubresource.mipLevel = u32(level)
+            blit.dstSubresource.layerCount = 1
+            blit.srcOffsets[1] = vkl.Offset3D { x: mip_size(width, level - 1), y: mip_size(height, level - 1), z: 1 }
+            blit.dstOffsets[1] = vkl.Offset3D { x: mip_size(width, level), y: mip_size(height, level), z: 1 }
+            r.api.CmdBlitImage(cmd, image, enums.image_layout(.TransferSrcOptimal), image, enums.image_layout(.TransferDstOptimal), 1, addr(&mut blit), enums.filter(.Linear))
+            barrier(r, cmd, image, u32(level), 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.TransferSrcOptimal), enums.access(.TransferWrite), enums.access(.TransferRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Transfer))
+            level = level + 1
+        }
+    }
+    barrier(r, cmd, image, 0, u32(levels), enums.image_layout(.TransferSrcOptimal), enums.image_layout(.ShaderReadOnlyOptimal), enums.access(.TransferRead).bit_or(enums.access(.TransferWrite)), enums.access(.ShaderRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.FragmentShader))
+    _ := r.api.EndCommandBuffer(cmd)
+}
+
+// Allocate the descriptor set of one slot from the shared pool.
+unsafe fn allocate_set(r: &state.Renderer, table: &mut Table, slot: i32) -> i32 {
+    mut allocation: vkl.DescriptorSetAllocateInfo = zeroed()
+    allocation.sType = 34
+    allocation.descriptorPool = r.material.pool
+    allocation.descriptorSetCount = 1
+    allocation.pSetLayouts = addr(&r.material.setLayout)
+    r.api.AllocateDescriptorSets(r.device, addr(&allocation), addr(&mut table.sets[slot]))
+}
+
+// Upload pixels into a slot: image, memory, view and descriptor set. The
+// slot's generation is bumped by the caller.
+unsafe fn upload_slot(r: &state.Renderer, table: &mut Table, slot: i32, pixels: []u8, width: i32, height: i32) -> i32 {
+    levels := if r.material.blit == 1 { mip_levels(width, height) } else { 1 }
+    mut code := create_image(r, u32(width), u32(height), u32(levels), addr(&mut table.images[slot]), addr(&mut table.memories[slot]), addr(&mut table.views[slot]))
+    if code != 0 { return code }
+    bytes := u64(width) * u64(height) * 4
+    mut staging := ptr(0)
+    mut staging_memory := ptr(0)
+    mut mapped := ptr(0)
+    code = staging_buffer(r, bytes, addr(&mut staging), addr(&mut staging_memory), addr(&mut mapped))
+    if code != 0 { return code }
+    _ := copy_bytes(mapped, addr(&pixels[0]), usize(bytes))
+    mut cmd := ptr(0)
+    code = begin(r, addr(&mut cmd))
+    if code != 0 { return code }
+    record_upload(r, cmd, staging, table.images[slot], width, height, levels, r.material.blit == 1)
+    code = finish(r, cmd)
+    release_staging(r, staging, staging_memory)
+    code = allocate_set(r, &mut table, slot)
+    if code != 0 { return code }
+    bind_sampler(r, table.sets[slot], table.views[slot])
+    0
+}
+
+// Free the Vulkan objects of a slot. The image stays in the table as null so
+// the handle keeps resolving to the fallback until the slot is reused.
+unsafe fn free_slot(r: &state.Renderer, table: &mut Table, slot: i32) {
+    r.api.DestroyImageView(r.device, table.views[slot], ptr(0))
+    r.api.DestroyImage(r.device, table.images[slot], ptr(0))
+    r.api.FreeMemory(r.device, table.memories[slot], ptr(0))
+    table.views[slot] = ptr(0)
+    table.images[slot] = ptr(0)
+    table.memories[slot] = ptr(0)
+}
+
+// Build the sampler, layout, pool and the white fallback in slot 0. The
+// format features decide the mip chain: `blit` is 1 when the device can
+// blit and filter this format.
+pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
+    mut features: vkl.FormatProperties = zeroed()
+    r.api.GetPhysicalDeviceFormatProperties(r.physical, enums.format(.R8G8B8A8_SRGB), addr(&mut features))
+    needed := FEATURE_BLIT_SRC.bit_or(FEATURE_BLIT_DST).bit_or(FEATURE_LINEAR_FILTER)
+    r.material.blit = if features.optimalTilingFeatures.bit_and(needed) == needed { 1 } else { 0 }
+
+    mut sampler: vkl.SamplerCreateInfo = zeroed()
+    sampler.sType = 31
+    sampler.magFilter = enums.filter(.Linear)
+    sampler.minFilter = enums.filter(.Linear)
+    sampler.mipmapMode = enums.sampler_mipmap_mode(.Linear)
+    sampler.addressModeU = enums.sampler_address_mode(.Repeat)
+    sampler.addressModeV = enums.sampler_address_mode(.Repeat)
+    sampler.addressModeW = enums.sampler_address_mode(.Repeat)
+    sampler.maxLod = 16.0
+    mut code := r.api.CreateSampler(r.device, addr(&sampler), ptr(0), addr(&mut r.material.sampler))
+    if code != 0 { return device.fail(&mut r, code, .Texture) }
+
+    mut binding: vkl.DescriptorSetLayoutBinding = zeroed()
+    binding.descriptorType = enums.descriptor_type(.CombinedImageSampler)
+    binding.descriptorCount = 1
+    binding.stageFlags = enums.shader_stage(.Fragment)
+    mut layout: vkl.DescriptorSetLayoutCreateInfo = zeroed()
+    layout.sType = 32
+    layout.bindingCount = 1
+    layout.pBindings = addr(&binding)
+    code = r.api.CreateDescriptorSetLayout(r.device, addr(&layout), ptr(0), addr(&mut r.material.setLayout))
+    if code != 0 { return device.fail(&mut r, code, .Texture) }
+
+    size := vkl.DescriptorPoolSize { type: enums.descriptor_type(.CombinedImageSampler), descriptorCount: u32(CAPACITY) }
+    mut pool: vkl.DescriptorPoolCreateInfo = zeroed()
+    pool.sType = 33
+    pool.maxSets = u32(CAPACITY)
+    pool.poolSizeCount = 1
+    pool.pPoolSizes = addr(&size)
+    code = r.api.CreateDescriptorPool(r.device, addr(&pool), ptr(0), addr(&mut r.material.pool))
+    if code != 0 { return device.fail(&mut r, code, .Texture) }
+
+    r.material.table = allocate(1, size_of(Table))
+    if r.material.table == ptr(0) { return device.fail(&mut r, -1, .Texture) }
+    code = allocate_set(&r, ref_at(r.material.table), 0)
+    if code != 0 { return device.fail(&mut r, code, .Texture) }
+    code = upload_slot(&r, ref_at(r.material.table), 0, [255, 255, 255, 255], 1, 1)
+    if code != 0 { return device.fail(&mut r, code, .Texture) }
+    .Ready
+}
+
+// Upload RGBA8 pixels as a new texture: the first free slot, or the error.
+pub unsafe fn upload(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32) -> Result<i64, string> {
+    if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("texture dimensions must be between 1 and 16384") }
+    if i64(pixels.len) != i64(width) * i64(height) * 4 { return .Err("texture pixels must be width x height x 4 bytes") }
+    if r.material.table == ptr(0) { return .Err("textures are not available on this window") }
+    slot := first_free(ref_at(r.material.table))
+    if slot == CAPACITY { return .Err("the texture table is full") }
+    mut code := upload_slot(&r, ref_at(r.material.table), slot, pixels, width, height)
+    if code != 0 { return .Err("texture upload failed with " + enums.result_name(code)) }
+    .Ok(claim(ref_at(r.material.table), slot))
+}
+
+// Free a texture. Unknown, zero and already freed handles are ignored: a
+// handle is a value, and a stale one must be harmless.
+pub unsafe fn free(r: &mut state.Renderer, id: i64) {
+    if id == 0 { return }
+    slot := slot_of(id)
+    if slot < 1 || slot >= CAPACITY { return }
+    if r.material.table == ptr(0) { return }
+    if !live(ref_at(r.material.table), id) { return }
+    _ := r.api.QueueWaitIdle(r.queue)
+    free_slot(&r, ref_at(r.material.table), slot)
+}
+
+pub unsafe fn destroy(r: &mut state.Renderer) {
+    if r.material.sampler == ptr(0) { return }
+    mut slot := 0
+    while slot < CAPACITY {
+        if occupied(ref_at(r.material.table), slot) { free_slot(&r, ref_at(r.material.table), slot) }
+        slot = slot + 1
+    }
+    release(r.material.table)
+    r.material.table = ptr(0)
+    r.api.DestroyDescriptorPool(r.device, r.material.pool, ptr(0))
+    r.api.DestroyDescriptorSetLayout(r.device, r.material.setLayout, ptr(0))
+    r.api.DestroySampler(r.device, r.material.sampler, ptr(0))
+}

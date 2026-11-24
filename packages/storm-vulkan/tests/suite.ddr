@@ -1,6 +1,7 @@
 capability unsafe
 
 import ..src.layout as vk
+import ..src.layout as vkl
 import ..src.depth as depth
 import ..src.device as device
 import ..src.enums as enums
@@ -8,6 +9,7 @@ import gfx
 import ..src.headless as headless
 import ..src.sdl as sdl
 import ..src.state as state
+import ..src.texture as texture
 
 // The raw SDL state of a window, as the engine's keys and pointer. Either
 // shift key is Shift; a key held since an earlier frame is down but not
@@ -69,6 +71,57 @@ import ..src.state as state
 
 @test fn barrier_struct_matches_the_c_abi() {
     assert(size_of(vk.ImageMemoryBarrier) == 72)
+}
+
+// VkImageBlit: two 16-byte subresource layers, each followed by two
+// 12-byte offsets. A wrong size here would hand vkCmdBlitImage a region
+// list it reads past.
+@test fn blit_regions_match_the_c_abi() {
+    assert(size_of(vkl.ImageBlit) == 80)
+    assert(size_of(vkl.Offset3D) == 12)
+    assert(size_of(vkl.ImageSubresourceLayers) == 16)
+}
+
+// A full mip chain halves the larger side until one texel; a 1x1 fallback
+// has one level, a 1920-wide capture eleven, a non-square image as many as
+// its larger side calls for.
+@test fn mip_chain_covers_every_level_down_to_one_texel() {
+    assert(texture.mip_levels(1, 1) == 1)
+    assert(texture.mip_levels(2, 2) == 2)
+    assert(texture.mip_levels(256, 160) == 9)
+    assert(texture.mip_levels(1920, 1080) == 11)
+    assert(texture.mip_size(256, 0) == 256)
+    assert(texture.mip_size(256, 3) == 32)
+    assert(texture.mip_size(160, 8) == 1)
+    assert(texture.mip_size(160, 20) == 1)
+}
+
+// A handle names a slot and a generation; a freed-and-reused slot must not
+// answer to the old handle, and zero names nothing.
+@test fn texture_handles_survive_a_slot_being_reused() {
+    unsafe {
+        mut table: texture.Table = zeroed()
+        assert(!texture.live(&table, 0))
+        assert(!texture.live(&table, texture.handle(1, 1)))
+        table.images[1] = ptr(1)
+        first := texture.claim(&mut table, 1)
+        assert(texture.handle(1, 1) == first)
+        assert(texture.live(&table, first))
+        table.images[1] = ptr(0)
+        assert(!texture.live(&table, first))
+        table.images[1] = ptr(1)
+        second := texture.claim(&mut table, 1)
+        assert(second != first)
+        assert(!texture.live(&table, first))
+        assert(texture.live(&table, second))
+        // The fallback set is what a dead or zero handle resolves to.
+        table.sets[0] = ptr(100)
+        table.sets[1] = ptr(200)
+        assert(texture.set_of(&table, 0) == ptr(100))
+        assert(texture.set_of(&table, second) == ptr(200))
+        assert(texture.set_of(&table, first) == ptr(100))
+        assert(texture.set_of(&table, texture.handle(999, 1)) == ptr(100))
+    }
 }
 
 @test fn image_creation_and_device_limits_match_the_vulkan_abi() {

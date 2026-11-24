@@ -31,6 +31,9 @@ layout(set = 0, binding = 1) uniform Light {
 layout(set = 0, binding = 2) uniform samplerCube prefiltered_env;
 layout(set = 0, binding = 3) uniform samplerCube irradiance_map;
 layout(set = 0, binding = 4) uniform sampler2D brdf_lut;
+// The material's base texture, set 1: a white 1x1 texture when it has none,
+// so the multiply below is the identity for untextured surfaces.
+layout(set = 1, binding = 0) uniform sampler2D base_texture;
 
 const float ENV_MIPS = 6.0;   // prefiltered_env mip count
 
@@ -109,7 +112,7 @@ void main() {
     vec3 l = normalize(sky_sun.xyz);
     vec3 h = normalize(v + l);
 
-    vec3 albedo = vertex_base_color.rgb;
+    vec3 albedo = vertex_base_color.rgb * texture(base_texture, vertex_uv).rgb;
     float metallic = clamp(vertex_params.x, 0.0, 1.0);
     float roughness = clamp(vertex_params.y, 0.045, 1.0);
     float emissive = max(vertex_params.z, 0.0);

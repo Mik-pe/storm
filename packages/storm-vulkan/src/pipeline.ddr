@@ -114,9 +114,12 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     layout.sType = 30
     layout.pushConstantRangeCount = 1
     layout.pPushConstantRanges = addr(&push_range)
-    // Set 0: shadow map sampler + light uniform buffer.
-    layout.setLayoutCount = 1
-    layout.pSetLayouts = addr(&r.shadowSetLayout)
+    // Set 0: shadow map sampler + light uniform buffer + environment.
+    // Set 1: the material's base texture (texture.ddr). Both layouts exist
+    // before this step (shadow.setup, texture.setup).
+    r.meshSetLayouts = [r.shadowSetLayout, r.material.setLayout]
+    layout.setLayoutCount = 2
+    layout.pSetLayouts = addr(&r.meshSetLayouts[0])
     code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
