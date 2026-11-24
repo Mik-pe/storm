@@ -473,9 +473,11 @@ fn frame_checks(failures: &mut i32) {
     again := window.poll()
     expect(&mut failures, "with nothing left to report as changed", !again.resized)
 
-    // Two floats are not a vertex: the list must be [x, y, z, nx, ny, nz] triples.
     junk: []f32 = [1.0, 2.0]
-    refused(&mut failures, "a mesh that is not a vertex list", window.mesh(&junk, &view, &view, &red, &glowing, &origin, &sky, .Opaque))
+    worked(&mut failures, "a frame for the invalid-stream probe opens", window.begin())
+    worked(&mut failures, "its main pass opens", window.begin_pass())
+    refused(&mut failures, "a malformed position-normal-UV stream", window.mesh(&junk, &view, &view, &red, &glowing, &origin, &sky, .Opaque))
+    expect(&mut failures, "the frame can finish after refusing a mesh", window.end().is_ok())
 
     // Closing is the last thing a renderer does; it cannot be done twice.
     window.close()

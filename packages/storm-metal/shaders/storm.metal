@@ -154,10 +154,10 @@ float shadow_factor(float3 world_pos, float ndl, constant Light& light,
     float2 uv = ndc.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
 
-    // Column 2, row 2 of an orthographic projection is 1 / (near - far).
-    float depth_range = -1.0 / light.light_vp[2][2];
-    float bias = (0.06 + 0.14 * (1.0 - ndl)) / depth_range;
-    const float texel = 1.0 / 1024.0; // the shadow map is 1024 wide
+    // The length of the depth row is unchanged by the sun camera's rotation.
+    float depth_scale = length(float3(light.light_vp[0].z, light.light_vp[1].z, light.light_vp[2].z));
+    float bias = (0.06 + 0.14 * (1.0 - ndl)) * depth_scale;
+    float texel = 1.0 / float(shadow_map.get_width());
     float lit = 0.0;
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {

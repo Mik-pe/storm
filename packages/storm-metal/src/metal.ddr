@@ -43,7 +43,7 @@ const MESH_FLOATS: i32 = 60  // mvp(16) model(16) base_color(4) params(4) camera
 const LIGHT_FLOATS: i32 = 16 // the sun's view-projection
 const SHADOW_FLOATS: i32 = 32 // light_vp(16) model(16)
 
-const NOT_A_MESH: string = "a mesh is not [x,y,z,nx,ny,nz] triples, or the frame's vertex space ran out"
+const NOT_A_MESH: string = "invalid position-normal-UV stream or exhausted frame vertex buffer"
 
 // What a frame is cleared to before anything is drawn: red, as on the Vulkan
 // backend, so a frame that draws nothing is unmistakable. (A const cannot
@@ -81,6 +81,7 @@ pub struct Renderer {
     drawable: ptr,
     target: ptr,
     command_buffer: ptr,
+    submitted: ptr,
     encoder: ptr,
     pass: Pass,
     light_vp: [f32; LIGHT_FLOATS],
@@ -111,7 +112,7 @@ unsafe fn empty() -> Renderer {
         environment: ibl.empty(),
         atlas: ui.empty(),
         vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
-        pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), encoder: ptr(0),
+        pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), submitted: ptr(0), encoder: ptr(0),
         pass: .None,
         light_vp: [0.0; LIGHT_FLOATS],
         width: 0, height: 0, vertex_cursor: 0, frames: 0, capturing: 0, trace: 0,
@@ -207,10 +208,26 @@ fn trace(r: &Renderer, message: string) {
 
 // ---- recording a frame ----
 
+// The mesh stream and the editor stream are shared with the GPU. Retire their
+// last submission before either cursor can be reused on the CPU.
+unsafe fn retire(r: &mut Renderer) -> Result<(), string> {
+    if r.submitted == ptr(0) { return .Ok }
+    command := r.submitted
+    r.submitted = ptr(0)
+    objc.tell(&r.objc, command, cstr("waitUntilCompleted"))
+    mut error := ""
+    if objc.number(&r.objc, command, cstr("status")) != enums.command_status(.Completed) {
+        error = "frame submission failed: " + device.reason(&r.objc, objc.send(&r.objc, command, cstr("error")))
+    }
+    r.objc.release(command)
+    if error.len > 0 { return .Err(error) }
+    .Ok
+}
+
 unsafe fn record_begin(r: &mut Renderer) -> Result<(), string> {
+    if r.pool != ptr(0) { return .Err("a frame is already being recorded") }
+    retire(&mut r)?
     appkit.sync(&r.objc, &r.window)
-    // A frame a caller never ended is dropped here, not left to leak.
-    if r.pool != ptr(0) { r.objc.poolPop(r.pool) }
     r.pool = r.objc.poolPush()
     r.drawable = objc.send(&r.objc, r.window.layer, cstr("nextDrawable"))
     if r.drawable == ptr(0) { return refuse(&mut r, "the window offered no drawable to render into") }
@@ -219,7 +236,7 @@ unsafe fn record_begin(r: &mut Renderer) -> Result<(), string> {
     height := objc.number(&r.objc, r.target, cstr("height"))
     if r.depth_buffer == ptr(0) || width != r.width || height != r.height {
         // The depth buffer shares the drawable's size and follows it.
-        if r.depth_buffer != ptr(0) { r.objc.release(r.depth_buffer) }
+        if r.depth_buffer != ptr(0) { r.objc.release(r.depth_buffer); r.depth_buffer = ptr(0) }
         made := device.texture(&r.objc, r.device, .Type2D, .Depth32Float, width, height, 1, .RenderTarget, .Private)
         if made.is_err() { return refuse(&mut r, made.unwrap_err()) }
         r.depth_buffer = made.unwrap()
@@ -407,18 +424,13 @@ unsafe fn read_pixels(r: &mut Renderer) -> Result<(), string> {
 
 // Show the frame, or keep its pixels when it is a capture.
 unsafe fn finish(r: &mut Renderer) -> Result<(), string> {
+    if r.capturing == 0 { objc.tell_to(&r.objc, r.command_buffer, cstr("presentDrawable:"), r.drawable) }
+    r.submitted = objc.send(&r.objc, r.command_buffer, cstr("retain"))
+    objc.tell(&r.objc, r.command_buffer, cstr("commit"))
     if r.capturing == 1 {
-        objc.tell(&r.objc, r.command_buffer, cstr("commit"))
-        objc.tell(&r.objc, r.command_buffer, cstr("waitUntilCompleted"))
-        status := objc.number(&r.objc, r.command_buffer, cstr("status"))
-        if status != enums.command_status(.Completed) {
-            failure := objc.send(&r.objc, r.command_buffer, cstr("error"))
-            return .Err("the captured frame did not finish: " + device.reason(&r.objc, failure))
-        }
+        retire(&mut r)?
         return read_pixels(&mut r)
     }
-    objc.tell_to(&r.objc, r.command_buffer, cstr("presentDrawable:"), r.drawable)
-    objc.tell(&r.objc, r.command_buffer, cstr("commit"))
     trace(r, "presented")
     .Ok
 }
@@ -441,13 +453,12 @@ unsafe fn record_end(r: &mut Renderer) -> Result<i64, string> {
 // Release everything the renderer holds, in the reverse of the order it was
 // made, each exactly once.
 unsafe fn destroy(r: &mut Renderer) {
+    if r.encoder != ptr(0) { _ := record_end_pass(&mut r) }
+    _ := retire(&mut r)
     if r.pool != ptr(0) {
         r.objc.poolPop(r.pool)
         r.pool = ptr(0)
     }
-    // A command buffer keeps every resource it uses alive until it completes,
-    // so the GPU may still be working through the last frame while these
-    // references go: nothing is freed under it.
     device.release_buffer(&r.objc, &mut r.vertices)
     ui.destroy(&r.objc, &mut r.atlas)
     ibl.destroy(&r.objc, &mut r.environment)
