@@ -7,7 +7,7 @@
 // Metal source in a Dunder module as one raw string: the system's own
 // compiler compiles it when a window opens, so neither build needs a shader
 // compiler for that. (The source cannot simply be @embed_file'd: a
-// dependency package cannot embed its own files, dogfood finding 63.)
+// dependency package cannot embed its own files, dogfood finding 65.)
 //
 // Re-run whenever a file under packages/*/shaders/ changes. The generated
 // modules are checked in.
