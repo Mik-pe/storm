@@ -74,15 +74,18 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen omfattade **129 egna
-  `@test`** (132 gröna: 19 rot + 113 paket; Skrifts två följer med i
-  `storm-text` och `storm-ui`) och Metal-självtestets kontroller i ett
-  riktigt fönster.
+  delade vertexströmmen. Den senaste kontrollen omfattade **140 egna
+  `@test`** (146 gröna: 27 rot + 113 paket, varje svit lika många som den
+  har `@test`; Skrifts två följer med i roten, `storm-text` och
+  `storm-ui`) och Metal-självtestets kontroller i ett riktigt fönster.
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **15 100–15 700 ms** på `77d9b0c` (`--timings`: 1 176 funktioner,
-  346 512 MIR-operationer, `mir_pipeline` 10,0 s). Dagen innan var samma
-  träd (`54214f3`) 6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med
-  0.11.3; skillnaden är alltså hälften kompilator, hälften spelet (fynd 70).
+  mätte **14 900–15 100 ms** på `a84ade9` med Dunder 0.12.0 (`--timings`:
+  1 238 funktioner, 386 871 MIR-operationer; `--profile-compiler`:
+  `mir_pipeline` 10,4 s av 14,6 s). Dagen innan var trädet `54214f3`
+  6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med 0.11.3, och `77d9b0c`
+  15 100–15 700 ms med 0.11.3 (1 176 funktioner, 346 512 operationer) —
+  skillnaden sedan igår är hälften kompilator, hälften spelet (fynd 70), och
+  0.12.0 tar +62 funktioner och +40 k operationer utan att väggklockan flyttar.
   En stubb-`main` med hela manifestet bygger på 207 ms och
   `shader.ddr`s 12 579 inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.

@@ -366,6 +366,20 @@ själv producerat är inget bevis; ett test mot **en fil utifrån** är det.
 inkluderar tester och funktionsvärden. Två privata hjälpfunktioner saknade
 referenser i scen- och textpaketen och har tagits bort.
 
+*Rättelse 2026-11-24, Dunder 0.12.0.* Flaggan ger `W1003 private function
+'x' has no references outside its own definition` — men bara för **privata**
+funktioner, och bara när flaggan ges (`check` utan flaggan är tyst; `--help`
+nämner den inte). Nio **publika** funktioner utan en enda anropare i hela
+repot stod kvar efter att flaggan var grön: `core.scaling`, `text.is_full`,
+`metal.aligned`, `scene.meshes/materials/worlds` (en dokumenterad yta utan
+konsument — `drawables` går på fälten), `widgets.hot` och `vulkan.ui.reset`
+(en död dublett av `r.uiCursor = 0` i `begin_frame`; nu anropar `begin_frame`
+den, så resetten har en ägare). Alla nio hittades med
+`grep -rnw <namn>` över `.ddr`/`.md` och togs bort; `check --unused-functions`
+var grönt före och efter. Rekommendation kvarstår: en `pub fn` i ett paket
+vars rotmodul aldrig når den är död på samma sätt som en privat — flaggan
+borde kunna ta `pub` med i paketets egen subtree.
+
 **Om vertexformatet (3a).** Stride, offset och format stod på två ställen
 (`pipeline.ddr` via enums, `shadow.ddr` med `inputRate: 0`, `format: 106`
 ×2) och "ändra på båda eller ingen" var en regel att komma ihåg — AGENTS.md
@@ -424,8 +438,8 @@ första poolen (skicka den minsta först), `at(index)`/`at_mut(index)` läser
 utan sparse-uppslag i den heta loopen, `dense_index` ger −1 för saknade
 och för inaktiva handtag. En fråga är en ögonblicksbild: en komponent som
 tas bort efteråt flyttar sista raden (swap-remove), så system som tar bort
-samlar entiteter i loopen och tar bort efter den. `Graph` exponerar sina
-pooler (`names()`, `locals()`, `meshes()`, `materials()`, `worlds()`),
+samlar entiteter i loopen och tar bort efter den. `Graph` exponerar de
+pooler systemen utanför paketet frågar (`names()`, `locals()`);
 `drawables` är `join2(meshes, worlds)` med material som valfri tredje,
 orbsystemen är `join2(names, locals)`. Sju ECS-tester, varav två för
 frågorna; capture utan `--glb` AE = 0 mot editorbaslinjen, `--eye`-spelet
@@ -543,7 +557,19 @@ och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 
 ## Verifiering
 
-På Mikparchy byggdes Storm för x86-64/Linux. Rotpaketet och de nio
+Senaste mätning på Mikparchy, 2026-11-24 (låst session, `a84ade9`, Dunder
+0.12.0): **140 egna tester gröna** (27 rot + 113 paket, 16 sviter, varje
+lika många som sin `@test`-räkning), `dunder check` 0 varningar i Storms
+paket, `check --unused-functions` rent i alla sju paket efter att nio
+publika funktioner utan anropare togs bort (fynd 64, rättelsen), och
+`tools/build-time.ddr` **14 900–15 100 ms** av 20 000. Capture 1280 × 800
+före/efter raderingarna: **AE = 0**. `tools/bench-frame.ddr` och
+`dunder run --example scene` kördes efteråt och fungerar: inget av dem var
+dött. Historiken för varje svit (`git log --numstat -- tests packages`)
+visar att varje teständring följer en funktion i samma commit, ingen
+omskrivning utan anledning och ingen flaky svit — därför raderas ingen.
+
+Äldre mätning, behållen för tal som inte mätts om: rotpaketet och de nio
 underpaketen kördes var för sig och alla 81 tester passerade (mätning
 2026-11-24: 8 rot + 73 paket, 6 850 ms byggtid): de 60 som
 fanns sedan djupbufferten (där två fasta clear-value-packning och

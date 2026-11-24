@@ -24,7 +24,7 @@ steg 3–6), som Metal-redan har och Vulkan inte. Instancing (5), fler ljus
 
 ## Byggtid på Mikparchy
 
-Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Budgeten är 20 s. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen.
+Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Budgeten är 20 s. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Samma träd på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 
 `tools/build-time.ddr` mätte tidigare **15 079–15 700 ms** på
 `77d9b0c`. Dagen innan var trädet 6 850 ms. Halva ökningen är kompilatorn
