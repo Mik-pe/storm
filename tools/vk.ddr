@@ -1,0 +1,470 @@
+// Generate packages/storm-vulkan/src/api.ddr from Khronos' vk.xml.
+//
+//   dunder run tools/vk.ddr -- <vk.xml>            rewrite api.ddr
+//   dunder run tools/vk.ddr -- <vk.xml> --check    exit 1 when api.ddr differs
+//
+// The entry points Storm loads by name were written by hand: one `extern fn`
+// and one `dl.symbol` per command, each spelled from the headers. This reads
+// the registry instead, so a parameter type, a return type or a symbol name
+// cannot be misremembered — there is no second copy to keep true. Storm still
+// names the commands it calls (COMMANDS below); the names say nothing about
+// their types. Which of them need a surface is the registry's answer too: the
+// commands of an extension that depends on VK_KHR_surface are the windowed
+// ones, followed through `depends=` as vk.xml states them.
+//
+// vk.xml is not vendored. Fetch the Khronos registry when regenerating:
+//   curl -o /tmp/vk.xml https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/main/xml/vk.xml
+//
+// The registry is scanned as bytes: its tags are ASCII and its comments carry
+// UTF-8 that a byte offset may land inside, so text is decoded only for the
+// values between two tags, which always split on ASCII.
+capability filesystem, stdio
+
+import std.bytes as bytes
+import std.map as map
+import std.text as text
+import sys
+
+// Entry points Storm calls, in the order api.ddr declares them: the C names
+// without the `vk` prefix, which is the field name in `Api`.
+const COMMANDS: []string = [
+    "CreateInstance", "DestroyInstance", "DestroySurfaceKHR", "EnumeratePhysicalDevices",
+    "GetPhysicalDeviceProperties", "GetPhysicalDeviceFormatProperties", "GetPhysicalDeviceMemoryProperties",
+    "GetPhysicalDeviceQueueFamilyProperties", "GetPhysicalDeviceSurfaceSupportKHR",
+    "GetPhysicalDeviceSurfaceCapabilitiesKHR", "GetPhysicalDeviceSurfaceFormatsKHR",
+    "GetPhysicalDeviceSurfacePresentModesKHR", "CreateDevice", "GetDeviceQueue", "CreateCommandPool",
+    "AllocateCommandBuffers", "CreateBuffer", "GetBufferMemoryRequirements", "AllocateMemory", "BindBufferMemory",
+    "MapMemory", "UnmapMemory", "GetImageMemoryRequirements", "CreateShaderModule", "CreatePipelineLayout",
+    "CreateGraphicsPipelines", "CreateRenderPass", "CreateFramebuffer", "CreateImage", "BindImageMemory", "CreateImageView",
+    "CreateSwapchainKHR", "GetSwapchainImagesKHR", "AcquireNextImageKHR", "QueuePresentKHR", "CreateSemaphore",
+    "CreateFence", "ResetFences", "WaitForFences", "DestroyFence", "DestroySemaphore", "DestroyImage", "DestroyImageView",
+    "DestroyFramebuffer", "DestroyPipeline", "DestroyPipelineLayout", "DestroyShaderModule", "DestroyRenderPass",
+    "DestroySwapchainKHR", "DestroyCommandPool", "DestroyBuffer", "FreeMemory", "FreeCommandBuffers", "DeviceWaitIdle",
+    "QueueWaitIdle", "DestroyDevice", "BeginCommandBuffer", "EndCommandBuffer", "ResetCommandBuffer", "CmdBeginRenderPass",
+    "CmdSetViewport", "CmdSetScissor", "CmdEndRenderPass", "CmdBindPipeline", "CmdBindVertexBuffers", "CmdDraw",
+    "CmdPushConstants", "CmdPipelineBarrier", "CmdCopyImageToBuffer", "CmdCopyBufferToImage", "QueueSubmit",
+    "CreateSampler", "DestroySampler", "CreateDescriptorSetLayout", "DestroyDescriptorSetLayout",
+    "CreateDescriptorPool", "DestroyDescriptorPool", "AllocateDescriptorSets", "UpdateDescriptorSets",
+    "CmdBindDescriptorSets",
+]
+
+// The extension whose commands only exist with a surface.
+const SURFACE_EXTENSION: string = "VK_KHR_surface"
+
+struct Param { type_name: string, pointer: bool, name: string }
+struct Command { name: string, params: []Param, returns: string }
+struct Extension { name: string, depends: string }
+
+// Everything the registry says, indexed by name.
+struct Registry {
+    commands: map.Map<string, Command>,
+    provider: map.Map<string, string>,
+    extensions: []Extension,
+    typedefs: map.Map<string, string>,
+    handles: map.Map<string, bool>,
+}
+
+// ---- bytes -------------------------------------------------------------------
+
+// Offset of `needle` in `data` within `[from, until)`, -1 when absent. Every
+// lookup inside an element passes that element's end: a `<param>` of prose has
+// no `<type>`, and an unbounded search for one runs to the end of the file.
+fn find_bytes(data: &[]u8, from: i32, until: i32, needle: string) -> i32 {
+    mut target: []u8 = bytes.from_text(needle)
+    mut i := from
+    while i + target.len <= until {
+        if bytes.equal_ranges(data, i, i + target.len, &target, 0, target.len) { return i }
+        i += 1
+    }
+    -1
+}
+
+// The text from `start` to `end` in `data`. Both offsets sit on tag
+// boundaries, which are ASCII, so the view is always valid UTF-8.
+fn text_at(data: &[]u8, start: i32, end: i32) -> string {
+    bytes.decode_range(data, start, end).unwrap_or_default()
+}
+
+// Text between the first `<tag>` after `from` and its `</tag>`; "" when absent.
+fn inner(data: &[]u8, from: i32, end: i32, tag: string) -> string {
+    open := find_bytes(data, from, end, "<" + tag + ">")
+    if open < 0 { return "" }
+    start := open + tag.len + 2
+    close := find_bytes(data, start, end, "</" + tag + ">")
+    if close < 0 { return "" }
+    text_at(data, start, close)
+}
+
+// Value of `key="…"` among a tag's attributes, which run from `tag_start` to
+// `tag_end`.
+fn attribute(data: &[]u8, tag_start: i32, tag_end: i32, key: string) -> string {
+    start := find_bytes(data, tag_start, tag_end, key + "=\"")
+    if start < 0 { return "" }
+    value := start + key.len + 2
+    stop := find_bytes(data, value, tag_end, "\"")
+    if stop < 0 { return "" }
+    text_at(data, value, stop)
+}
+
+// One tag as the scanner sees it: `name` is `type` for `<type …>` and
+// `/type` for `</type>`; `body_start` is the offset after `>`. A self-closing
+// `<command name="…"/>` has `closing` false and `empty` true.
+struct Tag { name: string, start: i32, attr_start: i32, attr_end: i32, body_start: i32, closing: bool, empty: bool }
+
+// The next tag at or after `from`, or a Tag with `start` -1.
+fn next_tag(data: &[]u8, from: i32) -> Tag {
+    start := find_bytes(data, from, data.len, "<")
+    if start < 0 { return Tag { name: "", start: -1, attr_start: 0, attr_end: 0, body_start: 0, closing: false, empty: false } }
+    mut end := start + 1
+    while end < data.len && data[end] != 62 { end += 1 }
+    empty := end > start && data[end - 1] == 47
+    closing := start + 1 < data.len && data[start + 1] == 47
+    name_start := start + if closing { 2 } else { 1 }
+    mut name_end := name_start
+    while name_end < end && data[name_end] != 32 && data[name_end] != 47 && data[name_end] != 62 { name_end += 1 }
+    Tag {
+        name: text_at(data, name_start, name_end),
+        start: start,
+        attr_start: name_end,
+        attr_end: if empty { end - 1 } else { end },
+        body_start: end + 1,
+        closing: closing,
+        empty: empty,
+    }
+}
+
+// The first opening tag called `name` at or after `from`; `start` is -1 when absent.
+fn find_open(data: &[]u8, from: i32, name: string) -> Tag {
+    mut at := from
+    while at < data.len {
+        t := next_tag(data, at)
+        if t.start < 0 { break }
+        at = t.body_start
+        if !t.closing && !t.empty && t.name == name { return t }
+    }
+    Tag { name: "", start: -1, attr_start: 0, attr_end: 0, body_start: 0, closing: false, empty: false }
+}
+
+// Offset just past the `</name>` that closes the element whose opening tag is
+// `open`, counting nested elements of the same name. `name` is "command" for
+// `<command>`, so the body of a command may contain anything but a command.
+fn close_of(data: &[]u8, open: &Tag) -> i32 {
+    // A self-closing tag and a closing tag both end where their `>` does;
+    // scanning from a closing tag would run to the end of the file, because
+    // the matching opener lies before it.
+    if open.empty || open.closing { return open.body_start }
+    mut depth := 1
+    mut at := open.body_start
+    while at < data.len {
+        t := next_tag(data, at)
+        if t.start < 0 { return -1 }
+        at = t.body_start
+        if t.name != open.name || t.empty { continue }
+        if t.closing { depth -= 1 } else { depth += 1 }
+        if depth == 0 { return at }
+    }
+    -1
+}
+
+// The direct children of the element `open` (whose body ends at `close`) whose
+// tag is `name`, as byte ranges of their bodies. Depth matters: a <command>
+// holds <param> elements and also an <implicitexternsyncparams> whose <param>
+// elements are prose about synchronization, not parameters.
+fn children(data: &[]u8, open: &Tag, close: i32, name: string) -> []Tag {
+    mut out: []Tag = []
+    mut at := open.body_start
+    while at < close {
+        t := next_tag(data, at)
+        if t.start < 0 || t.body_start > close { break }
+        // Every element's subtree is stepped over as a whole, named or not, so a
+        // descendant is never mistaken for a sibling.
+        child_close := close_of(data, &t)
+        at = if child_close > t.body_start { child_close } else { t.body_start }
+        if t.closing || t.name != name { continue }
+        out.push(t.clone())
+    }
+    out
+}
+
+// Whether a `<param api="…">` variant applies to Vulkan. The registry lists one
+// parameter per API profile when they differ, as a comma-separated list
+// (`api="vulkan,vulkanbase"` versus `api="vulkansc"`); a parameter without
+// `api` applies to every profile. Profiles are compared as whole names: "vulkansc"
+// is another API that merely shares a prefix.
+fn applies_to_vulkan(data: &[]u8, t: &Tag) -> bool {
+    apis := attribute(data, t.attr_start, t.attr_end, "api")
+    if apis == "" { return true }
+    for profile in text.split(apis, ",") {
+        if text.trim(profile) == "vulkan" { return true }
+    }
+    false
+}
+
+// ---- scanning ----------------------------------------------------------------
+
+// `<type category="basetype">typedef <type>uint64_t</type> <name>VkDeviceSize</name>;</type>`
+// and `<type category="handle"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>`.
+fn scan_types(data: &[]u8, r: &mut Registry) {
+    // <types> … </types> holds every <type category="…"> element.
+    types_open := find_open(data, 0, "types")
+    if types_open.start < 0 { return }
+    types_close := close_of(data, &types_open)
+    if types_close < 0 { return }
+    for t in children(data, &types_open, types_close, "type") {
+        close := close_of(data, &t)
+        if close < 0 { continue }
+        name := inner(data, t.body_start, close, "name")
+        if name == "" { continue }
+        category := attribute(data, t.attr_start, t.attr_end, "category")
+        if category == "basetype" {
+            base := inner(data, t.body_start, close, "type")
+            if base != "" { r.typedefs.put(name.clone(), base.clone()) }
+        } else if category == "handle" {
+            r.handles.put(name.clone(), true)
+        }
+    }
+}
+
+// `<param optional="true">const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>`:
+// the type is whatever the tag holds, the stars after it are the pointer.
+fn parse_param(data: &[]u8, start: i32, end: i32) -> Param {
+    type_name := inner(data, start, end, "type")
+    name := inner(data, start, end, "name")
+    type_close := find_bytes(data, start, end, "</type>")
+    name_open := find_bytes(data, start, end, "<name>")
+    mut pointer := false
+    if type_close >= 0 && name_open > type_close {
+        for i in type_close + 7..name_open { if data[i] == 42 { pointer = true } }
+    }
+    Param { type_name: type_name, pointer: pointer, name: name }
+}
+
+// `<command …><proto><type>VkResult</type> <name>vkCreateImage</name></proto>
+//  <param>const <type>VkImageCreateInfo</type>* <name>pCreateInfo</name></param> …</command>`
+// Every <command> sits under <commands>, in a <command> or an extension's
+// <require>; nested commands never occur, so the walk is flat.
+fn scan_commands(data: &[]u8, r: &mut Registry) {
+    commands_open := find_open(data, 0, "commands")
+    if commands_open.start < 0 { return }
+    commands_close := close_of(data, &commands_open)
+    if commands_close < 0 { return }
+    for cmd in children(data, &commands_open, commands_close, "command") {
+        cmd_close := close_of(data, &cmd)
+        if cmd_close < 0 { continue }
+        for proto in children(data, &cmd, cmd_close, "proto") {
+            proto_close := close_of(data, &proto)
+            if proto_close < 0 { continue }
+            mut returns := inner(data, proto.body_start, proto_close, "type")
+            if returns == "" { returns = "void" }
+            name := inner(data, proto.body_start, proto_close, "name")
+            if name == "" || !text.starts_with(name, "vk") { continue }
+            mut params: []Param = []
+            for param in children(data, &cmd, cmd_close, "param") {
+                if !applies_to_vulkan(data, &param) { continue }
+                param_close := close_of(data, &param)
+                if param_close < 0 { continue }
+                parsed := parse_param(data, param.body_start, param_close)
+                // A <param> without a <type> is not a parameter (the registry
+                // uses <param> for prose inside <implicitexternsyncparams>).
+                if parsed.type_name == "" { continue }
+                params.push(parsed.clone())
+            }
+            r.commands.put(name[2..name.len].clone(), Command { name: name.clone(), params: params, returns: returns.clone() })
+        }
+    }
+}
+
+// `<extension name="VK_KHR_swapchain" … depends="VK_KHR_surface" …>` blocks
+// list what they provide as `<command name="vkCreateSwapchainKHR"/>`, inside
+// <require> elements that may themselves depend on another extension.
+fn scan_extensions(data: &[]u8, r: &mut Registry) {
+    root_open := find_open(data, 0, "extensions")
+    if root_open.start < 0 { return }
+    root_close := close_of(data, &root_open)
+    if root_close < 0 { return }
+    for ext in children(data, &root_open, root_close, "extension") {
+        ext_close := close_of(data, &ext)
+        if ext_close < 0 { continue }
+        name := attribute(data, ext.attr_start, ext.attr_end, "name")
+        if name == "" { continue }
+        r.extensions.push(Extension { name: name.clone(), depends: attribute(data, ext.attr_start, ext.attr_end, "depends") })
+        // Walk the whole extension body for <command name="…"/> at any depth.
+        mut cat := ext.body_start
+        while cat < ext_close {
+            t := next_tag(data, cat)
+            if t.start < 0 || t.body_start > ext_close { break }
+            cat = t.body_start
+            if t.closing || t.name != "command" { continue }
+            cname := attribute(data, t.attr_start, t.attr_end, "name")
+            if text.starts_with(cname, "vk") { r.provider.put(cname[2..cname.len].clone(), name.clone()) }
+        }
+    }
+}
+
+fn registry(data: &[]u8) -> Registry {
+    mut r := Registry {
+        commands: map.Map<string, Command>::new(),
+        provider: map.Map<string, string>::new(),
+        extensions: [],
+        typedefs: map.Map<string, string>::new(),
+        handles: map.Map<string, bool>::new(),
+    }
+    scan_types(data, &mut r)
+    scan_commands(data, &mut r)
+    scan_extensions(data, &mut r)
+    r
+}
+
+// ---- questions about the registry -------------------------------------------
+
+// Whether a command exists only where a surface can: its extension, or an
+// extension it depends on, is VK_KHR_surface.
+fn needs_surface(r: &Registry, command: string) -> bool {
+    provider := r.provider.get(command)
+    mut ext := match provider { .Some(e) => e, .None => return false }
+    mut hops := 0
+    while ext != "" && hops < 8 {
+        if ext == SURFACE_EXTENSION { return true }
+        mut next := ""
+        for e in &r.extensions {
+            if e.name == ext { next = e.depends.clone() }
+        }
+        ext = next
+        hops += 1
+    }
+    false
+}
+
+// The C type a vk.xml name resolves to: typedefs are followed (`VkDeviceSize`
+// → `uint64_t`); handles and enums have no typedef and stay as themselves.
+fn resolves_to(r: &Registry, type_name: string) -> string {
+    mut t := type_name.clone()
+    mut hops := 0
+    while hops < 8 {
+        match r.typedefs.get(t.clone()) {
+            .Some(base) => { t = base; hops += 1 },
+            .None => break,
+        }
+    }
+    t
+}
+
+// The Dunder type of one parameter. Anything addressed (a handle, a struct, a
+// `void*`) is `ptr`; the integers are the widths the headers typedef them to.
+// Enums and flags are `uint32_t` in C, which is what the registry's silence
+// means here: a name that is neither a handle nor a typedef is an enum.
+fn dunder_type(r: &Registry, p: &Param) -> string {
+    if p.pointer { return "ptr" }
+    if r.handles.contains(p.type_name) { return "ptr" }
+    match resolves_to(r, p.type_name) {
+        "uint32_t" => "u32",
+        "int32_t" => "i32",
+        "int" => "i32",
+        "uint64_t" => "u64",
+        "size_t" => "u64",
+        "float" => "f32",
+        "char" => "ptr",
+        _ => "u32",
+    }
+}
+
+// `void` has no value; `VkResult` and every enum come back as the `int32_t`
+// the headers make of them.
+fn return_type(r: &Registry, c: &Command) -> string {
+    if c.returns == "void" { return "" }
+    match resolves_to(r, c.returns) {
+        "uint32_t" => "u32",
+        _ => "i32",
+    }
+}
+
+// ---- writing -----------------------------------------------------------------
+
+// api.ddr's `load`: every command resolved by name, a missing symbol fails
+// the load. Windowed commands are resolved only when a surface is asked for.
+fn write_api(r: &Registry, names: &[]string) -> string {
+    mut out: []u8 = []
+    bytes.append_utf8(&mut out, "// Generated by tools/vk.ddr from Khronos' vk.xml. Do not edit.\n")
+    bytes.append_utf8(&mut out, "// Vulkan entry points Storm calls, resolved by name from the loader before\n")
+    bytes.append_utf8(&mut out, "// any driver call. Prototypes are the registry's; the command list is Storm's.\n")
+    bytes.append_utf8(&mut out, "capability unsafe\n\nimport std.dl as dl\n\n@c_layout\npub struct Api {\n")
+    for n in names {
+        c := r.commands.get(n.clone()).unwrap()
+        bytes.append_utf8(&mut out, "    " + n + ": extern fn(")
+        for i in 0..c.params.len {
+            if i > 0 { bytes.append_utf8(&mut out, ", ") }
+            bytes.append_utf8(&mut out, dunder_type(r, &c.params[i]))
+        }
+        ret := return_type(r, &c)
+        if ret != "" { bytes.append_utf8(&mut out, ") -> " + ret) } else { bytes.append_utf8(&mut out, ")") }
+        bytes.append_utf8(&mut out, ",\n")
+    }
+    bytes.append_utf8(&mut out, "}\n\n")
+    bytes.append_utf8(&mut out, "// Resolve every entry point up front; a missing symbol fails the whole load.\n")
+    bytes.append_utf8(&mut out, "pub unsafe fn load(api: &mut Api, library: ptr, windowed: bool) -> bool {\n")
+    bytes.append_utf8(&mut out, "    mut symbol := ptr(0)\n")
+    // The surface-dependent commands first, inside the `windowed` guard: the
+    // loader exports them, but they cannot be called without a surface and a
+    // capture run never has one. Then everything else, unconditionally.
+    bytes.append_utf8(&mut out, "    if windowed {\n")
+    for n in names {
+        if !needs_surface(r, n.clone()) { continue }
+        c := r.commands.get(n.clone()).unwrap()
+        bytes.append_utf8(&mut out, "        symbol = dl.symbol(library, cstr(\"" + c.name + "\"))\n")
+        bytes.append_utf8(&mut out, "        if symbol == ptr(0) { return false }\n")
+        bytes.append_utf8(&mut out, "        api." + n + " = ffi_fn(symbol)\n")
+    }
+    bytes.append_utf8(&mut out, "    }\n")
+    for n in names {
+        if needs_surface(r, n.clone()) { continue }
+        c := r.commands.get(n.clone()).unwrap()
+        bytes.append_utf8(&mut out, "    symbol = dl.symbol(library, cstr(\"" + c.name + "\"))\n")
+        bytes.append_utf8(&mut out, "    if symbol == ptr(0) { return false }\n")
+        bytes.append_utf8(&mut out, "    api." + n + " = ffi_fn(symbol)\n")
+    }
+    bytes.append_utf8(&mut out, "\n    true\n}\n")
+    bytes.decode(&out).unwrap_or_default()
+}
+
+fn main() -> i32 {
+    // usage: vk.ddr <vk.xml> [--check] [target]
+    // `--check` compares the target with what the registry generates instead of
+    // writing it; the target defaults to the package's api.ddr.
+    path := if sys.arg_count() > 1 { sys.arg(1) } else { "" }
+    mut check := false
+    mut target := "packages/storm-vulkan/src/api.ddr"
+    if sys.arg_count() > 2 && sys.arg(2) == "--check" { check = true }
+    if sys.arg_count() > 2 && sys.arg(2) != "--check" { target = sys.arg(2) }
+    if sys.arg_count() > 3 { target = sys.arg(3) }
+    if path == "" {
+        _ := sys.eprint("usage: dunder run tools/vk.ddr -- <vk.xml> [--check] [target]")
+        return 2
+    }
+    data := sys.read_u8(path)
+    if !data.ok {
+        _ := sys.eprint("vk: could not read " + path)
+        return 2
+    }
+    r := registry(&data.value)
+    mut wanted: []string = []
+    for n in &COMMANDS { wanted.push(n.clone()) }
+    for n in &wanted {
+        if !r.commands.contains(n.clone()) {
+            _ := sys.eprint("vk: vk" + n + " is not in the registry")
+            return 2
+        }
+    }
+    generated := write_api(&r, &wanted)
+    if check {
+        current := sys.read_text(target)
+        if !current.ok || current.value != generated {
+            _ := sys.eprint("vk: " + target + " differs from what the registry generates; run tools/vk.ddr")
+            return 1
+        }
+        print("vk: " + target + " matches the registry (" + wanted.len.str() + " commands)")
+        return 0
+    }
+    _ := sys.write_text(target, generated)
+    print("vk: wrote " + target + " (" + wanted.len.str() + " commands)")
+    0
+}

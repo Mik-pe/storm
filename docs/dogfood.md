@@ -468,6 +468,24 @@ man in i en förstörs den och HUD:en räknar; `--eye x y z` startar kameran
 var som helst, vilket är hur capture-körningen bevisar plockningen (orbs 7/8,
 objects 13) utan tangentbord.
 
+## Uppföljning: vk.xml som källa
+
+`tools/vk.ddr` läser Khronos register och skriver `api.ddr`: 80 prototyper
+och 80 symboluppslag som tidigare stavades för hand. Tre saker i registret
+som en taggläsare måste veta, och som den första skissen felade på innan
+mätning rättade den: `<type category="handle">` omsluter en inre `<type>`
+(`VK_DEFINE_HANDLE`), så den första `</type>` stänger inte posten;
+`<implicitexternsyncparams>` innehåller `<param>`-element som är prosa, inte
+parametrar; och en parameter kan listas en gång per API-profil
+(`api="vulkan,vulkanbase"` mot `api="vulkansc"`), där `vulkansc` är ett annat
+API som bara delar prefix. Handkoden hade **ett** fel på 80 prototyper:
+`vkGetPhysicalDeviceQueueFamilyProperties` deklarerades `-> i32`, registriet
+säger `void`. De 79 andra var identiska med genereringen.
+
+**72. Byteoffset i en `string` måste ligga på en teckengränns — och bryter den tyst med status 106.** En genomsökning av en 3,3 MB `vk.xml` med `source[i..i + needle.len] == needle` vid varje offset avslutas med utgång **106** utan text, vid det första `©` i en kommentar. Symptom: `dunder run` skriver inget alls; sista `print` är den före loopen. Minimal repro: en fil med `<a>©</a>` och en loop som läser `s.value[i..i + 1]` för alla `i`. Workaround här: registryn läses som `[]u8` (`sys.read_u8`) och text dekodas bara mellan två taggränser (`bytes.decode_range`), som alltid är ASCII. Det fungerar och är snabbt (3,6 s för hela registret), men två saker saknas: en diagnostik som säger *vilken* operation och *vilket* offset som bröt gränsen (fynd 60: samma tysta slut som `to_bits()` på ett negativt flyttal), och en stdlibfunktion som söker ett ASCII-mönster i en `string` från en offset — `std.text.find` har ingen `from`-parameter, så varje anrop efter en träff börjar om från 0. Rekommendation: (a) status 106 ska peka ut operation och offset som status 103 gör för arrayer; (b) `text.find_from(text, needle, from)` eller en `[]u8`-vy av en `string` utan kopia.
+
+**73. `_ := f()` på en funktion utan returvärde kompilerar — så en felaktig `-> i32` syns inte när den rättas.** Skill-regeln är att ett anrop som returnerar `()` ska stå bart och att `_ := f()` på ett sådant är `E3002`. Mätt på 0.12.0 med en `extern fn(ptr)` (inget returvärde) i en `@c_layout`-post: `_ := f.void_ret(ptr(0))` går igenom `dunder check` grönt. Konsekvensen i Storm: `device.ddr` band `_ := r.api.GetPhysicalDeviceQueueFamilyProperties(…)` medan prototypen ljög `-> i32`, och när prototypen rättades till `void` kompilerade samma rad oförändrad — ingenting tvingade fram det korrekta bara anropet. Minimal repro: structen ovan. Workaround: raden ändrades för hand till ett bart anrop. Rekommendation: `E3002` för `_ :=` på `()`, som dokumentationen redan lovar; då blir en rättad prototyp ett compile-fel på varje anropsplats som bar på lögnen.
+
 ## Grafikobservationer på macOS (Metal)
 
 Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen
@@ -571,6 +589,15 @@ Nybygget skrev till en ny utdatafil. Ombygget använde den befintliga filen.
 | Mac, ARM64 | Oförändrat | 1,182 s | 0,183 s |
 | Mikparchy, x86-64 | Nybygge | 15,601 s | 8,077 s |
 | Mikparchy, x86-64 | Oförändrat | 15,666 s | 1,109 s |
+
+Mätning på Mikparchy, 2026-11-24 (låst session, `1bd197a` + generatorn
+för `api.ddr`, Dunder 0.12.0): **147 egna `@test fn` gröna** i 16 sviter
+(43 rapporterade i roten och 149 i paketen; de tre sviter som når
+`storm-text` räknar med Skrifts två), `dunder check` 0 varningar i Storms
+paket, `check --unused-functions` rent, `tools/build-time.ddr` **16 072 ms**
+av 20 000. `tools/vk.ddr --check` grönt mot den nya `api.ddr` och utgång 1
+mot en avsiktligt ändrad kopia. Capture 1280 × 800 före/efter den genererade
+`api.ddr` (standard och `--glb Fox.glb`): **AE = 0**.
 
 Mätning på Mikparchy, 2026-11-24 (låst session, `a84ade9`, Dunder
 0.12.0): **140 egna tester gröna** (27 rot + 113 paket, 16 sviter, varje

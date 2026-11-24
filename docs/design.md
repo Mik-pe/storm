@@ -350,13 +350,23 @@ renderaren mutabelt vid sidan av en pekare in i den.
 
 ## 6. Öppna frågor
 
-- **Genererade bindings?** Att hålla 300+ entry points för hand är det som
-  orsakade blend-buggen. För Vulkan: ett litet Dunder-verktyg som läser
-  Khronos `vk.xml` och skriver enums + structar. För Metal behövs det inte
-  på samma sätt: det som hålls för hand är 107 selektorer och 40 typer av
-  meddelanden, och det som håller dem ärliga är kontrollen mot SDK:s
-  rubriker (§3) — vilken i sin tur vore naturlig som ett Dunder-verktyg i
-  `tools/`, när den ska köras av fler än den som skrev den.
+- **Genererade bindings — ja, för prototyperna.** Att hålla entry points för
+  hand är det som orsakade blend-buggen, och det var sant för `api.ddr` också:
+  av 80 prototyper var 79 rätt stavade och en ljög
+  (`vkGetPhysicalDeviceQueueFamilyProperties` deklarerad `-> i32`, registriet
+  säger `void`; fynd 73 visar varför det inte syntes). Nu läser `tools/vk.ddr`
+  Khronos `vk.xml` och skriver hela filen — `Api`-posten och `load()` — med
+  `--check` som `dunder fmt --check`: utgång 1 om filen inte är vad registriet
+  ger. Kommandolistan är Storms (vilka kommandon som laddas), typerna är
+  registriets. De tio WSI-kommandona hamnar i `load()`:s `windowed`-gren
+  därför att `VK_KHR_swapchain` beror på `VK_KHR_surface` i registriet, inte
+  på en handskriven lista. `layout.ddr` (698 rader `@c_layout`) och
+  `enums.ddr` (34 enums) är nästa med samma taggläsare; där är vinsten större,
+  för de är 800 rader mot 80. För Metal behövs det inte på samma sätt: det
+  som hålls för hand är 107 selektorer och 40 typer av meddelanden, och det
+  som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin
+  tur vore naturlig som ett Dunder-verktyg i `tools/`, när den ska köras av
+  fler än den som skrev den.
 - **Safe-lager?** Räcker enums + `Result`, eller ska det finnas builders?
   Förslag: enums + `Result` först (klart på kontraktets nivå), builders när
   vi ser vad som är besvärligt att använda.

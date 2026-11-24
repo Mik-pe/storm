@@ -17,9 +17,13 @@ Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. 
 
 **Efter 0f och 3a** kommer textursampling för meshmaterial och glTF-bilder (3b–3c). Studion läser redan scenens noder och materialfaktorer (avsnitt 4). Sedan det som
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
-(genererade bindings; 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men
-ingen funktion saknas för den) och **Renderer-uppdelningen** (design.md §5,
-steg 3–6), som Metal-redan har och Vulkan inte. Instancing (5), fler ljus
+(genererade bindings). Första delen är landad: `tools/vk.ddr` skriver
+`api.ddr` ur `vk.xml` (80 prototyper + `load()`, `--check` som `fmt --check`;
+design.md §6). Kvar: `layout.ddr` (698 rader `@c_layout`, de fel som är
+tyst minneskorruption) och `enums.ddr` (34 enums som i dag pinnas av tester
+mot Khronos-tabellerna) med samma taggläsare, och paketet som eget namn.
+Sedan **Renderer-uppdelningen** (design.md §5,
+Instancing (5), fler ljus
 (7), och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy

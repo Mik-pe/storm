@@ -93,11 +93,11 @@ pub unsafe fn image_2d_info(format: u32, width: u32, height: u32, tiling: u32, u
 
 unsafe fn pick_queue(r: &mut state.Renderer) -> state.SetupStep {
     mut count: u32 = 0
-    _ := r.api.GetPhysicalDeviceQueueFamilyProperties(r.physical, addr(&mut count), ptr(0))
+    r.api.GetPhysicalDeviceQueueFamilyProperties(r.physical, addr(&mut count), ptr(0))
     if count == 0 || count > 32 { return .QueueFamily }
     // VkQueueFamilyProperties is six u32 words on 64-bit: flags, count, timestamp, gran x/y/z.
     mut families: [u32; 192] = [0; 192]
-    _ := r.api.GetPhysicalDeviceQueueFamilyProperties(r.physical, addr(&mut count), addr(&mut families[0]))
+    r.api.GetPhysicalDeviceQueueFamilyProperties(r.physical, addr(&mut count), addr(&mut families[0]))
     mut family := 0
     while family < i32(count) {
         graphics := i32(families[family * 6]).bit_and(1) != 0
