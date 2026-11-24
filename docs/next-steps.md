@@ -123,23 +123,11 @@ plats i paketet.
   (G = roughness, B = metallic), normal- och occlusion-kartor är **linjära**
   (UNORM). PNG:ns egen ICC/gamma ignoreras (spec: "MUST be ignored").
   `enums.Format` har båda (`R8G8B8A8_SRGB = 43`, `_UNORM = 37`).
-- **PNG i ren Dunder — zlib finns redan.** `dunder-skrift` har en publik
-  pur-Dunder `zlib_decompress(src, offset, length, expected_len)` (RFC 1950/
-  1951, WOFF1:s tavlor). *Bevisat:* den dekomprimerar FoxFixed `IDAT`
-  (26 707 byte) byte-identiskt mot Pythons zlib — 3 146 752 byte = 1024 ×
-  1024 × 3 + 1024 filterbyte — på 0,27 s. `expected_len = 0` betyder okänd
-  längd (används bara för `reserve`). Det som saknas är PNG-containern:
-  chunk-walk (`IHDR`/`IDAT`/`IEND`, längd big-endian), ihopsättning av
-  flera `IDAT`-chunkar (FoxFixed har en, spec tillåter flera), och de fem
-  filtertyperna (None/Sub/Up/Average/Paeth, en filterbyte per rad). FoxFixed
-  är enklast möjliga: 1024², bitdepth 8, **colortype 2 (RGB)**, interlace 0
-  → avkodaren måste expandera RGB→RGBA; colortype 6 (RGBA) och 4 (grå+alfa)
-  kommer näst, interlace (Adam7) och palett senare. `zlib_decompress` bor i
-  `skrift.sfnt`; antingen importeras den därifrån (ett teckensnittspaket som
-  avkodningspunkt för texturer är fel lager) eller lyfts till `std.bytes`/
-  ett `std.inflate` i Dunder-repot — det senare är rätt hemvist, eftersom
-  både WOFF, PNG och ZIP är konsumenter. *Beslut: lyft till Dunder-stdlib
-  (eget fynd), använd `skrift.sfnt` till dess.*
+- **PNG i ren Dunder.** Läs `IHDR`, sammanfoga `IDAT` och kontrollera
+  `IEND`. Avkoda med `packages/zlib` från Dunder och begränsa utdata till
+  summan av radlängderna inklusive filterbyte. FoxFixed ger 3 146 752 byte
+  för 1 024 × 1 024 RGB-pixlar. Tillämpa radens filter och expandera RGB
+  till RGBA. Testa sedan RGBA och gråskala med alfa.
 - **Sampler från glTF:s `samplers[]`, inte hårdkodat.** FoxFixed:
   `magFilter 9729` (LINEAR), `wrapS/T 10497` (REPEAT), ingen `minFilter`
   (→ implementation-defined enligt spec; Fox.glb anger 9987 =

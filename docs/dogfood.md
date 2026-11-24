@@ -257,15 +257,7 @@ använder nu `vk.Dependencies { before, after }` (en delad wrapper i
 `u32`:ar, och de kastade structarna och `writes: [u64; 28]` (deklarerad,
 aldrig fylld) är borta. AE = 0.
 
-**53. `zeroed()` vägrar en array av C-poster.** `[vk.SubpassDependency; 2]
-= zeroed()` ger `E5003: zeroed requires a C record`, och felplatsen pekar
-på ett senare uttryck (rad 30 istället för deklarationen). Det är den
-troliga orsaken till att storm-vulkan packade allt för hand: det finns inget
-nollställt array-värde att utgå ifrån. Workaround som fungerar:
-`[blank(), blank()]` (en funktion som returnerar `zeroed()`), eller en
-arrayliteral med samtliga fält. Felet borde säga *"zeroed takes one C
-record, not an array — use `[blank(); N]`"* om språket får det, eller
-acceptera arrayen.
+**53. Nollställ en array av C-poster.** `zeroed()` skapar en C-post. För en array av två poster fungerar `[zeroed(); 2]`. Arrayens storlek och elementens offset täcks av Vulkanprovet i fynd 54.
 
 **54. Arrayer av C-poster ÄR sammanhängande (en felalarm, dokumenterat
 för att inte återupprepas).** Under steg 3 mätte jag "stride 32, `size_of
@@ -279,22 +271,7 @@ fält på C-offsets, med och utan `mut`, i `main` och i funktioner. Både
 som fynd 39: en siffra som inte stämmer med förväntat läses en gång till
 på rätta rader innan den får förklara kompilatorn.
 
-**55. `to_bits()` på ett negativt flyttal avslutar programmet tyst.**
-`(-1000.0).to_bits()`, `CLEAR_NEG.to_bits()` (`const CLEAR_NEG: f32 =
--1000.0`) och `neg.to_bits()` på `mut neg: f32 = -1000.0` avslutar alla
-programmet med exit 101 **utan något meddelande**, i isolering utan
-pekare eller stores: `show(1)` skrivs, sedan dör programmet på
-`show(bits(-1000.0))`. Positiva värde fungerar. Även `u64(neg)` (f32 → u64
-av negativt) dör tyst, exit 107. Det är orsaken till att `shadow.ddr`
-hade clear-värdet som `0xC47A0000C47A0000`-hex (någon hade träffat väggen
-och packat för hand) och till en eftermiddags jakt: felet visade sig som
-"capture: ready" och sedan ingenting. *Storm: `depth.float_bits(value)`
-samlar teckenbiten själv — beloppets `to_bits()` med `0x80000000` eller:at när
-värdet är negativt — låst av
-`float_bits_covers_both_signs`; `depth_clear` och skuggans clear går genom
-den.* *Rekommendation:* negativa flyttal i `to_bits()` ska antingen
-fungera (det är en bit-om-tolkning, inget att panikera för) eller ge ett
-felmeddelande med rad. Tyst exit är det värsta av alternativen.
+**55. Skriv flyttalets bitmönster som ett Vulkan-ord.** `f32.to_bits()` ger ett tecknat `i32` och bevarar även negativ noll och NaN:s nyttolast. Exit 101 kom från den efterföljande konverteringen till `u32`. `depth.float_bits` breddar till `i64` och maskerar de lägsta 32 bitarna före konverteringen. Testet kontrollerar även negativ noll och en NaN med satt teckenbit.
 
 ## Uppföljning: IBL
 
@@ -379,8 +356,7 @@ Vulkan-lagret ~1,5 s, text ~0,7, stdlib ~0,5, resten ~2. *Uppföljning
 senare samma dag:* med editorn, IBL och glTF-laddaren är `main.ddr` 747 rader
 och bygget 6,6 s (`tools/build-time.ddr`, 20 s-budgeten i `AGENTS.md`); det är
 fortfarande kompilatorn, inte koden, som sätter talet. *Rekommendation:*
-inkrementell cache per paket skulle göra hela frågan ointressant (5 → <1 s
-vid oförändrade paket). Ordning på paket i `dunder.toml` spelar ingen roll.
+mät ett varmt bygge med Dunders befintliga funktionscache innan ett separat paketcacheformat övervägs.
 
 **57. `ERROR_OUT_OF_DATE_KHR` var −1000001003 — ett värde som inte finns.**
 Rätt är −1000001004 (Khronos `VkResult`); 1000001003 är `SUBOPTIMAL_KHR`.
@@ -417,46 +393,12 @@ laddar en modell in i scenen (autoskalad till 2,4 enheter, stående på
 marken) och den renderas med IBL och skugga. *Lärdom:* en fixtur som koden
 själv producerat är inget bevis; ett test mot **en fil utifrån** är det.
 
-**60. E3003 på ett giltigt anrop till en generisk funktion.** `join2<A, B>(a:
-&Pool<A>, b: &Pool<B>)` med två accessorer som returnerar `&Pool<X> from
-self` direkt som argument ger `cannot unify argument 1 for generic function
-'join2' (got '&__dunder_module_66<__dunder_module_126>')` när accessorn
-bor i en annan modul än anropet; i samma modul går det, och med mottagaren
-`&mut G` räcker det att **ett** argument är en accessor medan det andra är
-en lokal. Minimal repro i `/tmp/qtest2` (tre moduler: `ecsq` med `Pool` och
-`join2`, `sceneq` med `G { names, locals }` och accessorer, anropande
-modul). Ingen anteckning som föreslår workaronden. *Workaround:* bind varje
-accessor till en lokal först (`names := g.names()`), vilket alltid går.
-*Rekommendation:* unifieringen borde se att `&Pool<Name> from self` är
-`&Pool<Name>`; noten borde åtminstone säga "bind the call to a local".
-Diagnosen nämner interna modulnummer (`__dunder_module_66`) i stället för
-typerna `Pool<Name>` / `Pool<LocalTransform>`, vilket gör den oläslig.
+**60. Härled typ från ett returnerat lån.** `join2(g.names(), g.locals())` gav E3003 i 0.11.2 även inom en modul. En lokal för varje argument eller explicita typargument fungerade. Dunder 0.11.3 härleder typerna från accessorernas delade lån. Orbräknaren skickar `graph.locals()` direkt.
 
-**61. En pur-Dunder zlib-inflate finns — i teckensnittspaketet.** Stdlib har
-`base64`, `sha256`, `crypto`, men ingen inflate/deflate. `dunder-skrift`
-har en publik, komplett RFC 1950/1951-avkodare (`skrift.sfnt.zlib_decompress
-(src: &[]u8, offset, length, expected_len) -> InflateResult { ok, error,
-data }`) skriven för WOFF1:s tabeller, med adler32-kontroll. *Bevisat
-2026-11-23:* den dekomprimerar `FoxFixed.glb`:s PNG-`IDAT` (26 707 byte,
-dynamisk Huffman) **byte-identiskt** mot Pythons `zlib.decompress` —
-3 146 752 byte på 0,27 s — med `expected_len = 0` (okänd längd; argumentet
-används bara till `reserve`). Funktionens kontrakt antyger det inte:
-parametern heter `expected_len` och WOFF-slipan skickar alltid tabellens
-längd. Att den fungerar utan är alltså en egenskap man råkar utnyttja, inte
-en som dokumenterats. PNG-avkodning i ren Dunder (Storm textursteg 3c) behöver
-*inflate* + en chunk-walk + fem filtertyper — alltså finns 90 % av PNG redan
-i ekosystemet, men på fel adress: varje konsument (WOFF, PNG, ZIP, gzip)
-som importerar `skrift.sfnt` för inflate gör teckensnittspaketet till ett
-beroende för bilddata. *Workaround:* importera från `skrift.sfnt` och säg
-varför. *Rekommendation:* lyft `zlib_decompress`/`adler32`/`BitStream`/
-`HuffTable` till `std.inflate` (eller `std.bytes`) i Dunder-repot med
-skrifts befintliga tester som bas, och dokumentera att `expected_len ≤ 0`
-betyder "okänd längd". Skrift importerar det i sin tur.
+**61. Dela zlib mellan WOFF och andra filformat.** Dunders paket `packages/zlib` tillhandahåller `decompress(src, max_bytes)`. Gränsen gäller även när ett komprimerat block hänvisar bakåt i utdata. Skrift använder WOFF-tabellens deklarerade längd som gräns. En PNG-läsare kan i stället härleda sin gräns ur bildmåtten.
 
-**62. Beroendets varningar visas vid varje bygge — och kan inte stängas av
-därifrån.** `dunder build` av Storm skriver sex varningar från
-`dunder-skrift` (`binary.ddr:4 W1002 unused import 'sys'`, `font.ddr:5,14
-W1002 'bin'/'bytes'`, `sfnt.ddr:544–548 W1001 unused variable 'i'` ×5) vid
+**62. Oanvänd kod i beroendet.** Varningarna gick att reproducera i Skrift. De oanvända importerna har tagits bort och den gemensamma avkodaren använder `_` för överhoppade loopindex.
+
 **varje** kompilering, däribland `tools/build-time.ddr`:s. Det är rätt att
 kompilatorn visar dem — Skrift har faktiskt död kod och Micke har
 nolltolerans för det — men det gör Storms regel "0 varningar i Storms egna
@@ -468,21 +410,7 @@ varningarna så är fallet borta. Skrift är Mickes repo; det är (b) som gälle
 tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
 *i praktiken* är en filterregel tills syskonen är rena.)
 
-**63. E3003 "too many arguments" säger inte hur många som väntades.** Ett
-anrop med ett argument för mycket ger `error[E3003]: too many arguments`
-och inget tal. I Storm (`triangle(&mut vertices, …)` med 19 argument mot 18
-parametrar efter `&mut`) satt markören på det *sista* argumentet, och utan
-antal lästes det som ett *tak* (språket tillåter inte så många) i stället
-för en *räkning* (du gav ett för mycket) — jag mätte därför taket i
-isolation med 17, 18, 19 och 20 parametrar: alla går igenom. Minimal repro:
-`fn f2(a: f32, b: f32) -> f32 { a + b }` + `f2(1.0, 2.0, 3.0)` →
-`E3003 too many arguments`, markör på `f2`, inget "expected 2, got 3".
-För få heter det `E3003 wrong argument count`, också utan tal.
-*Workaround:* räkna argumenten för hand mot deklarationen, eller mät
-taket i isolation. *Rekommendation:* `expected N arguments, got M` i båda
-meddelandena. (Felet var mitt — en vertex med 18 positionsargument är
-oläslig oavsett språk; grunden blev en `Vertex`-post och `push_quad`, inte
-en rad till med tal.)
+**63. Antal argument.** Anropet `f2(1.0, 2.0, 3.0)` till en funktion med två parametrar fick E3003 utan antal. Dunder 0.11.3 visar både förväntat och faktiskt antal. För metoder räknas de argument anroparen skriver.
 
 **64. En funktion utan anropare ger ingen varning — varken `check` eller
 `build`.** `ui.ddr` bar 82 rader (`submit_barrier`, `transition_atlas`, båda
@@ -526,69 +454,15 @@ Ett kontrakt (`storm-gfx`), en app generisk över det, och en andra backend
 (`storm-metal`) som når AppKit och Metal genom Objective-C:s runtingen.
 Fynden är i den ordning de träffades.
 
-**65. `@embed_file` i ett beroende hittar inte sin fil, var den än ligger.**
-Ett paket som ensamt bygger med `@embed_file("assets/x.txt")` (filen i
-paketets rot) fallerar som beroende av en applikation med
-`E3099: cannot embed 'assets/x.txt': file not found` — och samma fel när
-filen kopieras till applikationens rot. Minsta repro i tre filer:
-`deps/lib/src/lib.ddr` med `pub fn asset() -> string { @embed_file("assets/x.txt") }`
-och `deps/lib/assets/x.txt`, samt en applikation med
-`lib = { path = "deps/lib" }` som anropar `lib.asset()`. `dunder run` i
-`deps/lib` skriver filens innehåll; `dunder check` i applikationen ger E3099.
-*Workaround:* en genererad modul med texten som råsträng — `tools/shaders.ddr`
-gör så för Metals 433 rader shaderkälla. *Rekommendation:* lös sökvägen
-mot roten av det paket som innehåller den modul som bäddar in. Det är vad
-"strikt begränsad till filer innanför paketets rot" lovar, och det är det
-enda sättet ett bibliotek kan bära sina egna tillgångar; i dag kan bara
-applikationens rotmodul bädda in något.
+**65. Bädda in paketets egen fil.** `@embed_file("shaders/storm.metal")` hittar filen relativt Metal-paketets rot även när paketet är ett beroende. Det fungerar redan i Dunder 0.11.2. Den genererade kopian av shaderkällan har tagits bort.
 
-**66. `dunder fmt` läser inte `impl modul.Trait for Type`.** Filen kompilerar
-och kör, men `dunder fmt --stdout f.ddr` svarar `f.ddr:3:9: expected '{'`
-vid traitens namn. Minsta repro i två filer: `lib.ddr` med
-`pub trait Speaks { fn word(&self) -> string }` och `main.ddr` med
-`struct Cat { name: string }` och `impl lib.Speaks for Cat { … }`. Med
-`impl Speaks for Cat` i samma fil som traiten formateras den. Det
-kvalificerade namnet är den enda form en traitimplementation från ett annat
-paket kan ta: antingen traiten eller måltypen måste vara deklarerad i
-modulen, så traiten kommer från en annan och måste namnges med den. I Storm
-kan därför de två filer som implementerar kontraktet inte formateras
-(`storm-vulkan/src/vulkan.ddr`, `storm-metal/src/metal.ddr`). Uppmätt över
-varje fil detta arbete lagt till eller ändrat: 23 är fmt-clean, 2 går inte att
-läsa, och de 4 formateraren skulle ändra (`storm-input/src/input.ddr`,
-`storm-text/src/text.ddr` och två testsviter) hade samma diff före arbetet —
-det är inte de här raderna. *Workaround:* ingen. *Rekommendation:*
-formaterarens grammatik bör vara kompilatorns — den har redan traits utan
-modulprefix.
+**66. Formatera en kvalificerad traitimplementation.** `impl lib.Speaks for Cat` kompilerade men gav tidigare `expected '{'` i `dunder fmt`. Dunder 0.11.3 läser det kvalificerade namnet även i formateraren.
 
-**67. En funktion som heter som en typ döljer typen, och diagnosen namnger
-ett internt modulnummer.** I `objc.ddr` hette en funktion `string`
-(`pub unsafe fn string(rt: &Runtime, value: string) -> ptr`). Kompilatorn
-svarade `error[E2003]: unknown type '__dunder_module_224'` på `-> string` i
-den funktionen: namnet `string` löses inte längre som typ eftersom funktionen
-skuggar den i hela modulen. Det tog en bisektion att hitta. Samma oläsliga
-namn som fynd 60, och en tredje gång: en slarvigt redigerad fil (ett oavslutat
-block) gav samma meddelande inifrån `stdlib/bytes.ddr`, på en rad i
-standardbiblioteket. *Workaround:* döp inte en funktion efter en typ
-(`nsstring`). *Rekommendation:* när en deklaration skuggar ett typnamn, säg
-det vid deklarationen ("`string` is a type; this function hides it in this
-module"), och skriv typernas namn i diagnoser i stället för
-`__dunder_module_N`.
+**67. Funktion med samma namn som en primitiv typ.** `fn string(value: string)` ska slå upp funktionen vid anrop och den primitiva typen i en typangivelse. Dunder 0.11.3 skiljer fallen åt. Diagnostik för generiska argument och konstanter visar källans typnamn.
 
-**68. `.Ok(())` ger "this value is not callable for the selected target".**
-För `Result<(), E>` kräver kompilatorn nakna `.Ok` (dokumenterat i
-enums.md). Den som skriver `.Ok(())` — för att vara tydlig, eller för att
-formateraren ska läsa det — får `E3003` med ett meddelande om anropsbarhet
-och mål, som inte nämner den rätta formen. Minsta repro:
-`fn f() -> Result<(), string> { return .Ok(()) }`. Tre gånger under ett
-kväll. *Rekommendation:* "for `Result<(), E>` write `.Ok`".
+**68. Ett lyckat resultat utan nyttolast.** Skriv `.Ok` för `Result<(), E>`. Från Dunder 0.11.3 visar felet för `.Ok(())` den giltiga formen.
 
-**69. `match` på ett heltal pekar på `else`.** `match code { 0 => …, else => -1 }`
-med `code: u64` ger `E3099: match pattern requires an enum` med markören
-vid `else =>`. Meddelandet är sant, platsen är det inte: det är subjektet
-som inte är en enum. *Workaround:* en tabell eller en `if`-kedja — vilket
-också blev det bättre uttrycket: båda backends bygger nu en tabell över
-plattformens tangenkoder och parar varje kod med en namngiven `gfx.Key`, så
-tabellen går att testa utan fönster. *Rekommendation:* markera subjektet.
+**69. Fångstgren i heltalsmatchning.** `match n { 0 => 1, _ => 2 }` fungerar i 0.11.2. Det var `else` i mönstret som utlöste felet. Diagnostiken i 0.11.3 föreslår `_`.
 
 **Vad Dunder gjorde bra, och vad som formade koden (inte brister).** Helt
 utan C-shim, bindningsgenerator eller extern kompilator: `std.dl` + `ffi_fn`
