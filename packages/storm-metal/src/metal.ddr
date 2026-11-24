@@ -32,8 +32,6 @@ import .records as records
 import .shader as shader
 import .ui as ui
 
-// 4 MiB of vertex space, enough for a few hundred thousand vertices.
-const VERTEX_CAPACITY: u64 = 4194304
 const SHADOW_SIZE: u64 = 1024
 
 // The constants of each draw, in f32. One number each, and every array and
@@ -182,7 +180,6 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
     r.shadow_sampler = device.sampler(&r.objc, r.device, .Nearest, .NotMipmapped)?
     r.shadow_map = device.texture(&r.objc, r.device, .Type2D, depth, SHADOW_SIZE, SHADOW_SIZE, 1, .RenderTargetAndShaderRead, .Private)?
     r.atlas = ui.create(&r.objc, r.device, r.library)?
-    r.vertices = device.buffer(&r.objc, r.device, VERTEX_CAPACITY)?
     .Ok
 }
 
@@ -237,9 +234,29 @@ unsafe fn retire(r: &mut Renderer) -> Result<(), string> {
     .Ok
 }
 
-unsafe fn record_begin(r: &mut Renderer) -> Result<(), string> {
+unsafe fn reserve_vertices(r: &mut Renderer, required: u64) -> Result<(), string> {
+    capacity := gfx.frame_vertex_capacity(r.vertices.capacity, required)
+    if capacity == r.vertices.capacity { return .Ok }
+    limit := objc.number(&r.objc, r.device, cstr("maxBufferLength"))
+    if required > limit { return .Err("frame vertex stream exceeds the device's maximum buffer length") }
+    wanted := if capacity > limit { limit } else { capacity }
+    fresh := match device.buffer(&r.objc, r.device, wanted) {
+        .Ok(buffer) => buffer,
+        .Err(reason) => {
+            if wanted <= required || required == 0 { return .Err(reason) }
+            device.buffer(&r.objc, r.device, required)?
+        },
+    }
+    device.release_buffer(&r.objc, &mut r.vertices)
+    r.vertices = fresh
+    trace(&r, "reserved " + r.vertices.capacity.str() + " vertex bytes for " + required.str())
+    .Ok
+}
+
+unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string> {
     if r.pool != ptr(0) { return .Err("a frame is already being recorded") }
     retire(&mut r)?
+    reserve_vertices(&mut r, vertex_bytes)?
     r.pool = r.objc.poolPush()
     if r.preview_target != ptr(0) {
         r.target = r.preview_target
@@ -302,7 +319,7 @@ unsafe fn append_vertices(r: &mut Renderer, vertices: &[]f32) -> bool {
     if vertices.len == 0 || vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
     for i in 0..vertices.len { if !vertices[i].is_finite() { return false } }
     offset := r.vertex_cursor
-    if !device.append(&r.vertices, &mut r.vertex_cursor, u64(vertices.len * 4), addr(&vertices[0])) { return false }
+    if !device.append(&r.vertices, &mut r.vertex_cursor, u64(vertices.len) * 4, addr(&vertices[0])) { return false }
     pass.vertex_buffer(&r.objc, r.encoder, r.vertices.handle, offset, 0)
     true
 }
@@ -387,7 +404,8 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
     for i in 0..4 { push[44 + i] = sky.sun[i] }
-    for i in 0..4 { push[48 + i] = sky.sun_color[i] }
+    for i in 0..3 { push[48 + i] = sky.sun_color[i] }
+    push[51] = sky.diffuse_fill
     for i in 0..4 { push[52 + i] = sky.zenith[i] }
     for i in 0..4 { push[56 + i] = sky.horizon[i] }
     // Both stages read the one block; the fragment stage also reads the
@@ -563,8 +581,8 @@ impl gfx.Backend for Renderer {
         }
     }
 
-    fn begin(&mut self) -> Result<(), string> {
-        unsafe { record_begin(&mut self) }
+    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string> {
+        unsafe { record_begin(&mut self, vertex_bytes) }
     }
 
     fn shadow_begin(&mut self, sky: &gfx.Sky) -> Result<(), string> {

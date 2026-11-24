@@ -280,9 +280,7 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.device != ptr(0) {
         _ := r.api.DeviceWaitIdle(r.device)
         destroy_swapchain(&mut r)
-        if r.vertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.vertex.memory) }
-        if r.vertex.handle != ptr(0) { r.api.DestroyBuffer(r.device, r.vertex.handle, ptr(0)) }
-        if r.vertex.memory != ptr(0) { r.api.FreeMemory(r.device, r.vertex.memory, ptr(0)) }
+        release_vertex_buffer(&mut r)
         for i in 0..2 {
             r.api.DestroyFence(r.device, r.fences[i], ptr(0))
             r.api.DestroySemaphore(r.device, r.image_available[i], ptr(0))
@@ -333,8 +331,15 @@ pub unsafe fn shader_module(r: &state.Renderer, words: ptr, bytes: usize, output
     r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output)
 }
 
-// Host-visible vertex buffer, mapped for the renderer's lifetime.
-pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
+unsafe fn release_vertex_buffer(r: &mut state.Renderer) {
+    if r.vertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.vertex.memory) }
+    if r.vertex.handle != ptr(0) { r.api.DestroyBuffer(r.device, r.vertex.handle, ptr(0)) }
+    if r.vertex.memory != ptr(0) { r.api.FreeMemory(r.device, r.vertex.memory, ptr(0)) }
+    r.vertex = zeroed()
+}
+
+// Replace only after all commands using the previous mapping have retired.
+pub unsafe fn replace_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
     mut info: vk.BufferCreateInfo = zeroed()
     info.sType = 12
     info.size = bytes
@@ -346,23 +351,25 @@ pub unsafe fn create_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.
     mut requirements: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
     mut memory := ptr(0)
-    if allocate(&r, &requirements, 6, addr(&mut memory)) != 0 {
+    code = allocate(&r, &requirements, 6, addr(&mut memory))
+    if code != 0 {
         r.api.DestroyBuffer(r.device, handle, ptr(0))
-        return .VertexBuffer
+        return fail(&mut r, code, .VertexBuffer)
     }
     code = r.api.BindBufferMemory(r.device, handle, memory, 0)
     if code != 0 {
-        r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyBuffer(r.device, handle, ptr(0))
+        r.api.FreeMemory(r.device, memory, ptr(0))
         return fail(&mut r, code, .VertexBuffer)
     }
     mut mapped := ptr(0)
     code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
     if code != 0 {
-        r.api.FreeMemory(r.device, memory, ptr(0))
         r.api.DestroyBuffer(r.device, handle, ptr(0))
+        r.api.FreeMemory(r.device, memory, ptr(0))
         return fail(&mut r, code, .VertexBuffer)
     }
+    release_vertex_buffer(&mut r)
     r.vertex.handle = handle
     r.vertex.memory = memory
     r.vertex.mapped = mapped

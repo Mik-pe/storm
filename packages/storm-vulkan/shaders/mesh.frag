@@ -149,7 +149,8 @@ void main() {
     // term too instead of only killing the highlight.
     float ambient_occlusion = mix(0.55, 1.0, shadow);
 
-    vec3 color = direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
+    vec3 fill = mix(sky_horizon.rgb * 0.75, sky_zenith.rgb, n.y * 0.5 + 0.5) * sky_sun_color.w;
+    vec3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
     color = aces(color * 1.35);
     out_color = display_color(pow(color, vec3(1.0 / 2.2)), vertex_base_color.a);
 }

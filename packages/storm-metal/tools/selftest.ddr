@@ -473,6 +473,26 @@ fn frame_checks(failures: &mut i32) {
     again := window.poll()
     expect(&mut failures, "with nothing left to report as changed", !again.resized)
 
+    // Each pass fits the initial stream, but the two passes together do not.
+    // End with a visible mesh to check that the new buffer is bound and populated.
+    mut large: []f32 = []
+    large.reserve(528000 + cube.len)
+    for _ in 0..528000 { large.push(0.0) }
+    gfx.cube(&mut large, 0.3)
+    total_bytes := u64(large.len) * 4 * 2
+    expect(&mut failures, "a reservation beyond the device limit is refused",
+        window.begin_with_vertices(18446744073709551615).is_err())
+    drawn = window.begin_with_vertices(total_bytes).is_ok() && window.shadow_begin(&sky).is_ok() &&
+        window.shadow_mesh(&large, &near_mvp).is_ok() && window.shadow_end().is_ok() && window.begin_pass().is_ok() &&
+        window.mesh(&large, &near_mvp, &near_mvp, &green, &glowing, &origin, &sky, .Opaque).is_ok() && window.end().is_ok()
+    expect(&mut failures, "the shadow and color draws share more than four MiB", drawn && window.vertex_cursor == total_bytes)
+    worked(&mut failures, "the grown stream capture is saved", window.save_capture(capture_path()))
+    large_capture := read_capture()
+    expect(&mut failures, "the last geometry in the grown stream is visible", large_capture.ok && is_green(under(&large_capture, centre, middle, scale)))
+    capacity := window.vertices.capacity
+    expect(&mut failures, "smaller frames retain the allocated vertex space",
+        window.begin_with_vertices(32).is_ok() && window.vertices.capacity == capacity && window.begin_pass().is_ok() && window.end().is_ok())
+
     junk: []f32 = [1.0, 2.0]
     worked(&mut failures, "a frame for the invalid-stream probe opens", window.begin())
     worked(&mut failures, "its main pass opens", window.begin_pass())

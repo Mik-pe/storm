@@ -2,3 +2,6 @@ name = "storm-gltf"
 version = "0.0.1"
 root = "src/gltf.ddr"
 test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }

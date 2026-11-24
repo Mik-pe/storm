@@ -82,6 +82,7 @@ pub struct Frame {
 pub struct Sky {
     sun: [f32; 4], // xyz towards the sun, w = intensity
     sun_color: [f32; 4],
+    diffuse_fill: f32, // hemispherical diffuse light from the horizon and zenith colors
     zenith: [f32; 4],
     horizon: [f32; 4],
     light_vp: [f32; 16], // sun view-projection for the shadow lookup
@@ -91,7 +92,7 @@ pub struct Sky {
 pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon: [f32; 4],
     light_vp: [f32; 16], light_dir_c: [f32; 4]) -> Sky {
     Sky {
-        sun: sun.clone(), sun_color: sun_color.clone(), zenith: zenith.clone(), horizon: horizon.clone(),
+        sun: sun.clone(), sun_color: sun_color.clone(), diffuse_fill: 0.0, zenith: zenith.clone(), horizon: horizon.clone(),
         light_vp: light_vp.clone(), light_dir_c: light_dir_c.clone()
     }
 }
@@ -131,8 +132,10 @@ pub trait Backend {
     // the same value every frame passes to sky().
     fn build_environment(&mut self, sky: &Sky) -> Result<(), string>
 
-    // Take a frame. Cursors are per frame: everything is appended anew.
-    fn begin(&mut self) -> Result<(), string>
+    // Reserve the complete mesh stream (shadow and color draws) before recording.
+    // Frames without an explicit estimate use the initial stream capacity.
+    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string>
+    fn begin(&mut self) -> Result<(), string> { self.begin_with_vertices(0) }
 
     // The sun's shadow map, in its own pass, recorded before begin_pass.
     fn shadow_begin(&mut self, sky: &Sky) -> Result<(), string>
@@ -169,6 +172,18 @@ pub const VERTEX_FLOATS: i32 = 8
 pub const VERTEX_BYTES: u32 = 32
 pub const NORMAL_OFFSET: u32 = 12
 pub const UV_OFFSET: u32 = 24
+pub const INITIAL_VERTEX_BYTES: u64 = 4194304
+
+// Reuse the high-water allocation; allow room for edits that grow a scene gradually.
+pub fn frame_vertex_capacity(current: u64, required: u64) -> u64 {
+    if current == 0 { return if required > INITIAL_VERTEX_BYTES { required } else { INITIAL_VERTEX_BYTES } }
+    if required <= current { return current }
+    spare := current / 2
+    if current > 18446744073709551615 - spare { return required }
+    grown := current + spare
+    if grown > required { return grown }
+    required
+}
 
 pub struct Vertex {
     x: f32, y: f32, z: f32,

@@ -20,23 +20,24 @@ import std.math as _
 
 pub struct LocalTransform {
     position: core.Vec3,
-    // Rotation around Y in radians; enough for the first scene pass.
+    rotation_x: f32,
     rotation_y: f32,
+    rotation_z: f32,
+    visible: bool,
     scale: core.Vec3,
 }
 
 pub struct Parent { entity: ecs.Entity }
 
-pub struct WorldTransform { matrix: core.Mat4 }
+pub struct WorldTransform { matrix: core.Mat4, visible: bool }
 
 pub struct Name { value: string }
 
 pub enum Shape { Cube = 0, Plane = 1, Mesh = 2, Sphere = 3 }
 
-// What a node is drawn as. Cube and Plane are built-in; Mesh carries the
-// vertex stream itself ([x,y,z,nx,ny,nz,u,v] per vertex, what gltf.interleave
-// produces and what the renderer consumes), so a loaded model needs no
-// renderer-side geometry table.
+// A geometry owner stores interleaved position, normal and UV data. Instances
+// carry the shape only. Graph.vertices resolves an instance and Drawable.mesh_index
+// points directly to its geometry in a frame snapshot.
 pub struct Mesh {
     shape: Shape,
     vertices: []f32,
@@ -84,6 +85,7 @@ pub struct Graph {
     worlds: ecs.Pool<WorldTransform>,
     names: ecs.Pool<Name>,
     meshes: ecs.Pool<Mesh>,
+    instances: ecs.Pool<ecs.Entity>,
     mesh_revision: i64,
     tree_revision: i64,
     world_order_revision: i64,
@@ -94,6 +96,18 @@ pub struct Graph {
 fn matrix_for(local: &LocalTransform) -> core.Mat4 {
     c := local.rotation_y.cos()
     s := local.rotation_y.sin()
+    if local.rotation_x != 0.0 || local.rotation_z != 0.0 {
+        // Yaw, then pitch about local X and roll about local Z.
+        cx := local.rotation_x.cos()
+        sx := local.rotation_x.sin()
+        cz := local.rotation_z.cos()
+        sz := local.rotation_z.sin()
+        return core.Mat4 { m: [
+            (c * cz + s * sx * sz) * local.scale.x, cx * sz * local.scale.x, (-s * cz + c * sx * sz) * local.scale.x, 0.0,
+            (-c * sz + s * sx * cz) * local.scale.y, cx * cz * local.scale.y, (s * sz + c * sx * cz) * local.scale.y, 0.0,
+            s * cx * local.scale.z, -sx * local.scale.z, c * cx * local.scale.z, 0.0,
+            local.position.x, local.position.y, local.position.z, 1.0] }
+    }
     core.Mat4 {
         m: [c * local.scale.x, 0.0, -s * local.scale.x, 0.0,
             0.0, local.scale.y, 0.0, 0.0,
@@ -111,6 +125,7 @@ impl Graph {
             worlds: ecs.Pool<WorldTransform>::new(),
             names: ecs.Pool<Name>::new(),
             meshes: ecs.Pool<Mesh>::new(),
+            instances: ecs.Pool<ecs.Entity>::new(),
             mesh_revision: 0,
             tree_revision: 0,
             world_order_revision: -1, world_order: [],
@@ -123,7 +138,7 @@ impl Graph {
     pub fn create_root(&mut self, position: core.Vec3) -> ecs.Entity {
         self.tree_revision = self.tree_revision + 1
         entity := self.allocator.create()
-        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) })
+        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_x: 0.0, rotation_y: 0.0, rotation_z: 0.0, visible: true, scale: core.vec3(1.0, 1.0, 1.0) })
         entity
     }
 
@@ -141,6 +156,19 @@ impl Graph {
 
     pub fn set_rotation(&mut self, entity: ecs.Entity, radians: f32) {
         if self.locals.contains(entity) { self.locals.get_mut(entity).rotation_y = radians }
+    }
+
+    pub fn set_angles(&mut self, entity: ecs.Entity, pitch: f32, yaw: f32, roll: f32) {
+        if self.locals.contains(entity) {
+            local := self.locals.get_mut(entity)
+            local.rotation_x = pitch
+            local.rotation_y = yaw
+            local.rotation_z = roll
+        }
+    }
+
+    pub fn set_visible(&mut self, entity: ecs.Entity, visible: bool) {
+        if self.locals.contains(entity) { self.locals.get_mut(entity).visible = visible }
     }
 
     pub fn set_scale(&mut self, entity: ecs.Entity, scale: core.Vec3) {
@@ -162,8 +190,50 @@ impl Graph {
         self.names.get(entity).value.clone()
     }
 
+    // Instances point straight to the owner, even when copied from another instance.
+    fn mesh_owner(&self, entity: ecs.Entity) -> ecs.Entity {
+        if self.instances.contains(entity) { return self.instances.get(entity).clone() }
+        entity
+    }
+
+    // Hand geometry to a surviving instance before changing or destroying its owner.
+    fn detach_mesh(&mut self, entity: ecs.Entity) {
+        if self.instances.remove(entity).is_some() || self.instances.len() == 0 { return }
+        mut next := entity
+        for i in 0..self.instances.len() {
+            if self.instances.at(i).index == entity.index {
+                next = self.instances.entities()[i]
+                break
+            }
+        }
+        if next.index == entity.index { return }
+        vertices := replace(&mut self.meshes.get_mut(entity).vertices, [])
+        self.meshes.get_mut(next).vertices = vertices
+        _ := self.instances.remove(next)
+        for i in 0..self.instances.len() {
+            if self.instances.at(i).index == entity.index {
+                self.instances.at_mut(i).index = next.index
+                self.instances.at_mut(i).generation = next.generation
+            }
+        }
+    }
+
+    // Share immutable geometry. Materials and transforms remain per entity.
+    pub fn share_mesh(&mut self, dest: ecs.Entity, source: ecs.Entity) -> bool {
+        if !self.is_alive(dest) || !self.meshes.contains(source) || self.meshes.get(source).shape != .Mesh { return false }
+        owner := self.mesh_owner(source)
+        if self.mesh_owner(dest).index == owner.index { return true }
+        self.detach_mesh(dest)
+        _ := self.meshes.insert(dest, Mesh { shape: .Mesh, vertices: [] })
+        _ := self.instances.insert(dest, owner)
+        self.mesh_revision = self.mesh_revision + 1
+        true
+    }
+
     pub fn set_shape(&mut self, entity: ecs.Entity, shape: Shape) -> bool {
         if !self.allocator.is_alive(entity) { return false }
+        if self.meshes.contains(entity) && self.meshes.get(entity).shape == shape { return true }
+        self.detach_mesh(entity)
         self.mesh_revision = self.mesh_revision + 1
         if self.meshes.contains(entity) {
             self.meshes.get_mut(entity).shape = shape
@@ -175,6 +245,7 @@ impl Graph {
     // Attach loaded geometry; the node becomes Shape.Mesh.
     pub fn set_mesh(&mut self, entity: ecs.Entity, move vertices: []f32) -> bool {
         if !self.allocator.is_alive(entity) { return false }
+        self.detach_mesh(entity)
         self.mesh_revision = self.mesh_revision + 1
         _ := self.meshes.insert(entity, Mesh { shape: .Mesh, vertices: vertices })
         true
@@ -185,7 +256,7 @@ impl Graph {
 
     pub fn vertices(&self, entity: ecs.Entity) -> []f32 {
         if !self.meshes.contains(entity) { return [] }
-        self.meshes.get(entity).vertices.clone()
+        self.meshes.get(self.mesh_owner(entity)).vertices.clone()
     }
 
     pub fn shape(&self, entity: ecs.Entity) -> Option<Shape> {
@@ -195,6 +266,8 @@ impl Graph {
 
     // A node without a shape is not drawn; this is how the scene hides things.
     pub fn remove_shape(&mut self, entity: ecs.Entity) -> bool {
+        if !self.meshes.contains(entity) { return false }
+        self.detach_mesh(entity)
         match self.meshes.remove(entity) {
             .None => false,
             .Some(_) => { self.mesh_revision = self.mesh_revision + 1; true },
@@ -358,13 +431,17 @@ impl Graph {
         }
         for i in 0..self.world_order.len {
             entity := self.world_order[i].entity
-            mut matrix := matrix_for(self.locals.get(entity))
+            local := self.locals.get(entity)
+            mut matrix := matrix_for(local)
+            mut visible := local.visible
             if self.parents.contains(entity) {
                 parent := self.parents.get(entity).entity
-                matrix = core.multiply(self.worlds.get(parent).matrix, matrix)
+                basis := self.worlds.get(parent)
+                matrix = core.multiply(basis.matrix, matrix)
+                visible = visible && basis.visible
             }
-            if self.worlds.contains(entity) { self.worlds.get_mut(entity).matrix = matrix }
-            else { _ := self.worlds.insert(entity, WorldTransform { matrix: matrix }) }
+            if self.worlds.contains(entity) { self.worlds.get_mut(entity).matrix = matrix; self.worlds.get_mut(entity).visible = visible }
+            else { _ := self.worlds.insert(entity, WorldTransform { matrix: matrix, visible: visible }) }
         }
     }
 
@@ -375,6 +452,7 @@ impl Graph {
         mut out: []Drawable = []
         // A shape and a world matrix make a drawable; a material is optional.
         for row in ecs.join2(&self.meshes, &self.worlds) {
+            if !self.worlds.at(row.b).visible { continue }
             model := self.worlds.at(row.b).matrix.clone()
             dx := model.m[12] - eye.x
             dy := model.m[13] - eye.y
@@ -386,7 +464,7 @@ impl Graph {
                 model: model,
                 material: mat,
                 shape: self.meshes.at(row.a).shape,
-                mesh_index: row.a,
+                mesh_index: if self.instances.contains(row.entity) { self.meshes.dense_index(self.instances.get(row.entity).clone()) } else { row.a },
                 depth: dx * dx + dy * dy + dz * dz,
             })
         }

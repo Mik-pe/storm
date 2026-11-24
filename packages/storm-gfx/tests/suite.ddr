@@ -126,3 +126,13 @@ import ..src.gfx as gfx
     assert(sky.sun[3] == 4.0 && sky.sun_color[0] == 5.0 && sky.zenith[2] == 11.0 && sky.horizon[3] == 16.0)
     assert(sky.light_vp[15] == 17.0 && sky.light_dir_c[1] == 19.0)
 }
+
+@test fn frame_vertex_capacity_reuses_peak_and_handles_wide_requests() {
+    first := gfx.frame_vertex_capacity(0, 16)
+    assert(first >= 16)
+    grown := gfx.frame_vertex_capacity(first, first + 32)
+    assert(grown > first + 32)
+    assert(gfx.frame_vertex_capacity(grown, 16) == grown)
+    maximum: u64 = 18446744073709551615
+    assert(gfx.frame_vertex_capacity(maximum - 1, maximum) == maximum)
+}

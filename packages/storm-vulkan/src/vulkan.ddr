@@ -70,10 +70,7 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     if step != .Ready { return step }
     step = ui.setup(&mut r)
     if step != .Ready { return step }
-    step = device.setup_frames(&mut r)
-    if step != .Ready { return step }
-    // 4 MiB of mapped vertex space, enough for a few hundred thousand vertices.
-    device.create_vertex_buffer(&mut r, 4194304)
+    device.setup_frames(&mut r)
 }
 
 // The live renderer behind a handle, or null for one that has expired.
@@ -187,7 +184,7 @@ fn draw_error(frames: i64, move message: string) -> DrawResult {
     DrawResult { ok: false, error: message.clone(), frames: frames }
 }
 
-unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
+unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult {
     if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed" } }
     if r.recording != 0 { return BeginResult { ok: false, error: "a frame is already being recorded" } }
     slot := r.current
@@ -195,6 +192,15 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     // The CPU is about to reuse the mapped mesh, UI and light buffers shared by both slots.
     waited := r.api.WaitForFences(r.device, u32(r.fences.len), addr(&mut r.fences[0]), 1, 18446744073709551615)
     if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed" } }
+    capacity := gfx.frame_vertex_capacity(r.vertex.capacity, vertex_bytes)
+    if capacity > r.vertex.capacity {
+        mut step := device.replace_vertex_buffer(&mut r, capacity)
+        if step != .Ready && capacity > vertex_bytes && vertex_bytes > 0 {
+            step = device.replace_vertex_buffer(&mut r, vertex_bytes)
+        }
+        if step != .Ready { return BeginResult { ok: false, error: "could not reserve vertex stream: " + describe(&r, step) } }
+        trace_step(&r, "reserved " + r.vertex.capacity.str() + " vertex bytes for " + vertex_bytes.str())
+    }
     mut image_index: u32 = 0
     if r.surface == ptr(0) && r.captureOn != 1 {
         return BeginResult { ok: false, error: "offscreen rendering requires capture_next" }
@@ -280,9 +286,9 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
     }
-    bytes := u64(vertices.len * 4)
+    bytes := u64(vertices.len) * 4
     offset := r.vertexCursor
-    if offset + bytes > r.vertex.capacity {
+    if offset > r.vertex.capacity || bytes > r.vertex.capacity - offset {
         return draw_error(r.frameIndex, "vertex list exceeds the mapped vertex buffer")
     }
     if vertices.len > 0 {
@@ -299,7 +305,8 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
     for i in 0..4 { push[44 + i] = sky.sun[i] }
-    for i in 0..4 { push[48 + i] = sky.sun_color[i] }
+    for i in 0..3 { push[48 + i] = sky.sun_color[i] }
+    push[51] = sky.diffuse_fill
     for i in 0..4 { push[52 + i] = sky.zenith[i] }
     for i in 0..4 { push[56 + i] = sky.horizon[i] }
     if blended {
@@ -479,11 +486,11 @@ impl gfx.Backend for Window {
         }
     }
 
-    fn begin(&mut self) -> Result<(), string> {
+    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            return begun(begin_frame(ref_at(address)))
+            return begun(begin_frame(ref_at(address), vertex_bytes))
         }
     }
 

@@ -222,7 +222,8 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     // ambient term too instead of only killing the highlight.
     float ambient_occlusion = mix(0.55, 1.0, shadow);
 
-    float3 color = direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
+    float3 fill = mix(push.horizon.rgb * 0.75, push.zenith.rgb, n.y * 0.5 + 0.5) * push.sun_color.w;
+    float3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
     color = aces(color * 1.35);
     return float4(pow(color, float3(1.0 / 2.2)), push.base_color.a);
 }

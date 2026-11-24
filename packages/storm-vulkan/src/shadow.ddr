@@ -391,9 +391,9 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
 pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) -> bool {
     if r.recording == 0 { return false }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
-    bytes := u64(vertices.len * 4)
+    bytes := u64(vertices.len) * 4
     offset := r.vertexCursor
-    if offset + bytes > r.vertex.capacity { return false }
+    if offset > r.vertex.capacity || bytes > r.vertex.capacity - offset { return false }
     if vertices.len > 0 {
         _ := copy_bytes(ptr(usize(r.vertex.mapped) + usize(offset)), addr(&vertices[0]), usize(bytes))
     }

@@ -145,3 +145,52 @@ fn append_u32(out: &mut []u8, value: u32) {
         k = k + 1
     }
 }
+
+@test fn respects_active_nodes_names_materials_and_every_triangle_primitive() {
+    mut doc := gltf.load_bytes(&build_triangle_glb())
+    doc.json_text = r#"{
+        "asset":{"version":"2.0"},"buffers":[{"byteLength":36}],
+        "bufferViews":[{"buffer":0,"byteLength":36}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],
+        "materials":[{"name":"Petal","pbrMetallicRoughness":{"baseColorFactor":[0.2,0.5,1,0.75],"roughnessFactor":0.6,"metallicFactor":0.1}}],
+        "meshes":[{"name":"Unused","primitives":[{"attributes":{"POSITION":0}}]},
+            {"name":"Head","primitives":[{"attributes":{"POSITION":0},"material":0},{"attributes":{"POSITION":0}}]}],
+        "nodes":[{"mesh":0},{"translation":[2,3,1],"children":[2]},{"mesh":1,"scale":[-2,1,1]}],
+        "scenes":[{"nodes":[0]},{"nodes":[1]}],"scene":1}"#
+    asset := gltf.asset(&doc).unwrap()
+    assert(asset.parts.len == 2)
+    first := &asset.parts[0]
+    assert(first.name == "Head" && first.material_name == "Petal" && first.vertices.len == 24)
+    assert(first.metallic == f32(0.1) && first.roughness == f32(0.6) && first.color[3] == 0.75)
+    assert(first.color[0] == f32(0.2) && first.color[1] == 0.5 && first.color[2] == 1.0)
+    // Mirroring swaps the second and third corners after baking the ancestor's translation.
+    assert(first.vertices[0] == 2.0 && first.vertices[1] == 3.0 && first.vertices[2] == 1.0)
+    assert(first.vertices[8] == 2.0 && first.vertices[9] == 4.0 && first.vertices[16] == 4.0)
+    assert(asset.parts[1].name == "Head" && asset.parts[1].color[0] == 1.0 && asset.parts[1].roughness == 1.0)
+}
+
+@test fn khronos_box_keeps_its_named_red_material_and_indexed_stream() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    asset := gltf.asset(&doc).unwrap()
+    assert(asset.parts.len == 1 && asset.parts[0].vertices.len == 36 * 8)
+    p := &asset.parts[0]
+    assert(p.name == "Mesh" && p.material_name == "Red")
+    assert(p.color[0] == f32(0.8) && p.color[1] == 0.0 && p.metallic == 0.0)
+}
+
+@test fn incomplete_buffers_and_invalid_triangle_indices_report_an_error() {
+    data := build_triangle_glb()
+    mut short := data.clone()
+    short.truncate(short.len - 1)
+    assert(!gltf.load_bytes(&short).ok)
+    mut doc := gltf.load_bytes(&data)
+    doc.json_text = r#"{"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+                     {"bufferView":1,"componentType":5121,"count":3,"type":"SCALAR"}],
+        "bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":3}]}"#
+    assert(gltf.asset(&doc).is_err())
+    doc.bin.push(0); doc.bin.push(1); doc.bin.push(8)
+    assert(gltf.asset(&doc).is_err())
+    doc.bin[38] = 2
+    assert(gltf.asset(&doc).unwrap().parts[0].vertices.len == 24)
+}

@@ -1,20 +1,15 @@
 // Storm glTF 2.0 loader.
 //
-// Supports both .glb (binary container) and .gltf (JSON) files. Reads the
-// first mesh's first primitive: float POSITION/NORMAL/TEXCOORD_0 accessors
-// and the index buffer. No nodes, materials, skins or animation yet; the
-// loader returns triangle data ready for the mesh pipeline.
-//
-//   doc := gltf.load("cube.glb")
-//   if !doc.ok { print(doc.error); return }
-//   mesh := gltf.load_mesh(&doc)       // positions, normals, uvs, indices
-//   stream := gltf.interleave(&mesh)   // []f32, x,y,z,nx,ny,nz,u,v per vertex
+// Embedded GLB buffers, interleaved triangle streams and per-primitive PBR factors.
+// asset() preserves every mesh name and material split; load_mesh() exposes
+// the first primitive for callers that consume separate attribute arrays.
 capability filesystem
 
 import std.bytes as bytes
 import std.json as json
 import std.wire as wire
 import sys
+import .nodes
 
 pub struct Mesh {
     ok: bool,
@@ -46,53 +41,34 @@ pub fn empty_mesh() -> Mesh {
 
 // ---- GLB container ----
 
-struct GlbChunk { kind: u32, start: i32, length: i32 }
+struct Chunk { start: i32, length: i32 }
+struct Glb { json: Chunk, bin: Option<Chunk> }
 
-fn read_u32(data: &[]u8, offset: i32) -> u32 {
-    u32(bytes.u32_le(data, offset))
-}
-
-// GLB chunk types are the four bytes b"JSON" and b"BIN\0" read little-endian.
-// This constant was once 1313821723 (b"\x1bTON"), and the test fixture was
-// built with the same wrong number, so every real .glb was rejected as "neither
-// GLB nor JSON" while the tests stayed green.
+// The four literal bytes JSON and BIN followed by NUL, in little-endian order.
 pub const JSON_CHUNK: u32 = 1313821514
 pub const BIN_CHUNK: u32 = 5130562
 
-// Split a .glb into its JSON and BIN chunks. Returns .None for non-GLB data.
-fn glb_chunks(data: &[]u8) -> Option<GlbChunk> {
-    if data.len < 12 { return .None }
-    if !(bytes.equals_text(data, 0, 4, "glTF")) { return .None }
-    // struct: magic, version, length, then chunks of (length, type, payload).
+fn glb_chunks(data: &[]u8) -> Option<Glb> {
+    if data.len < 20 || bytes.u32_le(data, 4) != 2 || bytes.u32_le(data, 8) != i64(data.len) { return .None }
+    mut chunks := Glb { json: Chunk { start: 0, length: 0 }, bin: .None }
     mut offset := 12
-    mut json_chunk := GlbChunk { kind: 0, start: 0, length: 0 }
-    while offset + 8 <= data.len {
-        length := i32(read_u32(data, offset))
-        kind := read_u32(data, offset + 4)
+    while offset < data.len {
+        if data.len - offset < 8 { return .None }
+        count := bytes.u32_le(data, offset)
+        kind := u32(bytes.u32_le(data, offset + 4))
         start := offset + 8
-        if start + length > data.len { return .None }
-        if kind == JSON_CHUNK { json_chunk = GlbChunk { kind: kind, start: start, length: length } }
-        // Chunks are padded to four-byte boundaries.
-        offset = start + length
-        if offset % 4 != 0 { offset = offset + (4 - offset % 4) }
+        if count > i64(data.len - start) || count % 4 != 0 { return .None }
+        chunk := Chunk { start: start, length: i32(count) }
+        if offset == 12 {
+            if kind != JSON_CHUNK || count == 0 { return .None }
+            chunks.json = chunk
+        } else if kind == BIN_CHUNK {
+            if chunks.bin.is_some() { return .None }
+            chunks.bin = .Some(chunk)
+        } else if kind == JSON_CHUNK { return .None }
+        offset = start + i32(count)
     }
-    if json_chunk.length == 0 { return .None }
-    .Some(json_chunk)
-}
-
-fn glb_bin(data: &[]u8) -> Option<GlbChunk> {
-    if data.len < 12 || !(bytes.equals_text(data, 0, 4, "glTF")) { return .None }
-    mut offset := 12
-    while offset + 8 <= data.len {
-        length := i32(read_u32(data, offset))
-        kind := read_u32(data, offset + 4)
-        start := offset + 8
-        if start + length > data.len { return .None }
-        if kind == BIN_CHUNK { return .Some(GlbChunk { kind: kind, start: start, length: length }) }
-        offset = start + length
-        if offset % 4 != 0 { offset = offset + (4 - offset % 4) }
-    }
-    .None
+    .Some(chunks)
 }
 
 // ---- Document loading ----
@@ -110,31 +86,25 @@ pub fn load_bytes(data: &[]u8) -> Document {
     mut json_text := ""
     mut bin: []u8 = []
     mut has_bin := false
-    match glb_chunks(data) {
-        .Some(chunk) => {
-            decoded := bytes.decode_range(data, chunk.start, chunk.start + chunk.length)
-            match decoded {
-                .Ok(text) => { json_text = text },
-                .Err(_) => { return fail("glTF JSON chunk is not valid UTF-8") },
-            }
-            match glb_bin(data) {
-                .Some(b) => {
-                    mut payload: []u8 = []
-                    payload.reserve(b.length)
-                    for k in 0..b.length { payload.push(data[b.start + k]) }
-                    bin = payload
-                    has_bin = true
-                },
-                .None => {},
-            }
-        },
-        .None => {
-            decoded := bytes.decode(data)
-            match decoded {
-                .Ok(text) => { json_text = text },
-                .Err(_) => { return fail("glTF file is neither GLB nor UTF-8 JSON") },
-            }
-        },
+    if bytes.equals_text(data, 0, 4, "glTF") {
+        chunks := match glb_chunks(data) { .Some(v) => v, .None => { return fail("invalid GLB container") } }
+        chunk := chunks.json
+        match bytes.decode_range(data, chunk.start, chunk.start + chunk.length) {
+            .Ok(text) => { json_text = text },
+            .Err(_) => { return fail("glTF JSON chunk is not valid UTF-8") },
+        }
+        match chunks.bin {
+            .Some(b) => {
+                bin = (&data[b.start..b.start + b.length]).clone()
+                has_bin = true
+            },
+            .None => {},
+        }
+    } else {
+        match bytes.decode(data) {
+            .Ok(text) => { json_text = text },
+            .Err(_) => { return fail("glTF file is neither GLB nor UTF-8 JSON") },
+        }
     }
     doc := json.Doc::parse_text(json_text.clone())
     if !doc.ok { return fail("glTF JSON: " + doc.error) }
@@ -170,20 +140,20 @@ fn read_component(data: &[]u8, offset: i32, component_type: i32, normalized: boo
         return reader.read_f32(data)
     }
     if component_type == 5120 {
-        mut raw := i32(bytes.u16_le(data, offset).bit_and(255))
+        mut raw := i32(data[offset])
         if raw > 127 { raw = raw - 256 }
-        if normalized { return f32(raw) / 127.0 }
+        if normalized { return if raw == -128 { -1.0 } else { f32(raw) / 127.0 } }
         return f32(raw)
     }
     if component_type == 5121 {
-        mut raw := i32(bytes.u16_le(data, offset).bit_and(255))
+        mut raw := i32(data[offset])
         if normalized { return f32(raw) / 255.0 }
         return f32(raw)
     }
     if component_type == 5122 {
         mut raw := i32(bytes.u16_le(data, offset))
         if raw > 32767 { raw = raw - 65536 }
-        if normalized { return f32(raw) / 32767.0 }
+        if normalized { return if raw == -32768 { -1.0 } else { f32(raw) / 32767.0 } }
         return f32(raw)
     }
     if component_type == 5123 {
@@ -200,145 +170,166 @@ fn read_component(data: &[]u8, offset: i32, component_type: i32, normalized: boo
 }
 
 fn read_index(data: &[]u8, offset: i32, component_type: i32) -> i32 {
-    if component_type == 5121 { return i32(bytes.u16_le(data, offset).bit_and(255)) }
+    if component_type == 5121 { return i32(data[offset]) }
     if component_type == 5123 { return i32(bytes.u16_le(data, offset)) }
     if component_type == 5125 { return i32(bytes.u32_le(data, offset)) }
     0
 }
 
-fn buffer_bytes(doc: &Document, buffer_index: i32) -> &[]u8 from doc {
-    _ := buffer_index
-    &doc.bin
+struct Accessor { base: i32, stride: i32, count: i32, components: i32, component: i32, normalized: bool }
+
+fn accessor(doc: &Document, j: &json.Doc, index: i32, kind: string) -> Option<Accessor> {
+    node := j.at(j.field(j.root, "accessors"), index)
+    if j.kind(node) != .Object || j.field(node, "sparse") >= 0 || j.get_str(node, "type").unwrap_or_default() != kind { return .None }
+    view_id := j.get_i64(node, "bufferView").unwrap_or(-1)
+    views := j.field(j.root, "bufferViews")
+    if view_id < 0 || view_id >= i64(j.count(views)) { return .None }
+    view := j.at(views, i32(view_id))
+    if j.get_i64(view, "buffer").unwrap_or(-1) != 0 { return .None }
+    count := j.get_i64(node, "count").unwrap_or(0)
+    component := i32(j.get_i64(node, "componentType").unwrap_or(0))
+    width := component_size(component) * component_count(kind)
+    stride := j.get_i64(view, "byteStride").unwrap_or(i64(width))
+    start := j.get_i64(view, "byteOffset").unwrap_or(0)
+    length := j.get_i64(view, "byteLength").unwrap_or(0)
+    offset := j.get_i64(node, "byteOffset").unwrap_or(0)
+    if width == 0 || count < 1 || stride < i64(width) || stride > 252 || start < 0 || start > i64(doc.bin.len) ||
+        length < i64(width) || length > i64(doc.bin.len) - start || offset < 0 || offset > length - i64(width) ||
+        count - 1 > (length - offset - i64(width)) / stride { return .None }
+    .Some(Accessor { base: i32(start + offset), stride: i32(stride), count: i32(count), component: component,
+        components: component_count(kind), normalized: j.get_bool(node, "normalized").unwrap_or(false) })
 }
 
-// Read accessor `index` as a flat f32 array of `count * components` values.
-fn read_accessor_f32(doc: &Document, doc_json: &json.Doc, index: i32) -> []f32 {
+fn read_accessor_f32(doc: &Document, j: &json.Doc, index: i32, kind: string) -> []f32 {
+    data := match accessor(doc, j, index, kind) { .Some(a) => a, .None => { return [] } }
     mut out: []f32 = []
-    accessors := doc_json.field(doc_json.root, "accessors")
-    if doc_json.kind(accessors) != .Array { return out }
-    node := doc_json.at(accessors, index)
-    if doc_json.kind(node) != .Object { return out }
-    count := i32(doc_json.get_i64(node, "count").unwrap_or_default())
-    component_type := i32(doc_json.get_i64(node, "componentType").unwrap_or_default())
-    kind := doc_json.get_str(node, "type").unwrap_or_default()
-    components := component_count(kind)
-    size := component_size(component_type)
-    if count <= 0 || components == 0 || size == 0 { return out }
-    normalized := doc_json.get_bool(node, "normalized").unwrap_or(false)
-
-    buffer_views := doc_json.field(doc_json.root, "bufferViews")
-    view_index := i32(doc_json.get_i64(node, "bufferView").unwrap_or_default())
-    view := doc_json.at(buffer_views, view_index)
-    if doc_json.kind(view) != .Object { return out }
-    view_offset := i32(doc_json.get_i64(view, "byteOffset").unwrap_or_default())
-    accessor_offset := i32(doc_json.get_i64(node, "byteOffset").unwrap_or_default())
-    mut stride := i32(doc_json.get_i64(view, "byteStride").unwrap_or_default())
-    if stride == 0 { stride = components * size }
-    data := buffer_bytes(doc, 0)
-    base := view_offset + accessor_offset
-    out.reserve(count * components)
-    for i in 0..count {
-        element := base + i * stride
-        for c in 0..components {
-            offset := element + c * size
-            if offset + size > data.len { return [] }
-            out.push(read_component(data, offset, component_type, normalized))
+    out.reserve(data.count * data.components)
+    for i in 0..data.count {
+        offset := data.base + i * data.stride
+        for c in 0..data.components {
+            out.push(read_component(&doc.bin, offset + c * component_size(data.component), data.component, data.normalized))
         }
     }
     out
 }
 
-fn read_accessor_i32(doc: &Document, doc_json: &json.Doc, index: i32) -> []i32 {
+fn read_accessor_i32(doc: &Document, j: &json.Doc, index: i32) -> []i32 {
+    data := match accessor(doc, j, index, "SCALAR") { .Some(a) => a, .None => { return [] } }
+    if data.normalized || (data.component != 5121 && data.component != 5123 && data.component != 5125) { return [] }
     mut out: []i32 = []
-    accessors := doc_json.field(doc_json.root, "accessors")
-    if doc_json.kind(accessors) != .Array { return out }
-    node := doc_json.at(accessors, index)
-    if doc_json.kind(node) != .Object { return out }
-    count := i32(doc_json.get_i64(node, "count").unwrap_or_default())
-    component_type := i32(doc_json.get_i64(node, "componentType").unwrap_or_default())
-    size := component_size(component_type)
-    if count <= 0 || size == 0 { return out }
-    buffer_views := doc_json.field(doc_json.root, "bufferViews")
-    view_index := i32(doc_json.get_i64(node, "bufferView").unwrap_or_default())
-    view := doc_json.at(buffer_views, view_index)
-    if doc_json.kind(view) != .Object { return out }
-    view_offset := i32(doc_json.get_i64(view, "byteOffset").unwrap_or_default())
-    accessor_offset := i32(doc_json.get_i64(node, "byteOffset").unwrap_or_default())
-    mut stride := i32(doc_json.get_i64(view, "byteStride").unwrap_or_default())
-    if stride == 0 { stride = size }
-    data := buffer_bytes(doc, 0)
-    base := view_offset + accessor_offset
-    out.reserve(count)
-    for i in 0..count {
-        offset := base + i * stride
-        if offset + size > data.len { return [] }
-        out.push(read_index(data, offset, component_type))
-    }
+    out.reserve(data.count)
+    for i in 0..data.count { out.push(read_index(&doc.bin, data.base + i * data.stride, data.component)) }
     out
 }
 
 // ---- Mesh extraction ----
 
-// Read the first mesh's first primitive. Enough for the engine's first
-// milestone; multi-primitive support arrives with materials.
-pub fn load_mesh(doc: &Document) -> Mesh {
-    if !doc.ok { return Mesh { ok: false, error: doc.error.clone(), positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 } }
-    doc_json := json.Doc::parse_text(doc.json_text.clone())
-    if !doc_json.ok { return empty_mesh() }
-    meshes := doc_json.field(doc_json.root, "meshes")
-    if doc_json.kind(meshes) != .Array || doc_json.count(meshes) == 0 {
-        return Mesh { ok: false, error: "glTF has no meshes", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
-    }
-    mesh := doc_json.at(meshes, 0)
-    primitives := doc_json.field(mesh, "primitives")
-    if doc_json.kind(primitives) != .Array || doc_json.count(primitives) == 0 {
-        return Mesh { ok: false, error: "glTF mesh has no primitives", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
-    }
-    primitive := doc_json.at(primitives, 0)
-    attributes := doc_json.field(primitive, "attributes")
-    // Accessor indices are zero-based, so -1 is the "attribute absent" sentinel.
-    mut position_index := -1
-    match doc_json.get_i64(attributes, "POSITION") {
-        .Some(value) => { position_index = i32(value) },
-        .None => {},
-    }
-    if position_index < 0 {
-        return Mesh { ok: false, error: "glTF primitive has no POSITION attribute", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
-    }
-    mut normal_index := -1
-    match doc_json.get_i64(attributes, "NORMAL") {
-        .Some(value) => { normal_index = i32(value) },
-        .None => {},
-    }
-    mut uv_index := -1
-    match doc_json.get_i64(attributes, "TEXCOORD_0") {
-        .Some(value) => { uv_index = i32(value) },
-        .None => {},
-    }
-    mut index_accessor := -1
-    match doc_json.get_i64(primitive, "indices") {
-        .Some(value) => { index_accessor = i32(value) },
-        .None => {},
-    }
+fn rejected(move message: string) -> Mesh {
+    mut mesh := empty_mesh()
+    mesh.error = message
+    mesh
+}
 
-    positions := read_accessor_f32(doc, &doc_json, position_index)
-    if positions.len == 0 {
-        return Mesh { ok: false, error: "glTF POSITION accessor is empty or unsupported", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
-    }
-    normals := if normal_index >= 0 { read_accessor_f32(doc, &doc_json, normal_index) } else { [] }
-    uvs := if uv_index >= 0 { read_accessor_f32(doc, &doc_json, uv_index) } else { [] }
-    mut indices := if index_accessor >= 0 { read_accessor_i32(doc, &doc_json, index_accessor) } else { [] }
+fn primitive_mesh(doc: &Document, j: &json.Doc, primitive: i32) -> Mesh {
+    if j.get_i64(primitive, "mode").unwrap_or(4) != 4 { return rejected("expected a TRIANGLES primitive") }
+    attrs := j.field(primitive, "attributes")
+    pos := i32(j.get_i64(attrs, "POSITION").unwrap_or(-1))
+    positions := read_accessor_f32(doc, j, pos, "VEC3")
+    if positions.len == 0 { return rejected("missing or invalid POSITION accessor") }
     vertex_count := positions.len / 3
-    if indices.len == 0 {
-        // Non-indexed geometry: synthesize an index buffer.
+    n := i32(j.get_i64(attrs, "NORMAL").unwrap_or(-1))
+    normals := if n >= 0 { read_accessor_f32(doc, j, n, "VEC3") } else { [] }
+    if j.field(attrs, "NORMAL") >= 0 && normals.len != positions.len { return rejected("invalid NORMAL accessor") }
+    uv := i32(j.get_i64(attrs, "TEXCOORD_0").unwrap_or(-1))
+    uvs := if uv >= 0 { read_accessor_f32(doc, j, uv, "VEC2") } else { [] }
+    if j.field(attrs, "TEXCOORD_0") >= 0 && uvs.len != vertex_count * 2 { return rejected("invalid TEXCOORD_0 accessor") }
+    mut indices: []i32 = []
+    if j.field(primitive, "indices") >= 0 {
+        indices = read_accessor_i32(doc, j, i32(j.get_i64(primitive, "indices").unwrap_or(-1)))
+        if indices.len == 0 { return rejected("invalid index accessor") }
+        for i in indices { if i < 0 || i >= vertex_count { return rejected("index outside POSITION accessor") } }
+    } else {
         indices.reserve(vertex_count)
         for i in 0..vertex_count { indices.push(i) }
     }
+    if indices.len % 3 != 0 { return rejected("triangle index count must be divisible by three") }
     index_count := indices.len
     Mesh {
         ok: true, error: "", positions: positions, normals: normals, uvs: uvs, indices: indices,
         index_count: index_count, vertex_count: vertex_count,
     }
+}
+
+pub fn load_mesh(doc: &Document) -> Mesh {
+    if !doc.ok { return rejected(doc.error.clone()) }
+    j := json.Doc::parse_text(doc.json_text.clone())
+    mesh := j.at(j.field(j.root, "meshes"), 0)
+    first := j.at(j.field(mesh, "primitives"), 0)
+    if first < 0 { return rejected("glTF has no mesh primitive") }
+    primitive_mesh(doc, &j, first)
+}
+
+pub struct Part {
+    name: string, material_name: string, color: [f32; 4], metallic: f32, roughness: f32, vertices: []f32,
+}
+
+pub struct Asset { parts: []Part }
+
+fn factor(j: &json.Doc, node: i32, fallback: f32) -> Result<f32,string> {
+    if node < 0 { return .Ok(fallback) }
+    n := match j.as_f64(node) { .Some(v) => v, .None => { return .Err("expected a numeric material factor") } }
+    if !(n >= 0.0 && n <= 1.0) { return .Err("material factor outside [0,1]") }
+    .Ok(f32(n))
+}
+
+fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Result<Part,string> {
+    mesh := primitive_mesh(doc, j, primitive)
+    if !mesh.ok { return .Err(mesh.error) }
+    mut material := -1
+    if j.field(primitive, "material") >= 0 {
+        materials := j.field(j.root, "materials")
+        index := j.get_i64(primitive, "material").unwrap_or(-1)
+        if index < 0 || index >= i64(j.count(materials)) { return .Err("invalid material index") }
+        material = j.at(materials, i32(index))
+    }
+    pbr := j.field(material, "pbrMetallicRoughness")
+    base := j.field(pbr, "baseColorFactor")
+    mut color: [f32; 4] = [1.0; 4]
+    if base >= 0 {
+        if j.kind(base) != .Array || j.count(base) != 4 { return .Err("baseColorFactor must have four components") }
+        for c in 0..4 { color[c] = factor(j, j.at(base, c), 1.0)? }
+    }
+    metallic := factor(j, j.field(pbr, "metallicFactor"), 1.0)?
+    roughness := factor(j, j.field(pbr, "roughnessFactor"), 1.0)?
+    .Ok(Part { name: name, material_name: j.get_str(material, "name").unwrap_or_default(),
+        color: color, metallic: metallic, roughness: roughness, vertices: interleave(&mesh) })
+}
+
+pub fn asset(doc: &Document) -> Result<Asset,string> {
+    if !doc.ok { return .Err(doc.error.clone()) }
+    j := json.Doc::parse_text(doc.json_text.clone())
+    meshes := j.field(j.root, "meshes")
+    if j.kind(meshes) != .Array || j.count(meshes) == 0 { return .Err("glTF has no meshes") }
+    mut parts: []Part = []
+    placed := nodes.placements(&j, j.count(meshes))?
+    for instance in placed {
+        m := instance.mesh
+        mesh := j.at(meshes, m)
+        name := j.get_str(mesh, "name").unwrap_or("Mesh " + m.str())
+        primitives := j.field(mesh, "primitives")
+        if j.kind(primitives) != .Array || j.count(primitives) == 0 { return .Err(name + " has no primitives") }
+        for p in 0..j.count(primitives) {
+            match part(doc, &j, j.at(primitives, p), name.clone()) {
+                .Ok(value) => {
+                    mut placed_part := move value
+                    nodes.bake(&mut placed_part.vertices, &instance.world)
+                    parts.push(move placed_part)
+                },
+                .Err(error) => { return .Err(name + " primitive " + p.str() + ": " + error) },
+            }
+        }
+    }
+    .Ok(Asset { parts: parts })
 }
 
 // Expand the mesh through its index buffer into Storm's unindexed

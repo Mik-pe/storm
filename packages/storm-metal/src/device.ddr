@@ -51,7 +51,7 @@ pub unsafe fn release_buffer(rt: &objc.Runtime, buffer: &mut Buffer) {
 // append can never overwrite an earlier one. False when they do not fit,
 // and nothing is written then.
 pub unsafe fn append(buffer: &Buffer, cursor: &mut u64, bytes: u64, source: ptr) -> bool {
-    if cursor + bytes > buffer.capacity { return false }
+    if cursor > buffer.capacity || bytes > buffer.capacity - cursor { return false }
     if bytes > 0 { _ := copy_bytes(ptr(usize(buffer.contents) + usize(cursor)), source, usize(bytes)) }
     cursor = cursor + bytes
     true
