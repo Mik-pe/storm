@@ -1,0 +1,148 @@
+capability filesystem, unsafe
+
+import std.base64 as base64
+import std.bytes as bytes
+import std.dl as dl
+import std.fs as fs
+import sys
+
+const PREVIEW_EDGE: i32 = 768
+const CAPTURE_BYTES: i64 = 67108864
+
+struct Header { width: i32, height: i32, start: i32 }
+
+fn number(data: &[]u8, cursor: &mut i32, delimiter: u8) -> Result<i32, string> {
+    start := cursor
+    mut value: i32 = 0
+    while cursor < data.len && data[cursor] >= 48 && data[cursor] <= 57 {
+        if cursor - start >= 6 { return .Err("capture dimension is too large") }
+        value = value * 10 + i32(data[cursor]) - 48
+        cursor += 1
+    }
+    if value == 0 || cursor >= data.len || data[cursor] != delimiter { return .Err("invalid capture header") }
+    cursor += 1
+    .Ok(value)
+}
+
+// Both renderers emit this P6 header; the first pixel may itself contain whitespace.
+fn header(data: &[]u8) -> Result<Header, string> {
+    if data.len < 11 || data[0] != 80 || data[1] != 54 || data[2] != 10 { return .Err("expected a Storm P6 capture") }
+    mut at: i32 = 3
+    width := number(data, &mut at, 32)?
+    height := number(data, &mut at, 10)?
+    if at + 4 > data.len || data[at] != 50 || data[at+1] != 53 || data[at+2] != 53 || data[at+3] != 10 { return .Err("expected 8-bit RGB pixels") }
+    at += 4
+    if i64(width) * i64(height) * 3 != i64(data.len - at) || i64(data.len) > CAPTURE_BYTES { return .Err("capture size disagrees with its header") }
+    .Ok(Header { width: width, height: height, start: at })
+}
+
+fn scanlines(data: &[]u8, source: Header, width: i32, height: i32) -> []u8 {
+    mut out: []u8 = []
+    out.reserve((width * 3 + 1) * height)
+    for y in 0..height {
+        out.push(1)
+        mut previous: [i32; 3] = [0; 3]
+        top := i32(i64(y) * i64(source.height) / i64(height))
+        bottom := i32(i64(y + 1) * i64(source.height) / i64(height))
+        for x in 0..width {
+            left := i32(i64(x) * i64(source.width) / i64(width))
+            right := i32(i64(x + 1) * i64(source.width) / i64(width))
+            count := (right - left) * (bottom - top)
+            mut sums: [i64; 3] = [0; 3]
+            for sy in top..bottom {
+                mut at := source.start + (sy * source.width + left) * 3
+                for _ in left..right {
+                    for c in 0..3 { sums[c] += i64(data[at + c]) }
+                    at += 3
+                }
+            }
+            for c in 0..3 {
+                value := i32((sums[c] + i64(count / 2)) / i64(count))
+                out.push(u8((value - previous[c] + 256) % 256))
+                previous[c] = value
+            }
+        }
+    }
+    out
+}
+
+unsafe fn chunk(out: &mut []u8, tag: string, data: &[]u8, checksum: extern fn(u64, ptr, u32) -> u64) {
+    bytes.append_be(&mut out, i64(data.len), 4)
+    start := out.len
+    bytes.append_utf8(&mut out, tag)
+    bytes.extend(&mut out, data)
+    crc := checksum(0, addr(&out[start]), u32(data.len + 4))
+    bytes.append_be(&mut out, i64(crc), 4)
+}
+
+unsafe fn encode(width: i32, height: i32, rows: &[]u8) -> Result<[]u8, string> {
+    library := if target_is("macos") { dl.open(cstr("/usr/lib/libz.1.dylib"), 2) } else { dl.open(cstr("libz.so.1"), 2) }
+    if library == ptr(0) { return .Err("PNG compression requires the system zlib library") }
+    bound_symbol := dl.symbol(library, cstr("compressBound"))
+    compress_symbol := dl.symbol(library, cstr("compress2"))
+    crc_symbol := dl.symbol(library, cstr("crc32"))
+    if bound_symbol == ptr(0) || compress_symbol == ptr(0) || crc_symbol == ptr(0) {
+        _ := dl.close(library)
+        return .Err("zlib does not provide PNG compression functions")
+    }
+    bound: extern fn(u64) -> u64 = ffi_fn(bound_symbol)
+    compress: extern fn(ptr, ptr, ptr, u64, i32) -> i32 = ffi_fn(compress_symbol)
+    checksum: extern fn(u64, ptr, u32) -> u64 = ffi_fn(crc_symbol)
+    mut length := bound(u64(rows.len))
+    mut compressed: []u8 = []
+    bytes.pad(&mut compressed, i32(length))
+    status := compress(addr(&mut compressed[0]), addr(&mut length), addr(&rows[0]), u64(rows.len), 3)
+    if status != 0 || length > u64(compressed.len) {
+        _ := dl.close(library)
+        return .Err("could not compress preview pixels")
+    }
+    compressed.truncate(i32(length))
+    mut dimensions: []u8 = []
+    bytes.append_be(&mut dimensions, i64(width), 4)
+    bytes.append_be(&mut dimensions, i64(height), 4)
+    fields: []u8 = [8, 2, 0, 0, 0]
+    bytes.extend(&mut dimensions, &fields)
+    mut out: []u8 = [137, 80, 78, 71, 13, 10, 26, 10]
+    out.reserve(compressed.len + 57)
+    chunk(&mut out, "IHDR", &dimensions, checksum)
+    chunk(&mut out, "IDAT", &compressed, checksum)
+    empty: []u8 = []
+    chunk(&mut out, "IEND", &empty, checksum)
+    _ := dl.close(library)
+    .Ok(move out)
+}
+
+pub fn png(data: &[]u8) -> Result<[]u8, string> {
+    source := header(data)?
+    longest := if source.width > source.height { source.width } else { source.height }
+    mut width := source.width
+    mut height := source.height
+    if longest > PREVIEW_EDGE {
+        width = i32((i64(width) * i64(PREVIEW_EDGE) + i64(longest / 2)) / i64(longest))
+        height = i32((i64(height) * i64(PREVIEW_EDGE) + i64(longest / 2)) / i64(longest))
+        if width < 1 { width = 1 }
+        if height < 1 { height = 1 }
+    }
+    rows := scanlines(data, source, width, height)
+    unsafe { return encode(width, height, &rows) }
+}
+
+fn image_file(path: string) -> Result<string, string> {
+    capture := sys.read_u8_limit(path, CAPTURE_BYTES)
+    if !capture.ok { return .Err("could not read rendered frame: " + sys.error_message(capture.error)) }
+    encoded := png(&capture.value)?
+    .Ok(base64.encode(&encoded))
+}
+
+pub fn preview<T>(session: &T, render: fn(&T, string) -> Result<(), string>) -> Result<string, string> {
+    temp := fs.temp_dir("storm-preview-")
+    if !temp.ok { return .Err("could not create private preview directory: " + sys.error_message(temp.error)) }
+    path := temp.value + "/frame.ppm"
+    result := match render(session, path) {
+        .Ok => image_file(path),
+        .Err(err) => .Err(err),
+    }
+    removed := fs.remove_all(temp.value)
+    if !removed.ok { return .Err("could not remove preview directory: " + sys.error_message(removed.error)) }
+    result
+}

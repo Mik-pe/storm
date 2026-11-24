@@ -1,0 +1,8 @@
+name = "storm-mcp"
+version = "0.1.0"
+root = "src/mcp.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+play = { path = "../storm-play", capabilities = ["filesystem"] }
+image = { path = "../storm-image", capabilities = ["filesystem", "unsafe"] }

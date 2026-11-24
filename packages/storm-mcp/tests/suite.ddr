@@ -1,0 +1,111 @@
+capability filesystem, stdio, unsafe
+
+import ..src.mcp as mcp
+import play
+import std.json as json
+
+fn no_window(session: &play.Session, path: string) -> Result<(), string> {
+    .Err("No renderer for tick " + session.tick.str() + " at " + path)
+}
+
+fn request(server: &mut mcp.Server, method: string, params: string) -> json.Doc {
+    text := mcp.handle(&mut server, "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":" + json.quote(method) + ",\"params\":" + params + "}")
+    d := json.Doc::parse_text(text)
+    assert(d.ok)
+    d
+}
+
+const INIT: string = "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}"
+
+fn ready() -> mcp.Server {
+    mut server := mcp.new(no_window)
+    d := request(&mut server, "initialize", INIT)
+    assert(d.kind(d.field(d.root, "result")) == .Object)
+    assert(mcp.handle(&mut server, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}") == "")
+    server
+}
+
+fn call(server: &mut mcp.Server, name: string, args: string) -> json.Doc {
+    request(&mut server, "tools/call", "{\"name\":" + json.quote(name) + ",\"arguments\":" + args + "}")
+}
+
+fn failed(d: &json.Doc) -> bool { d.get_bool(d.field(d.root, "result"), "isError").unwrap_or(false) }
+fn data(d: &json.Doc) -> i32 { d.field(d.field(d.root, "result"), "structuredContent") }
+
+@test fn lifecycle_and_rpc_framing() {
+    mut server := mcp.new(no_window)
+    broken := json.Doc::parse_text(mcp.handle(&mut server, "{"))
+    assert(broken.get_i64(broken.field(broken.root, "error"), "code") == .Some(-32700))
+    unopened := request(&mut server, "tools/list", "{}")
+    assert(unopened.get_i64(unopened.field(unopened.root, "error"), "code") == .Some(-32002))
+    d := request(&mut server, "initialize", INIT)
+    assert(d.get_str(d.field(d.root, "result"), "protocolVersion") == .Some("2025-11-25"))
+    assert(mcp.handle(&mut server, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}") == "")
+    assert(mcp.handle(&mut server, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\"}") == "")
+    catalog := request(&mut server, "tools/list", "{}")
+    assert(catalog.count(catalog.field(catalog.field(catalog.root, "result"), "tools")) == 10)
+    ping := json.Doc::parse_text(mcp.handle(&mut server, "{\"jsonrpc\":\"2.0\",\"id\":\"a\\\"b\",\"method\":\"ping\"}"))
+    assert(ping.get_str(ping.root, "id") == .Some("a\"b"))
+    missing := request(&mut server, "unknown_method", "{}")
+    assert(missing.get_i64(missing.field(missing.root, "error"), "code") == .Some(-32601))
+}
+
+@test fn invalid_edits_and_inputs_leave_the_game_unchanged() {
+    mut server := ready()
+    created := call(&mut server, "storm_new", "{\"name\":\"Track\",\"template\":\"demo\"}")
+    assert(!failed(&created))
+    bad_step := call(&mut server, "storm_step", "{\"ticks\":-1}")
+    assert(failed(&bad_step))
+    typo := call(&mut server, "storm_step", "{\"tick\":24}")
+    assert(failed(&typo))
+    bad_vector := call(&mut server, "storm_upsert", "{\"entity\":{\"name\":\"ball\",\"shape\":\"sphere\",\"size\":[1,0,1]}}")
+    assert(failed(&bad_vector))
+    bad_name := call(&mut server, "storm_new", "{\"name\":\"   \"}")
+    assert(failed(&bad_name))
+    scene := call(&mut server, "storm_inspect", "{\"view\":\"scene\"}")
+    assert(scene.get_str(data(&scene), "name") == .Some("Track"))
+    stepped := call(&mut server, "storm_step", "{\"ticks\":12,\"x\":1}")
+    assert(stepped.get_i64(data(&stepped), "tick") == .Some(12))
+    reset := call(&mut server, "storm_reset", "{}")
+    assert(reset.get_i64(data(&reset), "tick") == .Some(0))
+}
+
+@test fn editing_resets_the_runtime_and_preserves_authored_state() {
+    mut server := ready()
+    added := call(&mut server, "storm_upsert", "{\"entity\":{\"name\":\"Orb\",\"shape\":\"sphere\",\"mass\":1,\"position\":[0,4,0]}}")
+    assert(added.get_str(data(&added), "name") == .Some("Orb"))
+    first := call(&mut server, "storm_step", "{\"ticks\":15}")
+    assert(first.get_i64(data(&first), "tick") == .Some(15))
+    authored := call(&mut server, "storm_inspect", "{\"view\":\"scene\"}")
+    body := authored.at(authored.field(data(&authored), "entities"), 0)
+    assert(authored.as_f64(authored.at(authored.field(body, "position"), 1)).unwrap_or_default() == 4.0)
+    removed := call(&mut server, "storm_remove", "{\"name\":\"Orb\"}")
+    assert(!failed(&removed))
+    inspected := call(&mut server, "storm_inspect", "{}")
+    assert(inspected.get_i64(data(&inspected), "tick") == .Some(0))
+    assert(inspected.count(inspected.field(data(&inspected), "entities")) == 0)
+    render_error := call(&mut server, "storm_preview", "{}")
+    assert(failed(&render_error))
+}
+
+@test fn bulk_authoring_is_atomic_and_restores_the_new_gravity_on_reset() {
+    mut server := ready()
+    scene := "{\"scene\":{\"version\":1,\"name\":\"Updraft\",\"gravity\":[0,8,0],\"entities\":[{\"name\":\"Orb\",\"shape\":\"sphere\",\"mass\":1}]}}"
+    created := call(&mut server, "storm_set_scene", scene)
+    assert(created.get_i64(data(&created), "tick") == .Some(0))
+    running := call(&mut server, "storm_step", "{\"ticks\":20}")
+    body := running.at(running.field(data(&running), "entities"), 0)
+    assert(running.as_f64(running.at(running.field(body, "position"), 1)).unwrap_or_default() > 0.0)
+    rejected := call(&mut server, "storm_set_scene", "{\"scene\":{\"version\":1,\"name\":\"Other\",\"entities\":[{\"name\":\"A\",\"shape\":\"box\"},{\"name\":\"A\",\"shape\":\"sphere\"}]}}")
+    assert(failed(&rejected))
+    snapshot := call(&mut server, "storm_inspect", "{}")
+    assert(snapshot.raw_json(data(&snapshot)) == running.raw_json(data(&running)))
+    source := call(&mut server, "storm_inspect", "{\"view\":\"scene\"}")
+    assert(source.get_str(data(&source), "name") == .Some("Updraft"))
+    assert(source.as_f64(source.at(source.field(data(&source), "gravity"), 1)).unwrap_or_default() == 8.0)
+    reset := call(&mut server, "storm_reset", "{}")
+    assert(reset.raw_json(data(&reset)) == created.raw_json(data(&created)))
+    cleared := call(&mut server, "storm_set_scene", "{\"scene\":{\"version\":1,\"name\":\"Empty\",\"entities\":[]}}")
+    assert(!failed(&cleared))
+    assert(cleared.count(cleared.field(data(&cleared), "entities")) == 0)
+}

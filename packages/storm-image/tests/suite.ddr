@@ -1,0 +1,88 @@
+capability filesystem, unsafe
+
+import ..src.image as image
+import std.base64 as base64
+import std.bytes as bytes
+import std.dl as dl
+import std.path as path
+import sys
+
+fn sample() -> []u8 {
+    mut data := bytes.from_text("P6\n2 1\n255\n")
+    pixels: []u8 = [10, 35, 32, 255, 0, 42]
+    bytes.extend(&mut data, &pixels)
+    data
+}
+
+fn draw(pixels: &[]u8, path: string) -> Result<(), string> {
+    if !sys.write_bytes(path, pixels).is_ok() { return .Err("test capture failed") }
+    .Ok
+}
+
+fn fail(value: &i32, path: string) -> Result<(), string> {
+    if value == 0 || path.len == 0 { return .Err("invalid fixture") }
+    .Err("renderer diagnostic: " + path)
+}
+
+// Decode the IDAT stream independently of the encoder, including the PNG Sub filter.
+unsafe fn decoded_first_row(png: &[]u8, width: i32) -> []u8 {
+    assert(bytes.u32_be(png, 37) == 1229209940)
+    library := if target_is("macos") { dl.open(cstr("/usr/lib/libz.1.dylib"), 2) } else { dl.open(cstr("libz.so.1"), 2) }
+    assert(library != ptr(0))
+    symbol := dl.symbol(library, cstr("uncompress"))
+    assert(symbol != ptr(0))
+    inflate: extern fn(ptr, ptr, ptr, u64) -> i32 = ffi_fn(symbol)
+    mut length := u64(width * 3 + 1)
+    mut pixels: []u8 = []
+    bytes.pad(&mut pixels, i32(length))
+    assert(inflate(addr(&mut pixels[0]), addr(&mut length), addr(&png[41]), u64(bytes.u32_be(png, 33))) == 0)
+    _ := dl.close(library)
+    assert(length == u64(pixels.len) && pixels[0] == 1)
+    for i in 4..pixels.len {
+        pixels[i] = u8((i32(pixels[i]) + i32(pixels[i-3])) % 256)
+    }
+    mut row: []u8 = []
+    bytes.extend_range(&mut row, &pixels, 1, pixels.len)
+    row
+}
+
+@test fn preview_returns_inline_png_with_capture_dimensions() {
+    data := sample()
+    response := image.preview(&data, draw)
+    assert(response.is_ok())
+    png := base64.decode(response.unwrap())
+    assert(png.ok && png.value.len > 60)
+    assert(png.value[0] == 137 && bytes.u32_be(&png.value, 12) == 1229472850)
+    assert(bytes.u32_be(&png.value, 16) == 2 && bytes.u32_be(&png.value, 20) == 1)
+    assert(bytes.u32_be(&png.value, png.value.len - 4) == 2923585666)
+    unsafe {
+        decoded := decoded_first_row(&png.value, 2)
+        assert(bytes.equal_ranges(&decoded, 0, decoded.len, &data, data.len - decoded.len, data.len))
+    }
+}
+
+@test fn rejects_truncated_capture_and_preserves_renderer_errors() {
+    mut data := sample()
+    _ := data.pop()
+    assert(image.png(&data).is_err())
+    no_dimensions := bytes.from_text("P6\n0 1\n255\n")
+    assert(image.png(&no_dimensions).is_err())
+    value := 1
+    response := image.preview(&value, fail)
+    assert(response.is_err())
+    message := response.unwrap_err()
+    prefix := "renderer diagnostic: "
+    assert(message.len > prefix.len && message[0..prefix.len] == prefix)
+    assert(!sys.metadata(path.dirname(message[prefix.len..message.len])).ok)
+}
+
+@test fn preserves_aspect_and_caps_the_longest_edge() {
+    mut data := bytes.from_text("P6\n1536 2\n255\n")
+    for _ in 0..1536 { for pixel in [0, 10, 35, 255, 20, 5] { data.push(u8(pixel)) } }
+    png := image.png(&data).unwrap()
+    assert(bytes.u32_be(&png, 16) == 768 && bytes.u32_be(&png, 20) == 1)
+    unsafe {
+        row := decoded_first_row(&png, 768)
+        for x in 0..768 { assert(row[x*3] == 128 && row[x*3+1] == 15 && row[x*3+2] == 20) }
+    }
+}

@@ -1,0 +1,4 @@
+name = "storm-image"
+version = "0.1.0"
+root = "src/image.ddr"
+test_root = "tests/suite.ddr"
