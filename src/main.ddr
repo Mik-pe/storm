@@ -17,8 +17,8 @@ fn preview(session: &play.Session, path: string) -> Result<(), string> {
 fn main() -> i32 {
     argv := args.from_process()
     if args.flag(&argv, "--help") || args.flag(&argv, "-h") {
-        print("storm [--play | --scene FILE [--watch] | --mcp] [--frames N] [--capture FILE.ppm]")
-        print("Open the material studio, play the demo or a saved scene, or serve game tools on stdio.")
+        print("storm [--studio | --glb MODEL.glb | --play | --scene FILE [--watch] | --mcp] [--frames N] [--capture FILE.ppm]")
+        print("Play Blomsterskogen, open the material studio, load a scene, or serve game tools on stdio.")
         return 0
     }
     if args.flag(&argv, "--mcp") { return mcp.serve(preview) }

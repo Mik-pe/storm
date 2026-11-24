@@ -72,3 +72,76 @@ pub fn reload_error(c: &mut ui.Canvas, a: &text.Atlas, width: f32) {
     c.rounded_rect(12.0, y, w, 28.0, 5.0, &ui.rgb(0.21, 0.12, 0.08))
     c.text(a, message, 24.0, y + 5.0, 0.62, &ui.rgb(1.0, 0.78, 0.55))
 }
+
+// Open one petal for each fifth of the bouquet.
+fn blossom(c: &mut ui.Canvas, x: f32, y: f32, flowers: i32, total: i32, won: bool) {
+    c.rounded_rect(x - 18.0, y - 18.0, 36.0, 36.0, 18.0, &ui.rgb(0.32, 0.13, 0.22))
+    offsets: [[f32; 2]; 5] = [[0.0, -7.2], [6.8, -2.2], [4.2, 5.8], [-4.2, 5.8], [-6.8, -2.2]]
+    mut opened := 0
+    if total > 0 { opened = (flowers * 5 + total - 1) / total }
+    for i in 0..5 {
+        bright := won || i < opened
+        radius: f32 = if bright { 6.0 } else { 4.7 }
+        ink := if bright { ui.rgb(1.0, 0.68, 0.76) } else { ui.rgb(0.76, 0.48, 0.57) }
+        c.rounded_rect(x + offsets[i][0] - radius, y + offsets[i][1] - radius,
+            radius * 2.0, radius * 2.0, radius, &ink)
+    }
+    c.rounded_rect(x - 3.8, y - 3.8, 7.6, 7.6, 3.8, &ui.rgb(1.0, 0.83, 0.40))
+}
+
+pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas, p: &widgets.Pointer,
+    width: f32, height: f32, title: string, flowers: i32, total: i32, paused: bool, won: bool) -> Action {
+    compact := width < 430.0
+    pad: f32 = if compact { 10.0 } else { 18.0 }
+    cream := ui.rgb(1.0, 0.95, 0.89)
+    berry := ui.rgb(0.27, 0.10, 0.17)
+    shade := ui.rgba(0.16, 0.06, 0.10, 0.23)
+    gap: f32 = if compact { 0.0 } else { 156.0 }
+    available := width - 2.0 * pad - gap
+    mut headline := if won { "Buketten är klar!" } else { title.clone() }
+    if ui.Canvas::text_width(atlas, headline, 0.85) + 68.0 > available { headline = "Buketten" }
+    count := flowers.str() + " av " + total.str() + " blommor"
+    name_w := ui.Canvas::text_width(atlas, headline, 0.85)
+    count_w := ui.Canvas::text_width(atlas, count, 0.62)
+    chip_w := f32(68.0) + (if name_w > count_w { name_w } else { count_w })
+    c.rounded_rect(pad, pad + 3.0, chip_w, 58.0, 15.0, &shade)
+    c.rounded_rect(pad, pad, chip_w, 58.0, 15.0, &cream)
+    blossom(&mut c, pad + 27.0, pad + 29.0, flowers, total, won)
+    c.text(atlas, headline, pad + 54.0, pad + 7.0, 0.85, &berry)
+    c.text(atlas, count, pad + 55.0, pad + 32.0, 0.62, &ui.rgb(0.42, 0.23, 0.30))
+
+    controls.begin()
+    mut action := Action.Idle
+    mut buttons := widgets.theme()
+    buttons.fill = ui.rgb(0.38, 0.18, 0.26)
+    buttons.fill_hot = ui.rgb(0.50, 0.23, 0.32)
+    buttons.fill_active = ui.rgb(0.60, 0.29, 0.39)
+    buttons.ink = cream
+    more := paused || won
+    panel_h: f32 = if more { 77.0 } else { 41.0 }
+    px := width - pad - 142.0
+    py := if compact { height - pad - panel_h } else { pad }
+    c.rounded_rect(px, py + 3.0, 142.0, panel_h, 12.0, &shade)
+    c.rounded_rect(px, py, 142.0, panel_h, 12.0, &berry)
+    if controls.button(&mut c, atlas, 11, p, px + 6.0, py + 6.0, 58.0, 29.0, "Studio", &buttons) { action = .Studio }
+    if controls.button(&mut c, atlas, 12, p, px + 69.0, py + 6.0, 67.0, 29.0, if paused { "Fortsätt" } else { "Pausa" }, &buttons) {
+        action = .TogglePause
+    }
+    if more {
+        if paused && !won {
+            if controls.button(&mut c, atlas, 13, p, px + 6.0, py + 42.0, 58.0, 29.0, "Ett steg", &buttons) { action = .Step }
+        }
+        restart_x := if won { px + 6.0 } else { px + 69.0 }
+        restart_w: f32 = if won { 130.0 } else { 67.0 }
+        if controls.button(&mut c, atlas, 14, p, restart_x, py + 42.0, restart_w, 29.0,
+            if won { "Spela igen" } else { "Börja om" }, &buttons) { action = .Restart }
+    }
+    if !compact && height >= 260.0 && !won {
+        hint := "WASD / pilar   Gå      Mellanslag   Hoppa"
+        hint_w := ui.Canvas::text_width(atlas, hint, 0.60) + 26.0
+        c.rounded_rect(pad, height - pad - 32.0, hint_w, 32.0, 10.0, &ui.rgba(0.19, 0.09, 0.15, 0.93))
+        c.text(atlas, hint, pad + 13.0, height - pad - 25.0, 0.60, &cream)
+    }
+    controls.end(p)
+    action
+}

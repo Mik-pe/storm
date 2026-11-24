@@ -8,18 +8,20 @@ För att följa agentens bygge i ett öppet fönster, spara en första bana och 
 
 ## Spela till mål med verktygen
 
-| Verktyg | Argument | Förväntat resultat |
+| Verktyg | Argument | Efter anropet |
 | --- | --- | --- |
-| `storm_new` | `{"template":"demo"}` | *First light* vid tick 0 |
-| `storm_step` | `{"x":1,"ticks":20}` | Spelaren har fått markkontakt och närmar sig hindret |
-| `storm_step` | `{"x":1,"jump":true,"ticks":1}` | Spelaren hoppar |
-| `storm_step` | `{"x":1,"ticks":52}` | `tick` är 73 och `won` är `true` |
-| `storm_preview` | `{}` | En PNG av det aktuella läget |
+| `storm_new` | `{"template":"demo"}` | Vallmo står i gläntan med 0 av 5 blommor |
+| `storm_step` | `{"x":-1,"ticks":27}` | 1 blomma |
+| `storm_step` | `{"x":1,"z":-0.25,"ticks":54}` | 2 blommor |
+| `storm_step` | `{"x":-1,"z":-0.385,"ticks":68}` | 3 blommor |
+| `storm_step` | `{"x":1,"z":-0.22,"ticks":40}` | 4 blommor |
+| `storm_step` | `{"x":1,"z":0.14,"ticks":45}` | 5 blommor, `won` är `true` |
+| `storm_preview` | `{}` | En PNG av buketten och räven i den aktuella bildrutan |
 | `storm_save` | `{"path":"bana.storm.json"}` | Banans startläge sparas på disk |
 
-![Agentens förhandsvisning av First light under hoppet vid tick 34](first-light.png)
+![Vallmo bär den färdiga buketten i agentens spelbild](buketten.png)
 
-Starta den sparade banan med `./build/storm --scene bana.storm.json`. En ny agent kan öppna den med `storm_load`. `storm_reset` återställer spelaren och alla kroppar till banans startläge. `storm_inspect` ger position, hastighet, markkontakt och antal kontaktpar. Med `{"view":"scene"}` får agenten den redigerbara banan.
+Starta den sparade banan med `./build/storm --scene bana.storm.json`. En ny agent kan öppna den med `storm_load`. `storm_reset` återställer spelaren och alla kroppar till banans startläge och sätter tillbaka blommorna. `flowers` och `total_flowers` visar hur många som plockats och hur många som finns. `entities[].collected` visar vilken blomma räven har hittat. `storm_inspect` ger position, hastighet, markkontakt och antal kontaktpar. Med `{"view":"scene"}` får agenten den redigerbara banan.
 
 ## Skapa en egen bana
 
@@ -39,5 +41,7 @@ Använd `storm_set_scene` med hela nivån i argumentet `scene`, eller bygg vidar
 ```
 
 Position och storlek anges i meter. Storleken är hela lådans mått eller sfärens diameter på alla tre axlar. Positiv massa ger en dynamisk kropp. Massan noll ger en statisk kropp. En spelare har positiv massa och ett mål är en statisk sensor. Materialparametrarna `friction` och `restitution` ligger mellan 0 och 1. Spelriktningen följer världsaxlarna X och Z, med Y uppåt.
+
+`"theme":"blossom"` ger spelaren rävmodellen och gör objekt med `"role":"flower"` till plockbara blommor. `"bounds":[minX,minZ,maxX,maxZ]` avgränsar spelarens rörelse. Blommor har massa noll. Med rollen `collider` går det att ge till exempel en trädstam en osynlig, fast kollisionskropp. En bana med enbart blommor vinns när alla är plockade. Finns även ett mål ska spelaren nå det efter blomplockningen.
 
 Fysiken hanterar förflyttning hos sfärer och axelriktade lådor. Solvern använder upp till 16 delsteg för snabba kroppar. Rotationsdynamik, leder och kontinuerlig kollisionsdetektion ingår inte i version 1. En bana rymmer 128 objekt och ett verktygsanrop kan köra 600 tick. I fönstret kan upp till åtta tick hämtas in efter en fördröjd bildruta.

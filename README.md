@@ -11,11 +11,11 @@ Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
 Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
 av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexport.
 
-Materialstudien visar en mässingsring, en räfflad keramikvas och en porslinskula på ett roterande podium. Ett välvt studiogolv, två glaspaneler, skuggor och miljöreflexer gör materialen lätta att jämföra. Välj ett föremål i scenträdet för att ändra yta och position, eller tryck **F** för att se scenen i fokusläge. Åtta kristaller går att samla i scenen.
+**Blomsterskogen** är Storms basspel. Styr räven Vallmo genom en rosa körsbärsglänta och plocka fem blommor till en bukett. Fjärilar och humlor flyger mellan träden. När Vallmo hittar en blomma stiger hjärtan och stjärnor från platsen.
 
-![Storms materialstudie i ett macOS-fönster](docs/materialstudie-macos.jpg)
+![Vallmo bland körsbärsträden i Blomsterskogen, renderad av Storm på macOS](docs/blomsterskogen.png)
 
-[Samma scen på Linux med Intel Iris Plus och Vulkan](docs/materialstudie-linux.jpg)
+Öppna **Studio** i spelet för att arbeta med scenträdet, positioner och material. Materialstudien har en mässingsring, en keramikvas och en porslinskula på ett roterande podium. [Studion på macOS](docs/materialstudie-macos.jpg) · [Studion på Linux](docs/materialstudie-linux.jpg)
 
 ## Förutsättningar
 
@@ -34,7 +34,8 @@ Materialstudien visar en mässingsring, en räfflad keramikvas och en porslinsku
 - Editorn använder Arial på macOS och söker efter DejaVu Sans och Liberation Sans på Linux. `--font sökväg` väljer ett eget typsnitt.
 
 ```sh
-dunder run                      # fönstret med materialstudien och editorn
+dunder run                      # spela Blomsterskogen
+dunder run -- --studio          # öppna materialstudien
 dunder run -- --frames 120      # rita 120 bildrutor och avsluta
 dunder run -- --capture a.ppm   # en bildruta utan tangentbord
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
@@ -43,7 +44,7 @@ dunder test                     # rotpaketets tester
 
 ## Spela och bygg med en agent
 
-Klicka på **Play** i studion för att spela *First light*. Styr kulan med WASD eller piltangenterna, hoppa med mellanslag och nå den gyllene kulan. **Q** pausar och **Step** flyttar spelet exakt en tick. **R** startar om.
+Styr Vallmo med **WASD** eller **piltangenterna** och gå fram till en blomma för att plocka den. **Mellanslag** hoppar, **Q** pausar och **R** börjar om. I pausläget flyttar **Ett steg** fram simuleringen en tick. Efter fem blommor är buketten klar.
 
 ```sh
 dunder build -o build/storm
@@ -52,6 +53,12 @@ dunder build -o build/storm
 ```
 
 Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporoten. En agent kan bygga en bana, provspela bestämda indata och få både positioner och en PNG från GPU:n. Med `--watch` syns nästa sparade banändring i samma fönster. [Scenformat och en provkörning från start till mål](docs/spel.md)
+
+### Redigera modellerna i Blender
+
+[Räven](assets/blomsterskogen/fox.blend), [gläntan](assets/blomsterskogen/glade.blend) och [blomman och insekterna](assets/blomsterskogen/creatures.blend) är redigerbara original. I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `PawFL_`, `Tail_` och `WingL_`. Storm animerar dem kring modellens leder.
+
+Granska exportens geometri och material direkt med `./build/storm --glb assets/blomsterskogen/fox.glb`. För att använda en ny export i basspelet, ersätt motsvarande GLB och bygg Storm igen. Modellerna följer med i binären och Mac-appen.
 
 ## Paket
 
@@ -66,11 +73,11 @@ för sig.
 | [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `trait Backend`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
-| [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Läser riktiga Khronos-filer. | — |
+| [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer och PBR-material. | `core` |
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och djup-först-propagering till `WorldTransform`. `drawables()` är vad renderaren konsumerar. | `core`, `ecs` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
-| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll och målsensorer. | `core`, `physics` |
+| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
 | [`packages/storm-image`](packages/storm-image) | Omvandlar renderarens bild till en PNG med systemets zlib. | — |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
@@ -160,7 +167,7 @@ så opaque geometri behöver ingen sortering: mesh-pipelinen testar och skriver
 djup, glaspipelinen testar men skriver inte. Bara glaset sorteras bakifrån-fram,
 för blendingens skull.
 
-### Styrning
+### Styrning i materialstudien
 
 - **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint,
   **höger musknapp + mus** – titta
@@ -273,8 +280,7 @@ Laddaren läser `.glb` (JSON- och BIN-chunk) och `.gltf`. Accessorns
 `componentType` hanteras för `5126` (float) samt de normaliserade
 heltalstyperna. Saknade index genereras som `0..n`; finns index expanderar
 `interleave` genom dem (Khronos `Box.glb` är fixtur och läses: 24 verticer, 36
-index). `TEXCOORD_0` följer med i vertexströmmen. Om UV saknas används (0, 0). Material, texturer, noder och animation är nästa
-steg. I appen laddar `--glb fil.glb` en modell in i scenen som en `Mesh`-komponent.
+index). `TEXCOORD_0` följer med i vertexströmmen. Om UV saknas används (0, 0). I studion läser `--glb fil.glb` den valda glTF-scenen med nodtransformer, alla triangelprimitiver och deras PBR-färger, metallvärden och grovhet. Varje del kan väljas i scenträdet.
 
 ## Text
 

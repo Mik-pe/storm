@@ -1,0 +1,15 @@
+// The playable art travels in the executable on every platform.
+import gltf
+
+pub fn load(name: string) -> Result<gltf.Asset, string> {
+    data: []u8 = match name {
+        "fox" => @embed_bytes("assets/blomsterskogen/fox.glb"),
+        "flower" => @embed_bytes("assets/blomsterskogen/flower.glb"),
+        "glade" => @embed_bytes("assets/blomsterskogen/glade.glb"),
+        "bee" => @embed_bytes("assets/blomsterskogen/bee.glb"),
+        "butterfly" => @embed_bytes("assets/blomsterskogen/butterfly.glb"),
+        _ => { return .Err("unknown art asset: " + name) },
+    }
+    doc := gltf.load_bytes(&data)
+    gltf.asset(&doc)
+}

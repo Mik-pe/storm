@@ -4,11 +4,13 @@ import play
 import ..src.play_view as view
 
 @test fn play_shapes_match_body_extents_and_poses_use_the_requested_tick() {
-    scene_data := play.demo()
+    mut scene_data := play.demo()
+    scene_data.theme = .Plain
     mut session := play.start(&scene_data)
-    mut world := view.build(&session)
+    mut world := view.build(&session).unwrap()
     for i in 0..scene_data.entities.len {
         def := &scene_data.entities[i]
+        if def.role == .Collider { assert(world.graph.shape(world.nodes[i]).is_none()); continue }
         scale := world.graph.local(world.nodes[i]).scale
         span: f32 = if def.shape == .Box { 1.2 } else { 2.0 }
         assert((scale.x * span - def.size.x).abs() < 0.0001)
@@ -30,4 +32,20 @@ import ..src.play_view as view
     vertices := view.sphere_geometry(&level)
     assert(vertices.len > 0 && vertices.len % (3 * gfx.VERTEX_FLOATS) == 0)
     assert(vertices.len * 4 * 2 * level.entities.len <= 4194304)
+}
+
+@test fn picking_and_restarting_restore_the_same_flower_meshes() {
+    level := play.demo()
+    mut session := play.start(&level)
+    mut world := view.build(&session).unwrap()
+    view.sync(&mut world, &session, true)
+    first := world.nodes[2]
+    assert(world.graph.world(first).visible)
+    start := world.graph.geometry_revision()
+    for _ in 0..27 { play.step(&mut session, play.Input { x: -1.0, z: 0.0, jump: false }) }
+    view.sync(&mut world, &session, true)
+    assert(session.flowers == 1 && !world.graph.world(first).visible && world.graph.world(world.nodes[3]).visible)
+    session = play.start(&level)
+    view.sync(&mut world, &session, true)
+    assert(session.flowers == 0 && world.graph.world(first).visible && world.graph.geometry_revision() == start)
 }

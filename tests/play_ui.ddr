@@ -46,3 +46,28 @@ import ..src.play_ui as hud
         editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &release, 0.0, f32(width), 420.0, 60.0, 6, "GPU", 0, 8)
     }
 }
+
+@test fn woodland_transport_tracks_pause_and_win_in_each_layout() {
+    mut c := ui.Canvas::new()
+    atlas := text.Atlas::new(16, 16)
+    for width in [320, 1000] {
+        for mode in 0..3 {
+            paused := mode == 1
+            won := mode == 2
+            pad: i32 = if width == 320 { 10 } else { 18 }
+            x := width - pad - 142
+            y := if width == 320 { 500 - pad - (if mode > 0 { 77 } else { 41 }) } else { pad }
+            for i in 0..5 {
+                xy := [[x+32,y+20],[x+97,y+20],[x+32,y+55],[x+97,y+55],[130,190]]
+                p := widgets.Pointer::at(f32(xy[i][0]), f32(xy[i][1]), true, true)
+                mut s := widgets.State::new()
+                c.clear()
+                chosen := hud.woodland(&mut s, &mut c, &atlas, &p, f32(width), 500.0,
+                    "Blomsterskogen", if won { 8 } else { 2 }, 8, paused, won)
+                left := if won { hud.Action.Restart } else if paused { hud.Action.Step } else { hud.Action.Idle }
+                expected := [hud.Action.Studio, .TogglePause, left, if mode > 0 { hud.Action.Restart } else { hud.Action.Idle }, .Idle]
+                assert(chosen == expected[i])
+            }
+        }
+    }
+}

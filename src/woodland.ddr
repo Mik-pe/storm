@@ -1,0 +1,247 @@
+// Blender exports share a model space. Each moving group rotates about a local joint.
+import .art_asset
+import core
+import ecs
+import gfx
+import gltf
+import play
+import scene
+import std.math as _
+
+struct Joint { prefix: string, hinge: ecs.Entity, mount: ecs.Entity }
+struct Fox { root: ecs.Entity, head: ecs.Entity, bouquet: ecs.Entity, tail: ecs.Entity, paws: []ecs.Entity }
+struct Flyer { root: ecs.Entity, left: ecs.Entity, right: ecs.Entity, home: core.Vec3, bee: bool }
+pub struct Cast { foxes: []Fox, insects: []Flyer, motes: []ecs.Entity, petals: []ecs.Entity }
+
+pub fn empty() -> Cast { Cast { foxes: [], insects: [], motes: [], petals: [] } }
+fn origin() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
+
+fn joint(g: &mut scene.Graph, root: ecs.Entity, prefix: string, pivot: core.Vec3) -> Joint {
+    hinge := g.create_child(root, pivot)
+    Joint { prefix: prefix.clone(), hinge: hinge, mount: g.create_child(hinge, core.scale(pivot, -1.0)) }
+}
+
+fn attach(g: &mut scene.Graph, root: ecs.Entity, art: &gltf.Asset, joints: &[]Joint,
+    first: &mut []ecs.Entity, tint: Option<core.Vec3>) {
+    reuse := first.len == art.parts.len
+    for i in 0..art.parts.len {
+        part := &art.parts[i]
+        mut parent := root
+        for j in joints {
+            n := j.prefix.len
+            if part.name.len >= n && part.name[0..n] == j.prefix { parent = j.mount; break }
+        }
+        mesh := g.create_child(parent, origin())
+        _ := g.set_name(mesh, part.name.clone())
+        if reuse { _ := g.share_mesh(mesh, first[i]) }
+        else {
+            _ := g.set_mesh(mesh, part.vertices.clone())
+            first.push(mesh)
+        }
+        c := part.color.clone()
+        mut mat := scene.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness)
+        match tint {
+            .Some(rgb) => {
+                if part.material_name == "Rose petal" || part.material_name == "Blush petal" {
+                    // Keep the two petal tones and the cream petal tips in the painted flower.
+                    weight: f32 = if part.material_name == "Rose petal" { 0.82 } else { 0.55 }
+                    mat.base.r += (rgb.x - mat.base.r) * weight
+                    mat.base.g += (rgb.y - mat.base.g) * weight
+                    mat.base.b += (rgb.z - mat.base.b) * weight
+                }
+            },
+            .None => {},
+        }
+        _ := g.set_material(mesh, move mat)
+    }
+}
+
+fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset) -> Fox {
+    root := g.create_child(parent, origin())
+    head := joint(&mut g, root, "Head_", core.vec3(0.0, 0.97, 0.27))
+    tail := joint(&mut g, root, "Tail_", core.vec3(-0.015, 0.55, -0.43))
+    mut joints: []Joint = [head.clone(), tail.clone()]
+    mut paws: []ecs.Entity = []
+    names := ["PawFL_", "PawFR_", "PawBL_", "PawBR_"]
+    pivots := [core.vec3(0.19, 0.56, 0.214), core.vec3(-0.19, 0.56, 0.247), core.vec3(0.205, 0.57, -0.360), core.vec3(-0.205, 0.57, -0.345)]
+    for i in 0..names.len {
+        limb := joint(&mut g, root, names[i], pivots[i])
+        paws.push(limb.hinge)
+        joints.push(move limb)
+    }
+    mut first: []ecs.Entity = []
+    attach(&mut g, root, art, &joints, &mut first, .None)
+    bouquet := g.create_child(head.mount, core.vec3(0.0, 0.973, 0.77))
+    g.set_visible(bouquet, false)
+    Fox { root: root, head: head.hinge, bouquet: bouquet, tail: tail.hinge, paws: move paws }
+}
+
+fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
+    homes := if bee { [core.vec3(1.43, 0.92, 1.25), core.vec3(-2.4, 1.12, -1.1)] }
+    else { [core.vec3(-1.32, 1.34, 1.3), core.vec3(2.65, 1.55, -1.3)] }
+    mut first: []ecs.Entity = []
+    for home in homes {
+        root := g.create_root(home)
+        pivot := if bee { core.vec3(0.032, 0.025, 0.0) } else { core.vec3(0.010, 0.0, 0.0) }
+        left := joint(&mut g, root, "WingL_", core.vec3(-pivot.x, pivot.y, pivot.z))
+        right := joint(&mut g, root, "WingR_", pivot)
+        g.set_scale(root, core.vec3(1.16, 1.16, 1.16))
+        joints: []Joint = [left.clone(), right.clone()]
+        attach(&mut g, root, art, &joints, &mut first, .None)
+        cast.insects.push(Flyer { root: root, left: left.hinge, right: right.hinge, home: home, bee: bee })
+    }
+}
+
+fn emblem(heart: bool) -> []f32 {
+    mut vertices: []f32 = []
+    mut points: []core.Vec2 = []
+    if heart {
+        points = [core.vec2(0.0, -1.0), core.vec2(0.76, -0.20), core.vec2(0.94, 0.30), core.vec2(0.78, 0.68),
+            core.vec2(0.38, 0.80), core.vec2(0.0, 0.46), core.vec2(-0.38, 0.80), core.vec2(-0.78, 0.68),
+            core.vec2(-0.94, 0.30), core.vec2(-0.76, -0.20)]
+    } else {
+        for i in 0..10 {
+            a := 1.5707963 + f32(i) * 0.6283185
+            r: f32 = if i % 2 == 0 { 1.0 } else { 0.41 }
+            points.push(core.vec2(r * a.cos(), r * a.sin()))
+        }
+    }
+    middle := gfx.vertex(0.0, 0.08, 0.14, 0.0, 0.0, 1.0, 0.0, 0.0)
+    for i in 0..points.len {
+        a := points[i]
+        b := points[(i + 1) % points.len]
+        gfx.push_triangle(&mut vertices, middle, gfx.vertex(a.x, a.y, 0.0, a.x * 0.4, a.y * 0.4, 0.9, 0.0, 0.0),
+            gfx.vertex(b.x, b.y, 0.0, b.x * 0.4, b.y * 0.4, 0.9, 0.0, 0.0))
+    }
+    vertices
+}
+
+pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) -> Result<Cast, string> {
+    mut cast := empty()
+    glade := art_asset.load("glade")?
+    ground := g.create_root(origin())
+    mut meshes: []ecs.Entity = []
+    attach(&mut g, ground, &glade, &[], &mut meshes, .None)
+    daisy := art_asset.load("flower")?
+    mut flower_meshes: []ecs.Entity = []
+    for i in 0..session.scene.entities.len {
+        def := &session.scene.entities[i]
+        if def.role == .Player {
+            model := art_asset.load("fox")?
+            cast.foxes.push(fox(&mut g, nodes[i], &model))
+        } else if def.role == .Flower {
+            scale := def.size.x / 0.64
+            flower := g.create_child(nodes[i], core.vec3(0.0, -0.425 * scale, 0.0))
+            g.set_scale(flower, core.vec3(scale, scale, scale))
+            attach(&mut g, flower, &daisy, &[], &mut flower_meshes, .Some(def.color))
+        }
+    }
+    // The reward uses the same flower meshes and petal colors as the clearing.
+    for actor in cast.foxes {
+        mut n := 0
+        for item in session.scene.entities {
+            if item.role != .Flower { continue }
+            stem := g.create_child(actor.bouquet, core.vec3(0.0, 0.0, 0.0))
+            spread := f32(n) - 2.0
+            size := 0.53 + 0.05 * f32(n % 2)
+            g.set_scale(stem, core.vec3(size, size, size))
+            g.set_angles(stem, 0.23 * spread, 0.19 * spread, -1.87 + spread * 0.23)
+            attach(&mut g, stem, &daisy, &[], &mut flower_meshes, .Some(item.color))
+            n += 1
+            if n == 5 { break }
+        }
+    }
+    butterfly := art_asset.load("butterfly")?
+    bee := art_asset.load("bee")?
+    insects(&mut g, &butterfly, false, &mut cast)
+    insects(&mut g, &bee, true, &mut cast)
+    for i in 0..6 {
+        heart := i % 2 == 0
+        mote := g.create_root(origin())
+        if i < 2 { _ := g.set_mesh(mote, emblem(heart)) }
+        else { _ := g.share_mesh(mote, cast.motes[i % 2]) }
+        _ := g.set_material(mote, if heart { scene.emissive_material(0.95, 0.12, 0.27, 1.0, 0.0, 0.6, 0.32) }
+            else { scene.emissive_material(1.0, 0.67, 0.13, 1.0, 0.0, 0.5, 0.50) })
+        g.set_visible(mote, false)
+        cast.motes.push(mote)
+    }
+    mut petal: []f32 = []
+    tip := gfx.vertex(-0.85, -0.30, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    ridge := gfx.vertex(0.26, 0.15, 0.18, 0.0, 0.2, 0.98, 0.0, 0.0)
+    edge := gfx.vertex(0.90, 0.16, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    gfx.push_triangle(&mut petal, tip, gfx.vertex(0.28, -0.36, 0.0, 0.0, -0.3, 0.95, 0.0, 0.0), ridge)
+    gfx.push_triangle(&mut petal, ridge, edge, gfx.vertex(0.35, 0.48, 0.0, 0.0, 0.3, 0.95, 0.0, 0.0))
+    gfx.push_triangle(&mut petal, tip, ridge, gfx.vertex(0.35, 0.48, 0.0, 0.0, 0.3, 0.95, 0.0, 0.0))
+    gfx.push_triangle(&mut petal, ridge, gfx.vertex(0.28, -0.36, 0.0, 0.0, -0.3, 0.95, 0.0, 0.0), edge)
+    for i in 0..24 {
+        node := g.create_root(origin())
+        if i == 0 { _ := g.set_mesh(node, petal.clone()) } else { _ := g.share_mesh(node, cast.petals[0]) }
+        _ := g.set_material(node, if i % 3 == 0 { scene.material(0.97, 0.36, 0.48, 1.0, 0.0, 0.8) }
+            else { scene.material(1.0, 0.67, 0.73, 1.0, 0.0, 0.8) })
+        radius := 0.04 + 0.014 * f32(i % 4)
+        g.set_scale(node, core.vec3(radius, radius, radius))
+        cast.petals.push(node)
+    }
+    .Ok(cast)
+}
+
+pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player: i32, exact: bool) {
+    sub: f32 = if exact { 0.0 } else { f32(session.accumulator) }
+    time := f32(session.tick % 216000) / 60.0 + sub / 60.0
+    for actor in cast.foxes {
+        radius := session.scene.entities[player].size.y * 0.5
+        scale := radius / 0.4
+        gait: f32 = if session.walking { session.walk_phase.sin() } else { 0.0 }
+        g.set_scale(actor.root, core.vec3(scale, scale, scale))
+        g.set_position(actor.root, core.vec3(0.0, -radius + scale * (0.035 + 0.047 * gait.abs()), 0.0))
+        g.set_rotation(actor.root, session.heading)
+        g.set_visible(actor.bouquet, session.won && session.flowers > 0)
+        g.set_angles(actor.head, 0.025 * (time * 2.4).sin() + 0.035 * gait, 0.045 * (time * 1.7).sin(), 0.028 * (time * 1.3).cos())
+        g.set_angles(actor.tail, 0.05 * (time * 3.0).sin(), 0.18 * (time * 3.3).sin(), 0.05 * gait)
+        for i in 0..actor.paws.len {
+            swing: f32 = if i == 0 || i == 3 { gait } else { -gait }
+            g.set_angles(actor.paws[i], swing * 0.53, 0.0, 0.0)
+        }
+    }
+    for i in 0..cast.insects.len {
+        flyer := &cast.insects[i]
+        t := time * (if flyer.bee { f32(1.21) } else { f32(0.84) }) + f32(i) * 1.93
+        g.set_position(flyer.root, core.add(flyer.home, core.vec3(0.43 * t.sin(), 0.16 * (2.0 * t).cos(), 0.30 * t.cos())))
+        g.set_angles(flyer.root, 0.12 * (t * 1.6).cos(), 0.67 * t.cos(), 0.10 * t.sin())
+        wave: f32 = if flyer.bee { 0.13 + 0.44 * (time * 44.0 + f32(i)).sin() } else { 0.28 + 0.52 * (time * 11.0 + f32(i)).sin() }
+        if flyer.bee {
+            g.set_angles(flyer.left, 0.0, 0.0, wave)
+            g.set_angles(flyer.right, 0.0, 0.0, -wave)
+        } else {
+            g.set_rotation(flyer.left, wave)
+            g.set_rotation(flyer.right, -wave)
+        }
+    }
+    for i in 0..cast.petals.len {
+        f := f32(i)
+        cycle := time * (0.084 + f32(i % 3) * 0.010) + f * 0.618034
+        u := cycle - cycle.floor()
+        phase := f * 2.47 + time * 1.6
+        x := f32((i * 7) % 17) * 0.81 - 6.7 + u * 0.90 + 0.28 * phase.sin()
+        z := f32((i * 5) % 13) * 0.70 - 5.5 + 0.15 * phase.cos()
+        node := cast.petals[i]
+        g.set_position(node, core.vec3(x, 3.85 * (1.0 - u), z))
+        g.set_angles(node, 0.5 * phase.sin(), 0.8 * phase.cos(), f + 0.55 * time)
+    }
+    age := f32(session.tick - session.picked_tick) + sub
+    active := session.last_flower >= 0 && age >= 0.0 && age < 54.0
+    for i in 0..cast.motes.len {
+        mote := cast.motes[i]
+        g.set_visible(mote, active)
+        if active {
+            u := age / 54.0
+            angle := f32(i) * 1.0471976 + 0.26
+            pos := session.scene.entities[session.last_flower].position
+            drift := (0.12 + u * 0.92) * angle.cos()
+            g.set_position(mote, core.add(pos, core.vec3(drift, 0.35 + u * (1.3 + angle.sin() * 0.52), 0.22 + 0.12 * angle.sin())))
+            radius := (0.075 + 0.066 * (3.14159 * u).sin()) * (1.0 - u * u)
+            g.set_scale(mote, core.vec3(radius, radius, radius))
+            g.set_angles(mote, -0.24, 0.0, angle.cos() * 0.4 + u * 0.65)
+        }
+    }
+}

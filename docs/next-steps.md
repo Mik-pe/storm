@@ -223,10 +223,7 @@ Kvar efter 0f, i den ordning värde:
 
 ## 4. glTF-scener
 
-Laddaren läser geometri (och indexbufferten) och en modell kan laddas in som
-scennod med `--glb`. Nästa steg är `nodes` (TRS/matris), `scenes`, och att
-bygga scengrafen direkt från filen i stället för att koda den i `main.ddr`;
-`materials` och `textures`/`images` hör till texturstegen (3b–3c).
+Studion och Blomsterskogen läser den aktiva glTF-scenen med nodtransformer, triangelprimitiver och PBR-material. Nästa steg är bildtexturer och importerade animationsspår för modeller med skelett. Blomsterskogens rävrörelser använder scengrafens leder.
 
 ## 5. Instancing
 
