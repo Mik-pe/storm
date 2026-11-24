@@ -1,5 +1,7 @@
 // Blender exports share a model space. Each moving group rotates about a local joint.
 import .art_asset
+import .fox_animation
+import .model
 import core
 import ecs
 import gfx
@@ -8,72 +10,56 @@ import play
 import scene
 import std.math as _
 
-struct Joint { prefix: string, hinge: ecs.Entity, mount: ecs.Entity }
-struct Fox { root: ecs.Entity, head: ecs.Entity, bouquet: ecs.Entity, tail: ecs.Entity, paws: []ecs.Entity }
+struct Socket { hinge: ecs.Entity, pivot: core.Vec3 }
+struct Fox {
+    root: ecs.Entity, head: ecs.Entity, bouquet: ecs.Entity, tail: ecs.Entity,
+    paws: []Socket, eyes: []Socket, ears: []ecs.Entity, clips: fox_animation.Clips,
+}
 struct Flyer { root: ecs.Entity, left: ecs.Entity, right: ecs.Entity, home: core.Vec3, bee: bool }
 pub struct Cast { foxes: []Fox, insects: []Flyer, motes: []ecs.Entity, petals: []ecs.Entity }
 
 pub fn empty() -> Cast { Cast { foxes: [], insects: [], motes: [], petals: [] } }
 fn origin() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
 
-fn joint(g: &mut scene.Graph, root: ecs.Entity, prefix: string, pivot: core.Vec3) -> Joint {
-    hinge := g.create_child(root, pivot)
-    Joint { prefix: prefix.clone(), hinge: hinge, mount: g.create_child(hinge, core.scale(pivot, -1.0)) }
+fn petal_colors(color: core.Vec3) -> []model.Paint {
+    [model.Paint { material: "Rose petal", color: color, mix: 0.82 },
+        model.Paint { material: "Blush petal", color: color, mix: 0.55 }]
 }
 
-fn attach(g: &mut scene.Graph, root: ecs.Entity, art: &gltf.Asset, joints: &[]Joint,
-    first: &mut []ecs.Entity, tint: Option<core.Vec3>) {
-    reuse := first.len == art.parts.len
-    for i in 0..art.parts.len {
-        part := &art.parts[i]
-        mut parent := root
-        for j in joints {
-            n := j.prefix.len
-            if part.name.len >= n && part.name[0..n] == j.prefix { parent = j.mount; break }
-        }
-        mesh := g.create_child(parent, origin())
-        _ := g.set_name(mesh, part.name.clone())
-        if reuse { _ := g.share_mesh(mesh, first[i]) }
-        else {
-            _ := g.set_mesh(mesh, part.vertices.clone())
-            first.push(mesh)
-        }
-        c := part.color.clone()
-        mut mat := scene.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness)
-        match tint {
-            .Some(rgb) => {
-                if part.material_name == "Rose petal" || part.material_name == "Blush petal" {
-                    // Keep the two petal tones and the cream petal tips in the painted flower.
-                    weight: f32 = if part.material_name == "Rose petal" { 0.82 } else { 0.55 }
-                    mat.base.r += (rgb.x - mat.base.r) * weight
-                    mat.base.g += (rgb.y - mat.base.g) * weight
-                    mat.base.b += (rgb.z - mat.base.b) * weight
-                }
-            },
-            .None => {},
-        }
-        _ := g.set_material(mesh, move mat)
-    }
-}
-
-fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset) -> Fox {
+fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset) -> Result<Fox, string> {
     root := g.create_child(parent, origin())
-    head := joint(&mut g, root, "Head_", core.vec3(0.0, 0.97, 0.27))
-    tail := joint(&mut g, root, "Tail_", core.vec3(-0.015, 0.55, -0.43))
-    mut joints: []Joint = [head.clone(), tail.clone()]
-    mut paws: []ecs.Entity = []
+    head := model.joint(&mut g, root, "Head_", core.vec3(0.0, 0.97, 0.27))
+    tail := model.joint(&mut g, root, "Tail_", core.vec3(-0.015, 0.55, -0.43))
+    mut joints: []model.Joint = [head.clone(), tail.clone()]
+    mut eyes: []Socket = []
+    mut ears: []ecs.Entity = []
+    eye_names := ["EyeL_", "EyeR_"]
+    ear_names := ["EarL_", "EarR_"]
+    eye_pivots := [core.vec3(0.23161, 1.19824, 0.65291), core.vec3(-0.24575, 1.17339, 0.65257)]
+    ear_pivots := [core.vec3(0.30106, 1.32602, 0.252), core.vec3(-0.32809, 1.29328, 0.252)]
+    for i in 0..2 {
+        eye := model.joint(&mut g, head.mount, eye_names[i], eye_pivots[i])
+        ear := model.joint(&mut g, head.mount, ear_names[i], ear_pivots[i])
+        eyes.push(Socket { hinge: eye.hinge, pivot: eye_pivots[i] })
+        ears.push(ear.hinge)
+        joints.push(move eye)
+        joints.push(move ear)
+    }
+    mut paws: []Socket = []
     names := ["PawFL_", "PawFR_", "PawBL_", "PawBR_"]
     pivots := [core.vec3(0.19, 0.56, 0.214), core.vec3(-0.19, 0.56, 0.247), core.vec3(0.205, 0.57, -0.360), core.vec3(-0.205, 0.57, -0.345)]
     for i in 0..names.len {
-        limb := joint(&mut g, root, names[i], pivots[i])
-        paws.push(limb.hinge)
+        limb := model.joint(&mut g, root, names[i], pivots[i])
+        paws.push(Socket { hinge: limb.hinge, pivot: pivots[i] })
         joints.push(move limb)
     }
     mut first: []ecs.Entity = []
-    attach(&mut g, root, art, &joints, &mut first, .None)
+    model.attach(&mut g, root, art, &joints, &mut first, &[])
     bouquet := g.create_child(head.mount, core.vec3(0.0, 0.973, 0.77))
     g.set_visible(bouquet, false)
-    Fox { root: root, head: head.hinge, bouquet: bouquet, tail: tail.hinge, paws: move paws }
+    clips := fox_animation.clips()?
+    .Ok(Fox { root: root, head: head.hinge, bouquet: bouquet, tail: tail.hinge,
+        paws: move paws, eyes: move eyes, ears: move ears, clips: move clips })
 }
 
 fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
@@ -83,11 +69,11 @@ fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
     for home in homes {
         root := g.create_root(home)
         pivot := if bee { core.vec3(0.032, 0.025, 0.0) } else { core.vec3(0.010, 0.0, 0.0) }
-        left := joint(&mut g, root, "WingL_", core.vec3(-pivot.x, pivot.y, pivot.z))
-        right := joint(&mut g, root, "WingR_", pivot)
+        left := model.joint(&mut g, root, "WingL_", core.vec3(-pivot.x, pivot.y, pivot.z))
+        right := model.joint(&mut g, root, "WingR_", pivot)
         g.set_scale(root, core.vec3(1.16, 1.16, 1.16))
-        joints: []Joint = [left.clone(), right.clone()]
-        attach(&mut g, root, art, &joints, &mut first, .None)
+        joints: []model.Joint = [left.clone(), right.clone()]
+        model.attach(&mut g, root, art, &joints, &mut first, &[])
         cast.insects.push(Flyer { root: root, left: left.hinge, right: right.hinge, home: home, bee: bee })
     }
 }
@@ -121,19 +107,20 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
     glade := art_asset.load("glade")?
     ground := g.create_root(origin())
     mut meshes: []ecs.Entity = []
-    attach(&mut g, ground, &glade, &[], &mut meshes, .None)
+    model.attach(&mut g, ground, &glade, &[], &mut meshes, &[])
     daisy := art_asset.load("flower")?
     mut flower_meshes: []ecs.Entity = []
     for i in 0..session.scene.entities.len {
         def := &session.scene.entities[i]
         if def.role == .Player {
-            model := art_asset.load("fox")?
-            cast.foxes.push(fox(&mut g, nodes[i], &model))
+            fox_art := art_asset.load("fox")?
+            cast.foxes.push(fox(&mut g, nodes[i], &fox_art)?)
         } else if def.role == .Flower {
             scale := def.size.x / 0.64
             flower := g.create_child(nodes[i], core.vec3(0.0, -0.425 * scale, 0.0))
             g.set_scale(flower, core.vec3(scale, scale, scale))
-            attach(&mut g, flower, &daisy, &[], &mut flower_meshes, .Some(def.color))
+            paint := petal_colors(def.color)
+            model.attach(&mut g, flower, &daisy, &[], &mut flower_meshes, &paint)
         }
     }
     // The reward uses the same flower meshes and petal colors as the clearing.
@@ -146,7 +133,8 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
             size := 0.53 + 0.05 * f32(n % 2)
             g.set_scale(stem, core.vec3(size, size, size))
             g.set_angles(stem, 0.23 * spread, 0.19 * spread, -1.87 + spread * 0.23)
-            attach(&mut g, stem, &daisy, &[], &mut flower_meshes, .Some(item.color))
+            paint := petal_colors(item.color)
+            model.attach(&mut g, stem, &daisy, &[], &mut flower_meshes, &paint)
             n += 1
             if n == 5 { break }
         }
@@ -186,21 +174,34 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
 }
 
 pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player: i32, exact: bool) {
-    sub: f32 = if exact { 0.0 } else { f32(session.accumulator) }
+    sub := play.render_tick_offset(session, exact)
     time := f32(session.tick % 216000) / 60.0 + sub / 60.0
-    for actor in cast.foxes {
+    for i in 0..cast.foxes.len {
+        actor := &cast.foxes[i]
+        motion := play.render_motion(session, exact)
+        p := fox_animation.pose(&actor.clips, &motion)
         radius := session.scene.entities[player].size.y * 0.5
         scale := radius / 0.4
-        gait: f32 = if session.walking { session.walk_phase.sin() } else { 0.0 }
-        g.set_scale(actor.root, core.vec3(scale, scale, scale))
-        g.set_position(actor.root, core.vec3(0.0, -radius + scale * (0.035 + 0.047 * gait.abs()), 0.0))
-        g.set_rotation(actor.root, session.heading)
+        g.set_scale(actor.root, core.scale(p.body.scale, scale))
+        g.set_position(actor.root, core.vec3(0.0, -radius + scale * (0.035 + p.body.position.y), 0.0))
+        g.set_angles(actor.root, p.body.rotation.x, motion.heading, p.body.rotation.z)
         g.set_visible(actor.bouquet, session.won && session.flowers > 0)
-        g.set_angles(actor.head, 0.025 * (time * 2.4).sin() + 0.035 * gait, 0.045 * (time * 1.7).sin(), 0.028 * (time * 1.3).cos())
-        g.set_angles(actor.tail, 0.05 * (time * 3.0).sin(), 0.18 * (time * 3.3).sin(), 0.05 * gait)
-        for i in 0..actor.paws.len {
-            swing: f32 = if i == 0 || i == 3 { gait } else { -gait }
-            g.set_angles(actor.paws[i], swing * 0.53, 0.0, 0.0)
+        g.set_angles(actor.head, p.head.x, p.head.y, p.head.z)
+        g.set_angles(actor.tail, p.tail.x, p.tail.y, p.tail.z)
+        for j in 0..actor.paws.len {
+            foot := &actor.paws[j]
+            g.set_angles(foot.hinge, p.paw_pitch[j], 0.0, 0.0)
+            g.set_position(foot.hinge, core.add(foot.pivot, core.vec3(0.0, p.paw_lift[j], 0.0)))
+        }
+        closed := 1.0 - p.eye_open
+        eye_depth := -0.065 * closed * closed * closed * closed
+        for j in 0..actor.eyes.len {
+            e := p.ears[j]
+            g.set_angles(actor.ears[j], e.x, e.y, e.z)
+            eye := &actor.eyes[j]
+            g.set_scale(eye.hinge, core.vec3(1.0, 0.10 + 0.90 * p.eye_open, 1.0))
+            g.set_position(eye.hinge, core.add(eye.pivot, core.vec3(0.0, 0.0, eye_depth)))
+            g.set_visible(eye.hinge, closed < 0.92)
         }
     }
     for i in 0..cast.insects.len {

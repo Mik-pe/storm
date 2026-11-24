@@ -487,7 +487,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                 if playing {
                     if session.scene.theme == .Blossom {
                         action = play_ui.woodland(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
-                            session.scene.name, session.flowers, session.total_flowers, paused, session.won)
+                            session.scene.name, session.flowers, session.total_flowers, session.butterflies, session.total_butterflies, paused, session.won)
                     } else {
                         action = play_ui.draw(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
                         session.scene.name, session.tick, paused, session.player >= 0, game_view.has_goal, session.won)

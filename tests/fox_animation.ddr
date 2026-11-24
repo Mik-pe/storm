@@ -1,0 +1,138 @@
+import ecs
+import play
+import scene
+import ..src.fox_animation as fox
+import ..src.play_view as view
+
+fn still() -> play.PlayerMotion {
+    play.PlayerMotion { seconds: 0.0, heading: 0.0, walk_phase: 0.0, run_weight: 0.0, grounded: true,
+        vertical_velocity: 0.0, takeoff_age: -1.0, landing_age: -1.0, boost_age: -1.0, landing_strength: 0.0 }
+}
+
+@test fn fox_idle_breathes_blinks_and_flicks_its_ears_with_planted_paws() {
+    clips := fox.clips().unwrap()
+    mut m := still()
+    rest := fox.pose(&clips, &m)
+    m.seconds = 0.94
+    alert := fox.pose(&clips, &m)
+    assert(alert.body.scale.y > rest.body.scale.y + 0.015)
+    assert(alert.tail.y != rest.tail.y && alert.head.y != rest.head.y)
+    assert((alert.ears[0].x - alert.ears[1].x).abs() > 0.12)
+    m.walk_phase = 3.2
+    assert(fox.pose(&clips, &m).paw_pitch[0] == 0.0)
+    m.seconds = 2.23
+    assert(fox.pose(&clips, &m).eye_open < 0.05)
+    m.seconds = 2.4
+    assert(fox.pose(&clips, &m).eye_open > 0.99)
+}
+
+@test fn fox_strides_plant_diagonal_pairs_and_reverse_after_half_a_cycle() {
+    clips := fox.clips().unwrap()
+    mut m := still()
+    m.run_weight = 1.0
+    m.walk_phase = 0.0
+    a := fox.pose(&clips, &m)
+    m.walk_phase = 3.14159265
+    b := fox.pose(&clips, &m)
+    assert(a.paw_pitch[0] < -0.40 && a.paw_pitch[3] < -0.40)
+    assert(a.paw_pitch[1] > 0.40 && a.paw_pitch[2] > 0.40)
+    assert(b.paw_pitch[0] > 0.40 && b.paw_pitch[3] > 0.40)
+    m.walk_phase = 0.25 * 6.2831853
+    flight := fox.pose(&clips, &m)
+    assert(flight.body.position.y > a.body.position.y + 0.06)
+    assert(flight.paw_lift[1] > flight.paw_lift[0] + 0.05)
+}
+
+@test fn fox_jump_reaches_forward_on_descent_and_compresses_then_recovers_on_landing() {
+    clips := fox.clips().unwrap()
+    mut m := still()
+    m.grounded = false
+    m.takeoff_age = 0.075
+    m.vertical_velocity = 5.0
+    normal := fox.pose(&clips, &m)
+    m.boost_age = m.takeoff_age
+    boosted := fox.pose(&clips, &m)
+    assert(boosted.body.scale.y > normal.body.scale.y + 0.09)
+    assert(boosted.ears[0].x < normal.ears[0].x - 0.10)
+    m.boost_age = -1.0
+    m.takeoff_age = 0.5
+    m.vertical_velocity = 0.0
+    apex := fox.pose(&clips, &m)
+    m.takeoff_age = 0.95
+    m.vertical_velocity = -4.5
+    fall := fox.pose(&clips, &m)
+    assert(apex.paw_lift[0] > fall.paw_lift[0] + 0.05 && apex.paw_pitch[0] > fall.paw_pitch[0] + 0.6)
+    assert(normal.body.rotation.x < 0.0 && fall.body.rotation.x > 0.0)
+    m.grounded = true
+    m.landing_strength = 1.0
+    m.landing_age = 0.055
+    impact := fox.pose(&clips, &m)
+    m.landing_age = 0.16
+    recoil := fox.pose(&clips, &m)
+    m.landing_age = 0.40
+    settled := fox.pose(&clips, &m)
+    assert(impact.body.scale.y < 0.85 && impact.body.scale.x > 1.05)
+    assert(recoil.body.scale.y > 1.05 && settled.body.scale.y == 1.0)
+}
+
+fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
+    for e in g.nodes() { if g.name(e) == name { return .Some(e) } }
+    .None
+}
+
+@test fn imported_fox_blinks_both_eyes_and_restarts_with_its_original_pose() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    view.sync(&mut world, &s, true)
+    left := named(&world.graph, "EyeL_Dew").unwrap()
+    right := named(&world.graph, "EyeR_Iris").unwrap()
+    ear := named(&world.graph, "EarL_EarRose").unwrap()
+    paw := named(&world.graph, "PawFL_Boots").unwrap()
+    start := world.graph.world(ear).matrix.clone()
+    foot := world.graph.world(paw).matrix.clone()
+    assert(world.graph.world(left).visible && world.graph.world(right).visible)
+    for _ in 0..134 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    view.sync(&mut world, &s, true)
+    assert(!world.graph.world(left).visible && !world.graph.world(right).visible && world.graph.world(ear).visible)
+    for _ in 0..12 { play.step(&mut s, play.Input { x: -1.0, z: 0.0, jump: false }) }
+    view.sync(&mut world, &s, true)
+    assert(world.graph.world(left).visible && world.graph.world(right).visible)
+    assert((world.graph.world(paw).matrix.m[12] - foot.m[12]).abs() > 0.2)
+    s = play.start(&level)
+    view.sync(&mut world, &s, true)
+    assert(world.graph.world(left).visible && world.graph.world(right).visible)
+    for i in 0..16 {
+        assert(world.graph.world(ear).matrix.m[i] == start.m[i])
+        assert(world.graph.world(paw).matrix.m[i] == foot.m[i])
+    }
+}
+
+@test fn fox_carries_the_stride_into_takeoff_and_the_reach_into_ground_contact() {
+    clips := fox.clips().unwrap()
+    mut m := still()
+    m.run_weight = 1.0
+    m.walk_phase = 3.14159265
+    planted := fox.pose(&clips, &m)
+    m.grounded = false
+    m.takeoff_age = 0.0
+    m.vertical_velocity = 5.6
+    launch := fox.pose(&clips, &m)
+    for i in 0..4 { assert(launch.paw_pitch[i] == planted.paw_pitch[i]) }
+    m.takeoff_age = 1.0
+    m.vertical_velocity = -5.0
+    m.run_weight = 0.0
+    falling := fox.pose(&clips, &m)
+    m.grounded = true
+    m.vertical_velocity = 0.0
+    m.landing_age = 0.0
+    m.landing_strength = 0.75
+    contact := fox.pose(&clips, &m)
+    for i in 0..4 { assert((contact.paw_pitch[i] - falling.paw_pitch[i]).abs() < 0.001) }
+    m.grounded = false
+    m.landing_age = 0.72
+    m.takeoff_age = 1.72
+    m.vertical_velocity = -0.16
+    ledge := fox.pose(&clips, &m)
+    assert(ledge.paw_lift[0] < 0.03)
+}

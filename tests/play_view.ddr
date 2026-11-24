@@ -10,6 +10,7 @@ import ..src.play_view as view
     mut world := view.build(&session).unwrap()
     for i in 0..scene_data.entities.len {
         def := &scene_data.entities[i]
+        if def.role == .Cloud || def.role == .BoostCloud || def.role == .SuperButterfly { continue }
         if def.role == .Collider { assert(world.graph.shape(world.nodes[i]).is_none()); continue }
         scale := world.graph.local(world.nodes[i]).scale
         span: f32 = if def.shape == .Box { 1.2 } else { 2.0 }
@@ -48,4 +49,39 @@ import ..src.play_view as view
     session = play.start(&level)
     view.sync(&mut world, &session, true)
     assert(session.flowers == 0 && world.graph.world(first).visible && world.graph.geometry_revision() == start)
+}
+
+@test fn canopy_instances_share_geometry_and_keep_authored_wing_colors() {
+    level := play.demo()
+    s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    view.sync(&mut world, &s, true)
+    mut owner := -1
+    mut colors: []f32 = []
+    for item in world.graph.drawables(core.vec3(0.0, 2.0, 4.0)) {
+        if world.graph.name(item.entity) != "WingL_Vesper_Aurora" { continue }
+        if owner < 0 { owner = item.mesh_index }
+        assert(owner >= 0 && owner == item.mesh_index)
+        colors.push(item.material.base.r)
+    }
+    assert(colors.len == 3)
+    assert((colors[0] - colors[1]).abs() > 0.1 && (colors[1] - colors[2]).abs() > 0.1 && (colors[2] - colors[0]).abs() > 0.1)
+}
+
+@test fn cloud_mesh_tops_meet_collision_planes_and_camera_follows_the_climb() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    view.sync(&mut world, &s, true)
+    assert(world.course.pads.len == 6)
+    for p in world.course.pads {
+        item := &level.entities[p.index]
+        pose := world.graph.local(p.node)
+        top := play.position(&s, p.index).y + pose.position.y + pose.scale.y * 0.5
+        assert((top - (item.position.y + item.size.y * 0.5)).abs() < 0.00001)
+    }
+    ground := view.framing(&world, &s, true)
+    s.bodies[s.player].position.y += 3.76
+    crown := view.framing(&world, &s, true)
+    assert(ground.climb == 0.0 && crown.climb == 1.0 && crown.center.y > ground.center.y + 3.0)
 }

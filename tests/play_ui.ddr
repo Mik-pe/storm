@@ -51,23 +51,49 @@ import ..src.play_ui as hud
     mut c := ui.Canvas::new()
     atlas := text.Atlas::new(16, 16)
     for width in [320, 1000] {
-        for mode in 0..3 {
+        for mode in 0..5 {
             paused := mode == 1
-            won := mode == 2
+            won := mode == 2 || mode == 4
+            bonus := mode >= 3
             pad: i32 = if width == 320 { 10 } else { 18 }
             x := width - pad - 142
-            y := if width == 320 { 500 - pad - (if mode > 0 { 77 } else { 41 }) } else { pad }
+            y := if width == 320 { 500 - pad - (if paused || won { 77 } else { 41 }) } else { pad }
             for i in 0..5 {
                 xy := [[x+32,y+20],[x+97,y+20],[x+32,y+55],[x+97,y+55],[130,190]]
                 p := widgets.Pointer::at(f32(xy[i][0]), f32(xy[i][1]), true, true)
                 mut s := widgets.State::new()
                 c.clear()
                 chosen := hud.woodland(&mut s, &mut c, &atlas, &p, f32(width), 500.0,
-                    "Blomsterskogen", if won { 8 } else { 2 }, 8, paused, won)
+                    "Blomsterskogen", if won { 8 } else { 2 }, 8, if bonus { 3 } else { 1 }, 3, paused, won)
                 left := if won { hud.Action.Restart } else if paused { hud.Action.Step } else { hud.Action.Idle }
-                expected := [hud.Action.Studio, .TogglePause, left, if mode > 0 { hud.Action.Restart } else { hud.Action.Idle }, .Idle]
+                expected := [hud.Action.Studio, .TogglePause, left, if paused || won { hud.Action.Restart } else { hud.Action.Idle }, .Idle]
                 assert(chosen == expected[i])
             }
         }
     }
+}
+
+@test fn both_woodland_counters_fit_beside_the_controls_in_a_short_window() {
+    face := text.load_font(ui.RASTER_SIZE)
+    mut atlas := text.Atlas::new(512, 512)
+    assert(atlas.add_text(&face, "Buketten är klar!Klar0123456789/Spela igenStudioPausa"))
+    mut c := ui.Canvas::new()
+    mut controls := widgets.State::new()
+    p := widgets.Pointer::at(-1.0, -1.0, false, false)
+    _ := hud.woodland(&mut controls, &mut c, &atlas, &p, 240.0, 145.0, "Blomsterskogen", 5, 5, 1, 3, false, true)
+    mut cream_card := false
+    mut lower_line := false
+    vertices := c.vertices()
+    for i in 0..vertices.len / 8 {
+        at := i * 8
+        x := vertices[at]
+        y := vertices[at + 1]
+        assert(x >= 0.0 && x <= 240.0 && y >= 0.0 && y <= 145.0)
+        if vertices[at + 2] < 0.0 && vertices[at + 4] == 1.0 && vertices[at + 5] == 0.95 {
+            assert(x < 88.0)
+            cream_card = true
+        }
+        if x < 88.0 && y > 60.0 && vertices[at + 2] >= 0.0 { lower_line = true }
+    }
+    assert(cream_card && lower_line)
 }

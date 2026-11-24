@@ -1,0 +1,106 @@
+// Cloud art rests on the collision plane. The animation deforms the underside
+// and briefly dips the crown under the player's feet on impact.
+import .art_asset
+import .model
+import .particles
+import core
+import ecs
+import gltf
+import play
+import scene
+import scene.animation as anim
+import std.math as _
+
+const REBOUND_SECONDS: f32 = 0.43
+
+struct Pad { index: i32, node: ecs.Entity }
+struct Prize { index: i32, root: ecs.Entity, left: ecs.Entity, right: ecs.Entity }
+pub struct Course { pads: []Pad, prizes: []Prize, impact: anim.Clip, effects: particles.Effects }
+
+pub fn platform(role: play.Role) -> bool { role == .Cloud || role == .BoostCloud }
+pub fn modeled(role: play.Role) -> bool { platform(role) || role == .SuperButterfly }
+fn zero() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
+
+fn mount(g: &mut scene.Graph, parent: ecs.Entity, art: &mut gltf.Asset, name: string,
+    joints: &[]model.Joint, first: &mut []ecs.Entity, paint: &[]model.Paint) -> Result<(), string> {
+    if art.parts.len == 0 {
+        loaded := art_asset.load(name)?
+        art.parts = loaded.parts
+    }
+    model.attach(&mut g, parent, &art, joints, &mut first, paint)
+    .Ok
+}
+
+pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) -> Result<Course, string> {
+    impact := anim.clip(REBOUND_SECONDS, [], [], [
+        anim.key(0.0, 1.0, 1.0, 1.0, .EaseOut),
+        anim.key(0.055, 1.11, 0.63, 1.11, .Smooth),
+        anim.key(0.17, 0.97, 1.11, 0.97, .Smooth),
+        anim.key(0.28, 1.025, 0.95, 1.025, .Smooth),
+        anim.key(REBOUND_SECONDS, 1.0, 1.0, 1.0, .Smooth)])?
+    mut course := Course { pads: [], prizes: [], impact: move impact, effects: particles.empty() }
+    mut cloud := gltf.Asset { parts: [] }
+    mut boost := gltf.Asset { parts: [] }
+    mut butterfly := gltf.Asset { parts: [] }
+    mut cloud_meshes: []ecs.Entity = []
+    mut boost_meshes: []ecs.Entity = []
+    mut wings: []ecs.Entity = []
+    for i in 0..nodes.len {
+        e := &session.scene.entities[i]
+        if platform(e.role) {
+            pad := g.create_child(nodes[i], zero())
+            if e.role == .BoostCloud {
+                tint: []model.Paint = [model.Paint { material: "Cloud / Strawberry", color: e.color, mix: 0.44 }]
+                mount(&mut g, pad, &mut boost, "boost_cloud", &[], &mut boost_meshes, &tint)?
+            } else {
+                tint: []model.Paint = [model.Paint { material: "Cloud / Meringue", color: e.color, mix: 0.44 }]
+                mount(&mut g, pad, &mut cloud, "cloud", &[], &mut cloud_meshes, &tint)?
+            }
+            course.pads.push(Pad { index: i, node: pad })
+        } else if e.role == .SuperButterfly {
+            root := g.create_child(nodes[i], zero())
+            left := model.joint(&mut g, root, "WingL_", zero())
+            right := model.joint(&mut g, root, "WingR_", zero())
+            joints: []model.Joint = [left.clone(), right.clone()]
+            tint: []model.Paint = [model.Paint { material: "Vesper / Aurora", color: e.color, mix: 0.82 },
+                model.Paint { material: "Vesper / Seafoam", color: e.color, mix: 0.61 }]
+            mount(&mut g, root, &mut butterfly, "super_butterfly", &joints, &mut wings, &tint)?
+            size := e.size.x / 0.60
+            g.set_scale(root, core.vec3(size, size, size))
+            course.prizes.push(Prize { index: i, root: root, left: left.hinge, right: right.hinge })
+        }
+    }
+    if course.pads.len > 0 || course.prizes.len > 0 { course.effects = particles.build(&mut g) }
+    .Ok(move course)
+}
+
+pub fn animate(g: &mut scene.Graph, course: &Course, s: &play.Session, exact: bool) {
+    if course.pads.len == 0 && course.prizes.len == 0 { return }
+    sub := play.render_tick_offset(s, exact)
+    t := (f32(s.tick % 216000) + sub) / 60.0
+    since_landing := (f32(s.tick - s.cloud_tick) + sub) / f32(play.TICK_RATE)
+    for pad in course.pads {
+        e := &s.scene.entities[pad.index]
+        mut squash := core.vec3(1.0, 1.0, 1.0)
+        if pad.index == s.last_cloud && since_landing >= 0.0 && since_landing < REBOUND_SECONDS {
+            rest := anim.identity()
+            impact := anim.sample(&course.impact, since_landing, .Clamp, rest)
+            weight := if e.role == .BoostCloud { f32(1.0) } else { f32(0.62) }
+            squash = anim.mix(rest, impact, 0.0, 0.0, weight).scale
+        }
+        height := e.size.y * 1.9
+        g.set_scale(pad.node, core.vec3(e.size.x * squash.x, height * squash.y, e.size.z * squash.z))
+        g.set_position(pad.node, core.vec3(0.0, (e.size.y - height) * 0.5 + height * 0.18 * (1.0 - squash.y), 0.0))
+    }
+    for prize in course.prizes {
+        g.set_visible(prize.root, !s.collected[prize.index])
+        if s.collected[prize.index] { continue }
+        phase := t + f32(prize.index) * 1.83
+        g.set_position(prize.root, core.vec3(0.065 * phase.sin(), 0.105 * (phase * 2.7).sin(), 0.058 * (phase * 1.2).cos()))
+        g.set_angles(prize.root, 0.06 * phase.sin(), 0.23 * (phase * 1.37).cos(), 0.10 * (phase * 1.67).sin())
+        flap := 0.30 + 0.54 * (phase * 8.9).sin()
+        g.set_rotation(prize.left, flap)
+        g.set_rotation(prize.right, -flap)
+    }
+    particles.animate(&mut g, &course.effects, s, exact)
+}

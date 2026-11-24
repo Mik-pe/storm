@@ -1,0 +1,65 @@
+import core
+import ecs
+import play
+import scene
+import ..src.particles
+
+fn visible_count(g: &scene.Graph, ids: &[]ecs.Entity) -> i32 {
+    mut n := 0
+    for id in ids { if g.local(id).visible { n += 1 } }
+    n
+}
+
+@test fn cloud_and_butterfly_particles_replay_at_exact_ticks_without_changing_meshes() {
+    mut level := play.empty("Particles")
+    assert(play.upsert(&mut level, "{\"name\":\"Fox\",\"shape\":\"sphere\",\"role\":\"player\",\"mass\":1,\"position\":[1,2,0]}").is_ok())
+    assert(play.upsert(&mut level, "{\"name\":\"Cloud\",\"shape\":\"box\",\"role\":\"cloud\"}").is_ok())
+    assert(play.upsert(&mut level, "{\"name\":\"Boost\",\"shape\":\"box\",\"role\":\"boost_cloud\"}").is_ok())
+    assert(play.upsert(&mut level, "{\"name\":\"Wings\",\"shape\":\"sphere\",\"role\":\"super_butterfly\",\"position\":[1,3,0]}").is_ok())
+    mut s := play.start(&level)
+    mut g := scene.Graph::new()
+    fx := particles.build(&mut g)
+    n := g.len()
+    revision := g.geometry_revision()
+    mut owners := 0
+    for mesh in g.mesh_snapshot() { if mesh.vertices.len > 0 { owners += 1 } }
+    assert(owners == 3 && n == fx.puffs.len + fx.trail.len + fx.burst.len + fx.aura.len)
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.aura) == 3 && visible_count(&g, &fx.puffs) == 0 && visible_count(&g, &fx.burst) == 0)
+
+    s.cloud_tick = 40
+    s.tick = 40
+    s.accumulator = 0.5
+    s.last_cloud = 1
+    particles.animate(&mut g, &fx, &s, false)
+    assert(visible_count(&g, &fx.puffs) == 0)
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.puffs) == fx.puffs.len)
+    s.tick = 49
+    s.last_cloud = 1
+    s.cloud_origin = core.vec3(0.6, 1.3, 0.08)
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.puffs) == fx.puffs.len && visible_count(&g, &fx.trail) == 0)
+    for puff in fx.puffs { assert(g.local(puff).position.y - g.local(puff).scale.y > s.cloud_origin.y) }
+    s.last_cloud = 2
+    s.last_butterfly = 3
+    s.collected[3] = true
+    s.butterfly_tick = 40
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.trail) == fx.trail.len && visible_count(&g, &fx.burst) == fx.burst.len && visible_count(&g, &fx.aura) == 0)
+    before := g.local(fx.burst[1]).position
+    s.tick = 92
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.puffs) == 0 && visible_count(&g, &fx.trail) == 0 && visible_count(&g, &fx.burst) > 0)
+    s.tick = 120
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.burst) == 0)
+    s.tick = 49
+    particles.animate(&mut g, &fx, &s, true)
+    after := g.local(fx.burst[1]).position
+    assert(after.x == before.x && after.y == before.y && after.z == before.z)
+    s = play.start(&level)
+    particles.animate(&mut g, &fx, &s, true)
+    assert(visible_count(&g, &fx.aura) == 3 && visible_count(&g, &fx.puffs) + visible_count(&g, &fx.trail) + visible_count(&g, &fx.burst) == 0)
+    assert(g.len() == n && g.geometry_revision() == revision)
+}

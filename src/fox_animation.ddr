@@ -1,0 +1,127 @@
+// Vallmo's local animation. Cycles are sampled in stride lengths and action clips in seconds.
+import core
+import play
+import scene.animation as anim
+
+pub struct Clips {
+    breath: anim.Clip, stride: anim.Clip, paw: anim.Clip, flight: anim.Clip,
+    launch: anim.Clip, impact: anim.Clip, blink: anim.Clip, ear: anim.Clip,
+}
+
+pub struct Pose {
+    body: anim.Pose, head: core.Vec3, tail: core.Vec3, ears: [core.Vec3; 2],
+    eye_open: f32, paw_pitch: [f32; 4], paw_lift: [f32; 4],
+}
+
+fn key(t: f32, x: f32, y: f32, z: f32) -> anim.Key { anim.key(t, x, y, z, .Smooth) }
+
+pub fn clips() -> Result<Clips, string> {
+    breath := anim.clip(2.50, [], [], [key(0.0, 1.0, 1.0, 1.0),
+        key(0.90, 0.988, 1.025, 1.012), key(2.03, 1.008, 0.989, 0.996)])?
+    // Half a stride: weight on a diagonal pair, push off, gather in suspension, reach again.
+    stride := anim.clip(0.50, [key(0.0, 0.0, 0.0, 0.0), key(0.11, 0.0, -0.011, 0.0),
+        key(0.30, 0.0, 0.092, 0.0), key(0.45, 0.0, 0.026, 0.0)],
+        [key(0.04, 0.055, 0.0, 0.0), key(0.24, -0.072, 0.0, 0.0), key(0.42, 0.015, 0.0, 0.0)],
+        [key(0.08, 1.048, 0.927, 1.032), key(0.24, 0.963, 1.063, 0.983),
+        key(0.41, 1.0, 1.005, 1.0)])?
+    paw := anim.clip(1.0, [key(0.0, 0.0, 0.0, 0.0), key(0.43, 0.0, 0.0, 0.0),
+        key(0.68, 0.0, 0.13, 0.0), key(0.96, 0.0, 0.0, 0.0)],
+        [key(0.0, -0.60, 0.0, 0.0), key(0.17, -0.20, 0.0, 0.0),
+        key(0.47, 0.69, 0.0, 0.0), key(0.66, 0.34, 0.0, 0.0), key(0.90, -0.67, 0.0, 0.0)], [])?
+    // Upward, apex and downward silhouettes, indexed by vertical velocity.
+    flight := anim.clip(1.0, [], [key(0.0, -0.16, 0.0, 0.0), key(0.5, -0.035, 0.0, 0.0), key(1.0, 0.145, 0.0, 0.0)],
+        [key(0.0, 0.95, 1.10, 0.97), key(0.5, 1.045, 0.957, 1.025), key(1.0, 0.972, 1.063, 0.976)])?
+    // A quick push followed by extension. A pink cloud gives this gesture more amplitude.
+    launch := anim.clip(0.30, [], [key(0.0, 0.035, 0.0, 0.0), key(0.075, -0.115, 0.0, 0.0), key(0.30, 0.0, 0.0, 0.0)],
+        [key(0.0, 1.035, 0.93, 1.035), key(0.075, 0.935, 1.13, 0.955), key(0.30, 1.0, 1.0, 1.0)])?
+    impact := anim.clip(0.34, [], [key(0.0, 0.0, 0.0, 0.0), key(0.055, 0.12, 0.0, 0.0),
+        key(0.16, -0.072, 0.0, 0.0), key(0.34, 0.0, 0.0, 0.0)],
+        [key(0.0, 1.0, 1.0, 1.0), key(0.055, 1.135, 0.74, 1.10),
+        key(0.16, 0.956, 1.084, 0.97), key(0.25, 1.016, 0.971, 1.012), key(0.34, 1.0, 1.0, 1.0)])?
+    blink := anim.clip(3.95, [], [], [key(2.16, 1.0, 1.0, 1.0), key(2.22, 1.0, 0.0, 1.0),
+        key(2.25, 1.0, 0.0, 1.0), key(2.35, 1.0, 1.0, 1.0)])?
+    ear := anim.clip(4.65, [], [key(0.85, 0.0, 0.0, 0.0), key(0.94, 0.16, -0.12, -0.23),
+        key(1.09, -0.055, 0.035, 0.06), key(1.28, 0.0, 0.0, 0.0)], [])?
+    .Ok(Clips { breath: move breath, stride: move stride, paw: move paw, flight: move flight,
+        launch: move launch, impact: move impact, blink: move blink, ear: move ear })
+}
+
+fn unit(v: f32) -> f32 { if v < 0.0 { return 0.0 }; if v > 1.0 { return 1.0 }; v }
+fn layer(body: &mut anim.Pose, gesture: anim.Pose, strength: f32) {
+    body.rotation.x += gesture.rotation.x * strength
+    body.scale = core.add(body.scale, core.scale(core.sub(gesture.scale, core.vec3(1.0, 1.0, 1.0)), strength))
+}
+
+pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
+    base := anim.identity()
+    cycle := m.walk_phase / 6.2831853
+    rest := anim.sample(&c.breath, m.seconds, .Loop, base)
+    stride := anim.sample(&c.stride, cycle, .Loop, base)
+    run := m.run_weight
+    mut body := anim.mix(rest, stride, run, run, run)
+    mut air := unit(m.vertical_velocity.abs() / 1.2)
+    mut descent := unit(0.5 - m.vertical_velocity / 9.0)
+    mut boost: f32 = 0.0
+    if m.grounded {
+        // Let the reaching paws settle onto the floor for the first few impact frames.
+        air = if m.landing_age >= 0.0 { (1.0 - unit(m.landing_age / 0.083)) * unit(m.landing_strength / 0.25) } else { 0.0 }
+        descent = 1.0
+    } else if m.takeoff_age >= 0.0 && (m.landing_age < 0.0 || m.takeoff_age <= m.landing_age) {
+        // Stepping off a ledge uses fall speed. An intentional jump unfolds from the planted stride.
+        air = unit(m.takeoff_age / 0.067)
+        if m.boost_age == m.takeoff_age {
+            // A spring reverses velocity at contact. Carry the downstroke into its push.
+            air = 1.0
+            push := unit(m.boost_age / 0.067)
+            descent = 1.0 + (descent - 1.0) * push
+            boost = (1.0 - unit(m.boost_age / 0.44)) * push
+        }
+    }
+    if air > 0.0 {
+        sky := anim.sample(&c.flight, descent, .Clamp, base)
+        body = anim.mix(body, sky, air, air, air)
+        if !m.grounded && m.takeoff_age >= 0.0 && m.takeoff_age < 0.30 {
+            layer(&mut body, anim.sample(&c.launch, m.takeoff_age, .Clamp, base), (0.66 + 1.12 * boost) * air)
+        }
+    }
+    mut dip: f32 = 0.0
+    if m.grounded && m.landing_age >= 0.0 && m.landing_age < 0.34 {
+        contact := anim.sample(&c.impact, m.landing_age, .Clamp, base)
+        layer(&mut body, contact, m.landing_strength)
+        dip = (1.0 - contact.scale.y) * m.landing_strength
+    }
+    gait := m.walk_phase
+    sway := (m.seconds * 2.51).sin()
+    mut result := Pose {
+        body: body,
+        head: core.vec3(-0.025 * sway - body.rotation.x * 0.45 + dip * 0.42,
+            (m.seconds * 1.42).sin() * 0.065 * (1.0 - run), 0.035 * (m.seconds * 1.18).sin() + gait.sin() * run * 0.062),
+        tail: core.vec3(0.075 * sway - 0.19 * (2.0 * gait - 0.38).cos() * run + (0.30 - 0.67 * descent) * air + dip * 0.7,
+            0.24 * (m.seconds * 2.6).sin() + 0.23 * (gait - 0.42).sin() * run,
+            -0.08 * sway - 0.12 * (2.0 * gait).cos() * run - boost * 0.27),
+        ears: [core.vec3(0.0, 0.0, 0.0); 2],
+        eye_open: anim.sample(&c.blink, m.seconds, .Loop, base).scale.y,
+        paw_pitch: [0.0; 4], paw_lift: [0.0; 4],
+    }
+    for i in 0..2 {
+        mirror: f32 = if i == 0 { 1.0 } else { -1.0 }
+        flick := anim.sample(&c.ear, m.seconds + f32(i) * 1.37, .Loop, base).rotation
+        result.ears[i] = core.vec3(flick.x - (1.0 - descent) * air * (0.32 + boost * 0.31)
+            - (2.0 * gait - 0.55).cos() * run * 0.105 + dip * 0.9,
+            mirror * flick.y, mirror * (flick.z + 0.028 * sway - dip * 0.75))
+    }
+    for i in 0..4 {
+        rear := i >= 2
+        offset: f32 = if i == 1 || i == 2 { 0.5 } else { 0.0 }
+        lag: f32 = if rear { 0.055 } else { 0.0 }
+        foot := anim.sample(&c.paw, cycle + offset + lag, .Loop, base)
+        diagonal: f32 = if i == 0 || i == 3 { 1.0 } else { -1.0 }
+        tuck := 4.0 * descent * (1.0 - descent)
+        flying: f32 = if rear { 0.68 - 0.62 * descent - 0.82 * tuck + boost * 0.20 }
+            else { 0.15 - 0.75 * descent + 0.78 * tuck - boost * 0.24 }
+        grounded_pitch := foot.rotation.x * run + dip * (if rear { f32(0.88) } else { f32(-0.66) })
+        result.paw_pitch[i] = (1.0 - air) * grounded_pitch + air * (flying + diagonal * 0.10)
+        result.paw_lift[i] = (1.0 - air) * foot.position.y * run + air * (0.034 + 0.082 * tuck)
+    }
+    result
+}
