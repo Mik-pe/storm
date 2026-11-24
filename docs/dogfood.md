@@ -366,19 +366,15 @@ själv producerat är inget bevis; ett test mot **en fil utifrån** är det.
 inkluderar tester och funktionsvärden. Två privata hjälpfunktioner saknade
 referenser i scen- och textpaketen och har tagits bort.
 
-*Rättelse 2026-11-24, Dunder 0.12.0.* Flaggan ger `W1003 private function
-'x' has no references outside its own definition` — men bara för **privata**
-funktioner, och bara när flaggan ges (`check` utan flaggan är tyst; `--help`
-nämner den inte). Nio **publika** funktioner utan en enda anropare i hela
-repot stod kvar efter att flaggan var grön: `core.scaling`, `text.is_full`,
-`metal.aligned`, `scene.meshes/materials/worlds` (en dokumenterad yta utan
-konsument — `drawables` går på fälten), `widgets.hot` och `vulkan.ui.reset`
-(en död dublett av `r.uiCursor = 0` i `begin_frame`; nu anropar `begin_frame`
-den, så resetten har en ägare). Alla nio hittades med
-`grep -rnw <namn>` över `.ddr`/`.md` och togs bort; `check --unused-functions`
-var grönt före och efter. Rekommendation kvarstår: en `pub fn` i ett paket
-vars rotmodul aldrig når den är död på samma sätt som en privat — flaggan
-borde kunna ta `pub` med i paketets egen subtree.
+*Verifierat med Dunder 0.12.0.* `dunder --help` visar flaggan under `check`.
+`W1003` gäller privata funktioner. Ett separat testprojekt importerade
+`math.extras` direkt och skrev ut `42` från dess publika funktion, trots att
+bibliotekets rotmodul aldrig importerade `extras`. En varning grundad på
+rotmodulens referenser skulle alltså även träffa fungerande publika API:er.
+
+Vid genomgången av Storm tog `d394ec0` bort sju publika funktioner som
+saknade anropare här: `scaling`, `is_full`, `aligned`, `meshes`, `materials`,
+`worlds` och `hot`. `vulkan.ui.reset` fick en anropare i `begin_frame`.
 
 **Om vertexformatet (3a).** Stride, offset och format stod på två ställen
 (`pipeline.ddr` via enums, `shadow.ddr` med `inputRate: 0`, `format: 106`
@@ -410,9 +406,15 @@ Fynden är i den ordning de träffades.
 
 **69. Fångstgren i heltalsmatchning.** `match n { 0 => 1, _ => 2 }` fungerar i 0.11.2. Det var `else` i mönstret som utlöste felet. Diagnostiken i 0.11.3 föreslår `_`.
 
-**70. Samma träd, 50 % längre byggtid efter en kompilatoruppdatering — och ingen modul pekas ut.** Uppmätt på Mikparchy 2026-11-24: commit `54214f3` av Storm byggde på **6 850 ms** (Dunder 0.11.0/0.11.1, `tools/build-time.ddr` 01:41) och på **9 100–10 300 ms** med den installerade 0.11.3:an (`--timings`: `compiler=9030 ms`, 680 funktioner, 231 948 MIR-operationer). Micks elva nästa commits (`77d9b0c`: Blomsterskogen, `storm-play`, `storm-physics`, `storm-mcp`) tar trädet till **15 100–15 700 ms** av 20 000 (1 176 funktioner, 346 512 operationer), så marginalen mot AGENTS.md:s budget är 4–5 s. Workaround här: inget i Storm — en stubb-`main` med hela manifestet bygger på 207 ms och `shader.ddr`s 12 579 ord kostar 70 ms, så tiden är proportionell mot koden `main` når (`mir_pipeline` 10,0 s av 14,1 s), inte en enskild tung array. Rekommendation: (a) `dunder build --timings` ska räkna `functions`/`operations` **per modul** eller per funktion, så att den som har 15 s ser vilka tio funktioner som äger 5 s av dem; i dag visar utskriften bara `mir_pipeline=… calls=1176` och `--profile-compiler` delar upp i faser, inte i källkod; (b) en utvecklingsmätning i Dunder-repot (samma träd före/efter `82c389b`, `e896509`, `440d6d9`) bör hålla byggtiden på ett fast program som lock; 0.10.0-byggaren (`dunder-0.10.0.bak`) kan inte bygga trädet alls (traits saknas), så regressionen går inte att mäta bakåt med en binär.
+**70. Byggtiden ökade med ny kompilator.** På Mikparchy byggde samma Storm-träd (`54214f3`) på 6,85 s med 0.11.0/0.11.1 och 9,1–10,3 s med 0.11.3. Det större trädet vid `77d9b0c` tog 15,1–15,7 s med 0.11.3. För att jämföra kompilatorversioner har Dunder nu en byggtidsserie med fasta källrevisioner, växelvis körordning och separata mätningar för nybygge, ändrad källa och oförändrat bygge. [Byggtider och rådata](https://github.com/Mik-pe/dunder/tree/b5a10f3/benchmarks/compiler/2026-11-24-project-builds)
 
-**71. Optimeringsflaggorna är bara avslag.** `--mir-opt=off`, `--mir-ssa=off`, `--mir-values=off`, `--range-opt=off`, `--ownership-opt=off`, `--frame-free=off`, `--const-div-opt=off`, `--mir-memory=off` bygger alla grönt men räddar högst 2,8 s var för sig (`--mir-memory=off` 13,1 s, `--mir-opt=off` 13,3 s), medan `--inline-opt=off` och `--scalar-opt=off` **förlänger** till 18,8–19,4 s. Det är bra för den som felsöker en pass, men det finns ingen flagga som visar *vilka* funktioner en pass tar tid på. Rekommendation: `--profile-compiler` plus en `--timings=per_function`-sortering (längst först) — en utskrift på tio rader som gör nästa byggtidsfråga till en läsning i stället för en bisektion.
+**71. Hitta funktionerna som tar tid i MIR.** I 0.11.3 gick det att stänga av optimeringar och mäta hela passet. Dunders `main` visar nu upp till tio funktioner, längst tid först, med `dunder build --profile-compiler`. Varje rad anger funktion, källfil, rad och antal MIR-operationer. Samma uppgifter finns i `compiler_detail.slowest_mir_functions` med `--timings=json`. Profileringen kör seriellt. Byggbudgeten mäts fortfarande med ett vanligt bygge.
+
+På Mikparchy, med Storm `4123d5a` och Dunder `5a1ed4e`, tog de tio
+långsammaste funktionerna sammanlagt 2,14 s av MIR-fasens 9,56 s.
+`run_session<Window>` (`src/app.ddr:184`, 332 ms) och `post_fragment`
+(`shader.ddr:1747`, 321 ms) låg högst. Den profilerade binären var
+byteidentisk med den från ett vanligt bygge.
 
 **Vad Dunder gjorde bra, och vad som formade koden (inte brister).** Helt
 utan C-shim, bindningsgenerator eller extern kompilator: `std.dl` + `ffi_fn`
@@ -557,11 +559,24 @@ och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 
 ## Verifiering
 
-Senaste mätning på Mikparchy, 2026-11-24 (låst session, `a84ade9`, Dunder
+Storm `4123d5a` gav 185 godkända test i roten och de 15 paketen på både
+Macen och Mikparchy. Tabellen jämför Dunder 0.12.0 med `5a1ed4e` på
+samma träd. Varje tid är medianen för tre hela byggkommandon efter
+uppvärmning, med växlande körordning och automatiskt jobbantal.
+Nybygget skrev till en ny utdatafil. Ombygget använde den befintliga filen.
+
+| Värd | Bygge | 0.12.0 | `5a1ed4e` |
+| --- | --- | ---: | ---: |
+| Mac, ARM64 | Nybygge | 1,162 s | 0,713 s |
+| Mac, ARM64 | Oförändrat | 1,182 s | 0,183 s |
+| Mikparchy, x86-64 | Nybygge | 15,601 s | 8,077 s |
+| Mikparchy, x86-64 | Oförändrat | 15,666 s | 1,109 s |
+
+Mätning på Mikparchy, 2026-11-24 (låst session, `a84ade9`, Dunder
 0.12.0): **140 egna tester gröna** (27 rot + 113 paket, 16 sviter, varje
 lika många som sin `@test`-räkning), `dunder check` 0 varningar i Storms
-paket, `check --unused-functions` rent i alla sju paket efter att nio
-publika funktioner utan anropare togs bort (fynd 64, rättelsen), och
+paket, `check --unused-functions` rent i de sju kontrollerade paketen
+efter genomgången av publika funktioner (fynd 64), och
 `tools/build-time.ddr` **14 900–15 100 ms** av 20 000. Capture 1280 × 800
 före/efter raderingarna: **AE = 0**. `tools/bench-frame.ddr` och
 `dunder run --example scene` kördes efteråt och fungerar: inget av dem var
