@@ -22,11 +22,11 @@ fn binary() -> string {
     "build/x86_64-linux/storm"
 }
 
-// The compiler: `dunder` on PATH, else the install the toolchain's own
+// Fallback when the shell has no dunder on PATH: the install the toolchain's own
 // installer creates. (`process.status` searches PATH itself and reports
 // exit 127 when nothing is found; a shell that relies on ~/.dunder/bin being
 // added interactively would otherwise read as a build failure.)
-fn compiler() -> string {
+fn installed_compiler() -> string {
     match process.env("HOME") {
         .Some(home) => {
             installed := home + "/.dunder/bin/dunder"
@@ -43,7 +43,8 @@ fn main() -> i32 {
     _ := sys.remove_file(binary())
 
     started := sys.now_ms()
-    result := process.status(compiler(), ["build"])
+    mut result := process.status("dunder", ["build"])
+    if result.code == 127 { result = process.status(installed_compiler(), ["build"]) }
     elapsed := sys.now_ms() - started
 
     // Both halves matter: a compiler that never started, and one that
