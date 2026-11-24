@@ -1,5 +1,7 @@
 // Blender exports share a model space. Each moving group rotates about a local joint.
 import .art_asset
+import .canopy
+import .woodland_ground
 import .fox_animation
 import .model
 import core
@@ -8,17 +10,19 @@ import gfx
 import gltf
 import play
 import scene
+import scene.animation as anim
 import std.math as _
 
 struct Socket { hinge: ecs.Entity, pivot: core.Vec3 }
+struct Limb { plane: ecs.Entity, upper: ecs.Entity, shin: ecs.Entity, foot: ecs.Entity, bind: fox_animation.Leg }
 struct Fox {
-    root: ecs.Entity, head: ecs.Entity, bouquet: ecs.Entity, tail: ecs.Entity,
-    paws: []Socket, eyes: []Socket, ears: []ecs.Entity, clips: fox_animation.Clips,
+    root: ecs.Entity, body: Socket, chest: Socket, head: ecs.Entity, bouquet: ecs.Entity,
+    tail: [ecs.Entity; 3], limbs: []Limb, eyes: []Socket, ears: []ecs.Entity, clips: fox_animation.Clips,
 }
 struct Flyer { root: ecs.Entity, left: ecs.Entity, right: ecs.Entity, home: core.Vec3, bee: bool }
-pub struct Cast { foxes: []Fox, insects: []Flyer, motes: []ecs.Entity, petals: []ecs.Entity }
+pub struct Cast { ground: woodland_ground.Ground, foxes: []Fox, insects: []Flyer, motes: []ecs.Entity, petals: []ecs.Entity }
 
-pub fn empty() -> Cast { Cast { foxes: [], insects: [], motes: [], petals: [] } }
+pub fn empty() -> Cast { Cast { ground: woodland_ground.empty(), foxes: [], insects: [], motes: [], petals: [] } }
 fn origin() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
 
 fn petal_colors(color: core.Vec3) -> []model.Paint {
@@ -26,40 +30,56 @@ fn petal_colors(color: core.Vec3) -> []model.Paint {
         model.Paint { material: "Blush petal", color: color, mix: 0.55 }]
 }
 
-fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset) -> Result<Fox, string> {
+fn bind(g: &mut scene.Graph, parent: ecs.Entity, rig: &model.Rig, name: string, expected_parent: string,
+    joints: &mut []model.Joint) -> Result<model.Joint, string> {
+    part := rig.get(name)?
+    if part.parent != expected_parent { return .Err("unexpected parent for fox joint " + name) }
+    joint := model.joint(&mut g, parent, name + "_", part.pivot)
+    joints.push(joint.clone())
+    .Ok(joint)
+}
+
+fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Rig) -> Result<Fox, string> {
     root := g.create_child(parent, origin())
-    head := model.joint(&mut g, root, "Head_", core.vec3(0.0, 0.97, 0.27))
-    tail := model.joint(&mut g, root, "Tail_", core.vec3(-0.015, 0.55, -0.43))
-    mut joints: []model.Joint = [head.clone(), tail.clone()]
+    mut joints: []model.Joint = []
+    body := bind(&mut g, root, rig, "Body", "", &mut joints)?
+    chest := bind(&mut g, body.mount, rig, "Chest", "Body", &mut joints)?
+    head := bind(&mut g, chest.mount, rig, "Head", "Chest", &mut joints)?
+    tail := bind(&mut g, body.mount, rig, "Tail", "Body", &mut joints)?
+    mid := bind(&mut g, tail.mount, rig, "TailMid", "Tail", &mut joints)?
+    tip := bind(&mut g, mid.mount, rig, "TailTip", "TailMid", &mut joints)?
     mut eyes: []Socket = []
     mut ears: []ecs.Entity = []
-    eye_names := ["EyeL_", "EyeR_"]
-    ear_names := ["EarL_", "EarR_"]
-    eye_pivots := [core.vec3(0.23161, 1.19824, 0.65291), core.vec3(-0.24575, 1.17339, 0.65257)]
-    ear_pivots := [core.vec3(0.30106, 1.32602, 0.252), core.vec3(-0.32809, 1.29328, 0.252)]
-    for i in 0..2 {
-        eye := model.joint(&mut g, head.mount, eye_names[i], eye_pivots[i])
-        ear := model.joint(&mut g, head.mount, ear_names[i], ear_pivots[i])
-        eyes.push(Socket { hinge: eye.hinge, pivot: eye_pivots[i] })
+    for side in ["L", "R"] {
+        eye := bind(&mut g, head.mount, rig, "Eye" + side, "Head", &mut joints)?
+        ear := bind(&mut g, head.mount, rig, "Ear" + side, "Head", &mut joints)?
+        eyes.push(Socket { hinge: eye.hinge, pivot: g.local(eye.hinge).position })
         ears.push(ear.hinge)
-        joints.push(move eye)
-        joints.push(move ear)
     }
-    mut paws: []Socket = []
-    names := ["PawFL_", "PawFR_", "PawBL_", "PawBR_"]
-    pivots := [core.vec3(0.19, 0.56, 0.214), core.vec3(-0.19, 0.56, 0.247), core.vec3(0.205, 0.57, -0.360), core.vec3(-0.205, 0.57, -0.345)]
-    for i in 0..names.len {
-        limb := model.joint(&mut g, root, names[i], pivots[i])
-        paws.push(Socket { hinge: limb.hinge, pivot: pivots[i] })
-        joints.push(move limb)
+    mut limbs: []Limb = []
+    labels := ["FL", "FR", "BL", "BR"]
+    for i in 0..4 {
+        suffix := labels[i].clone()
+        // The leg's origin follows its animated shoulder/hip. Keep its links at their authored length.
+        plane := g.create_child(root, origin())
+        upper := bind(&mut g, plane, rig, "Paw" + suffix, if i < 2 { "Chest" } else { "Body" }, &mut joints)?
+        shin := bind(&mut g, upper.mount, rig, "Shin" + suffix, "Paw" + suffix, &mut joints)?
+        foot := bind(&mut g, shin.mount, rig, "Foot" + suffix, "Shin" + suffix, &mut joints)?
+        shoe := rig.get("Foot" + suffix)?
+        sole := match shoe.sole { .Some(p) => p, .None => { return .Err("missing sole on " + shoe.name) } }
+        toe := match shoe.toe { .Some(p) => p, .None => { return .Err("missing toe on " + shoe.name) } }
+        legs := fox_animation.leg(g.local(upper.hinge).position, g.local(shin.hinge).position, shoe.pivot, sole, toe, i)
+        g.set_position(upper.hinge, origin())
+        limbs.push(Limb { plane: plane, upper: upper.hinge, shin: shin.hinge, foot: foot.hinge, bind: legs })
     }
     mut first: []ecs.Entity = []
     model.attach(&mut g, root, art, &joints, &mut first, &[])
     bouquet := g.create_child(head.mount, core.vec3(0.0, 0.973, 0.77))
     g.set_visible(bouquet, false)
     clips := fox_animation.clips()?
-    .Ok(Fox { root: root, head: head.hinge, bouquet: bouquet, tail: tail.hinge,
-        paws: move paws, eyes: move eyes, ears: move ears, clips: move clips })
+    .Ok(Fox { root: root, body: Socket { hinge: body.hinge, pivot: g.local(body.hinge).position },
+        chest: Socket { hinge: chest.hinge, pivot: g.local(chest.hinge).position }, head: head.hinge, bouquet: bouquet,
+        tail: [tail.hinge, mid.hinge, tip.hinge], limbs: move limbs, eyes: move eyes, ears: move ears, clips: move clips })
 }
 
 fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
@@ -105,6 +125,7 @@ fn emblem(heart: bool) -> []f32 {
 pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) -> Result<Cast, string> {
     mut cast := empty()
     glade := art_asset.load("glade")?
+    cast.ground = woodland_ground.build(&glade)
     ground := g.create_root(origin())
     mut meshes: []ecs.Entity = []
     model.attach(&mut g, ground, &glade, &[], &mut meshes, &[])
@@ -113,8 +134,8 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
     for i in 0..session.scene.entities.len {
         def := &session.scene.entities[i]
         if def.role == .Player {
-            fox_art := art_asset.load("fox")?
-            cast.foxes.push(fox(&mut g, nodes[i], &fox_art)?)
+            fox_art := art_asset.load_rigged("fox")?
+            cast.foxes.push(fox(&mut g, nodes[i], &fox_art.art, &fox_art.rig)?)
         } else if def.role == .Flower {
             scale := def.size.x / 0.64
             flower := g.create_child(nodes[i], core.vec3(0.0, -0.425 * scale, 0.0))
@@ -173,37 +194,96 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
     .Ok(cast)
 }
 
-pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player: i32, exact: bool) {
-    sub := play.render_tick_offset(session, exact)
-    time := f32(session.tick % 216000) / 60.0 + sub / 60.0
-    for i in 0..cast.foxes.len {
-        actor := &cast.foxes[i]
-        motion := play.render_motion(session, exact)
-        p := fox_animation.pose(&actor.clips, &motion)
-        radius := session.scene.entities[player].size.y * 0.5
-        scale := radius / 0.4
-        g.set_scale(actor.root, core.scale(p.body.scale, scale))
-        g.set_position(actor.root, core.vec3(0.0, -radius + scale * (0.035 + p.body.position.y), 0.0))
-        g.set_angles(actor.root, p.body.rotation.x, motion.heading, p.body.rotation.z)
-        g.set_visible(actor.bouquet, session.won && session.flowers > 0)
-        g.set_angles(actor.head, p.head.x, p.head.y, p.head.z)
-        g.set_angles(actor.tail, p.tail.x, p.tail.y, p.tail.z)
-        for j in 0..actor.paws.len {
-            foot := &actor.paws[j]
-            g.set_angles(foot.hinge, p.paw_pitch[j], 0.0, 0.0)
-            g.set_position(foot.hinge, core.add(foot.pivot, core.vec3(0.0, p.paw_lift[j], 0.0)))
+fn joint_matrix(socket: &Socket, pose: &anim.Pose) -> core.Mat4 {
+    local := scene.LocalTransform { position: core.add(socket.pivot, pose.position), scale: pose.scale,
+        rotation_x: pose.rotation.x, rotation_y: pose.rotation.y, rotation_z: pose.rotation.z, visible: true }
+    core.multiply(scene.matrix_for(&local), core.translation(-socket.pivot.x, -socket.pivot.y, -socket.pivot.z))
+}
+
+fn apply_joint(g: &mut scene.Graph, socket: &Socket, pose: &anim.Pose) {
+    g.set_position(socket.hinge, core.add(socket.pivot, pose.position))
+    g.set_angles(socket.hinge, pose.rotation.x, pose.rotation.y, pose.rotation.z)
+    g.set_scale(socket.hinge, pose.scale)
+}
+
+fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground, course: &canopy.Course,
+    s: &play.Session, player: i32, exact: bool) {
+    motion := play.render_motion(s, exact)
+    mut p := fox_animation.pose(&actor.clips, &motion)
+    radius := s.scene.entities[player].size.y * 0.5
+    scale := radius / 0.4
+    center := if exact { play.position(s, player) } else { play.render_position(s, player) }
+    g.set_scale(actor.root, core.vec3(scale, scale, scale))
+    g.set_position(actor.root, core.vec3(0.0, -radius, 0.0))
+    g.set_rotation(actor.root, motion.heading)
+    g.set_visible(actor.bouquet, s.won && s.flowers > 0)
+    body := joint_matrix(&actor.body, &p.body)
+    chest := core.multiply(body, joint_matrix(&actor.chest, &p.chest))
+    mut hips: [core.Vec3; 4] = [origin(); 4]
+    mut ankles: [core.Vec3; 4] = [origin(); 4]
+    mut pitches: [f32; 4] = [0.0; 4]
+    mut lower: f32 = 0.0
+    heading_x := motion.heading.sin()
+    heading_z := motion.heading.cos()
+    for i in 0..4 {
+        leg := &actor.limbs[i].bind
+        hips[i] = if leg.hind { core.transform_point(&body, leg.hip) } else { core.transform_point(&chest, leg.hip) }
+        mut foot := fox_animation.foot(leg, &p, &motion, s, exact, center, scale)
+        if motion.grounded {
+            x := center.x + scale * (heading_z * foot.sole.x + heading_x * foot.sole.z)
+            z := center.z + scale * (heading_z * foot.sole.z - heading_x * foot.sole.x)
+            support := center.y - radius
+            sole_height := woodland_ground.height(ground, course, s, x, z, support, exact)
+            forward := (leg.toe.z - leg.sole.z) * foot.pitch.cos() * scale
+            toe_height := woodland_ground.height(ground, course, s, x + heading_x * forward, z + heading_z * forward, support, exact)
+            heel_height := woodland_ground.height(ground, course, s, x - heading_x * forward, z - heading_z * forward, support, exact)
+            mut surface := if toe_height > sole_height { toe_height } else { sole_height }
+            if heel_height > surface { surface = heel_height }
+            foot.sole.y += surface / scale
         }
-        closed := 1.0 - p.eye_open
-        eye_depth := -0.065 * closed * closed * closed * closed
-        for j in 0..actor.eyes.len {
-            e := p.ears[j]
-            g.set_angles(actor.ears[j], e.x, e.y, e.z)
-            eye := &actor.eyes[j]
-            g.set_scale(eye.hinge, core.vec3(1.0, 0.10 + 0.90 * p.eye_open, 1.0))
-            g.set_position(eye.hinge, core.add(eye.pivot, core.vec3(0.0, 0.0, eye_depth)))
-            g.set_visible(eye.hinge, closed < 0.92)
+        ankles[i] = fox_animation.ankle_target(leg, &foot)
+        pitches[i] = foot.pitch
+        if (motion.grounded || p.air < 1.0) && foot.sole.y < 0.065 {
+            delta := core.sub(hips[i], ankles[i])
+            reach := (leg.thigh + leg.shin) * 0.998
+            remaining := reach * reach - delta.x * delta.x - delta.z * delta.z
+            depth := if remaining > 0.0 { remaining.sqrt() } else { f32(0.0) }
+            excess := delta.y - depth
+            if excess > lower { lower = excess }
         }
     }
+    if lower > 0.17 { lower = 0.17 }
+    p.body.position.y -= lower
+    apply_joint(&mut g, &actor.body, &p.body)
+    apply_joint(&mut g, &actor.chest, &p.chest)
+    for i in 0..4 {
+        leg := &actor.limbs[i]
+        hip := core.sub(hips[i], core.vec3(0.0, lower, 0.0))
+        angles := fox_animation.solve(&leg.bind, hip, ankles[i], pitches[i])
+        g.set_position(leg.plane, hip)
+        g.set_angles(leg.plane, 0.0, 0.0, angles.roll)
+        g.set_angles(leg.upper, angles.hip, 0.0, 0.0)
+        g.set_angles(leg.shin, angles.knee, 0.0, 0.0)
+        g.set_angles(leg.foot, angles.ankle, 0.0, -angles.roll)
+    }
+    g.set_angles(actor.head, p.head.x, p.head.y, p.head.z)
+    for i in 0..3 { a := p.tail[i]; g.set_angles(actor.tail[i], a.x, a.y, a.z) }
+    closed := 1.0 - p.eye_open
+    depth := -0.065 * closed * closed * closed * closed
+    for i in 0..2 {
+        e := p.ears[i]
+        g.set_angles(actor.ears[i], e.x, e.y, e.z)
+        eye := &actor.eyes[i]
+        g.set_scale(eye.hinge, core.vec3(1.0, 0.10 + 0.90 * p.eye_open, 1.0))
+        g.set_position(eye.hinge, core.add(eye.pivot, core.vec3(0.0, 0.0, depth)))
+        g.set_visible(eye.hinge, closed < 0.92)
+    }
+}
+
+pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player: i32, exact: bool, course: &canopy.Course) {
+    sub := play.render_tick_offset(session, exact)
+    time := f32(session.tick % 216000) / 60.0 + sub / 60.0
+    for i in 0..cast.foxes.len { animate_fox(&mut g, &cast.foxes[i], &cast.ground, course, session, player, exact) }
     for i in 0..cast.insects.len {
         flyer := &cast.insects[i]
         t := time * (if flyer.bee { f32(1.21) } else { f32(0.84) }) + f32(i) * 1.93

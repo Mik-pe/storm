@@ -1,49 +1,59 @@
+import core
 import ecs
+import gfx
 import play
 import scene
+import ..src.art_asset
 import ..src.fox_animation as fox
 import ..src.play_view as view
+import ..src.woodland_ground as ground
 
 fn still() -> play.PlayerMotion {
     play.PlayerMotion { seconds: 0.0, heading: 0.0, walk_phase: 0.0, run_weight: 0.0, grounded: true,
-        vertical_velocity: 0.0, takeoff_age: -1.0, landing_age: -1.0, boost_age: -1.0, landing_strength: 0.0 }
+        vertical_velocity: 0.0, takeoff_age: -1.0, landing_age: -1.0, boost_age: -1.0, landing_strength: 0.0,
+        bank: 0.0, drive: 0.0 }
 }
 
-@test fn fox_idle_breathes_blinks_and_flicks_its_ears_with_planted_paws() {
+fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
+    for e in g.nodes() { if g.name(e) == name { return .Some(e) } }
+    .None
+}
+
+@test fn fox_idle_moves_its_weight_and_listens_with_one_ear_at_a_time() {
     clips := fox.clips().unwrap()
     mut m := still()
     rest := fox.pose(&clips, &m)
     m.seconds = 0.94
     alert := fox.pose(&clips, &m)
     assert(alert.body.scale.y > rest.body.scale.y + 0.015)
-    assert(alert.tail.y != rest.tail.y && alert.head.y != rest.head.y)
+    assert(alert.body.position.x > rest.body.position.x + 0.025)
+    assert(alert.tail[2].y != rest.tail[2].y && alert.head.y != rest.head.y)
     assert((alert.ears[0].x - alert.ears[1].x).abs() > 0.12)
-    m.walk_phase = 3.2
-    assert(fox.pose(&clips, &m).paw_pitch[0] == 0.0)
     m.seconds = 2.23
     assert(fox.pose(&clips, &m).eye_open < 0.05)
     m.seconds = 2.4
     assert(fox.pose(&clips, &m).eye_open > 0.99)
 }
 
-@test fn fox_strides_plant_diagonal_pairs_and_reverse_after_half_a_cycle() {
+@test fn fox_gallop_gathers_then_extends_and_transfers_weight_in_turns() {
     clips := fox.clips().unwrap()
     mut m := still()
     m.run_weight = 1.0
-    m.walk_phase = 0.0
-    a := fox.pose(&clips, &m)
-    m.walk_phase = 3.14159265
-    b := fox.pose(&clips, &m)
-    assert(a.paw_pitch[0] < -0.40 && a.paw_pitch[3] < -0.40)
-    assert(a.paw_pitch[1] > 0.40 && a.paw_pitch[2] > 0.40)
-    assert(b.paw_pitch[0] > 0.40 && b.paw_pitch[3] > 0.40)
-    m.walk_phase = 0.25 * 6.2831853
-    flight := fox.pose(&clips, &m)
-    assert(flight.body.position.y > a.body.position.y + 0.06)
-    assert(flight.paw_lift[1] > flight.paw_lift[0] + 0.05)
+    m.walk_phase = 0.07 * 6.2831853
+    gather := fox.pose(&clips, &m)
+    m.walk_phase = 0.39 * 6.2831853
+    reach := fox.pose(&clips, &m)
+    assert(reach.body.scale.z > gather.body.scale.z + 0.20)
+    assert(reach.body.position.y > gather.body.position.y + 0.06)
+    assert((reach.tail[0].x - reach.tail[2].x).abs() > 0.10)
+    m.bank = 1.0
+    m.drive = 0.80
+    turn := fox.pose(&clips, &m)
+    assert(turn.body.rotation.z < reach.body.rotation.z - 0.10)
+    assert(turn.chest.rotation.x < reach.chest.rotation.x - 0.04 && turn.head.y > reach.head.y + 0.1)
 }
 
-@test fn fox_jump_reaches_forward_on_descent_and_compresses_then_recovers_on_landing() {
+@test fn fox_jump_gathers_at_the_apex_and_yields_then_rebounds_on_landing() {
     clips := fox.clips().unwrap()
     mut m := still()
     m.grounded = false
@@ -52,8 +62,7 @@ fn still() -> play.PlayerMotion {
     normal := fox.pose(&clips, &m)
     m.boost_age = m.takeoff_age
     boosted := fox.pose(&clips, &m)
-    assert(boosted.body.scale.y > normal.body.scale.y + 0.09)
-    assert(boosted.ears[0].x < normal.ears[0].x - 0.10)
+    assert(boosted.body.scale.y > normal.body.scale.y + 0.09 && boosted.ears[0].x < normal.ears[0].x - 0.10)
     m.boost_age = -1.0
     m.takeoff_age = 0.5
     m.vertical_velocity = 0.0
@@ -61,10 +70,13 @@ fn still() -> play.PlayerMotion {
     m.takeoff_age = 0.95
     m.vertical_velocity = -4.5
     fall := fox.pose(&clips, &m)
-    assert(apex.paw_lift[0] > fall.paw_lift[0] + 0.05 && apex.paw_pitch[0] > fall.paw_pitch[0] + 0.6)
-    assert(normal.body.rotation.x < 0.0 && fall.body.rotation.x > 0.0)
+    assert(normal.body.rotation.x < 0.0 && fall.body.rotation.x > 0.0 && apex.body.scale.z < fall.body.scale.z - 0.12)
     m.grounded = true
+    m.vertical_velocity = 0.0
     m.landing_strength = 1.0
+    m.landing_age = 0.0
+    contact := fox.pose(&clips, &m)
+    assert((fall.body.rotation.x - contact.body.rotation.x).abs() < 0.001)
     m.landing_age = 0.055
     impact := fox.pose(&clips, &m)
     m.landing_age = 0.16
@@ -75,12 +87,7 @@ fn still() -> play.PlayerMotion {
     assert(recoil.body.scale.y > 1.05 && settled.body.scale.y == 1.0)
 }
 
-fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
-    for e in g.nodes() { if g.name(e) == name { return .Some(e) } }
-    .None
-}
-
-@test fn imported_fox_blinks_both_eyes_and_restarts_with_its_original_pose() {
+@test fn standing_fox_keeps_its_soles_still_as_the_shoulders_breathe_and_both_eyes_blink() {
     level := play.demo()
     mut s := play.start(&level)
     mut world := view.build(&s).unwrap()
@@ -88,51 +95,137 @@ fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
     left := named(&world.graph, "EyeL_Dew").unwrap()
     right := named(&world.graph, "EyeR_Iris").unwrap()
     ear := named(&world.graph, "EarL_EarRose").unwrap()
-    paw := named(&world.graph, "PawFL_Boots").unwrap()
+    paw := named(&world.graph, "FootFL_Boots").unwrap()
+    shin := named(&world.graph, "ShinFL_Foxglove").unwrap()
+    rigged := art_asset.load_rigged("fox").unwrap()
+    sole := rigged.rig.get("FootFL").unwrap().sole.unwrap()
     start := world.graph.world(ear).matrix.clone()
-    foot := world.graph.world(paw).matrix.clone()
-    assert(world.graph.world(left).visible && world.graph.world(right).visible)
-    for _ in 0..134 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    boot := world.graph.world(paw).matrix.clone()
+    knee := world.graph.world(shin).matrix.clone()
+    at := core.transform_point(&boot, sole)
+    for _ in 0..55 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    view.sync(&mut world, &s, true)
+    breath := core.transform_point(&world.graph.world(paw).matrix, sole)
+    assert(core.length(core.sub(breath, at)) < 0.003 && at.y > 0.01 && at.y < 0.03)
+    assert((world.graph.world(shin).matrix.m[6] - knee.m[6]).abs() > 0.008)
+    for _ in 55..134 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
     view.sync(&mut world, &s, true)
     assert(!world.graph.world(left).visible && !world.graph.world(right).visible && world.graph.world(ear).visible)
-    for _ in 0..12 { play.step(&mut s, play.Input { x: -1.0, z: 0.0, jump: false }) }
-    view.sync(&mut world, &s, true)
-    assert(world.graph.world(left).visible && world.graph.world(right).visible)
-    assert((world.graph.world(paw).matrix.m[12] - foot.m[12]).abs() > 0.2)
     s = play.start(&level)
     view.sync(&mut world, &s, true)
     assert(world.graph.world(left).visible && world.graph.world(right).visible)
     for i in 0..16 {
         assert(world.graph.world(ear).matrix.m[i] == start.m[i])
-        assert(world.graph.world(paw).matrix.m[i] == foot.m[i])
+        assert(world.graph.world(paw).matrix.m[i] == boot.m[i])
     }
 }
 
-@test fn fox_carries_the_stride_into_takeoff_and_the_reach_into_ground_contact() {
-    clips := fox.clips().unwrap()
-    mut m := still()
-    m.run_weight = 1.0
-    m.walk_phase = 3.14159265
-    planted := fox.pose(&clips, &m)
-    m.grounded = false
-    m.takeoff_age = 0.0
-    m.vertical_velocity = 5.6
-    launch := fox.pose(&clips, &m)
-    for i in 0..4 { assert(launch.paw_pitch[i] == planted.paw_pitch[i]) }
-    m.takeoff_age = 1.0
-    m.vertical_velocity = -5.0
-    m.run_weight = 0.0
-    falling := fox.pose(&clips, &m)
-    m.grounded = true
-    m.vertical_velocity = 0.0
-    m.landing_age = 0.0
-    m.landing_strength = 0.75
-    contact := fox.pose(&clips, &m)
-    for i in 0..4 { assert((contact.paw_pitch[i] - falling.paw_pitch[i]).abs() < 0.001) }
-    m.grounded = false
-    m.landing_age = 0.72
-    m.takeoff_age = 1.72
-    m.vertical_velocity = -0.16
-    ledge := fox.pose(&clips, &m)
-    assert(ledge.paw_lift[0] < 0.03)
+@test fn all_four_imported_feet_bear_weight_and_keep_world_contact_over_full_running_strides() {
+    mut level := play.demo()
+    level.bounds = .None
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    rigged := art_asset.load_rigged("fox").unwrap()
+    mut soles: []core.Vec3 = []
+    mut boots: []ecs.Entity = []
+    for part in ["FootFL", "FootFR", "FootBL", "FootBR"] {
+        soles.push(rigged.rig.get(part).unwrap().sole.unwrap())
+        boots.push(named(&world.graph, part + "_Boots").unwrap())
+    }
+    mut previous: [core.Vec3; 4] = [core.vec3(0.0, 0.0, 0.0); 4]
+    mut planted: [i32; 4] = [0; 4]
+    mut lifted: [i32; 4] = [0; 4]
+    for tick in 0..50 {
+        play.step(&mut s, play.Input { x: 1.0, z: 0.0, jump: false })
+        view.sync(&mut world, &s, true)
+        mut lowest: f32 = 1.0
+        for i in 0..4 {
+            sample := core.transform_point(&world.graph.world(boots[i]).matrix, soles[i])
+            if sample.y < lowest { lowest = sample.y }
+            if tick > 10 {
+                assert(sample.y > -0.012)
+                if sample.y < 0.032 && previous[i].y < 0.032 && core.length(core.sub(sample, previous[i])) < 0.012 { planted[i] += 1 }
+                if sample.y > 0.12 { lifted[i] += 1 }
+            }
+            previous[i] = sample
+        }
+        if tick > 10 { assert(lowest < 0.039) }
+    }
+    for i in 0..4 { assert(planted[i] >= 8 && lifted[i] >= 6) }
+}
+
+@test fn planted_foot_stays_on_one_world_point_through_a_banked_turn_and_subticks() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    foot := named(&world.graph, "FootBL_Boots").unwrap()
+    rigged := art_asset.load_rigged("fox").unwrap()
+    sole := rigged.rig.get("FootBL").unwrap().sole.unwrap()
+    mut contact := core.vec3(0.0, 0.0, 0.0)
+    mut holding := false
+    mut samples := 0
+    for tick in 0..26 {
+        diagonal := tick >= 17
+        play.step(&mut s, play.Input { x: 1.0, z: if diagonal { 1.0 } else { 0.0 }, jump: false })
+        for fraction in [0.0, 0.5] {
+            s.accumulator = fraction
+            m := play.render_motion(&s, false)
+            phase := m.walk_phase / 6.2831853
+            if tick < 14 || phase < 0.0 || phase > 0.37 { holding = false; continue }
+            view.sync(&mut world, &s, false)
+            now := core.transform_point(&world.graph.world(foot).matrix, sole)
+            if holding {
+                assert((now.x - contact.x).abs() + (now.z - contact.z).abs() < 0.018)
+                if m.bank.abs() > 0.05 { samples += 1 }
+            } else { contact = now; holding = true }
+        }
+    }
+    assert(samples >= 3)
+}
+
+@test fn planted_hind_paw_leaves_its_actual_footprint_on_the_first_jump_tick() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    foot := named(&world.graph, "FootBL_Boots").unwrap()
+    art := art_asset.load_rigged("fox").unwrap()
+    sole := art.rig.get("FootBL").unwrap().sole.unwrap()
+    for _ in 0..20 { play.step(&mut s, play.Input { x: 1.0, z: 0.0, jump: false }) }
+    view.sync(&mut world, &s, true)
+    planted := core.transform_point(&world.graph.world(foot).matrix, sole)
+    assert(planted.y < 0.035)
+    play.step(&mut s, play.Input { x: 1.0, z: 0.0, jump: true })
+    view.sync(&mut world, &s, true)
+    pushing := core.transform_point(&world.graph.world(foot).matrix, sole)
+    assert(!play.render_motion(&s, true).grounded)
+    assert((pushing.x - planted.x).abs() + (pushing.z - planted.z).abs() < 0.035)
+    assert((pushing.y - planted.y).abs() < 0.075)
+}
+
+@test fn landing_keeps_the_leading_front_heel_above_the_rendered_meadow() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    foot := named(&world.graph, "FootFL_Boots").unwrap()
+    vertices := world.graph.vertices(foot)
+    play.step(&mut s, play.Input { x: 1.0, z: 0.0, jump: true })
+    for _ in 0..95 {
+        if play.render_motion(&s, true).grounded { break }
+        play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    }
+    assert(play.render_motion(&s, true).landing_age == 0.0)
+    for _ in 0..7 {
+        view.sync(&mut world, &s, true)
+        matrix := &world.graph.world(foot).matrix
+        support_y := play.position(&s, world.player_node).y - 0.4
+        mut lowest: f32 = 2.0
+        for j in 0..(vertices.len / gfx.VERTEX_FLOATS) {
+            b := j * gfx.VERTEX_FLOATS
+            pt := core.transform_point(matrix, core.vec3(vertices[b], vertices[b+1], vertices[b+2]))
+            surface := support_y + ground.height(&world.cast.ground, &world.course, &s, pt.x, pt.z, support_y, true)
+            if pt.y - surface < lowest { lowest = pt.y - surface }
+        }
+        assert(lowest >= -0.006 && lowest < 0.045)
+        play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    }
 }

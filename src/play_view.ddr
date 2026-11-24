@@ -78,7 +78,7 @@ pub fn sync(view: &mut View, session: &play.Session, exact: bool) {
         pos := if exact { play.position(session, i) } else { play.render_position(session, i) }
         view.graph.set_position(view.nodes[i], pos)
     }
-    woodland.animate(&mut view.graph, &view.cast, session, view.player_node, exact)
+    woodland.animate(&mut view.graph, &view.cast, session, view.player_node, exact, &view.course)
     canopy.animate(&mut view.graph, &view.course, session, exact)
     view.graph.propagate()
 }

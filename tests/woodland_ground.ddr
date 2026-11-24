@@ -1,0 +1,50 @@
+import gfx
+import gltf
+import play
+import ..src.play_view
+import ..src.walk_surface
+import ..src.woodland_ground
+
+@test fn contact_reads_the_uppermost_walkable_triangle_in_either_winding() {
+    mut vertices: []f32 = []
+    a := gfx.vertex(0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    b := gfx.vertex(1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    c := gfx.vertex(0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    gfx.push_triangle(&mut vertices, a, c, b)
+    gfx.push_triangle(&mut vertices, a, b, c)
+    low := gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    gfx.push_triangle(&mut vertices, low, b, c)
+    gfx.push_triangle(&mut vertices, a, a, a)
+    art := gltf.Asset { parts: [gltf.Part { name: "patch", material_name: "grass", color: [1.0; 4],
+        metallic: 0.0, roughness: 0.8, vertices: vertices }] }
+    top := walk_surface.build(&art, &["grass"])
+    assert((walk_surface.top(&top, 0.25, 0.25).unwrap() - 1.25).abs() < 0.00001)
+    assert(walk_surface.top(&top, 0.5, 0.5).unwrap() == 1.5 && walk_surface.top(&top, 0.8, 0.8).is_none())
+    other := walk_surface.build(&art, &["leaves"])
+    assert(walk_surface.top(&other, 0.0, 0.0).is_none())
+}
+
+@test fn fox_uses_the_meadow_and_tracks_the_rendered_cloud_rebound() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut w := play_view.build(&s).unwrap()
+    path := woodland_ground.height(&w.cast.ground, &w.course, &s, 0.0, 1.0, 0.0, true)
+    assert(path > 0.01 && path < 0.04)
+    assert(woodland_ground.height(&w.cast.ground, &w.course, &s, 0.0, 1.0, 1.4, true) == 0.0)
+    pad := w.course.pads[0]
+    idx := pad.index
+    s.last_cloud = idx
+    s.cloud_tick = 0
+    s.tick = 3
+    s.accumulator = 0.5
+    s.bodies[s.player].platform = s.body_indices[idx]
+    center := play.position(&s, idx)
+    top := center.y + level.entities[idx].size.y * 0.5
+    for exact in [true, false] {
+        play_view.sync(&mut w, &s, exact)
+        rendered := w.graph.local(pad.node)
+        crown := center.y + rendered.position.y + rendered.scale.y * 0.5
+        delta := woodland_ground.height(&w.cast.ground, &w.course, &s, center.x, center.z, top, exact)
+        assert(delta < -0.01 && (top + delta - crown).abs() < 0.0001)
+    }
+}

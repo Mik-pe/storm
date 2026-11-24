@@ -233,6 +233,8 @@ import ..src.editor as editor
 import .play_ui as _
 import .particles as _
 import .fox_animation as _
+import .model_rig as _
+import .woodland_ground as _
 import text
 import ui
 import ui.widgets as widgets

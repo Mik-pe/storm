@@ -1,0 +1,20 @@
+import .canopy
+import .walk_surface
+import gltf
+import play
+
+pub struct Ground { meadow: walk_surface.Surface }
+pub fn empty() -> Ground { Ground { meadow: walk_surface.empty() } }
+pub fn build(glade: &gltf.Asset) -> Ground {
+    Ground { meadow: walk_surface.build(glade, &["Meadow | seafoam", "Meadow | dapple", "Path | apricot"]) }
+}
+
+pub fn height(ground: &Ground, course: &canopy.Course, s: &play.Session, x: f32, z: f32, support_y: f32, exact: bool) -> f32 {
+    match canopy.surface(course, s, x, z, support_y, exact) {
+        .Some(delta) => { return delta },
+        .None => {},
+    }
+    // The glade is authored around the level's zero-height meadow collider.
+    if support_y.abs() > 0.05 { return 0.0 }
+    walk_surface.top(&ground.meadow, x, z).unwrap_or(support_y) - support_y
+}
