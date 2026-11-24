@@ -5,11 +5,13 @@ Granskat 2026-11-23. Utgångspunkten var Storm `fdd9cc6` och Dunder
 26–36 från `9452ba3` och 37–39 från djupbufferten.
 Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mik-pe/dunder/commit/9b6dcd2e441c0fb88cb211347e2955d6716546df).
 
+Omprovat 2026-11-24 med Dunder 0.12.0 och Storm `77d9b0c`. Roten och alla 15 paket gav 143 godkända test på både Macen och Mikparchy. Metals pixelprov passerade på Macen. Byggtidsprovet på Mikparchy gav 16,689 s mot gränsen 20 s.
+
 ## Språk och standardbibliotek
 
 | Punkt | Vad som gick att verifiera |
 | --- | --- |
-| 1 och 17. Fält i `@c_layout` | Ett direkt fält av typen `Frame` och en fast skalärarray stöds. `[Frame; 2]` och `string` som C-fält avvisas. Den gamla kompilatorn markerade `fn main` respektive en annan modul. Nu markerar E5003 själva fälttypen och FFI-manualen ger exempel på båda begränsningarna. |
+| 1 och 17. Fält i `@c_layout` | Fasta arrayer av C-poster stöds som fält. Elementen ligger med C:s storlek och justering. Ett ägt `string`-fält ger E5003 vid fälttypen. [FFI-kontrakt](https://github.com/Mik-pe/dunder/blob/v0.11.3/docs/ffi.md) · [Storms ABI-prov](../packages/storm-vulkan/tests/suite.ddr) |
 | 2. Trigonometri | Tidigare behövde Storm bredda en `f32` för `math.sin`, `cos` och `tan`. Med `import std.math as _` får en modul tillgång till `vinkel.sin()`, `.cos()` och `.tan()` för både `f32` och `f64`. Resultatet har samma typ som vinkeln. Kameran, perspektivprojektionen och scengrafen använder metoderna. |
 | 3. Flyttalsliteraler | `mut sum := 0.0` ger `f64`. `mut sum: f32 = 0.0` ger en smal ackumulator. I `x * 0.5` där `x: f32` får redan literalen och resultatet typen `f32`. Detta fungerar i ursprungsversionen och beskrivs i [flyttalsmanualen](https://github.com/Mik-pe/dunder/blob/9b6dcd2/docs/floating.md). |
 | 4. Ignorerade resultat | Ett anrop med returtypen `()` kan stå som en egen sats. Tidigare avvisades `_ := ping()` för ett sådant anrop. Nu godtas båda formerna. Regressionstestet kontrollerar att varje anrop utförs exakt en gång. |
@@ -42,7 +44,6 @@ Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mi
 
 ## Designbedömning
 
-- **Prioritera fasta structarrayer vid C-gränsen.** Dunder kan bädda in ett enskilt C-record, men `frames: [Frame; 2]` tvingar fortfarande Storm att dela upp en frame i flera parallella arrayer. Den förbättrade diagnostiken löser felsökningen. För språkstödet måste arrayfältet lagra elementen intill varandra med C:s storlek och justering. Vanliga Dunder-arrayer av record använder indirekta element. Ett acceptansprov för utökningen behöver låta både C och Dunder läsa, skriva och ta adressen till det andra elementet i samma struct.
 - **Behåll de explicita ägarreglerna.** `&mut self` lånar och `move self` gör konsumtion synlig. Ett lån ska upphöra efter sista möjliga läsning, även när nästa sats är en loop. Då kan scengrafen traverseras direkt och kompilatorn kan fortfarande skydda lån som lever till nästa varv. Typade `Pool<T>` ger systemen tydliga beroenden. Ett behov av komponenttyper som registreras under körning skulle motivera en separat design.
 - **Ge ordnad och oordnad borttagning egna namn.** `remove` bevarar ordningen. `array.swap_remove` flyttar sista elementet till luckan och returnerar det borttagna värdet i konstant tid. Den skillnaden påverkar vilken entitet som äger komponenten efteråt. [Dunders implementation och tester](https://github.com/Mik-pe/dunder/commit/9f9b341)
 - **Låt typen följa uträkningen.** Standardtypen `f64` för en fristående literal och kontextuell `f32` i en redan typad uträkning fungerar väl tillsammans. Samma metodnamn för trigonometri på båda typerna tar bort konverteringar från den faktiska kamerakoden. `import std.math as _` är dock svårt att upptäcka. En namngiven import som bara tillför metoder kan fortfarande få W1002 för oanvänt importnamn.
@@ -51,12 +52,7 @@ Dunders ändringar och regressionstester finns i [9b6dcd2](https://github.com/Mi
 
 ## Uppföljning: editor-UI, overlay-effekter och textatlasen
 
-**26. `@c_layout` med en fast array av structs.** Att skicka en
-`[VkPipelineShaderStageCreateInfo; 2]` eller
-`[VkVertexInputAttributeDescription; 3]` till Vulkan kraschade
-`vkCreateGraphicsPipelines`. Samma lösning som tidigare: lägg struktarna i en
-`@c_layout`-struct med namngivna fält och skicka adressen till den. Fynd 1 och 17 gäller
-alltså fortfarande.
+**26. Fasta arrayer av C-poster.** Den tidigare kraschen i `vkCreateGraphicsPipelines` ledde till en rekommendation om namngivna omslagsfält. Storms senare prov för två `Dep` visade 28 bytes elementstorlek, 56 bytes arraystorlek och rätt fältoffset. Både en fristående array och ett arrayfält kan skickas till C. Se fynd 54.
 
 **27. `store_u32`/`store_f32` med framräknad pekaradress.** Skrivningar till
 mappat minne med `store_*(ptr(usize(base) + offset), värde)` ger antingen
@@ -198,18 +194,7 @@ där heltalen skrivs. Blendtillstånd blev ett värde: `apply_blend(&mut
 attachment, &enums.alpha_over())`. Capturen före/efter är pixelidentisk
 (AE = 0), inklusive `--effects`.
 
-**43. `const` kan inte hålla en struct — och diagnoserna säger det inte.**
-`pub const ALPHA_OVER: Blend = Blend { src_color: .SrcAlpha, … }` ger
-`error[E3007]: unsupported constant type '__dunder_module_1'`. Med ett
-suffix på varje variant samma sak; en kontroll med en struct av enbart
-`u32` ger `__dunder_module_0`. Det är alltså structen som helhet som inte
-är en konstant typ, inte enum-fälten, men meddelandet pekar på en
-internt namngiven modul i stället för att säga "struct literals are not
-allowed in const". *Workaround:* en funktion som returnerar värdet
-(`pub fn alpha_over() -> Blend`). *Rekommendation:* antingen tillåt
-structliteraler med konstanta fält i `const`, eller ge E3007 ett
-meddelande som namner typen (`Blend`) och säger att `const` bara tar
-skalärer.
+**43. Structliteraler som modulkonstanter.** Ett `const` av typen `Blend` ger E3007. Diagnostiken visar nu källans typnamn. Storms `alpha_over()` bygger värdet från typade enumvarianter. Dunder stöder också fasta strängtabeller från 0.12.0.
 
 **44. Två layoutkommentarer som ljög, och en drivrutin som tolererade det.**
 Djupbilagans `finalLayout` och subpassreferensen var `2` med kommentaren
@@ -223,12 +208,7 @@ fortfarande AE = 0, och testet `vk_enum_values_match_the_khronos_tables`
 låser varje värde mot specen. Det är samma princip som fynd 1, 39 och 42:
 en siffra med en kommentar är en försäran utan vittne.
 
-**45. `||` i början av en fortsättningsrad delar uttrycket i två statements.**
-`a == x || b == y\n    || c == z` gav `E2006 unused value` på sista raden i
-stället för ett syntaxfel; operatoren måste stå på raden som avslutas.
-*Workaround:* `||` i slutet av varje rad. *Rekommendation:* antingen
-tillåt ledande operatorer (vanligt i C-stil) eller rapportera den
-avbrutna raden som ett uttrycksfel.
+**45. Radfortsättning med `||`.** Avsluta raden med operatorn för att fortsätta uttrycket. Med `||` först på nästa rad ger 0.12.0 E2006 vid den avslutade satsen och E1002 vid operatorn. [Dunders syntax](https://github.com/Mik-pe/dunder/blob/v0.11.3/docs/syntax.md)
 
 **51. Subagenten återinförde den lögnerandiga konstanten.** IBL-arbetet
 (skrevs parallellt med fynd 44:s rättelse) definierade i `ibl.ddr`
@@ -259,17 +239,7 @@ aldrig fylld) är borta. AE = 0.
 
 **53. Nollställ en array av C-poster.** `zeroed()` skapar en C-post. För en array av två poster fungerar `[zeroed(); 2]`. Arrayens storlek och elementens offset täcks av Vulkanprovet i fynd 54.
 
-**54. Arrayer av C-poster ÄR sammanhängande (en felalarm, dokumenterat
-för att inte återupprepas).** Under steg 3 mätte jag "stride 32, `size_of
-([Dep; 2]) = 112`" och var nära att skriva om storm-vulkan till
-wrapper-structar *på grund av en kompilatorbugg som inte fanns*: jag hade
-läst två utskriftskolumner fel. Ommätt i isolering och i storm-vulkans
-testsvit: `size_of(Dep) = 28`, `size_of([Dep; 2]) = 56`, stride 28, alla
-fält på C-offsets, med och utan `mut`, i `main` och i funktioner. Både
-`[before, after]` och wrapper-structen är sammanhängande; testet
-`c_record_pairs_and_arrays_are_contiguous` låser båda. Lärdomen är samma
-som fynd 39: en siffra som inte stämmer med förväntat läses en gång till
-på rätta rader innan den får förklara kompilatorn.
+**54. Verifierad layout för arrayer av C-poster.** `c_record_pairs_and_arrays_are_contiguous` kontrollerar två 28-byteposter i en 56-bytearray och motsvarande omslag. Den tidigare uppgiften om 32 bytes steg berodde på en felläsning av mätutskriften. [ABI-provet](../packages/storm-vulkan/tests/suite.ddr)
 
 **55. Skriv flyttalets bitmönster som ett Vulkan-ord.** `f32.to_bits()` ger ett tecknat `i32` och bevarar även negativ noll och NaN:s nyttolast. Exit 101 kom från den efterföljande konverteringen till `u32`. `depth.float_bits` breddar till `i64` och maskerar de lägsta 32 bitarna före konverteringen. Testet kontrollerar även negativ noll och en NaN med satt teckenbit.
 
@@ -302,13 +272,7 @@ Minsta repro: bind en view med `levelCount = 1` och sampla på LOD 1.
 Åtgärd: `textureLod(source, l, 0.0)`, alltid. Rekommendation: samma regel som
 för arrayer i Dunder — index relativt till det som är bundet.
 
-**48. Vidarebefordran av `&mut` kräver `&mut`.** En funktion med parametern
-`push: &mut [f32; 24]` som anropar `face_basis(push, face)` kompilerar inte:
-`push` auto-derefereras till `[f32; 24]` och felmeddelandet säger
-`expected &mut [f32; 24], got [f32; 24]`. Kompilatorns not förslår `&mut push`,
-och det fungerar. `&mut *push` är ett syntaxfel (`expected expression`).
-Rekommendation: dokumentera reborrow-formen i språkreferensen; noten räcker
-för att lösa det, men bara om man läser den.
+**48. Vidarebefordra ett muterbart lån.** En funktion med `push: &mut [f32; 24]` skickar lånet vidare med `face_basis(&mut push, face)`. Formen visar att det andra anropet får ändra värdet.
 
 **49. Flytlitteraler får typ från sammanhanget.** I 0.11.2 ger både
 `x * 2.0` och `2.0 * x` ett `f32` när `x` och returtypen är `f32`.
