@@ -1,0 +1,107 @@
+capability filesystem
+
+import ..src.play as play
+import std.json as json
+import sys
+
+fn command(x: f32, jump: bool) -> play.Input { play.Input { x: x, z: 0.0, jump: jump } }
+
+@test fn validated_scene_edits_replace_by_name_and_preserve_order() {
+    mut scene := play.empty("Workshop")
+    assert(play.upsert(&mut scene, "{\"name\":\"A\",\"shape\":\"box\"}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"B\",\"shape\":\"box\"}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"C\",\"shape\":\"sphere\"}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"B\",\"shape\":\"sphere\",\"role\":\"player\",\"mass\":1}").is_ok())
+    before := play.encode(&scene)
+    for input in [
+        "{\"name\":\"B\",\"shape\":\"sphere\",\"size\":[1,2,3]}",
+        "{\"name\":\"D\",\"shape\":\"box\",\"role\":\"player\",\"mass\":1}",
+        "{\"name\":\"D\",\"shape\":\"box\",\"role\":null}",
+        "{\"name\":\"D\",\"shape\":\"box\",\"mas\":4}",
+        "{\"name\":\"D\",\"shape\":\"box\",\"mass\":0,\"mass\":1}",
+        "{\"name\":\"D\",\"shape\":\"box\",\"mass\":1e309}",
+        "{\"name\":\"D\",\"shape\":\"box\",\"velocity\":[1,0,0]}",
+    ] { assert(play.upsert(&mut scene, input).is_err()) }
+    assert(play.encode(&scene) == before)
+    assert(play.remove(&mut scene, "D").is_err())
+    assert(play.remove(&mut scene, "B").is_ok())
+    assert(scene.entities.len == 2 && scene.entities[0].name == "A" && scene.entities[1].name == "C")
+    assert(play.validate_name("  ").is_err() && play.validate_name("Hål 🟡").is_ok())
+}
+
+@test fn scene_version_unique_entities_and_types_are_checked() {
+    assert(play.decode("{\"version\":2,\"name\":\"A\",\"entities\":[]}").is_err())
+    assert(play.decode("{\"version\":1,\"name\":\"A\",\"entities\":{}}").is_err())
+    assert(play.decode("{\"version\":1,\"name\":\"A\",\"gravity\":[0,null,0],\"entities\":[]}").is_err())
+    assert(play.decode("{\"version\":1,\"name\":\"A\",\"entities\":[{\"name\":\"one\",\"shape\":\"box\"},{\"name\":\"one\",\"shape\":\"sphere\"}]}").is_err())
+    empty := play.decode("{\"version\":1,\"name\":\"A\",\"entities\":[]}").unwrap()
+    assert(empty.entities.len == 0 && empty.gravity.y < -9.8)
+}
+
+@test fn demo_can_be_played_to_completion_and_reset_from_the_authored_scene() {
+    original := play.demo()
+    source := play.encode(&original)
+    mut s := play.start(&play.decode(source).unwrap())
+    for _ in 0..20 { play.step(&mut s, command(1.0, false)) }
+    assert(s.bodies[s.player].grounded)
+    play.step(&mut s, command(1.0, true))
+    for _ in 0..52 { play.step(&mut s, command(1.0, false)) }
+    assert(s.tick == 73 && s.won)
+    assert(play.position(&s, 1).x > 2.0)
+    assert(play.encode(&s.scene) == source)
+    reset := play.start(&s.scene)
+    assert(reset.tick == 0 && !reset.won && play.position(&reset, 1).x == original.entities[1].position.x)
+    state := json.Doc::parse_text(play.state_json(&s))
+    assert(state.ok && state.get_i64(state.root, "tick").unwrap() == 73 && state.get_bool(state.root, "won").unwrap())
+    entities := state.field(state.root, "entities")
+    assert(state.count(entities) == original.entities.len)
+    goal := state.at(entities, 3)
+    assert(state.get_str(goal, "name").unwrap() == "Beacon" && !state.get_bool(goal, "grounded").unwrap())
+}
+
+@test fn frame_rate_does_not_change_the_simulation_and_fractional_time_is_preserved() {
+    original := play.demo()
+    mut sixty := play.start(&original)
+    mut fast := play.start(&original)
+    for _ in 0..60 { play.step(&mut sixty, command(1.0, false)) }
+    for _ in 0..144 { _ := play.advance(&mut fast, 1.0 / 144.0, command(1.0, false)) }
+    assert(play.state_json(&sixty) == play.state_json(&fast))
+    p0 := play.position(&fast, 4)
+    assert(play.advance(&mut fast, 1.0 / 120.0, command(0.0, false)) == 0)
+    assert(play.position(&fast, 4).y == p0.y)
+    assert(play.advance(&mut fast, 1.0 / 120.0, command(0.0, false)) == 1)
+    assert(play.advance(&mut fast, 120.0, command(0.0, false)) == 8)
+    assert(play.advance(&mut fast, -1.0, command(0.0, false)) == 0)
+    assert(fast.tick == 69)
+}
+
+@test fn jump_is_buffered_once_across_frames_without_a_tick_and_positions_interpolate() {
+    original := play.demo()
+    mut s := play.start(&original)
+    for _ in 0..5 { play.step(&mut s, command(0.0, false)) }
+    start := play.position(&s, 1)
+    assert(s.bodies[s.player].grounded)
+    assert(play.advance(&mut s, 1.0 / 120.0, command(1.0, true)) == 0)
+    assert(play.advance(&mut s, 1.0 / 120.0, command(1.0, false)) == 1)
+    end := play.position(&s, 1)
+    assert(end.y > start.y + 0.05 && end.x > start.x)
+    assert(play.advance(&mut s, 1.0 / 120.0, command(1.0, false)) == 0)
+    middle := play.render_position(&s, 1)
+    assert(middle.x > start.x && middle.x < end.x && middle.y > start.y && middle.y < end.y)
+    for _ in 0..100 { _ := play.advance(&mut s, 1.0 / 60.0, command(0.0, false)) }
+    assert(s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 0.0)
+}
+
+@test fn save_roundtrips_authored_values_and_failed_edits_leave_the_file_intact() {
+    mut scene := play.demo()
+    scene.name = "Åskans \"arena\""
+    path := "/tmp/storm-scene-" + sys.pid().str() + ".json"
+    assert(play.save(&scene, path).is_ok())
+    loaded := play.load(path).unwrap()
+    before := play.encode(&scene)
+    assert(play.encode(&loaded) == before)
+    scene.name = ""
+    assert(play.save(&scene, path).is_err())
+    assert(play.encode(&play.load(path).unwrap()) == before)
+    assert(sys.remove_file(path).ok)
+}

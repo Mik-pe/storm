@@ -1,0 +1,69 @@
+import core
+import std.json as json
+
+pub fn fields(doc: &json.Doc, node: i32, allowed: []string) -> Result<(), string> {
+    if doc.kind(node) != .Object { return .Err("expected an object") }
+    mut seen: []string = []
+    for i in 0..doc.count(node) {
+        key := doc.key_at(node, i).unwrap_or_default()
+        mut known := false
+        for field in allowed { if field == key { known = true; break } }
+        if !known { return .Err("unknown field '" + key + "'") }
+        for field in seen { if field == key { return .Err("duplicate field '" + key + "'") } }
+        seen.push(move key)
+    }
+    .Ok
+}
+
+pub fn validate_name(value: string) -> Result<(), string> {
+    if value.len == 0 || value.len > 128 { return .Err("name must contain 1 to 128 UTF-8 bytes") }
+    mut visible := false
+    for ch in value.bytes() {
+        if ch < 32 { return .Err("name cannot contain control characters") }
+        if ch != 32 { visible = true }
+    }
+    if !visible { return .Err("name must contain visible text") }
+    .Ok
+}
+
+pub fn name(doc: &json.Doc, node: i32) -> Result<string, string> {
+    value := doc.get_str(node, "name").unwrap_or_default()
+    validate_name(value)?
+    .Ok(value)
+}
+
+fn number(doc: &json.Doc, node: i32, key: string) -> Result<f32, string> {
+    value := match doc.as_f64(node) {
+        .Some(n) => n,
+        .None => { return .Err(key + " requires a finite number") },
+    }
+    if !value.is_finite() || value < -100000.0 || value > 100000.0 {
+        return .Err(key + " exceeds the supported range [-100000,100000]")
+    }
+    .Ok(f32(value))
+}
+
+pub fn scalar(doc: &json.Doc, node: i32, key: string, fallback: f32) -> Result<f32, string> {
+    member := doc.field(node, key)
+    if member < 0 { return .Ok(fallback) }
+    number(doc, member, key)
+}
+
+pub fn vector(doc: &json.Doc, node: i32, key: string, fallback: core.Vec3) -> Result<core.Vec3, string> {
+    member := doc.field(node, key)
+    if member < 0 { return .Ok(fallback) }
+    if doc.kind(member) != .Array || doc.count(member) != 3 { return .Err(key + " requires a three-number array") }
+    x := number(doc, doc.at(member, 0), key)?
+    y := number(doc, doc.at(member, 1), key)?
+    z := number(doc, doc.at(member, 2), key)?
+    .Ok(core.vec3(x, y, z))
+}
+
+pub fn vector_field(w: &mut json.Writer, key: string, v: core.Vec3) {
+    w.key(key)
+    w.array()
+    w.decimal(f64(v.x))
+    w.decimal(f64(v.y))
+    w.decimal(f64(v.z))
+    w.end()
+}

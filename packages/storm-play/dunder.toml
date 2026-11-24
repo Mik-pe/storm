@@ -1,0 +1,8 @@
+name = "storm-play"
+version = "0.1.0"
+root = "src/play.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+physics = { path = "../storm-physics" }

@@ -1,0 +1,7 @@
+name = "storm-physics"
+version = "0.1.0"
+root = "src/physics.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }

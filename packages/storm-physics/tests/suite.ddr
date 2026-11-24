@@ -1,0 +1,96 @@
+import ..src.physics as physics
+import core
+import std.math as _
+
+fn zero() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
+fn gravity() -> core.Vec3 { core.vec3(0.0, -9.81, 0.0) }
+fn floor() -> physics.Body { physics.box_body(core.vec3(0.0, -0.5, 0.0), core.vec3(8.0, 0.5, 8.0), 0.0) }
+fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.002 }
+
+@test fn gravity_uses_seconds_and_an_impulse_respects_mass() {
+    mut bodies: []physics.Body = [physics.sphere(zero(), 0.5, 2.0), floor()]
+    bodies[1].position.y = -20.0
+    physics.impulse(&mut bodies[0], core.vec3(8.0, 0.0, 0.0))
+    physics.impulse(&mut bodies[1], core.vec3(8.0, 0.0, 0.0))
+    for _tick in 0..60 { _ := physics.step(&mut bodies, gravity(), 1.0 / 60.0) }
+    assert(near(bodies[0].position.x, 4.0))
+    assert(near(bodies[0].velocity.y, -9.81))
+    assert(near(bodies[0].position.y, -4.98675))
+    assert(near(bodies[1].position.y, -20.0) && near(bodies[1].velocity.x, 0.0))
+}
+
+@test fn sphere_sleeps_on_a_floor_and_leaves_support_after_kick() {
+    mut bodies: []physics.Body = [physics.sphere(core.vec3(0.5, 4.0, 0.2), 0.5, 1.0), floor()]
+    mut hits := 0
+    for _tick in 0..300 { hits = physics.step(&mut bodies, gravity(), 1.0 / 60.0) }
+    assert(hits == 1 && bodies[0].grounded)
+    assert(near(bodies[0].position.y, 0.5) && near(bodies[0].velocity.y, 0.0))
+    physics.impulse(&mut bodies[0], core.vec3(0.0, 4.0, 0.0))
+    assert(physics.step(&mut bodies, gravity(), 1.0 / 60.0) == 0)
+    assert(!bodies[0].grounded && bodies[0].velocity.y > 3.0)
+}
+
+@test fn spheres_exchange_momentum_in_an_elastic_impact() {
+    mut bodies: []physics.Body = [physics.sphere(core.vec3(-0.51, 0.0, 0.0), 0.5, 1.0),
+        physics.sphere(core.vec3(0.51, 0.0, 0.0), 0.5, 3.0)]
+    bodies[0].velocity.x = 4.0
+    bodies[0].restitution = 1.0
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(near(bodies[0].velocity.x, -2.0) && near(bodies[1].velocity.x, 2.0))
+}
+
+@test fn three_boxes_stack_under_gravity_without_drifting() {
+    mut bodies: []physics.Body = [floor()]
+    for i in 0..3 {
+        bodies.push(physics.box_body(core.vec3(0.0, f32(i) * 1.1 + 0.6, 0.0), core.vec3(0.5, 0.5, 0.5), 1.0))
+    }
+    mut hits := 0
+    for _tick in 0..360 { hits = physics.step(&mut bodies, gravity(), 1.0 / 60.0) }
+    assert(hits == 3)
+    for i in 1..4 {
+        assert((bodies[i].position.y - (f32(i) - 0.5)).abs() < 0.02)
+        assert(bodies[i].grounded && bodies[i].velocity.y.abs() < 0.05)
+    }
+}
+
+@test fn friction_dissipates_slide_without_reversing_it() {
+    mut bodies: []physics.Body = [floor(), physics.box_body(core.vec3(0.0, 0.5, 0.0), core.vec3(0.5, 0.5, 0.5), 1.0)]
+    bodies[1].velocity.x = 4.0
+    for _tick in 0..90 { _ := physics.step(&mut bodies, gravity(), 1.0 / 60.0) }
+    assert(bodies[1].position.x > 1.0 && bodies[1].position.x < 2.0)
+    assert(near(bodies[1].velocity.x, 0.0) && bodies[1].grounded)
+}
+
+@test fn sphere_box_uses_rounded_corners_and_ejects_an_inside_centre() {
+    box := physics.box_body(zero(), core.vec3(1.0, 1.0, 1.0), 0.0)
+    mut ball := physics.sphere(core.vec3(1.4, 1.4, 0.0), 0.5, 1.0)
+    assert(!physics.overlap(&box, &ball) && !physics.overlap(&ball, &box))
+    ball.position = core.vec3(1.3, 1.3, 0.0)
+    assert(physics.overlap(&ball, &box) && physics.overlap(&box, &ball))
+    ball.position = core.vec3(0.0, 0.8, 0.0)
+    mut bodies: []physics.Body = [ball, box]
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(near(bodies[0].position.y, 1.5) && near(bodies[0].position.x, 0.0))
+}
+
+@test fn fast_ball_hits_thin_static_wall() {
+    mut bodies: []physics.Body = [physics.sphere(core.vec3(-0.46, 0.0, 0.0), 0.1, 1.0),
+        physics.box_body(zero(), core.vec3(0.01, 1.0, 1.0), 0.0)]
+    bodies[0].velocity.x = 40.0
+    _ := physics.step(&mut bodies, zero(), 1.0 / 60.0)
+    assert(near(bodies[0].position.x, -0.11) && near(bodies[0].velocity.x, 0.0))
+    assert(!bodies[0].grounded)
+}
+
+@test fn replay_preserves_positions_velocities_and_contact_counts() {
+    mut initial: []physics.Body = [floor(), physics.sphere(core.vec3(0.3, 3.0, 0.0), 0.5, 1.0),
+        physics.box_body(core.vec3(0.0, 0.5, 0.0), core.vec3(0.5, 0.5, 0.5), 2.0)]
+    initial[1].restitution = 0.4
+    mut replay := initial.clone()
+    for _tick in 0..180 {
+        assert(physics.step(&mut initial, gravity(), 1.0 / 60.0) == physics.step(&mut replay, gravity(), 1.0 / 60.0))
+        for i in 0..initial.len {
+            assert(initial[i].position.y == replay[i].position.y && initial[i].velocity.x == replay[i].velocity.x)
+        }
+    }
+}

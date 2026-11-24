@@ -1,0 +1,230 @@
+// Translational rigid bodies in metres and seconds. Box extents are measured
+// from the centre. A sphere stores its radius on all three axes.
+import core
+import std.math as _
+
+pub enum Shape { Sphere, Box }
+
+pub struct Body {
+    shape: Shape,
+    half_extents: core.Vec3,
+    position: core.Vec3,
+    velocity: core.Vec3,
+    inverse_mass: f32,
+    restitution: f32,
+    friction: f32,
+    grounded: bool,
+}
+
+fn lesser(a: f32, b: f32) -> f32 { if a < b { return a }; b }
+fn greater(a: f32, b: f32) -> f32 { if a > b { return a }; b }
+fn clamp(value: f32, low: f32, high: f32) -> f32 { lesser(greater(value, low), high) }
+fn sign(value: f32) -> f32 { if value < 0.0 { return -1.0 }; 1.0 }
+
+fn body(shape: Shape, position: core.Vec3, half: core.Vec3, mass: f32) -> Body {
+    Body {
+        shape: shape, position: position, half_extents: half,
+        velocity: core.vec3(0.0, 0.0, 0.0),
+        inverse_mass: if mass > 0.0 { 1.0 / mass } else { 0.0 },
+        restitution: 0.0, friction: 0.55, grounded: false,
+    }
+}
+
+pub fn sphere(position: core.Vec3, radius: f32, mass: f32) -> Body {
+    r := greater(radius, 0.0001)
+    body(.Sphere, position, core.vec3(r, r, r), mass)
+}
+
+pub fn box_body(position: core.Vec3, half_extents: core.Vec3, mass: f32) -> Body {
+    half := core.vec3(greater(half_extents.x, 0.0001), greater(half_extents.y, 0.0001), greater(half_extents.z, 0.0001))
+    body(.Box, position, half, mass)
+}
+
+pub fn impulse(b: &mut Body, kick: core.Vec3) {
+    if b.inverse_mass > 0.0 { b.velocity = core.add(b.velocity, core.scale(kick, b.inverse_mass)) }
+}
+
+// A contact normal points from the first body into the second.
+struct Contact { normal: core.Vec3, depth: f32 }
+
+fn nearest_axis(delta: core.Vec3, depth: core.Vec3) -> Contact {
+    if depth.x <= depth.y && depth.x <= depth.z {
+        return Contact { normal: core.vec3(sign(delta.x), 0.0, 0.0), depth: depth.x }
+    }
+    if depth.y <= depth.z {
+        return Contact { normal: core.vec3(0.0, sign(delta.y), 0.0), depth: depth.y }
+    }
+    Contact { normal: core.vec3(0.0, 0.0, sign(delta.z)), depth: depth.z }
+}
+
+fn sphere_contact(offset: core.Vec3, radius: f32) -> Option<Contact> {
+    squared := core.dot(offset, offset)
+    if squared > radius * radius { return .None }
+    if squared == 0.0 {
+        return .Some(Contact { normal: core.vec3(1.0, 0.0, 0.0), depth: radius })
+    }
+    distance := squared.sqrt()
+    .Some(Contact { normal: core.scale(offset, 1.0 / distance), depth: radius - distance })
+}
+
+fn box_sphere(box: &Body, ball: &Body) -> Option<Contact> {
+    d := core.sub(ball.position, box.position)
+    h := box.half_extents
+    point := core.vec3(clamp(d.x, -h.x, h.x), clamp(d.y, -h.y, h.y), clamp(d.z, -h.z, h.z))
+    offset := core.sub(d, point)
+    if core.dot(offset, offset) > 0.0 { return sphere_contact(offset, ball.half_extents.x) }
+    // The centre is inside or exactly on a face. Eject along its shortest way out.
+    mut nearest := nearest_axis(d, core.vec3(h.x - d.x.abs(), h.y - d.y.abs(), h.z - d.z.abs()))
+    nearest.depth = nearest.depth + ball.half_extents.x
+    .Some(nearest)
+}
+
+fn contact(a: &Body, b: &Body) -> Option<Contact> {
+    if a.shape == .Box && b.shape == .Sphere { return box_sphere(a, b) }
+    if a.shape == .Sphere && b.shape == .Box {
+        return match box_sphere(b, a) {
+            .None => .None,
+            .Some(hit) => .Some(Contact { normal: core.scale(hit.normal, -1.0), depth: hit.depth }),
+        }
+    }
+    d := core.sub(b.position, a.position)
+    if a.shape == .Sphere { return sphere_contact(d, a.half_extents.x + b.half_extents.x) }
+    h := core.add(a.half_extents, b.half_extents)
+    depth := core.vec3(h.x - d.x.abs(), h.y - d.y.abs(), h.z - d.z.abs())
+    if depth.x < 0.0 || depth.y < 0.0 || depth.z < 0.0 { return .None }
+    .Some(nearest_axis(d, depth))
+}
+
+pub fn overlap(a: &Body, b: &Body) -> bool {
+    contact(a, b).is_some()
+}
+
+fn resolve(bodies: &mut []Body, i: i32, j: i32, hit: &Contact) -> bool {
+    wa := bodies[i].inverse_mass
+    wb := bodies[j].inverse_mass
+    total := wa + wb
+    n := hit.normal
+    // Leave a hairline of overlap so a resting stack retains its contacts.
+    depth := greater(hit.depth - 0.0002, 0.0)
+    separated := depth > 0.00001
+    if separated {
+        shift := core.scale(n, depth / total)
+        bodies[i].position = core.sub(bodies[i].position, core.scale(shift, wa))
+        bodies[j].position = core.add(bodies[j].position, core.scale(shift, wb))
+    }
+
+    relative := core.sub(bodies[j].velocity, bodies[i].velocity)
+    speed := core.dot(relative, n)
+    if speed >= -0.00001 { return separated }
+    bounce := if speed < -0.6 { clamp(greater(bodies[i].restitution, bodies[j].restitution), 0.0, 1.0) } else { 0.0 }
+    normal_impulse := -(1.0 + bounce) * speed / total
+    mut applied := core.scale(n, normal_impulse)
+    tangent := core.sub(relative, core.scale(n, speed))
+    length := core.length(tangent)
+    if length > 0.00001 {
+        friction := greater(bodies[i].friction, 0.0) * greater(bodies[j].friction, 0.0)
+        magnitude := lesser(length / total, friction.sqrt() * normal_impulse)
+        applied = core.sub(applied, core.scale(tangent, magnitude / length))
+    }
+    bodies[i].velocity = core.sub(bodies[i].velocity, core.scale(applied, wa))
+    bodies[j].velocity = core.add(bodies[j].velocity, core.scale(applied, wb))
+    true
+}
+
+struct Pair { a: i32, b: i32 }
+
+// Keep the application-owned body array in stable entity order. Sort indices
+// along X so distant pairs never enter the iterative contact solver.
+fn candidates(bodies: &[]Body, order: &mut []i32, pairs: &mut []Pair) {
+    for i in 1..order.len {
+        id := order[i]
+        left := bodies[id].position.x - bodies[id].half_extents.x
+        mut j := i
+        while j > 0 {
+            other := order[j - 1]
+            if bodies[other].position.x - bodies[other].half_extents.x <= left { break }
+            order[j] = other
+            j = j - 1
+        }
+        order[j] = id
+    }
+    pairs.clear()
+    for p in 0..order.len {
+        i := order[p]
+        a := &bodies[i]
+        right := a.position.x + a.half_extents.x
+        for q in p + 1..order.len {
+            j := order[q]
+            b := &bodies[j]
+            if b.position.x - b.half_extents.x > right { break }
+            if a.inverse_mass == 0.0 && b.inverse_mass == 0.0 { continue }
+            if (a.position.y - b.position.y).abs() > a.half_extents.y + b.half_extents.y ||
+            (a.position.z - b.position.z).abs() > a.half_extents.z + b.half_extents.z { continue }
+            pairs.push(Pair { a: i, b: j })
+        }
+    }
+}
+
+// Fixed ticks may be subdivided for fast, small bodies. The cap bounds work
+// per tick; this discrete solver handles travel up to eight minimum half-extents
+// per tick at half-extent/2 resolution.
+fn subdivisions(bodies: &[]Body, gravity: core.Vec3, dt: f32) -> i32 {
+    mut count: i32 = 1
+    for i in 0..bodies.len {
+        b := &bodies[i]
+        if b.inverse_mass == 0.0 { continue }
+        half := lesser(b.half_extents.x, lesser(b.half_extents.y, b.half_extents.z))
+        speed := greater(core.length(b.velocity), core.length(core.add(b.velocity, core.scale(gravity, dt))))
+        needed := lesser(speed * dt * 2.0 / half, 16.0)
+        if needed > f32(count) { count = i32(needed.ceil()) }
+    }
+    count
+}
+
+// Advance a simulation tick and return the number of contact pairs at its end.
+pub fn step(bodies: &mut []Body, gravity: core.Vec3, dt: f32) -> i32 {
+    if !dt.is_finite() || dt <= 0.0 || bodies.len == 0 { return 0 }
+    count := subdivisions(bodies, gravity, dt)
+    h := dt / f32(count)
+    mut order: []i32 = []
+    order.reserve(bodies.len)
+    for i in 0..bodies.len { order.push(i) }
+    mut pairs: []Pair = []
+    mut contacts := 0
+    for substep in 0..count {
+        for i in 0..bodies.len {
+            bodies[i].grounded = false
+            if bodies[i].inverse_mass == 0.0 { continue }
+            bodies[i].velocity = core.add(bodies[i].velocity, core.scale(gravity, h))
+            bodies[i].position = core.add(bodies[i].position, core.scale(bodies[i].velocity, h))
+        }
+        candidates(bodies, &mut order, &mut pairs)
+        for _iteration in 0..8 {
+            mut any := false
+            for pair in pairs {
+                match contact(&bodies[pair.a], &bodies[pair.b]) {
+                    .None => {},
+                    .Some(hit) => {
+                        if resolve(&mut bodies, pair.a, pair.b, &hit) { any = true }
+                    },
+                }
+            }
+            if !any { break }
+        }
+        if substep + 1 == count {
+            for pair in pairs {
+                match contact(&bodies[pair.a], &bodies[pair.b]) {
+                    .None => {},
+                    .Some(hit) => {
+                        contacts = contacts + 1
+                        relative := core.sub(bodies[pair.b].velocity, bodies[pair.a].velocity)
+                        if core.dot(relative, hit.normal) > 0.15 { continue }
+                        if hit.normal.y < -0.5 && bodies[pair.a].inverse_mass > 0.0 { bodies[pair.a].grounded = true }
+                        if hit.normal.y > 0.5 && bodies[pair.b].inverse_mass > 0.0 { bodies[pair.b].grounded = true }
+                    },
+                }
+            }
+        }
+    }
+    contacts
+}

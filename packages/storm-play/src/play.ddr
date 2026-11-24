@@ -1,0 +1,293 @@
+// Authored scenes and fixed-tick game sessions are shared by the editor and agent tools.
+capability filesystem
+
+import .codec
+import core
+import physics
+import std.fs as fs
+import std.json as json
+import sys
+
+pub const MAX_ENTITIES: i32 = 128
+pub const TICK_RATE: i32 = 60
+pub const TICK_SECONDS: f64 = 1.0 / 60.0
+const MAX_CATCHUP: i32 = 8
+
+pub enum Shape { Box, Sphere }
+pub enum Role { Prop, Player, Goal }
+
+pub struct Entity {
+    name: string, shape: Shape, role: Role, position: core.Vec3, size: core.Vec3,
+    velocity: core.Vec3, mass: f32, restitution: f32, friction: f32, color: core.Vec3,
+}
+
+pub struct Scene { name: string, gravity: core.Vec3, entities: []Entity }
+pub struct Input { x: f32, z: f32, jump: bool }
+pub struct Session {
+    scene: Scene, tick: i64, won: bool, contacts: i32, player: i32,
+    bodies: []physics.Body, body_indices: []i32, sensors: []physics.Body,
+    previous: []core.Vec3, accumulator: f64, jump_pending: bool,
+}
+
+pub fn validate_name(name: string) -> Result<(), string> { codec.validate_name(name) }
+
+pub fn empty(name: string) -> Scene {
+    Scene { name: name.clone(), gravity: core.vec3(0.0, -9.81, 0.0), entities: [] }
+}
+
+fn entity(name: string, shape: Shape, role: Role, p: core.Vec3, size: core.Vec3, mass: f32, color: core.Vec3) -> Entity {
+    Entity { name: name.clone(), shape: shape, role: role, position: p, size: size, mass: mass,
+        velocity: core.vec3(0.0, 0.0, 0.0), restitution: 0.0, friction: 0.6, color: color }
+}
+
+pub fn demo() -> Scene {
+    mut scene := empty("First light")
+    scene.entities.push(entity("Slate platform", .Box, .Prop, core.vec3(0.0, -0.25, 0.0), core.vec3(8.6, 0.5, 4.4),
+        0.0, core.vec3(0.18, 0.25, 0.29)))
+    scene.entities.push(entity("Runner", .Sphere, .Player, core.vec3(-2.7, 0.4, 0.0), core.vec3(0.8, 0.8, 0.8),
+        1.0, core.vec3(0.04, 0.50, 0.42)))
+    scene.entities.push(entity("Hurdle", .Box, .Prop, core.vec3(0.0, 0.31, 0.0), core.vec3(0.45, 0.62, 2.4),
+        0.0, core.vec3(0.60, 0.35, 0.18)))
+    scene.entities.push(entity("Beacon", .Sphere, .Goal, core.vec3(2.7, 0.65, 0.0), core.vec3(1.0, 1.0, 1.0),
+        0.0, core.vec3(1.0, 0.62, 0.12)))
+    scene.entities.push(entity("Crate", .Box, .Prop, core.vec3(-1.5, 1.1, -1.4), core.vec3(0.7, 0.7, 0.7),
+        1.4, core.vec3(0.70, 0.46, 0.26)))
+    scene
+}
+
+fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
+    codec.fields(doc, node, ["name", "shape", "role", "position", "size", "velocity", "mass", "restitution", "friction", "color"])?
+    name := codec.name(doc, node)?
+    shape_name := doc.get_str(node, "shape").unwrap_or_default()
+    shape := if shape_name == "sphere" { Shape.Sphere } else { Shape.Box }
+    if shape_name != "box" && shape_name != "sphere" { return .Err("shape must be box or sphere") }
+    role_name := if doc.field(node, "role") < 0 { "prop" } else { doc.get_str(node, "role").unwrap_or_default() }
+    role := if role_name == "player" { Role.Player } else if role_name == "goal" { Role.Goal } else { Role.Prop }
+    if role_name != "prop" && role_name != "player" && role_name != "goal" { return .Err("role must be prop, player or goal") }
+    zero := core.vec3(0.0, 0.0, 0.0)
+    pos := codec.vector(doc, node, "position", zero)?
+    size := codec.vector(doc, node, "size", core.vec3(1.0, 1.0, 1.0))?
+    velocity := codec.vector(doc, node, "velocity", zero)?
+    color := codec.vector(doc, node, "color", core.vec3(0.55, 0.62, 0.70))?
+    mass := codec.scalar(doc, node, "mass", 0.0)?
+    friction := codec.scalar(doc, node, "friction", 0.6)?
+    restitution := codec.scalar(doc, node, "restitution", 0.0)?
+    if size.x < 0.001 || size.y < 0.001 || size.z < 0.001 { return .Err("size components must be at least 0.001") }
+    if shape == .Sphere && (size.x != size.y || size.x != size.z) { return .Err("sphere diameters must match") }
+    if mass < 0.0 || (mass > 0.0 && mass < 0.001) { return .Err("mass must be zero or at least 0.001") }
+    if mass == 0.0 && (velocity.x != 0.0 || velocity.y != 0.0 || velocity.z != 0.0) { return .Err("a static entity cannot have initial velocity") }
+    if role == .Player && mass == 0.0 { return .Err("a player requires positive mass") }
+    if role == .Goal && mass != 0.0 { return .Err("a goal must have zero mass") }
+    if color.x < 0.0 || color.y < 0.0 || color.z < 0.0 || color.x > 1.0 || color.y > 1.0 || color.z > 1.0 { return .Err("color components must be in [0,1]") }
+    if friction < 0.0 || friction > 1.0 || restitution < 0.0 || restitution > 1.0 { return .Err("friction and restitution must be in [0,1]") }
+    .Ok(Entity { name: name, shape: shape, role: role, position: pos, size: size,
+        velocity: velocity, mass: mass, friction: friction, restitution: restitution, color: color })
+}
+
+fn place(scene: &mut Scene, move value: Entity, replace: bool) -> Result<(), string> {
+    mut index := -1
+    for i in 0..scene.entities.len {
+        if scene.entities[i].name == value.name { index = i }
+        else if value.role == .Player && scene.entities[i].role == .Player { return .Err("a scene can have only one player") }
+    }
+    if index >= 0 {
+        if !replace { return .Err("duplicate entity name '" + value.name + "'") }
+        scene.entities[index] = value
+    } else {
+        if scene.entities.len >= MAX_ENTITIES { return .Err("a scene supports at most " + MAX_ENTITIES.str() + " entities") }
+        scene.entities.push(move value)
+    }
+    .Ok
+}
+
+pub fn upsert(scene: &mut Scene, source: string) -> Result<(), string> {
+    doc := json.Doc::parse_text(source)
+    if !doc.ok { return .Err(doc.error.clone()) }
+    value := read_entity(&doc, doc.root)?
+    place(&mut scene, move value, true)
+}
+
+pub fn remove(scene: &mut Scene, name: string) -> Result<(), string> {
+    for i in 0..scene.entities.len {
+        if scene.entities[i].name == name {
+            for j in i + 1..scene.entities.len { scene.entities.swap(j - 1, j) }
+            _ := scene.entities.pop()
+            return .Ok
+        }
+    }
+    .Err("unknown entity '" + name + "'")
+}
+
+pub fn decode(source: string) -> Result<Scene, string> {
+    doc := json.Doc::parse_text(source)
+    if !doc.ok { return .Err(doc.error.clone()) }
+    root := doc.root
+    codec.fields(&doc, root, ["version", "name", "gravity", "entities"])?
+    if doc.get_i64(root, "version").unwrap_or(0) != 1 { return .Err("expected scene version 1") }
+    name := codec.name(&doc, root)?
+    mut scene := empty(name)
+    scene.gravity = codec.vector(&doc, root, "gravity", scene.gravity)?
+    items := doc.field(root, "entities")
+    if doc.kind(items) != .Array { return .Err("entities must be an array") }
+    if doc.count(items) > MAX_ENTITIES { return .Err("a scene supports at most " + MAX_ENTITIES.str() + " entities") }
+    for i in 0..doc.count(items) {
+        value := match read_entity(&doc, doc.at(items, i)) {
+            .Ok(v) => v,
+            .Err(err) => { return .Err("entities[" + i.str() + "]: " + err) },
+        }
+        place(&mut scene, move value, false)?
+    }
+    .Ok(scene)
+}
+
+pub fn read_source(path: string) -> Result<string, string> {
+    source := sys.read_text_limit(path, 1048576)
+    if !source.ok { return .Err("cannot read scene '" + path + "': " + sys.error_message(source.error)) }
+    .Ok(source.value)
+}
+
+pub fn load(path: string) -> Result<Scene, string> { decode(read_source(path)?) }
+
+fn write_entity(w: &mut json.Writer, item: &Entity) {
+    w.object()
+    w.key("name"); w.string(item.name)
+    w.key("shape"); w.string(if item.shape == .Sphere { "sphere" } else { "box" })
+    w.key("role"); w.string(if item.role == .Player { "player" } else if item.role == .Goal { "goal" } else { "prop" })
+    codec.vector_field(&mut w, "position", item.position)
+    codec.vector_field(&mut w, "size", item.size)
+    codec.vector_field(&mut w, "velocity", item.velocity)
+    w.key("mass"); w.decimal(f64(item.mass))
+    w.key("friction"); w.decimal(f64(item.friction))
+    w.key("restitution"); w.decimal(f64(item.restitution))
+    codec.vector_field(&mut w, "color", item.color)
+    w.end()
+}
+
+pub fn encode(scene: &Scene) -> string {
+    mut w := json.Writer::new()
+    w.object()
+    w.key("version"); w.integer(1)
+    w.key("name"); w.string(scene.name)
+    codec.vector_field(&mut w, "gravity", scene.gravity)
+    w.key("entities"); w.array()
+    for item in scene.entities { write_entity(&mut w, &item) }
+    w.end()
+    w.end()
+    w.finish().unwrap_or_default()
+}
+
+pub fn save(scene: &Scene, path: string) -> Result<(), string> {
+    source := encode(scene)
+    match decode(source) { .Ok(_) => {}, .Err(err) => { return .Err(err) } }
+    match fs.write_private_text_atomic(path, source + "\n") {
+        .Ok => .Ok,
+        .Err(err) => .Err("cannot save scene '" + path + "': " + err.message()),
+    }
+}
+
+fn make_body(e: &Entity) -> physics.Body {
+    mut body := if e.shape == .Sphere { physics.sphere(e.position, e.size.x * 0.5, e.mass) }
+        else { physics.box_body(e.position, core.scale(e.size, 0.5), e.mass) }
+    body.velocity = e.velocity
+    body.friction = e.friction
+    body.restitution = e.restitution
+    body
+}
+
+pub fn start(scene: &Scene) -> Session {
+    mut session := Session {
+        scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
+        bodies: [], body_indices: [], sensors: [], accumulator: 0.0, jump_pending: false,
+    }
+    for item in scene.entities {
+        body := make_body(&item)
+        session.previous.push(item.position)
+        if item.role == .Goal {
+            session.body_indices.push(-1)
+            session.sensors.push(body)
+        } else {
+            if item.role == .Player { session.player = session.bodies.len }
+            session.body_indices.push(session.bodies.len)
+            session.bodies.push(body)
+        }
+    }
+    session
+}
+
+pub fn position(s: &Session, index: i32) -> core.Vec3 {
+    body := s.body_indices[index]
+    if body < 0 { return s.scene.entities[index].position }
+    s.bodies[body].position
+}
+
+pub fn render_position(s: &Session, index: i32) -> core.Vec3 {
+    before := s.previous[index]
+    core.add(before, core.scale(core.sub(position(s, index), before), f32(s.accumulator)))
+}
+
+fn axis(value: f32) -> f32 {
+    if !value.is_finite() { return 0.0 }
+    if value < -1.0 { return -1.0 }
+    if value > 1.0 { return 1.0 }
+    value
+}
+
+pub fn step(s: &mut Session, input: Input) {
+    for i in 0..s.body_indices.len { s.previous[i] = position(&s, i) }
+    if s.player >= 0 {
+        x := axis(input.x)
+        z := axis(input.z)
+        length := (x * x + z * z).sqrt()
+        speed := if length > 1.0 { f32(4.5) / length } else { f32(4.5) }
+        s.bodies[s.player].velocity.x = x * speed
+        s.bodies[s.player].velocity.z = z * speed
+        if (input.jump || s.jump_pending) && s.bodies[s.player].grounded {
+            s.bodies[s.player].velocity.y = 5.6
+        }
+    }
+    s.jump_pending = false
+    s.contacts = physics.step(&mut s.bodies, s.scene.gravity, f32(TICK_SECONDS))
+    if s.player >= 0 && !s.won {
+        for i in 0..s.sensors.len {
+            if physics.overlap(&s.bodies[s.player], &s.sensors[i]) { s.won = true; break }
+        }
+    }
+    s.tick += 1
+}
+
+// The accumulator is in ticks. Preserve sub-tick time and a jump edge until a tick consumes it.
+pub fn advance(s: &mut Session, elapsed: f64, input: Input) -> i32 {
+    if !elapsed.is_finite() || elapsed < 0.0 { return 0 }
+    if input.jump { s.jump_pending = true }
+    ticks := elapsed * f64(TICK_RATE)
+    s.accumulator += if ticks > f64(MAX_CATCHUP) { f64(MAX_CATCHUP) } else { ticks }
+    steps := i32(s.accumulator + 0.000000001)
+    s.accumulator -= f64(steps)
+    if s.accumulator < 0.0 { s.accumulator = 0.0 }
+    for _ in 0..steps {
+        step(&mut s, Input { x: input.x, z: input.z, jump: false })
+    }
+    steps
+}
+
+pub fn state_json(s: &Session) -> string {
+    mut w := json.Writer::new()
+    w.object()
+    w.key("tick"); w.integer(s.tick)
+    w.key("won"); w.boolean(s.won)
+    w.key("contacts"); w.integer(i64(s.contacts))
+    w.key("entities"); w.array()
+    for i in 0..s.body_indices.len {
+        body := s.body_indices[i]
+        w.object()
+        w.key("name"); w.string(s.scene.entities[i].name)
+        codec.vector_field(&mut w, "position", position(s, i))
+        velocity := if body < 0 { core.vec3(0.0, 0.0, 0.0) } else { s.bodies[body].velocity }
+        codec.vector_field(&mut w, "velocity", velocity)
+        w.key("grounded"); w.boolean(body >= 0 && s.bodies[body].grounded)
+        w.end()
+    }
+    w.end()
+    w.end()
+    w.finish().unwrap_or_default()
+}
