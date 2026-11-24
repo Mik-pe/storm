@@ -39,8 +39,10 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
         anim.key(0.17, 0.97, 1.11, 0.97, .Smooth),
         anim.key(0.28, 1.025, 0.95, 1.025, .Smooth),
         anim.key(REBOUND_SECONDS, 1.0, 1.0, 1.0, .Smooth)])?
-    mut course := Course { pads: [], prizes: [], impact: move impact,
-        cloud_top: walk_surface.empty(), boost_top: walk_surface.empty(), effects: particles.empty() }
+    mut course := Course {
+        pads: [], prizes: [], impact: move impact,
+        cloud_top: walk_surface.empty(), boost_top: walk_surface.empty(), effects: particles.empty()
+    }
     mut cloud := gltf.Asset { parts: [] }
     mut boost := gltf.Asset { parts: [] }
     mut butterfly := gltf.Asset { parts: [] }
@@ -91,8 +93,10 @@ fn pad_pose(course: &Course, s: &play.Session, index: i32, sub: f32) -> PadPose 
         squash = anim.mix(rest, impact, 0.0, 0.0, weight).scale
     }
     h := e.size.y * 1.9
-    PadPose { scale: core.vec3(e.size.x * squash.x, h * squash.y, e.size.z * squash.z),
-        y: (e.size.y - h) * 0.5 + h * 0.18 * (1.0 - squash.y) }
+    PadPose {
+        scale: core.vec3(e.size.x * squash.x, h * squash.y, e.size.z * squash.z),
+        y: (e.size.y - h) * 0.5 + h * 0.18 * (1.0 - squash.y)
+    }
 }
 
 pub struct PadSurface { center: core.Vec3, scale: core.Vec3, boost: bool }
@@ -104,7 +108,7 @@ pub fn support_surface(course: &Course, s: &play.Session, support: core.Vec3, re
             e := &s.scene.entities[pad.index]
             p := play.position(s, pad.index)
             if (p.y + e.size.y * 0.5 - support.y).abs() <= 0.002 &&
-                (support.x - p.x).abs() <= e.size.x * 0.5 + 0.001 && (support.z - p.z).abs() <= e.size.z * 0.5 + 0.001 {
+            (support.x - p.x).abs() <= e.size.x * 0.5 + 0.001 && (support.z - p.z).abs() <= e.size.z * 0.5 + 0.001 {
                 if index < 0 || pad.index == s.last_cloud { index = pad.index }
                 if index == s.last_cloud { break }
             }
@@ -116,6 +120,39 @@ pub fn support_surface(course: &Course, s: &play.Session, support: core.Vec3, re
     center := if exact { play.position(s, index) } else { play.render_position(s, index) }
     pose := pad_pose(course, s, index, play.render_tick_offset(s, exact))
     .Some(PadSurface { center: core.vec3(center.x, center.y + pose.y, center.z), scale: pose.scale, boost: e.role == .BoostCloud })
+}
+
+// Return the highest cloud platform top beneath (x, y, z), or 0.0 for the meadow.
+pub fn surface_below(course: &Course, s: &play.Session, x: f32, y: f32, z: f32) -> f32 {
+    mut best: f32 = 0.0
+    mut found := false
+    for pad in course.pads {
+        if pad.index < 0 || pad.index >= s.scene.entities.len { continue }
+        e := &s.scene.entities[pad.index]
+        p := play.position(s, pad.index)
+        top := p.y + e.size.y * 0.5
+        if top <= y + 0.08 &&
+        (x - p.x).abs() <= e.size.x * 0.5 + 0.05 &&
+        (z - p.z).abs() <= e.size.z * 0.5 + 0.05 {
+            if !found || top > best {
+                best = top
+                found = true
+            }
+        }
+    }
+    if !found { return 0.0 }
+    best
+}
+
+// Return the center of the first BoostCloud entity if present.
+pub fn boost_cloud_pos(course: &Course, s: &play.Session) -> Option<core.Vec3> {
+    for pad in course.pads {
+        if pad.index < 0 || pad.index >= s.scene.entities.len { continue }
+        if s.scene.entities[pad.index].role == .BoostCloud {
+            return .Some(play.position(s, pad.index))
+        }
+    }
+    .None
 }
 
 pub fn animate(g: &mut scene.Graph, course: &Course, s: &play.Session, exact: bool) {

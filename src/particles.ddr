@@ -8,6 +8,7 @@ import scene
 import std.math as _
 
 const TAU: f32 = 6.2831853
+const PI: f32 = 3.14159265
 const RING_TICKS: f32 = 27.0
 const TRAIL_TICKS: f32 = 39.0
 const BURST_TICKS: f32 = 66.0
@@ -51,6 +52,31 @@ fn glint_mesh(heart: bool) -> []f32 {
     n := if heart { 20 } else { 8 }
     tip := gfx.vertex(0.0, 0.0, 0.19, 0.0, 0.0, 1.0, 0.0, 0.0)
     for i in 0..n { gfx.push_triangle(&mut vertices, tip, edge(i, n, heart), edge((i + 1) % n, n, heart)) }
+    vertices
+}
+
+fn ring_point(index: i32, segs: i32, outer: bool) -> gfx.Vertex {
+    idx := index % segs
+    a := f32(idx) * TAU / f32(segs)
+    even := idx % 2 == 0
+    // Subtle 8-petal scallop lets rotation read on the destination blossom ring.
+    r: f32 = if outer { if even { 1.0 } else { 0.88 } } else { if even { 0.66 } else { 0.60 } }
+    u: f32 = if outer { 1.0 } else { 0.0 }
+    gfx.vertex(r * a.cos(), 0.0, r * a.sin(), 0.0, 1.0, 0.0, u, f32(idx) / f32(segs))
+}
+
+fn ring_mesh() -> []f32 {
+    mut vertices: []f32 = []
+    segs := 16
+    for i in 0..segs {
+        p_in0 := ring_point(i, segs, false)
+        p_out0 := ring_point(i, segs, true)
+        p_in1 := ring_point(i + 1, segs, false)
+        p_out1 := ring_point(i + 1, segs, true)
+        // Wind CCW around +Y (matching gfx.plane) so upward faces pass culling.
+        gfx.push_triangle(&mut vertices, p_in0, p_out1, p_out0)
+        gfx.push_triangle(&mut vertices, p_in0, p_in1, p_out1)
+    }
     vertices
 }
 
@@ -171,7 +197,7 @@ pub fn animate(g: &mut scene.Graph, fx: &Effects, s: &play.Session, exact: bool)
     if fx.puffs.len == 0 { return }
     sub := play.render_tick_offset(s, exact)
     fox := if s.player < 0 { core.vec3(0.0, 0.0, 0.0) } else if exact { s.bodies[s.player].position }
-        else { play.render_position(s, s.body_entities[s.player]) }
+    else { play.render_position(s, s.body_entities[s.player]) }
     cloud := s.last_cloud
     cloud_age := if cloud >= 0 { f32(s.tick - s.cloud_tick) + sub } else { f32(-1.0) }
     ring(&mut g, &fx.puffs, s.cloud_origin, cloud_age)
@@ -182,4 +208,240 @@ pub fn animate(g: &mut scene.Graph, fx: &Effects, s: &play.Session, exact: bool)
         butterfly_burst(&mut g, &fx.burst, s.scene.entities[insect].position, f32(s.tick - s.butterfly_tick) + sub)
     } else { butterfly_burst(&mut g, &fx.burst, fox, -1.0) }
     aura(&mut g, &fx.aura, s, fox, sub)
+}
+
+pub struct CozyEffects {
+    fireflies: []ecs.Entity,
+    landing_halo: ecs.Entity,
+    guide_ring: ecs.Entity,
+    guide_heart: ecs.Entity,
+    landing_puffs: []ecs.Entity,
+    hearts: []ecs.Entity,
+    snooze: []ecs.Entity,
+    boost_shimmer: []ecs.Entity,
+}
+
+pub fn empty_cozy() -> CozyEffects {
+    none := ecs.Entity { index: -1, generation: 0 }
+    CozyEffects {
+        fireflies: [], landing_halo: none, guide_ring: none, guide_heart: none,
+        landing_puffs: [], hearts: [], snooze: [], boost_shimmer: [],
+    }
+}
+
+pub struct CozyCue {
+    fox: core.Vec3,
+    support_y: f32,
+    grounded: bool,
+    landing_age: f32,
+    landing_strength: f32,
+    pet_age: f32,
+    emote_age: f32,
+    snoozing: bool,
+    won: bool,
+    guide_active: bool,
+    guide_pos: core.Vec3,
+    guide_age: f32,
+    boost_pos: Option<core.Vec3>,
+}
+
+pub fn build_cozy(g: &mut scene.Graph) -> CozyEffects {
+    honey_gold := scene.emissive_material(1.0, 0.84, 0.44, 0.88, 0.0, 0.55, 0.85)
+    peach_spark := scene.emissive_material(1.0, 0.74, 0.62, 0.86, 0.0, 0.55, 0.82)
+    pearl_star := scene.emissive_material(1.0, 0.93, 0.78, 0.86, 0.0, 0.55, 0.80)
+    lavender_pearl := scene.emissive_material(0.84, 0.74, 1.0, 0.84, 0.0, 0.55, 0.78)
+    blush_rose := scene.emissive_material(1.0, 0.46, 0.66, 0.90, 0.0, 0.58, 0.72)
+    strawberry_gold := scene.emissive_material(1.0, 0.68, 0.74, 0.90, 0.0, 0.54, 0.84)
+    cream_blush := scene.emissive_material(1.0, 0.90, 0.88, 0.74, 0.0, 0.70, 0.58)
+    blush_ring := scene.emissive_material(1.0, 0.78, 0.84, 0.80, 0.0, 0.66, 0.62)
+    blush_puff := scene.emissive_material(1.0, 0.87, 0.90, 0.76, 0.0, 0.84, 0.25)
+    cream_puff := scene.emissive_material(1.0, 0.94, 0.88, 0.76, 0.0, 0.84, 0.24)
+
+    // Own each of the four shared geometries on its first node so nothing sits idle.
+    star_owner := make_node(&mut g, &honey_gold)
+    _ := g.set_mesh(star_owner, glint_mesh(false))
+    ring_owner := make_node(&mut g, &cream_blush)
+    _ := g.set_mesh(ring_owner, ring_mesh())
+    heart_owner := make_node(&mut g, &blush_rose)
+    _ := g.set_mesh(heart_owner, glint_mesh(true))
+    puff_owner := make_node(&mut g, &blush_puff)
+    _ := g.set_mesh(puff_owner, puff_mesh())
+
+    mut fx := empty_cozy()
+    fx.fireflies.push(star_owner)
+    for i in 1..12 {
+        mat := if i % 4 == 0 { honey_gold } else if i % 4 == 1 { peach_spark }
+        else if i % 4 == 2 { pearl_star } else { lavender_pearl }
+        fx.fireflies.push(copy_node(&mut g, star_owner, &mat))
+    }
+    fx.landing_halo = ring_owner
+    fx.guide_ring = copy_node(&mut g, ring_owner, &blush_ring)
+    fx.guide_heart = heart_owner
+    fx.landing_puffs.push(puff_owner)
+    for i in 1..5 {
+        fx.landing_puffs.push(copy_node(&mut g, puff_owner, &if i % 2 == 0 { blush_puff } else { cream_puff }))
+    }
+    for i in 0..6 {
+        if i % 2 == 0 {
+            fx.hearts.push(copy_node(&mut g, heart_owner, &if i == 2 { strawberry_gold } else { blush_rose }))
+        } else {
+            fx.hearts.push(copy_node(&mut g, star_owner, &if i == 3 { pearl_star } else { honey_gold }))
+        }
+    }
+    for i in 0..4 {
+        fx.snooze.push(copy_node(&mut g, star_owner, &if i % 2 == 0 { lavender_pearl } else { pearl_star }))
+    }
+    for i in 0..3 {
+        fx.boost_shimmer.push(copy_node(&mut g, star_owner, &if i == 1 { honey_gold } else { strawberry_gold }))
+    }
+    fx
+}
+
+fn clamp01(v: f32) -> f32 {
+    if v <= 0.0 { return 0.0 }
+    if v >= 1.0 { return 1.0 }
+    v
+}
+
+fn hide_all(g: &mut scene.Graph, nodes: &[]ecs.Entity) {
+    for node in nodes { g.set_visible(node, false) }
+}
+
+fn pose_soft(g: &mut scene.Graph, node: ecs.Entity, pos: core.Vec3, scale: core.Vec3, roll: f32, alpha: f32) {
+    pose(&mut g, node, pos, scale, roll)
+    _ := g.set_material_value(node, .BaseA, alpha)
+}
+
+fn pose_ring(g: &mut scene.Graph, node: ecs.Entity, pos: core.Vec3, radius: f32, yaw: f32, alpha: f32) {
+    g.set_position(node, pos)
+    g.set_scale(node, core.vec3(radius, 1.0, radius))
+    g.set_angles(node, 0.0, yaw, 0.0)
+    _ := g.set_material_value(node, .BaseA, alpha)
+    g.set_visible(node, true)
+}
+
+fn animate_fireflies(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32, won: bool) {
+    for i in 0..nodes.len {
+        f := f32(i)
+        bx := (f32((i * 5 + 2) % 12) / 11.0 - 0.5) * 8.4
+        bz := (f32((i * 7 + 3) % 12) / 11.0 - 0.5) * 5.6
+        by := 0.42 + f32(i % 4) * 0.28
+        phase := seconds * (0.42 + f32(i % 3) * 0.08) + f * 1.37
+        pos := core.vec3(bx + 0.52 * phase.sin(), by + 0.14 * (phase * 1.3 + f).cos(), bz + 0.34 * (2.0 * phase).sin())
+        breath := 0.5 + 0.5 * (seconds * (1.3 + f32(i % 4) * 0.25) + f * 2.1).sin()
+        glow := if won { f32(1.18) } else { f32(1.0) }
+        rad := (0.022 + 0.028 * breath * breath) * glow
+        alpha := (0.36 + 0.52 * breath) * (if won { f32(1.05) } else { f32(1.0) })
+        pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 0.85, rad * 1.15, rad), 0.35 * phase.cos(), if alpha > 0.94 { 0.94 } else { alpha })
+    }
+}
+
+fn animate_landing_halo(g: &mut scene.Graph, node: ecs.Entity, seconds: f32, cue: &CozyCue) {
+    if cue.grounded { g.set_visible(node, false); return }
+    clear := if cue.fox.y > cue.support_y { cue.fox.y - cue.support_y } else { f32(0.0) }
+    height_t := clamp01(clear / 3.0)
+    pulse := 0.5 + 0.5 * (seconds * 3.2).sin()
+    radius := 0.34 + 0.16 * height_t + 0.015 * pulse
+    pos := core.vec3(cue.fox.x, cue.support_y + 0.025, cue.fox.z)
+    pose_ring(&mut g, node, pos, radius, seconds * 0.45, 0.78 - 0.24 * height_t)
+}
+
+fn animate_guide(g: &mut scene.Graph, ring_node: ecs.Entity, heart_node: ecs.Entity, seconds: f32, cue: &CozyCue) {
+    if !cue.guide_active {
+        g.set_visible(ring_node, false)
+        g.set_visible(heart_node, false)
+        return
+    }
+    age := if cue.guide_age >= 0.0 { cue.guide_age } else { f32(0.0) }
+    intro := clamp01(age / 0.22)
+    pulse := 0.5 + 0.5 * (seconds * 3.6 + age * 1.5).sin()
+    ring_r := (0.28 + 0.06 * pulse) * (0.55 + 0.45 * intro)
+    ring_pos := core.vec3(cue.guide_pos.x, cue.guide_pos.y + 0.03, cue.guide_pos.z)
+    pose_ring(&mut g, ring_node, ring_pos, ring_r, seconds * 1.35 + age * 0.6, 0.58 + 0.24 * pulse)
+    heart_bob := 0.19 + 0.045 * (seconds * 3.2 + age).sin()
+    hr := (0.072 + 0.016 * pulse) * (0.65 + 0.35 * intro)
+    heart_pos := core.vec3(cue.guide_pos.x, cue.guide_pos.y + heart_bob, cue.guide_pos.z)
+    pose_soft(&mut g, heart_node, heart_pos, core.vec3(hr, hr, hr), 0.16 * (seconds * 2.4).cos(), 0.80 + 0.14 * pulse)
+}
+
+fn animate_landing_puffs(g: &mut scene.Graph, nodes: &[]ecs.Entity, cue: &CozyCue) {
+    if !(cue.grounded && cue.landing_age >= 0.0 && cue.landing_age < 0.42 && cue.landing_strength > 0.15) {
+        hide_all(&mut g, nodes)
+        return
+    }
+    t := cue.landing_age / 0.42
+    strength := clamp01(cue.landing_strength)
+    ease := 1.0 - (1.0 - t) * (1.0 - t)
+    for i in 0..nodes.len {
+        a := f32(i) * TAU / f32(nodes.len) + 0.35
+        travel := (0.24 + 0.38 * ease) * (0.65 + 0.35 * strength)
+        lift := 0.06 + 0.12 * (PI * t).sin() * strength
+        pos := core.vec3(cue.fox.x + a.cos() * travel, cue.support_y + lift, cue.fox.z + a.sin() * travel)
+        rad := (0.065 + 0.055 * (PI * t).sin()) * (1.0 - t * t) * (0.7 + 0.3 * strength)
+        pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 1.25, rad * 0.65, rad), 0.18 * a.cos(), 0.78 * (1.0 - t * t))
+    }
+}
+
+fn animate_hearts(g: &mut scene.Graph, nodes: &[]ecs.Entity, cue: &CozyCue) {
+    pet_on := cue.pet_age >= 0.0 && cue.pet_age < 1.7
+    emote_on := cue.emote_age >= 0.0 && cue.emote_age < 1.25
+    if !pet_on && !emote_on { hide_all(&mut g, nodes); return }
+    use_pet := pet_on && (!emote_on || cue.pet_age <= cue.emote_age)
+    age := if use_pet { cue.pet_age } else { cue.emote_age }
+    dur: f32 = if use_pet { 1.7 } else { 1.25 }
+    for i in 0..nodes.len {
+        node := nodes[i]
+        stagger := f32(i % 3) * 0.08
+        local := age - stagger
+        span := dur - stagger
+        if local < 0.0 || local >= span { g.set_visible(node, false); continue }
+        t := local / span
+        a := f32(i) * 1.0471976 + 0.40 + t * 0.90
+        spread := 0.18 + 0.34 * (1.0 - (1.0 - t) * (1.0 - t))
+        rise := 0.56 + t * 0.84 + 0.08 * (PI * t).sin()
+        pos := core.add(cue.fox, core.vec3(a.cos() * spread, rise, a.sin() * spread * 0.72))
+        rad := (0.068 + 0.044 * (PI * t).sin()) * (1.0 - t * t * 0.55)
+        pose_soft(&mut g, node, pos, core.vec3(rad, rad, rad), 0.28 * a.sin(), 0.92 * (1.0 - t * t))
+    }
+}
+
+fn animate_snooze(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32, cue: &CozyCue) {
+    if !cue.snoozing { hide_all(&mut g, nodes); return }
+    for i in 0..nodes.len {
+        f := f32(i)
+        cycle := seconds * 0.36 + f * 0.25
+        u := cycle - cycle.floor()
+        sway := (seconds * 1.4 + f * 1.7).sin()
+        pos := core.add(cue.fox, core.vec3(0.16 * sway + (f - 1.5) * 0.07, 0.56 + u * 0.78, 0.14 * (seconds * 1.1 + f).cos()))
+        fade := (PI * u).sin()
+        rad := 0.025 + 0.055 * fade
+        pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 0.88, rad * 1.15, rad), 0.22 * sway, 0.85 * fade)
+    }
+}
+
+fn animate_boost_shimmer(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32, cue: &CozyCue) {
+    match cue.boost_pos {
+        .None => { hide_all(&mut g, nodes) },
+        .Some(bp) => {
+            for i in 0..nodes.len {
+                a := seconds * 1.35 + f32(i) * TAU / f32(nodes.len)
+                bob := 0.14 + 0.12 * (a * 2.0).sin()
+                pulse := 0.5 + 0.5 * (seconds * 3.1 + f32(i) * 2.1).sin()
+                rad := 0.036 + 0.034 * pulse
+                pos := core.add(bp, core.vec3(0.88 * a.cos(), bob, 0.78 * a.sin()))
+                pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 0.82, rad * 1.18, rad), 0.25 * a.sin(), 0.68 + 0.24 * pulse)
+            }
+        },
+    }
+}
+
+pub fn animate_cozy(g: &mut scene.Graph, fx: &CozyEffects, seconds: f32, cue: &CozyCue) {
+    if fx.fireflies.len == 0 { return }
+    animate_fireflies(&mut g, &fx.fireflies, seconds, cue.won)
+    animate_landing_halo(&mut g, fx.landing_halo, seconds, cue)
+    animate_guide(&mut g, fx.guide_ring, fx.guide_heart, seconds, cue)
+    animate_landing_puffs(&mut g, &fx.landing_puffs, cue)
+    animate_hearts(&mut g, &fx.hearts, cue)
+    animate_snooze(&mut g, &fx.snooze, seconds, cue)
+    animate_boost_shimmer(&mut g, &fx.boost_shimmer, seconds, cue)
 }
