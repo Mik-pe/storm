@@ -183,6 +183,7 @@ pub enum ImageUsage {
     ColorAttachmentTransferSrc = 17,
     ColorAttachmentSampled = 20, // COLOR_ATTACHMENT | SAMPLED: env/irradiance cubes
     TransferDstSampled = 6, // TRANSFER_DST | SAMPLED: uploaded BRDF LUT
+    TransferSrcTransferDstSampled = 7, // uploaded material textures (mip chain by blit)
 }
 
 pub fn image_usage(v: ImageUsage) -> u32 { u32(i32(v)) }

@@ -585,6 +585,26 @@ pub struct BufferImageCopy {
     imageExtent: Extent3D,
 }
 
+// One region of vkCmdBlitImage: a subresource plus two opposite corners,
+// per side. The corners are in texels; each mip level of a blit chain is the
+// whole previous level (src) into the whole next one (dst).
+@c_layout
+pub struct ImageBlit {
+    srcSubresource: ImageSubresourceLayers,
+    srcOffsets: [Offset3D; 2],
+    dstSubresource: ImageSubresourceLayers,
+    dstOffsets: [Offset3D; 2],
+}
+
+// vkGetPhysicalDeviceFormatProperties: the format features per tiling, as
+// VkFormatFeatureFlagBits. Only the bits a caller tests are named.
+@c_layout
+pub struct FormatProperties {
+    linearTilingFeatures: u32,
+    optimalTilingFeatures: u32,
+    bufferFeatures: u32,
+}
+
 @c_layout
 pub struct MemoryBarrier { sType: u32, pNext: ptr, srcAccessMask: u32, dstAccessMask: u32 }
 

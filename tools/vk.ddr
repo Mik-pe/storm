@@ -42,7 +42,7 @@ const COMMANDS: []string = [
     "DestroySwapchainKHR", "DestroyCommandPool", "DestroyBuffer", "FreeMemory", "FreeCommandBuffers", "DeviceWaitIdle",
     "QueueWaitIdle", "DestroyDevice", "BeginCommandBuffer", "EndCommandBuffer", "ResetCommandBuffer", "CmdBeginRenderPass",
     "CmdSetViewport", "CmdSetScissor", "CmdEndRenderPass", "CmdBindPipeline", "CmdBindVertexBuffers", "CmdDraw",
-    "CmdPushConstants", "CmdPipelineBarrier", "CmdCopyImageToBuffer", "CmdCopyBufferToImage", "QueueSubmit",
+    "CmdPushConstants", "CmdPipelineBarrier", "CmdCopyImageToBuffer", "CmdCopyBufferToImage", "CmdBlitImage", "QueueSubmit",
     "CreateSampler", "DestroySampler", "CreateDescriptorSetLayout", "DestroyDescriptorSetLayout",
     "CreateDescriptorPool", "DestroyDescriptorPool", "AllocateDescriptorSets", "UpdateDescriptorSets",
     "CmdBindDescriptorSets",
