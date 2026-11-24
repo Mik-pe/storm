@@ -1,0 +1,93 @@
+import core
+import ecs
+import ..src.art_asset
+import ..src.play_view
+import play
+import ..src.fox_animation as fox
+import ..src.fox_expression as expression
+
+fn step(s: &mut play.Session, x: f32, ticks: i32) {
+    for _ in 0..ticks { play.step(&mut s, play.Input { x: x, z: 0.0, jump: false }) }
+}
+
+@test fn a_tap_eases_out_of_a_gesture_and_a_long_run_starts_a_fresh_one() {
+    level := play.demo()
+    mut s := play.start(&level)
+    step(&mut s, 0.0, 85)
+    settled := play.render_rest(&s, true)
+    step(&mut s, 0.12, 1)
+    leaving := play.render_rest(&s, true)
+    assert(leaving.weight < settled.weight && leaving.weight > 0.9)
+    step(&mut s, 0.0, 1)
+    assert(play.render_rest(&s, true).age > settled.age)
+    step(&mut s, 0.3, 28)
+    assert(play.render_rest(&s, true).weight == 0.0)
+    step(&mut s, 0.0, 1)
+    s.accumulator = 0.5
+    halfway := play.render_rest(&s, false)
+    assert(halfway.weight > 0.0 && halfway.weight < play.render_rest(&s, true).weight)
+    assert(play.render_rest(&s, true).age == 0.0)
+}
+
+fn expression_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> fox.Pose {
+    m := play.render_motion(s, true)
+    mut p := fox.pose(c, &m)
+    _ := expression.apply(&mut p, g, s, &m, play.position(s, s.body_entities[s.player]), 1.0, true, core.vec3(0.0, 0.17, 0.0))
+    p
+}
+
+@test fn a_flower_guides_the_muzzle_and_a_pickup_softens_the_eyes_even_in_motion() {
+    mut level := play.demo()
+    origin := level.entities[1].position
+    level.entities[2].position = core.add(origin, core.vec3(0.68, 0.05, 0.84))
+    mut toward := play.start(&level)
+    level.entities[2].position = core.add(origin, core.vec3(0.0, 0.05, -1.05))
+    mut behind := play.start(&level)
+    step(&mut toward, 0.0, 72)
+    step(&mut behind, 0.0, 72)
+    assert(toward.flowers == 0 && behind.flowers == 0)
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+    sniff := expression_at(&toward, &c, &g)
+    stretch := expression_at(&behind, &c, &g)
+    assert(sniff.head.x > stretch.head.x + 0.40 && sniff.head.y > stretch.head.y + 0.10)
+    assert(sniff.eye_open < 0.5)
+    for _ in 0..22 { play.step(&mut toward, play.Input { x: 0.64, z: 0.77, jump: false }) }
+    assert(toward.flowers == 1 && play.render_rest(&toward, true).weight == 0.0)
+    glad := expression_at(&toward, &c, &g)
+    plain := fox.pose(&c, &play.render_motion(&toward, true))
+    assert(glad.eye_open < plain.eye_open * 0.25 && glad.head.x < plain.head.x - 0.16)
+}
+
+@test fn nose_tracks_the_pollen_height_on_both_sniffs_after_the_legs_are_solved() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut v := play_view.build(&s).unwrap()
+    nose := expression.nose_tip(&art_asset.load("fox").unwrap()).unwrap()
+    pollen := expression.bloom_center(&art_asset.load("flower").unwrap()).unwrap()
+    mut head: Option<ecs.Entity> = .None
+    mut flower: Option<ecs.Entity> = .None
+    for e in v.graph.nodes() {
+        name := v.graph.name(e)
+        if name == "Head_Cocoa" { head = .Some(e) }
+        if name == "Body_Daisyheart" && flower.is_none() { flower = .Some(e) }
+    }
+    directions := [core.vec2(0.0,-1.0), core.vec2(-1.0,0.0), core.vec2(0.0,1.0), core.vec2(0.64,0.77)]
+    counts := [16,39,12,3]
+    for i in 0..4 {
+        for _ in 0..counts[i] { play.step(&mut s, play.Input { x: directions[i].x, z: directions[i].y, jump: false }) }
+    }
+    mut lowest: f32 = 10.0
+    mut highest: f32 = -10.0
+    for i in 0..116 {
+        step(&mut s, 0.0, 1)
+        if i < 61 { continue }
+        play_view.sync(&mut v, &s, true)
+        tip := core.transform_point(&v.graph.world(head.unwrap()).matrix, nose)
+        heart := core.transform_point(&v.graph.world(flower.unwrap()).matrix, pollen)
+        gap := tip.y - heart.y
+        if gap < lowest { lowest = gap }
+        if gap > highest { highest = gap }
+    }
+    assert(s.flowers == 0 && lowest > 0.025 && highest < 0.23 && highest - lowest > 0.025)
+}

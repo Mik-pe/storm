@@ -95,18 +95,27 @@ fn pad_pose(course: &Course, s: &play.Session, index: i32, sub: f32) -> PadPose 
         y: (e.size.y - h) * 0.5 + h * 0.18 * (1.0 - squash.y) }
 }
 
-pub fn surface(course: &Course, s: &play.Session, x: f32, z: f32, support_y: f32, exact: bool) -> Option<f32> {
-    index := play.render_platform(s, exact)
+pub struct PadSurface { center: core.Vec3, scale: core.Vec3, boost: bool }
+
+pub fn support_surface(course: &Course, s: &play.Session, support: core.Vec3, releasing: bool, exact: bool) -> Option<PadSurface> {
+    mut index := play.render_platform(s, exact)
+    if releasing && index < 0 {
+        for pad in course.pads {
+            e := &s.scene.entities[pad.index]
+            p := play.position(s, pad.index)
+            if (p.y + e.size.y * 0.5 - support.y).abs() <= 0.002 &&
+                (support.x - p.x).abs() <= e.size.x * 0.5 + 0.001 && (support.z - p.z).abs() <= e.size.z * 0.5 + 0.001 {
+                if index < 0 || pad.index == s.last_cloud { index = pad.index }
+                if index == s.last_cloud { break }
+            }
+        }
+    }
     if index < 0 { return .None }
     e := &s.scene.entities[index]
     if !platform(e.role) { return .None }
     center := if exact { play.position(s, index) } else { play.render_position(s, index) }
     pose := pad_pose(course, s, index, play.render_tick_offset(s, exact))
-    lx := (x - center.x) / pose.scale.x
-    lz := (z - center.z) / pose.scale.z
-    local_y := if e.role == .BoostCloud { walk_surface.top(&course.boost_top, lx, lz) }
-        else { walk_surface.top(&course.cloud_top, lx, lz) }
-    .Some(center.y + pose.y + local_y.unwrap_or(0.5) * pose.scale.y - support_y)
+    .Some(PadSurface { center: core.vec3(center.x, center.y + pose.y, center.z), scale: pose.scale, boost: e.role == .BoostCloud })
 }
 
 pub fn animate(g: &mut scene.Graph, course: &Course, s: &play.Session, exact: bool) {

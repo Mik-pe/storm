@@ -1,5 +1,6 @@
 import .canopy
 import .walk_surface
+import core
 import gltf
 import play
 
@@ -9,12 +10,39 @@ pub fn build(glade: &gltf.Asset) -> Ground {
     Ground { meadow: walk_surface.build(glade, &["Meadow | seafoam", "Meadow | dapple", "Path | apricot"]) }
 }
 
-pub fn height(ground: &Ground, course: &canopy.Course, s: &play.Session, x: f32, z: f32, support_y: f32, exact: bool) -> f32 {
-    match canopy.surface(course, s, x, z, support_y, exact) {
-        .Some(delta) => { return delta },
+enum Kind { Plain, Meadow, Cloud, Boost }
+pub struct Probe {
+    kind: Kind, x: f32, z: f32, inv_x: f32, inv_z: f32, offset: f32, scale: f32, fallback: f32, ceiling: f32,
+}
+
+pub fn probe(ground: &Ground, course: &canopy.Course, s: &play.Session, support: core.Vec3, releasing: bool, exact: bool) -> Probe {
+    match canopy.support_surface(course, s, support, releasing, exact) {
+        .Some(p) => {
+            high := if p.boost { course.boost_top.ceiling } else { course.cloud_top.ceiling }
+            offset := p.center.y - support.y
+            return Probe { kind: if p.boost { Kind.Boost } else { Kind.Cloud }, x: p.center.x, z: p.center.z,
+                inv_x: 1.0 / p.scale.x, inv_z: 1.0 / p.scale.z, offset: offset, scale: p.scale.y, fallback: 0.5,
+                ceiling: offset + (if high > 0.5 { high } else { f32(0.5) }) * p.scale.y }
+        },
         .None => {},
     }
-    // The glade is authored around the level's zero-height meadow collider.
-    if support_y.abs() > 0.05 { return 0.0 }
-    walk_surface.top(&ground.meadow, x, z).unwrap_or(support_y) - support_y
+    meadow := support.y.abs() <= 0.05
+    ceiling := ground.meadow.ceiling - support.y
+    Probe { kind: if meadow { Kind.Meadow } else { Kind.Plain }, x: 0.0, z: 0.0, inv_x: 1.0, inv_z: 1.0,
+        offset: -support.y, scale: 1.0, fallback: support.y, ceiling: if meadow && ceiling > 0.0 { ceiling } else { f32(0.0) } }
+}
+
+pub fn sample(ground: &Ground, course: &canopy.Course, p: &Probe, x: f32, z: f32) -> f32 {
+    lx := (x - p.x) * p.inv_x
+    lz := (z - p.z) * p.inv_z
+    y := match p.kind {
+        .Plain => { return 0.0 }, .Meadow => walk_surface.top(&ground.meadow, lx, lz),
+        .Cloud => walk_surface.top(&course.cloud_top, lx, lz), .Boost => walk_surface.top(&course.boost_top, lx, lz),
+    }
+    p.offset + y.unwrap_or(p.fallback) * p.scale
+}
+
+pub fn height(ground: &Ground, course: &canopy.Course, s: &play.Session, x: f32, z: f32, support_y: f32, exact: bool) -> f32 {
+    p := probe(ground, course, s, core.vec3(x, support_y, z), false, exact)
+    sample(ground, course, &p, x, z)
 }

@@ -1,3 +1,5 @@
+import core
+import ecs
 import gfx
 import gltf
 import play
@@ -54,4 +56,45 @@ import ..src.woodland_ground
     }
     play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: true })
     assert(play.render_platform(&s, false) == idx && play.render_platform(&s, true) == -1)
+    play_view.sync(&mut w, &s, true)
+    released := woodland_ground.probe(&w.cast.ground, &w.course, &s, core.vec3(center.x, top, center.z), true, true)
+    delta := woodland_ground.sample(&w.cast.ground, &w.course, &released, center.x, center.z)
+    rendered := w.graph.local(pad.node)
+    assert((top + delta - (center.y + rendered.position.y + rendered.scale.y * 0.5)).abs() < 0.0001)
+}
+
+@test fn rolling_toes_sole_edges_and_the_last_push_clear_the_rendered_path() {
+    mut s := play.start(&play.demo())
+    mut w := play_view.build(&s).unwrap()
+    mut boots: []ecs.Entity = []
+    for e in w.graph.nodes() {
+        for name in ["FootFL_Boots", "FootFR_Boots", "FootBL_Boots", "FootBR_Boots"] {
+            if w.graph.name(e) == name { boots.push(e) }
+        }
+    }
+    assert(boots.len == 4)
+    // Turn by the flower, cross the raised path at a trot, brake and jump back across it.
+    counts := [16, 39, 12, 3, 172, 16, 12, 58, 12, 6, 6, 6, 24, 24, 32, 38, 38]
+    xs := [0.0, -1.0, 0.0, 0.64, 0.0, 0.68, 1.0, 0.68, 1.0, 0.78, 0.45, 0.22, 0.0, -0.70, -0.75, 0.0, -0.72]
+    zs := [-1.0, 0.0, 1.0, 0.77, 0.0, 0.73, 0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    for segment in 0..counts.len {
+        for i in 0..counts[segment] {
+            play.step(&mut s, play.Input { x: f32(xs[segment]), z: f32(zs[segment]), jump: segment == 14 && i == 0 })
+            if s.tick != 333 && s.tick != 407 && s.tick != 480 && s.tick != 501 { continue }
+            play_view.sync(&mut w, &s, true)
+            mut nearest: f32 = 1.0e20
+            for boot in boots {
+                m := &w.graph.world(boot).matrix
+                v := w.graph.vertices(boot)
+                for j in 0..v.len / gfx.VERTEX_FLOATS {
+                    k := j * gfx.VERTEX_FLOATS
+                    point := core.transform_point(m, core.vec3(v[k], v[k+1], v[k+2]))
+                    floor := walk_surface.top(&w.cast.ground.meadow, point.x, point.z).unwrap_or(0.0)
+                    gap := point.y - floor
+                    if gap < nearest { nearest = gap }
+                }
+            }
+            assert(nearest > -0.002 && nearest < 0.002)
+        }
+    }
 }

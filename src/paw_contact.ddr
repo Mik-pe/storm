@@ -1,0 +1,66 @@
+import .canopy
+import .fox_animation
+import .woodland_ground
+import core
+import gfx
+import gltf
+
+fn vertex(vertices: &[]f32, i: i32) -> core.Vec3 { core.vec3(vertices[i], vertices[i+1], vertices[i+2]) }
+
+// Keep the faces visible from below, including the lip that takes weight when the toes roll.
+pub fn underside(art: &gltf.Asset, prefix: string, ankle: core.Vec3) -> []core.Vec3 {
+    mut points: []core.Vec3 = []
+    for i in 0..art.parts.len {
+        part := &art.parts[i]
+        if part.name.len < prefix.len || part.name[0..prefix.len] != prefix { continue }
+        for t in 0..(part.vertices.len / (3 * gfx.VERTEX_FLOATS)) {
+            at := t * 3 * gfx.VERTEX_FLOATS
+            a := vertex(&part.vertices, at)
+            b := vertex(&part.vertices, at + gfx.VERTEX_FLOATS)
+            c := vertex(&part.vertices, at + 2 * gfx.VERTEX_FLOATS)
+            if core.cross(core.sub(b, a), core.sub(c, a)).y >= 0.0 { continue }
+            for v in [a, b, c] {
+                p := core.sub(v, ankle)
+                mut seen := false
+                for mark in points {
+                    if mark.x == p.x && mark.y == p.y && mark.z == p.z { seen = true; break }
+                }
+                if !seen { points.push(p) }
+            }
+        }
+    }
+    move points
+}
+
+pub struct Contact { lift: f32, surface: f32 }
+
+pub fn fit(ground: &woodland_ground.Ground, course: &canopy.Course, probe: &woodland_ground.Probe, points: &[]core.Vec3,
+    leg: &fox_animation.Leg, foot: &fox_animation.Foot, hip: core.Vec3, center: core.Vec3, scale: f32, heading_x: f32, heading_z: f32) -> Contact {
+    ankle := fox_animation.ankle_target(leg, foot)
+    dx := ankle.x - hip.x
+    dy := hip.y - ankle.y
+    span := (dy * dy + dx * dx).sqrt()
+    cs := if span > 0.00001 { dy / span } else { f32(1.0) }
+    sn := if span > 0.00001 { dx / span } else { f32(0.0) }
+    pitch := foot.pitch.sin()
+    cp := foot.pitch.cos()
+    reference := foot.sole.y - leg.sole.y - (leg.toe.z - leg.sole.z) * pitch.abs()
+    mut lift: f32 = -1.0e20
+    mut surface: f32 = 0.0
+    for point in points {
+        // The leg's roll, the wrist's pitch and its counter-roll match the rendered shoe.
+        u := cs * point.x + sn * point.y
+        v := cs * point.y - sn * point.x
+        y := cp * v - pitch * point.z
+        relative := (ankle.y + sn * u + cs * y - reference) * scale
+        if probe.ceiling - relative <= lift { continue }
+        x := ankle.x + cs * u - sn * y
+        z := ankle.z + pitch * v + cp * point.z
+        world_x := center.x + scale * (heading_z * x + heading_x * z)
+        world_z := center.z + scale * (heading_z * z - heading_x * x)
+        height := woodland_ground.sample(ground, course, probe, world_x, world_z)
+        correction := height - relative
+        if correction > lift { lift = correction; surface = height }
+    }
+    Contact { lift: if points.len == 0 { f32(0.0) } else { lift / scale }, surface: surface / scale }
+}

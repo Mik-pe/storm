@@ -1,0 +1,178 @@
+// Whole-body acting is layered on the gait before the feet are solved.
+import .fox_animation as fox
+import core
+import gfx
+import gltf
+import scene
+import play
+import scene.animation as anim
+
+pub struct Focus { height: f32, weight: f32 }
+
+// Read the authored landmarks once, in the same coordinates as the visible meshes.
+pub fn nose_tip(art: &gltf.Asset) -> Result<core.Vec3, string> {
+    for i in 0..art.parts.len {
+        part := &art.parts[i]
+        if part.name != "Head_Cocoa" || part.vertices.len < gfx.VERTEX_FLOATS { continue }
+        mut nose := core.vec3(part.vertices[0], part.vertices[1], part.vertices[2])
+        for k in 0..(part.vertices.len / gfx.VERTEX_FLOATS) {
+            j := k * gfx.VERTEX_FLOATS
+            if part.vertices[j+2] > nose.z { nose = core.vec3(part.vertices[j], part.vertices[j+1], part.vertices[j+2]) }
+        }
+        return .Ok(nose)
+    }
+    .Err("fox model has no muzzle")
+}
+
+pub fn bloom_center(art: &gltf.Asset) -> Result<core.Vec3, string> {
+    for i in 0..art.parts.len {
+        part := &art.parts[i]
+        if part.name != "Body_Daisyheart" || part.vertices.len < gfx.VERTEX_FLOATS { continue }
+        mut lo := core.vec3(part.vertices[0], part.vertices[1], part.vertices[2])
+        mut hi := lo
+        for k in 0..(part.vertices.len / gfx.VERTEX_FLOATS) {
+            j := k * gfx.VERTEX_FLOATS
+            x := part.vertices[j]; y := part.vertices[j+1]; z := part.vertices[j+2]
+            if x < lo.x { lo.x = x }; if x > hi.x { hi.x = x }
+            if y < lo.y { lo.y = y }; if y > hi.y { hi.y = y }
+            if z < lo.z { lo.z = z }; if z > hi.z { hi.z = z }
+        }
+        return .Ok(core.scale(core.add(lo, hi), 0.5))
+    }
+    .Err("flower model has no pollen center")
+}
+
+pub struct Gestures { sniff: anim.Clip, stretch: anim.Clip, pleased: anim.Clip }
+
+fn key(t: f32, x: f32, y: f32, z: f32) -> anim.Key { anim.key(t, x, y, z, .Spline) }
+
+pub fn gestures() -> Result<Gestures, string> {
+    // Muzzle dip, chest bow, eyelid closure. The head finds the scent before the shoulders move.
+    sniff := anim.clip(7.4, [key(0.0, 0.0, 0.0, 0.0), key(0.27, -0.08, 0.0, 0.0),
+        key(0.80, 0.36, 0.12, 0.18), key(1.18, 0.62, 0.30, 0.64),
+        key(1.40, 0.50, 0.33, 0.94), key(1.63, 0.61, 0.30, 0.82),
+        key(1.86, 0.52, 0.28, 0.98), key(2.03, 0.56, 0.25, 0.88),
+        key(2.48, -0.14, 0.04, 0.67), key(2.90, -0.05, -0.015, 0.04),
+        key(3.33, 0.0, 0.0, 0.0), key(7.4, 0.0, 0.0, 0.0)], [], [])?
+    // Forequarters fold into the stretch, pause, then ease out through a lifted chin.
+    stretch := anim.clip(8.6, [key(0.0, 0.0, 0.0, 0.0), key(0.60, 0.0, 0.0, 0.0),
+        key(1.19, 0.09, 0.22, 0.30), key(1.77, 0.19, 0.40, 0.92),
+        key(2.12, 0.17, 0.42, 0.96), key(2.56, -0.20, 0.17, 0.76),
+        key(3.03, -0.11, -0.025, 0.07), key(3.64, 0.0, 0.0, 0.0),
+        key(8.6, 0.0, 0.0, 0.0)], [], [])?
+    // A picked flower lifts the chin first. The ears and brush catch up as the eyes soften.
+    pleased := anim.clip(1.18, [key(0.0, 0.0, 0.0, 0.0), key(0.14, 0.05, 0.02, 0.50),
+        key(0.34, -0.28, -0.095, 0.96), key(0.53, -0.23, -0.075, 0.96),
+        key(0.78, -0.06, -0.02, 0.48), key(1.18, 0.0, 0.0, 0.0)], [], [])?
+    .Ok(Gestures { sniff: move sniff, stretch: move stretch, pleased: move pleased })
+}
+
+fn smooth(start: f32, end: f32, n: f32) -> f32 {
+    if n <= start { return 0.0 }
+    if n >= end { return 1.0 }
+    t := (n - start) / (end - start)
+    t * t * (3.0 - 2.0 * t)
+}
+
+struct Scent { weight: f32, side: f32, height: f32 }
+
+// Flowers contribute continuously at the edge of Vallmo's reach and field of view.
+fn scent(s: &play.Session, center: core.Vec3, heading: f32, scale: f32, picked_age: f32, bloom_offset: core.Vec3) -> Scent {
+    sn := heading.sin()
+    cs := heading.cos()
+    mut interest: f32 = 0.0
+    mut side: f32 = 0.0
+    mut height: f32 = 0.0
+    for sensor in s.sensors {
+        i := sensor.entity_index
+        f := &s.scene.entities[i]
+        if f.role != .Flower { continue }
+        mut available: f32 = 1.0
+        if s.collected[i] {
+            if i != s.last_flower { continue }
+            available = 1.0 - smooth(0.0, 0.45, picked_age)
+            if available <= 0.0 { continue }
+        }
+        pollen := core.add(f.position, core.scale(bloom_offset, f.size.x / 0.64))
+        d := core.scale(core.sub(pollen, center), 1.0 / scale)
+        distance := (d.x * d.x + d.z * d.z).sqrt()
+        if distance < 0.001 || distance >= 1.8 || d.y.abs() > 0.95 { continue }
+        forward := (d.x * sn + d.z * cs) / distance
+        w := available * (1.0 - smooth(1.12, 1.80, distance)) * (1.0 - smooth(0.50, 0.95, d.y.abs())) *
+            smooth(-0.05, 0.56, forward)
+        height += w * pollen.y
+        interest += w
+        side += w * (d.x * cs - d.z * sn) / distance
+    }
+    if interest <= 0.0 { return Scent { weight: 0.0, side: 0.0, height: 0.0 } }
+    Scent { weight: smooth(0.0, 1.0, interest), side: side / interest, height: height / interest }
+}
+
+pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.PlayerMotion,
+    center: core.Vec3, scale: f32, exact: bool, bloom_offset: core.Vec3) -> Focus {
+    base := anim.identity()
+    rest := play.render_rest(s, exact)
+    picked := (f32(s.tick - s.picked_tick) + play.render_tick_offset(s, exact)) / f32(play.TICK_RATE)
+    idle := smooth(0.0, 1.0, rest.weight) * (1.0 - p.air)
+    mut channels := core.vec3(0.0, 0.0, 0.0)
+    mut look: f32 = 0.0
+    mut focus := Focus { height: 0.0, weight: 0.0 }
+    if idle > 0.0 {
+        flower := scent(s, center, m.heading, scale, picked, bloom_offset)
+        bow := anim.sample(&clips.stretch, rest.age, .Loop, base).position
+        sniff := anim.sample(&clips.sniff, rest.age, .Loop, base).position
+        channels = core.scale(core.add(core.scale(bow, 1.0 - flower.weight), core.scale(sniff, flower.weight)), idle)
+        // The sniffs skim the pollen at two slightly different heights.
+        focus.height = flower.height + (0.075 + 0.85 * (0.60 - sniff.x)) * scale
+        focus.weight = flower.weight * idle * smooth(0.08, 0.42, sniff.x)
+        look = flower.weight * flower.side * idle * smooth(0.0, 0.46, rest.age)
+    }
+    mut joy: f32 = 0.0
+    if s.last_flower >= 0 && picked >= 0.0 && picked < 1.18 {
+        reward := anim.sample(&clips.pleased, picked, .Clamp, base).position
+        channels = core.add(core.scale(channels, 1.0 - reward.z), reward)
+        joy = reward.z
+        focus.weight *= 1.0 - joy
+    }
+    head := channels.x
+    bow := channels.y
+    shut := channels.z
+    p.body.rotation.x += 0.22 * bow
+    p.body.position.z += 0.095 * bow
+    p.chest.rotation.x += 0.68 * bow
+    p.chest.position.y -= 0.20 * bow
+    p.chest.position.z += 0.13 * bow
+    p.head.x += head
+    p.head.y += 0.61 * look
+    p.head.z += 0.12 * look + 0.10 * joy
+    p.eye_open *= 1.0 - shut
+    for i in 0..2 {
+        mirror: f32 = if i == 0 { 1.0 } else { -1.0 }
+        p.ears[i].x -= 0.36 * bow + 0.23 * joy
+        p.ears[i].y += 0.22 * look
+        p.ears[i].z += mirror * (0.24 * bow + 0.15 * joy)
+    }
+    for i in 0..3 {
+        f := f32(i)
+        p.tail[i].x += (0.35 - 0.08 * f) * bow
+        p.tail[i].y += joy * (9.0 * picked - f * 0.60).sin() * (0.19 + 0.05 * f)
+    }
+    focus
+}
+
+// Solve the muzzle height after the shoulders and the planted legs have set the actual neck position.
+pub fn aim(head: core.Vec3, pivot: core.Vec3, nose: core.Vec3, parent: &core.Mat4, height: f32, weight: f32) -> f32 {
+    if weight <= 0.0 { return head.x }
+    mut lo: f32 = -0.78
+    mut hi: f32 = 1.05
+    tip := core.sub(nose, pivot)
+    mut local := scene.LocalTransform { position: pivot, scale: core.vec3(1.0, 1.0, 1.0),
+        rotation_x: 0.0, rotation_y: head.y, rotation_z: head.z, visible: true }
+    for _ in 0..10 {
+        mid := 0.5 * (lo + hi)
+        local.rotation_x = mid
+        sample := core.transform_point(parent, core.transform_point(&scene.matrix_for(&local), tip))
+        if sample.y > height { lo = mid } else { hi = mid }
+    }
+    head.x + (0.5 * (lo + hi) - head.x) * weight
+}
