@@ -64,7 +64,6 @@ pub fn draw(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas,
     action
 }
 
-
 pub fn reload_error(c: &mut ui.Canvas, a: &text.Atlas, width: f32) {
     y: f32 = if width < 560.0 { 94.0 } else { 54.0 }
     message := "Scene reload failed"
@@ -75,34 +74,150 @@ pub fn reload_error(c: &mut ui.Canvas, a: &text.Atlas, width: f32) {
 
 // Open one petal for each fifth of the bouquet.
 fn blossom(c: &mut ui.Canvas, x: f32, y: f32, flowers: i32, total: i32, won: bool) {
-    c.rounded_rect(x - 9.5, y - 9.5, 19.0, 19.0, 9.5, &ui.rgb(0.32, 0.13, 0.22))
+    c.rounded_rect(x - 9.5, y - 9.5, 19.0, 19.0, 9.5, &ui.rgb(0.36, 0.14, 0.24))
     offsets: [[f32; 2]; 5] = [[0.0, -4.0], [3.8, -1.2], [2.4, 3.3], [-2.4, 3.3], [-3.8, -1.2]]
     mut opened := 0
     if total > 0 { opened = (flowers * 5 + total - 1) / total }
     for i in 0..5 {
         bright := won || i < opened
         radius: f32 = if bright { 3.5 } else { 2.7 }
-        ink := if bright { ui.rgb(1.0, 0.68, 0.76) } else { ui.rgb(0.76, 0.48, 0.57) }
+        ink := if bright { ui.rgb(1.0, 0.69, 0.78) } else { ui.rgb(0.76, 0.48, 0.57) }
         c.rounded_rect(x + offsets[i][0] - radius, y + offsets[i][1] - radius,
             radius * 2.0, radius * 2.0, radius, &ink)
     }
-    c.rounded_rect(x - 2.1, y - 2.1, 4.2, 4.2, 2.1, &ui.rgb(1.0, 0.83, 0.40))
+    c.rounded_rect(x - 2.1, y - 2.1, 4.2, 4.2, 2.1, &ui.rgb(1.0, 0.84, 0.42))
 }
 
 fn butterfly(c: &mut ui.Canvas, x: f32, y: f32, finished: bool) {
     upper := if finished { ui.rgb(1.0, 0.79, 0.27) } else { ui.rgb(0.49, 0.37, 0.78) }
     lower := if finished { ui.rgb(0.93, 0.46, 0.22) } else { ui.rgb(0.77, 0.58, 0.88) }
+    spot := if finished { ui.rgb(1.0, 0.94, 0.72) } else { ui.rgb(0.95, 0.82, 0.98) }
     for side in [-1.0, 1.0] {
-        tip := x + f32(side) * 10.0
-        c.triangle(x, y + 2.0, tip, y - 8.0, tip - f32(side), y + 1.0, &upper)
-        c.triangle(x, y + 1.0, tip - f32(side), y + 2.0, x + f32(side) * 5.0, y + 8.0, &lower)
+        sx := f32(side)
+        tip := x + sx * 10.0
+        c.triangle(x, y + 2.0, tip, y - 8.0, tip - sx, y + 1.0, &upper)
+        c.triangle(x, y + 1.0, tip - sx, y + 2.0, x + sx * 5.0, y + 8.0, &lower)
+        c.rounded_rect(x + sx * 5.4 - 1.3, y - 3.8, 2.6, 2.6, 1.3, &spot)
     }
     c.rounded_rect(x - 1.2, y - 3.0, 2.4, 10.0, 1.2, &ui.rgb(0.31, 0.17, 0.31))
+}
+
+fn flower_pip(c: &mut ui.Canvas, cx: f32, cy: f32, open: bool, petal: &ui.Color, complete: bool) {
+    if open {
+        rim := if complete { ui.rgba(1.0, 0.92, 0.95, 0.36) } else { ui.rgba(0.36, 0.14, 0.24, 0.72) }
+        c.rounded_rect(cx - 5.8, cy - 5.8, 11.6, 11.6, 5.8, &rim)
+        offsets: [[f32; 2]; 5] = [[0.0, -2.5], [2.4, -0.8], [1.5, 2.0], [-1.5, 2.0], [-2.4, -0.8]]
+        for i in 0..5 {
+            c.rounded_rect(cx + offsets[i][0] - 2.1, cy + offsets[i][1] - 2.1, 4.2, 4.2, 2.1, petal)
+        }
+        c.rounded_rect(cx - 1.4, cy - 1.4, 2.8, 2.8, 1.4, &ui.rgb(1.0, 0.83, 0.38))
+        return
+    }
+    bud_rim := if complete { ui.rgba(1.0, 0.90, 0.94, 0.24) } else { ui.rgba(0.38, 0.16, 0.26, 0.22) }
+    c.rounded_rect(cx - 4.2, cy - 4.2, 8.4, 8.4, 4.2, &bud_rim)
+    bud := ui.rgba(petal.r, petal.g, petal.b, 0.55)
+    c.rounded_rect(cx - 2.0, cy - 2.0, 4.0, 4.0, 2.0, &bud)
+}
+
+fn tiny_heart(c: &mut ui.Canvas, cx: f32, cy: f32, s: f32, color: &ui.Color) {
+    c.rounded_rect(cx - s, cy - s * 0.70, s * 1.15, s * 1.15, s * 0.58, color)
+    c.rounded_rect(cx - s * 0.15, cy - s * 0.70, s * 1.15, s * 1.15, s * 0.58, color)
+    c.triangle(cx - s * 0.95, cy - s * 0.12, cx + s * 0.95, cy - s * 0.12, cx, cy + s * 0.95, color)
+}
+
+fn tiny_sparkle(c: &mut ui.Canvas, cx: f32, cy: f32, r: f32, color: &ui.Color) {
+    arm := r * 0.28
+    c.triangle(cx, cy - r, cx + arm, cy, cx - arm, cy, color)
+    c.triangle(cx - arm, cy, cx + arm, cy, cx, cy + r, color)
+    c.triangle(cx - r, cy, cx, cy - arm, cx, cy + arm, color)
+    c.triangle(cx, cy - arm, cx + r, cy, cx, cy + arm, color)
+}
+
+fn tiny_paw(c: &mut ui.Canvas, cx: f32, cy: f32, s: f32, color: &ui.Color) {
+    c.rounded_rect(cx - s * 0.55, cy - s * 0.05, s * 1.10, s * 0.85, s * 0.42, color)
+    c.rounded_rect(cx - s * 0.88, cy - s * 0.62, s * 0.46, s * 0.46, s * 0.23, color)
+    c.rounded_rect(cx - s * 0.23, cy - s * 0.88, s * 0.46, s * 0.46, s * 0.23, color)
+    c.rounded_rect(cx + s * 0.42, cy - s * 0.62, s * 0.46, s * 0.46, s * 0.23, color)
+}
+
+fn tiny_blossom(c: &mut ui.Canvas, cx: f32, cy: f32, r: f32, petal: &ui.Color, core_ink: &ui.Color) {
+    offsets: [[f32; 2]; 5] = [[0.0, -1.0], [0.95, -0.31], [0.59, 0.81], [-0.59, 0.81], [-0.95, -0.31]]
+    dot := r * 0.45
+    for i in 0..5 {
+        c.rounded_rect(cx + offsets[i][0] * r * 0.55 - dot, cy + offsets[i][1] * r * 0.55 - dot,
+            dot * 2.0, dot * 2.0, dot, petal)
+    }
+    c.rounded_rect(cx - dot * 0.72, cy - dot * 0.72, dot * 1.44, dot * 1.44, dot * 0.72, core_ink)
+}
+
+struct Rect { x: f32, y: f32, w: f32, h: f32 }
+
+fn in_rect(r: &Rect, x: f32, y: f32) -> bool {
+    x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h
+}
+
+fn transport_rect(width: f32, height: f32, paused: bool, won: bool) -> Rect {
+    compact := width < 430.0
+    pad: f32 = if compact { 10.0 } else { 18.0 }
+    panel_h: f32 = if paused || won { 77.0 } else { 41.0 }
+    px := width - pad - 142.0
+    py := if compact { height - pad - panel_h } else { pad }
+    Rect { x: px, y: py, w: 142.0, h: panel_h }
+}
+
+const COZY_BAR_H: f32 = 36.0
+const COZY_BTN_SIT_W: f32 = 90.0
+const COZY_BTN_MYS_W: f32 = 72.0
+const COZY_BTN_CAM_W: f32 = 88.0
+
+fn cozy_bar_rect(width: f32, height: f32, cam_adjusted: bool) -> Rect {
+    compact := width < 430.0
+    if compact || height < 260.0 { return Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 } }
+    pad: f32 = 18.0
+    w: f32 = if cam_adjusted { 270.0 } else { 177.0 }
+    Rect { x: width - pad - w, y: height - pad - COZY_BAR_H, w: w, h: COZY_BAR_H }
+}
+
+fn score_bounds(width: f32, height: f32) -> Rect {
+    compact := width < 430.0
+    pad: f32 = if compact { 10.0 } else { 18.0 }
+    reserve: f32 = if !compact || height < 186.0 { 150.0 } else { 0.0 }
+    available := width - 2.0 * pad - reserve
+    if available <= 0.0 { return Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 } }
+    w := if available < 236.0 { available } else { 236.0 }
+    h: f32 = if available >= 175.0 && available < 224.0 { 88.0 } else { 80.0 }
+    Rect { x: pad, y: pad, w: w, h: h }
+}
+
+fn clamp01(v: f32) -> f32 {
+    if v < 0.0 { f32(0.0) } else if v > 1.0 { f32(1.0) } else { v }
+}
+
+fn pastel_pill(c: &mut ui.Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, alpha: f32) {
+    a := clamp01(alpha)
+    c.rounded_rect(x, y + 2.5, w, h, r, &ui.rgba(0.28, 0.10, 0.19, 0.16 * a))
+    c.rounded_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, r + 1.0, &ui.rgba(0.95, 0.69, 0.79, 0.86 * a))
+    c.rounded_rect(x, y, w, h, r, &ui.rgba(1.0, 0.96, 0.92, 0.95 * a))
 }
 
 fn counter_text(collected: i32, total: i32, label: string, tight: bool) -> string {
     if tight { return collected.str() + "/" + total.str() }
     collected.str() + " av " + total.str() + " " + label
+}
+
+fn pick_woodland_hint(atlas: &text.Atlas, max_w: f32, won: bool, has_bonus: bool, complete: bool) -> string {
+    candidates := if won && has_bonus && !complete {
+        ["Studsa på molnen för att nå superfjärilarna", "Studsa på molnen till superfjärilarna", "Studsa på molnen"]
+    } else {
+        ["Klicka gå / klappa   WASD / pilar   Shift strosa   C sitt   F mys   Mellanslag hoppa",
+            "Klicka gå/klappa   WASD   C sitt   F mys   Mellanslag",
+            "Klicka gå   C sitt   F mys   Hoppa"]
+    }
+    for text_opt in candidates {
+        if ui.Canvas::text_width(atlas, text_opt, 0.60) + 38.0 <= max_w { return text_opt.clone() }
+    }
+    if ui.Canvas::text_width(atlas, "Klicka / C / F", 0.60) + 38.0 <= max_w { return "Klicka / C / F" }
+    ""
 }
 
 pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas, p: &widgets.Pointer,
@@ -111,8 +226,9 @@ pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.At
     compact := width < 430.0
     pad: f32 = if compact { 10.0 } else { 18.0 }
     cream := ui.rgb(1.0, 0.95, 0.89)
-    berry := ui.rgb(0.27, 0.10, 0.17)
-    shade := ui.rgba(0.16, 0.06, 0.10, 0.23)
+    berry := ui.rgb(0.32, 0.12, 0.21)
+    plum_rose := ui.rgb(0.33, 0.13, 0.22)
+    shade := ui.rgba(0.20, 0.07, 0.13, 0.20)
     has_bonus := total_butterflies > 0
     bonus := has_bonus && butterflies >= total_butterflies
     complete := won && bonus
@@ -123,7 +239,7 @@ pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.At
     inset: f32 = if available < 100.0 { 5.0 } else { 12.0 }
     heading_scale: f32 = if tight { 0.72 } else { 0.84 }
     mut headline := if complete { "Hela skogen firar!" } else if won { "Buketten är klar!" }
-        else if bonus { "Alla superfjärilar!" } else { title.clone() }
+    else if bonus { "Alla superfjärilar!" } else { title.clone() }
     if ui.Canvas::text_width(atlas, headline, heading_scale) + 2.0 * inset > available {
         headline = if complete { "Allt klart!" } else if won { "Bukett klar!" } else if bonus { "Bonus klar!" } else { "Bukett" }
     }
@@ -133,20 +249,32 @@ pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.At
     count := counter_text(flowers, total, "blommor", tight)
     wings := counter_text(butterflies, total_butterflies, "superfjärilar", tight)
     name_w := ui.Canvas::text_width(atlas, headline, heading_scale) + 2.0 * inset
-    mut list_w := ui.Canvas::text_width(atlas, count, 0.62)
+    count_w := ui.Canvas::text_width(atlas, count, 0.62)
+    mut list_w := count_w
     if has_bonus {
         w := ui.Canvas::text_width(atlas, wings, 0.62)
         if w > list_w { list_w = w }
     }
     text_x := inset + 26.0
+    show_pips := total == 5 && !tight
+    pips_span: f32 = 66.0
+    inline_pips := show_pips && text_x + count_w + 10.0 + pips_span + inset <= available
+    if inline_pips {
+        row1_w := count_w + 10.0 + pips_span
+        if row1_w > list_w { list_w = row1_w }
+    }
     list_w += text_x + inset
     desired := if name_w > list_w { name_w } else { list_w }
     chip_w := if desired > available { available } else { desired }
     first_y: f32 = if headline.len > 0 { 39.0 } else { 15.0 }
-    chip_h := first_y + (if has_bonus { 41.0 } else { 19.0 })
-    card := if complete { ui.rgb(0.33, 0.13, 0.24) } else { cream }
+    wrap_pips := show_pips && !inline_pips
+    mut chip_h := first_y + (if has_bonus { 41.0 } else { 19.0 })
+    if wrap_pips { chip_h += if has_bonus { 14.0 } else { 18.0 } }
+    card := if complete { plum_rose } else { cream }
     ink := if complete { cream } else { berry }
+    card_border := if complete { ui.rgba(0.98, 0.79, 0.45, 0.65) } else { ui.rgba(0.92, 0.67, 0.77, 0.72) }
     c.rounded_rect(pad, pad + 3.0, chip_w, chip_h, 14.0, &shade)
+    c.rounded_rect(pad - 1.0, pad - 1.0, chip_w + 2.0, chip_h + 2.0, 15.0, &card_border)
     c.rounded_rect(pad, pad, chip_w, chip_h, 14.0, &card)
     if name_w <= chip_w { c.text(atlas, headline, pad + inset, pad + 4.0, heading_scale, &ink) }
     if chip_w >= inset + 20.0 {
@@ -157,20 +285,40 @@ pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.At
         c.text(atlas, count, pad + text_x, pad + first_y - 9.0, 0.62, &ink)
         if has_bonus { c.text(atlas, wings, pad + text_x, pad + first_y + 13.0, 0.62, &ink) }
     }
+    if show_pips {
+        // Gold, periwinkle, cream, lavender, peach matching Blomsterskogen's 5 woodland flowers.
+        pip_colors: [ui.Color; 5] = [
+            ui.rgb(0.98, 0.72, 0.18),
+            ui.rgb(0.44, 0.50, 0.94),
+            ui.rgb(1.0, 0.98, 0.90),
+            ui.rgb(0.73, 0.45, 0.87),
+            ui.rgb(0.99, 0.61, 0.28),
+        ]
+        pips_x0 := if inline_pips { pad + text_x + count_w + 15.0 } else { pad + inset + 12.0 }
+        pips_y := if inline_pips { pad + first_y - 1.5 } else { pad + chip_h - 11.0 }
+        for i in 0..5 {
+            if pips_x0 + f32(i) * 13.5 + 5.8 <= pad + chip_w - 4.0 {
+                flower_pip(&mut c, pips_x0 + f32(i) * 13.5, pips_y, won || i < flowers, &pip_colors[i], complete)
+            }
+        }
+    }
 
     controls.begin()
     mut action := Action.Idle
     mut buttons := widgets.theme()
-    buttons.fill = ui.rgb(0.38, 0.18, 0.26)
-    buttons.fill_hot = ui.rgb(0.50, 0.23, 0.32)
-    buttons.fill_active = ui.rgb(0.60, 0.29, 0.39)
+    buttons.fill = ui.rgb(0.46, 0.21, 0.31)
+    buttons.fill_hot = ui.rgb(0.58, 0.28, 0.40)
+    buttons.fill_active = ui.rgb(0.68, 0.35, 0.48)
     buttons.ink = cream
     more := paused || won
-    panel_h: f32 = if more { 77.0 } else { 41.0 }
-    px := width - pad - 142.0
-    py := if compact { height - pad - panel_h } else { pad }
+    panel := transport_rect(width, height, paused, won)
+    px := panel.x
+    py := panel.y
+    panel_h := panel.h
+    pill_border := ui.rgba(0.88, 0.60, 0.72, 0.55)
     c.rounded_rect(px, py + 3.0, 142.0, panel_h, 12.0, &shade)
-    c.rounded_rect(px, py, 142.0, panel_h, 12.0, &berry)
+    c.rounded_rect(px - 1.0, py - 1.0, 144.0, panel_h + 2.0, 13.0, &pill_border)
+    c.rounded_rect(px, py, 142.0, panel_h, 12.0, &plum_rose)
     if controls.button(&mut c, atlas, 11, p, px + 6.0, py + 6.0, 58.0, 29.0, "Studio", &buttons) { action = .Studio }
     if controls.button(&mut c, atlas, 12, p, px + 69.0, py + 6.0, 67.0, 29.0, if paused { "Fortsätt" } else { "Pausa" }, &buttons) {
         action = .TogglePause
@@ -185,14 +333,144 @@ pub fn woodland(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.At
             if won { "Spela igen" } else { "Börja om" }, &buttons) { action = .Restart }
     }
     if !compact && height >= 260.0 && (!won || (has_bonus && !complete)) {
-        mut hint := if won { "Studsa på molnen för att nå superfjärilarna" }
-            else if has_bonus { "WASD / pilar   Gå      Mellanslag   Hoppa      Rosa moln ger superstuds" }
-            else { "WASD / pilar   Gå      Mellanslag   Hoppa" }
-        if ui.Canvas::text_width(atlas, hint, 0.60) + 26.0 > width - 2.0 * pad { hint = "Gå med pilarna   Hoppa med mellanslag" }
-        hint_w := ui.Canvas::text_width(atlas, hint, 0.60) + 26.0
-        c.rounded_rect(pad, height - pad - 32.0, hint_w, 32.0, 10.0, &ui.rgba(0.19, 0.09, 0.15, 0.93))
-        c.text(atlas, hint, pad + 13.0, height - pad - 25.0, 0.60, &cream)
+        // Reserve room on the bottom-right for woodland_cozy's action pill bar.
+        max_hint_w := width - 2.0 * pad - 280.0
+        hint := pick_woodland_hint(atlas, max_hint_w, won, has_bonus, complete)
+        if hint.len > 0 {
+            hint_w := ui.Canvas::text_width(atlas, hint, 0.60) + 38.0
+            hint_y := height - pad - 32.0
+            pastel_pill(&mut c, pad, hint_y, hint_w, 32.0, 12.0, 0.99)
+            tiny_blossom(&mut c, pad + 14.0, hint_y + 16.0, 4.4, &ui.rgb(0.94, 0.52, 0.67), &ui.rgb(1.0, 0.82, 0.40))
+            c.text(atlas, hint, pad + 26.0, hint_y + 7.0, 0.60, &berry)
+        }
     }
     controls.end(p)
     action
+}
+
+pub enum CozyAction { None, Sit, Emote, ResetCam }
+
+pub struct CozyHudInfo {
+    sitting: bool,
+    snoozing: bool,
+    hovering_fox: bool,
+    toast: string,
+    toast_alpha: f32,
+    cam_adjusted: bool,
+}
+
+fn cozy_button_theme(active: bool) -> widgets.Theme {
+    mut t := widgets.theme()
+    if active {
+        t.fill = ui.rgb(0.46, 0.21, 0.31)
+        t.fill_hot = ui.rgb(0.58, 0.28, 0.40)
+        t.fill_active = ui.rgb(0.68, 0.35, 0.48)
+        t.ink = ui.rgb(1.0, 0.96, 0.92)
+    } else {
+        t.fill = ui.rgb(0.98, 0.86, 0.90)
+        t.fill_hot = ui.rgb(0.97, 0.77, 0.84)
+        t.fill_active = ui.rgb(0.92, 0.63, 0.74)
+        t.ink = ui.rgb(0.32, 0.12, 0.21)
+    }
+    t
+}
+
+pub fn woodland_cozy(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas, p: &widgets.Pointer,
+    width: f32, height: f32, info: &CozyHudInfo) -> CozyAction {
+    controls.begin()
+    mut action := CozyAction.None
+    compact := width < 430.0
+    pad: f32 = if compact { 10.0 } else { 18.0 }
+    berry := ui.rgb(0.32, 0.12, 0.21)
+
+    if !compact && height >= 260.0 {
+        bar := cozy_bar_rect(width, height, info.cam_adjusted)
+        pastel_pill(&mut c, bar.x, bar.y, bar.w, bar.h, 14.0, 1.0)
+
+        normal_btn := cozy_button_theme(false)
+        sit_theme := cozy_button_theme(info.sitting)
+        btn_y := bar.y + 4.0
+        btn_h: f32 = 28.0
+        sit_x := bar.x + 5.0
+        sit_label := if info.sitting { "Res dig" } else { "Sitt" }
+        if controls.button(&mut c, atlas, 21, p, sit_x, btn_y, COZY_BTN_SIT_W, btn_h, sit_label, &sit_theme) {
+            action = .Sit
+        }
+        paw_ink := if info.sitting { ui.rgb(1.0, 0.84, 0.76) } else { ui.rgb(0.84, 0.36, 0.49) }
+        tiny_paw(&mut c, sit_x + 12.0, btn_y + btn_h * 0.5 + 0.5, 4.4, &paw_ink)
+        if info.snoozing {
+            tiny_sparkle(&mut c, sit_x + COZY_BTN_SIT_W - 10.0, btn_y + 8.0, 3.6, &ui.rgb(1.0, 0.84, 0.40))
+        }
+
+        mys_x := sit_x + COZY_BTN_SIT_W + 5.0
+        if controls.button(&mut c, atlas, 22, p, mys_x, btn_y, COZY_BTN_MYS_W, btn_h, "Mys", &normal_btn) {
+            action = .Emote
+        }
+        tiny_heart(&mut c, mys_x + 12.0, btn_y + btn_h * 0.5, 4.3, &ui.rgb(0.92, 0.31, 0.48))
+
+        if info.cam_adjusted {
+            cam_x := mys_x + COZY_BTN_MYS_W + 5.0
+            if controls.button(&mut c, atlas, 23, p, cam_x, btn_y, COZY_BTN_CAM_W, btn_h, "Kamera", &normal_btn) {
+                action = .ResetCam
+            }
+            tiny_sparkle(&mut c, cam_x + 11.0, btn_y + btn_h * 0.5, 4.4, &ui.rgb(0.51, 0.38, 0.80))
+        }
+
+        if info.hovering_fox {
+            hover_msg := "Klicka på Vallmo för att klappa"
+            hover_w := ui.Canvas::text_width(atlas, hover_msg, 0.58) + 34.0
+            hover_y := height - pad - 68.0
+            pastel_pill(&mut c, pad, hover_y, hover_w, 28.0, 12.0, 1.0)
+            tiny_heart(&mut c, pad + 13.0, hover_y + 14.0, 4.2, &ui.rgb(0.92, 0.33, 0.50))
+            c.text(atlas, hover_msg, pad + 24.0, hover_y + 5.5, 0.58, &berry)
+        }
+    }
+
+    if info.toast.len > 0 && info.toast_alpha > 0.02 {
+        alpha := clamp01(info.toast_alpha)
+        max_rw := width - 2.0 * pad
+        if max_rw > 20.0 {
+            mut scale: f32 = 0.62
+            mut tw := ui.Canvas::text_width(atlas, info.toast, scale)
+            if tw + 46.0 > max_rw {
+                scale = 0.52
+                tw = ui.Canvas::text_width(atlas, info.toast, scale)
+            }
+            mut rw := tw + 46.0
+            if rw < 110.0 && max_rw >= 110.0 { rw = 110.0 }
+            if rw > max_rw { rw = max_rw }
+            rx := (width - rw) * 0.5
+            left_limit := pad + 240.0
+            right_limit := if compact { width - pad } else { width - pad - 154.0 }
+            enough_room := !compact && rx >= left_limit && rx + rw <= right_limit
+            rh: f32 = 30.0
+            mut ty: f32 = if enough_room { pad + 4.0 } else { pad + 92.0 }
+            if ty + rh > height - 4.0 { ty = height - 4.0 - rh }
+            if ty < 2.0 { ty = 2.0 }
+
+            toast_ink := ui.rgba(0.32, 0.12, 0.21, alpha)
+            heart_ink := ui.rgba(0.93, 0.35, 0.52, alpha)
+            star_ink := ui.rgba(1.0, 0.78, 0.30, alpha)
+
+            pastel_pill(&mut c, rx, ty, rw, rh, 15.0, alpha)
+            tiny_heart(&mut c, rx + 15.0, ty + rh * 0.5, 4.4, &heart_ink)
+            tiny_sparkle(&mut c, rx + rw - 14.0, ty + rh * 0.5, 3.6, &star_ink)
+            mut text_offset := ((rw - 46.0) - tw) * 0.5
+            if text_offset < 0.0 { text_offset = 0.0 }
+            text_x := rx + 26.0 + text_offset
+            c.text(atlas, info.toast, text_x, ty + 6.5, scale, &toast_ink)
+        }
+    }
+
+    controls.end(p)
+    action
+}
+
+pub fn woodland_pointer_captured(width: f32, height: f32, paused: bool, won: bool, cam_adjusted: bool, x: f32, y: f32) -> bool {
+    score := score_bounds(width, height)
+    if in_rect(&score, x, y) { return true }
+    panel := transport_rect(width, height, paused, won)
+    if in_rect(&panel, x, y) { return true }
+    bar := cozy_bar_rect(width, height, cam_adjusted)
+    in_rect(&bar, x, y)
 }
