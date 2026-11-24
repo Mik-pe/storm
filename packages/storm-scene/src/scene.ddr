@@ -89,10 +89,6 @@ pub struct Graph {
     materials: ecs.Pool<Material>,
 }
 
-fn local_identity() -> LocalTransform {
-    LocalTransform { position: core.vec3(0.0, 0.0, 0.0), rotation_y: 0.0, scale: core.vec3(1.0, 1.0, 1.0) }
-}
-
 fn matrix_for(local: &LocalTransform) -> core.Mat4 {
     c := local.rotation_y.cos()
     s := local.rotation_y.sin()

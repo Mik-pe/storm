@@ -57,11 +57,6 @@ pub struct Atlas {
     full: bool,
 }
 
-fn empty_glyph(codepoint: i32) -> Glyph {
-    Glyph { codepoint: codepoint, x: 0, y: 0, width: 0, height: 0, advance: 0.0,
-        bearing_x: 0.0, bearing_y: 0.0, size: 0.0, ok: false }
-}
-
 impl Atlas {
     pub fn new(width: i32, height: i32) -> Self {
         mut pixels: []u8 = []

@@ -1,0 +1,7 @@
+version = 1
+
+[[git]]
+url = "https://github.com/Mik-pe/dunder.git"
+kind = "rev"
+reference = "50cb55968d2df84b9c80b9b74afcf42fb6f1da52"
+commit = "50cb55968d2df84b9c80b9b74afcf42fb6f1da52"

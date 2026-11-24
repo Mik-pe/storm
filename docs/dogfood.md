@@ -412,27 +412,10 @@ tills det är gjort. (Inte ett kompilatorfel: en anteckning om att regeln
 
 **63. Antal argument.** Anropet `f2(1.0, 2.0, 3.0)` till en funktion med två parametrar fick E3003 utan antal. Dunder 0.11.3 visar både förväntat och faktiskt antal. För metoder räknas de argument anroparen skriver.
 
-**64. En funktion utan anropare ger ingen varning — varken `check` eller
-`build`.** `ui.ddr` bar 82 rader (`submit_barrier`, `transition_atlas`, båda
-privata `unsafe fn`) som inget anropade sedan textatlasen bytte uppladdningsväg;
-de kompilerade in i varje bygge och `dunder check` var tyst. Kompilatorn
-varnar för döda *namn* (W1001 oanvänd lokal, W1002 oanvänd import) men inte
-för döda *funktioner*, och `build` kompilerar bara det `main` når, så den
-döda koden kostade ingenting i binären och syntes därför aldrig. Minimal
-repro (Dunder 0.10.0, mätt i isolation): en rotmodul med `capability unsafe`
-och `unsafe fn dead_in_root(x: i32) -> i32 { x + 3 }` aldrig anropad, plus
-en importerad `helper.ddr` med en privat `dead_private` och en `pub
-dead_public`, båda oanropade; `main` når bara `helper.live()`.
-`dunder check` → `checked src/main.ddr (2 modules)`, exit 0, noll varningar.
-Kontroller i samma träd: en oanvänd import ger W1002 och en oanvänd lokal
-ger W1001. *Workaround:* grep efter varje privat funktionsnamn i hela
-repot innan den får stanna; AGENTS.md-regeln "noll död kod" har inget
-verktygsstöd för funktioner och vilar på att någon letar. *Rekommendation:*
-W1003 för en privat (`fn` utan `pub`) funktion eller metod utan anropare i
-någon kompilerad modul, med samma förlåtelser som W1001 (`_`-prefix eller
-`pub` tar bort den). Publika funktioner i ett bibliotek är dess API och ska
-fortfarande vara tysta — det är de privata som är ett misstag. (Död koden
-var min; tystnaden är kompilatorns.)
+**64. Hitta oanvända privata funktioner.** Dunders valfria
+`check --unused-functions` söker efter referenser i paketets källkod och
+inkluderar tester och funktionsvärden. Två privata hjälpfunktioner saknade
+referenser i scen- och textpaketen och har tagits bort.
 
 **Om vertexformatet (3a).** Stride, offset och format stod på två ställen
 (`pipeline.ddr` via enums, `shadow.ddr` med `inputRate: 0`, `format: 106`
