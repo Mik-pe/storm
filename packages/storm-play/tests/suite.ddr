@@ -35,28 +35,98 @@ fn command(x: f32, jump: bool) -> play.Input { play.Input { x: x, z: 0.0, jump: 
     assert(play.decode("{\"version\":1,\"name\":\"A\",\"gravity\":[0,null,0],\"entities\":[]}").is_err())
     assert(play.decode("{\"version\":1,\"name\":\"A\",\"entities\":[{\"name\":\"one\",\"shape\":\"box\"},{\"name\":\"one\",\"shape\":\"sphere\"}]}").is_err())
     empty := play.decode("{\"version\":1,\"name\":\"A\",\"entities\":[]}").unwrap()
-    assert(empty.entities.len == 0 && empty.gravity.y < -9.8)
+    assert(empty.entities.len == 0 && empty.gravity.y < -9.8 && empty.theme == .Plain && empty.bounds.is_none())
+    for prefix in ["\"theme\":\"typo\"", "\"bounds\":[-3,-2,0]", "\"bounds\":[2,-2,1,2]", "\"bounds\":[0,0,0,0]"] {
+        assert(play.decode("{\"version\":1,\"name\":\"A\"," + prefix + ",\"entities\":[]}").is_err())
+    }
 }
 
-@test fn demo_can_be_played_to_completion_and_reset_from_the_authored_scene() {
+fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
+    for _ in 0..ticks { play.step(&mut s, play.Input { x: x, z: z, jump: false }) }
+}
+
+@test fn blossom_demo_collects_all_five_flowers_once_with_replayable_inputs() {
     original := play.demo()
     source := play.encode(&original)
     mut s := play.start(&play.decode(source).unwrap())
-    for _ in 0..20 { play.step(&mut s, command(1.0, false)) }
-    assert(s.bodies[s.player].grounded)
-    play.step(&mut s, command(1.0, true))
-    for _ in 0..52 { play.step(&mut s, command(1.0, false)) }
-    assert(s.tick == 73 && s.won)
-    assert(play.position(&s, 1).x > 2.0)
+    assert(s.scene.theme == .Blossom && s.scene.name == "Blomsterskogen")
+    assert(s.flowers == 0 && s.total_flowers == 5 && s.last_flower == -1 && s.picked_tick == -1)
+    assert(s.scene.entities[1].name == "Vallmo" && s.heading == 0.35)
+    directions := [[-1.0, 0.0], [1.0, -0.25], [-1.0, -0.385], [1.0, -0.22], [1.0, 0.14]]
+    times := [27, 54, 68, 40, 45]
+    for i in 0..times.len {
+        walk(&mut s, f32(directions[i][0]), f32(directions[i][1]), times[i])
+        assert(s.flowers == i + 1 && s.last_flower == i + 2 && s.collected[i + 2])
+        assert(s.picked_tick > 0 && s.picked_tick <= s.tick && s.won == (s.flowers == s.total_flowers))
+        picked := s.picked_tick
+        walk(&mut s, 0.0, 0.0, 3)
+        assert(s.picked_tick == picked && s.flowers == i + 1)
+    }
+    assert(s.won && !s.walking && s.tick == 249)
     assert(play.encode(&s.scene) == source)
     reset := play.start(&s.scene)
-    assert(reset.tick == 0 && !reset.won && play.position(&reset, 1).x == original.entities[1].position.x)
+    assert(reset.tick == 0 && !reset.won && reset.flowers == 0 && reset.picked_tick == -1)
+    for picked in reset.collected { assert(!picked) }
     state := json.Doc::parse_text(play.state_json(&s))
-    assert(state.ok && state.get_i64(state.root, "tick").unwrap() == 73 && state.get_bool(state.root, "won").unwrap())
+    assert(state.ok && state.get_i64(state.root, "flowers").unwrap() == 5 && state.get_bool(state.root, "won").unwrap())
+    assert(state.get_i64(state.root, "last_flower").unwrap() == 6)
+    assert(state.get_i64(state.root, "picked_tick").unwrap() == s.picked_tick)
     entities := state.field(state.root, "entities")
     assert(state.count(entities) == original.entities.len)
-    goal := state.at(entities, 3)
-    assert(state.get_str(goal, "name").unwrap() == "Beacon" && !state.get_bool(goal, "grounded").unwrap())
+    for i in 0..original.entities.len {
+        assert(state.get_bool(state.at(entities, i), "collected").unwrap() == (original.entities[i].role == .Flower))
+    }
+}
+
+@test fn authored_bounds_limit_player_motion_and_the_gait_uses_real_displacement() {
+    original := play.demo()
+    mut s := play.start(&original)
+    walk(&mut s, 1.0, 0.0, 12)
+    assert(s.walking && s.heading > 1.56 && s.heading < 1.58 && s.walk_phase > 0.0)
+    walk(&mut s, 1.0, 1.0, 240)
+    at_edge := play.position(&s, 1)
+    assert(at_edge.x == 5.0 && at_edge.z == 3.3 && !s.walking)
+    phase := s.walk_phase
+    walk(&mut s, 1.0, 1.0, 8)
+    assert(s.walk_phase == phase && s.bodies[s.player].velocity.x == 0.0)
+    walk(&mut s, -1.0, -1.0, 300)
+    bottom := play.position(&s, 1)
+    assert(bottom.x == -5.0 && bottom.z == -3.5)
+}
+
+@test fn the_forest_trunk_stops_the_runner_until_she_turns_back() {
+    mut original := play.demo()
+    assert(original.entities.len == 11 && original.entities[7].role == .Collider)
+    assert(play.upsert(&mut original, "{\"name\":\"Stam 1\",\"role\":\"collider\",\"shape\":\"box\",\"mass\":1}").is_err())
+    mut s := play.start(&play.decode(play.encode(&original)).unwrap())
+    walk(&mut s, 0.0, -1.0, 35)
+    walk(&mut s, -1.0, 0.0, 100)
+    p := play.position(&s, 1)
+    trunk := &s.scene.entities[7]
+    east_face := trunk.position.x + trunk.size.x * 0.5
+    assert((p.x - east_face - 0.4).abs() < 0.005)
+    assert((p.z - trunk.position.z).abs() < 0.06 && s.contacts >= 2)
+    walk(&mut s, -1.0, 0.0, 20)
+    assert((play.position(&s, 1).x - p.x).abs() < 0.001)
+    walk(&mut s, 1.0, 0.0, 10)
+    assert(play.position(&s, 1).x > p.x + 0.5)
+}
+
+@test fn plain_goal_scenes_keep_their_win_condition_and_support_optional_flowers() {
+    mut scene := play.empty("Goal")
+    assert(play.upsert(&mut scene, "{\"name\":\"floor\",\"shape\":\"box\",\"position\":[0,-0.5,0],\"size\":[25,1,5]}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"player\",\"shape\":\"sphere\",\"role\":\"player\",\"mass\":1,\"position\":[0,0.5,0]}").is_ok())
+    assert(play.upsert(&mut scene, "{\"name\":\"goal\",\"shape\":\"box\",\"role\":\"goal\",\"position\":[0,0.5,0]}").is_ok())
+    mut old := play.start(&scene)
+    walk(&mut old, 1.0, 0.0, 90)
+    assert(old.won && old.total_flowers == 0 && play.position(&old, 1).x > 5.0)
+    assert(play.upsert(&mut scene, "{\"name\":\"bloom\",\"shape\":\"sphere\",\"role\":\"flower\",\"mass\":1}").is_err())
+    assert(play.upsert(&mut scene, "{\"name\":\"bloom\",\"shape\":\"sphere\",\"role\":\"flower\",\"position\":[2.5,0.5,0]}").is_ok())
+    mut mixed := play.start(&scene)
+    walk(&mut mixed, 1.0, 0.0, 35)
+    assert(mixed.flowers == 1 && mixed.collected[3] && !mixed.won)
+    walk(&mut mixed, -1.0, 0.0, 32)
+    assert(mixed.won && mixed.flowers == 1)
 }
 
 @test fn frame_rate_does_not_change_the_simulation_and_fractional_time_is_preserved() {
@@ -66,9 +136,9 @@ fn command(x: f32, jump: bool) -> play.Input { play.Input { x: x, z: 0.0, jump: 
     for _ in 0..60 { play.step(&mut sixty, command(1.0, false)) }
     for _ in 0..144 { _ := play.advance(&mut fast, 1.0 / 144.0, command(1.0, false)) }
     assert(play.state_json(&sixty) == play.state_json(&fast))
-    p0 := play.position(&fast, 4)
+    p0 := play.position(&fast, 1)
     assert(play.advance(&mut fast, 1.0 / 120.0, command(0.0, false)) == 0)
-    assert(play.position(&fast, 4).y == p0.y)
+    assert(play.position(&fast, 1).x == p0.x)
     assert(play.advance(&mut fast, 1.0 / 120.0, command(0.0, false)) == 1)
     assert(play.advance(&mut fast, 120.0, command(0.0, false)) == 8)
     assert(play.advance(&mut fast, -1.0, command(0.0, false)) == 0)

@@ -32,7 +32,7 @@ pub fn name(doc: &json.Doc, node: i32) -> Result<string, string> {
     .Ok(value)
 }
 
-fn number(doc: &json.Doc, node: i32, key: string) -> Result<f32, string> {
+pub fn number(doc: &json.Doc, node: i32, key: string) -> Result<f32, string> {
     value := match doc.as_f64(node) {
         .Some(n) => n,
         .None => { return .Err(key + " requires a finite number") },

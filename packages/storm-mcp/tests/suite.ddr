@@ -109,3 +109,29 @@ fn data(d: &json.Doc) -> i32 { d.field(d.field(d.root, "result"), "structuredCon
     assert(!failed(&cleared))
     assert(cleared.count(cleared.field(data(&cleared), "entities")) == 0)
 }
+
+@test fn flower_level_can_be_authored_collected_and_replayed() {
+    mut server := ready()
+    demo := call(&mut server, "storm_new", "{\"template\":\"demo\"}")
+    assert(demo.get_i64(data(&demo), "total_flowers").unwrap_or_default() > 0)
+    scene := "{\"scene\":{\"version\":1,\"name\":\"Glänta\",\"theme\":\"blossom\",\"bounds\":[-2,-1,2,1],\"gravity\":[0,0,0],\"entities\":[{\"name\":\"Runner\",\"shape\":\"sphere\",\"role\":\"player\",\"mass\":1}]}}"
+    made := call(&mut server, "storm_set_scene", scene)
+    assert(!failed(&made))
+    added := call(&mut server, "storm_upsert", "{\"entity\":{\"name\":\"Bell\",\"role\":\"flower\",\"shape\":\"sphere\"}}")
+    assert(!failed(&added))
+    source := call(&mut server, "storm_inspect", "{\"view\":\"scene\"}")
+    assert(source.get_str(data(&source), "theme") == .Some("blossom"))
+    assert(source.count(source.field(data(&source), "bounds")) == 4)
+    stepped := call(&mut server, "storm_step", "{\"ticks\":2}")
+    state := data(&stepped)
+    assert(stepped.get_i64(state, "flowers") == .Some(1) && stepped.get_i64(state, "total_flowers") == .Some(1))
+    assert(stepped.get_i64(state, "picked_tick") == .Some(1) && stepped.get_bool(state, "won") == .Some(true))
+    flower := stepped.at(stepped.field(state, "entities"), 1)
+    assert(stepped.get_bool(flower, "collected") == .Some(true))
+    reversed := call(&mut server, "storm_set_scene", "{\"scene\":{\"version\":1,\"name\":\"Other\",\"theme\":\"plain\",\"bounds\":[2,0,1,1],\"entities\":[]}}")
+    assert(failed(&reversed))
+    snapshot := call(&mut server, "storm_inspect", "{}")
+    assert(snapshot.raw_json(data(&snapshot)) == stepped.raw_json(state))
+    reset := call(&mut server, "storm_reset", "{}")
+    assert(reset.get_i64(data(&reset), "flowers") == .Some(0) && reset.get_bool(data(&reset), "won") == .Some(false))
+}

@@ -6,6 +6,7 @@ import core
 import physics
 import std.fs as fs
 import std.json as json
+import std.math as math
 import sys
 
 pub const MAX_ENTITIES: i32 = 128
@@ -14,25 +15,30 @@ pub const TICK_SECONDS: f64 = 1.0 / 60.0
 const MAX_CATCHUP: i32 = 8
 
 pub enum Shape { Box, Sphere }
-pub enum Role { Prop, Player, Goal }
+pub enum Role { Prop, Player, Goal, Flower, Collider }
+pub enum Theme { Plain, Blossom }
+pub struct Bounds { min_x: f32, min_z: f32, max_x: f32, max_z: f32 }
+struct Sensor { entity_index: i32, body: physics.Body }
 
 pub struct Entity {
     name: string, shape: Shape, role: Role, position: core.Vec3, size: core.Vec3,
     velocity: core.Vec3, mass: f32, restitution: f32, friction: f32, color: core.Vec3,
 }
 
-pub struct Scene { name: string, gravity: core.Vec3, entities: []Entity }
+pub struct Scene { name: string, gravity: core.Vec3, theme: Theme, bounds: Option<Bounds>, entities: []Entity }
 pub struct Input { x: f32, z: f32, jump: bool }
 pub struct Session {
     scene: Scene, tick: i64, won: bool, contacts: i32, player: i32,
-    bodies: []physics.Body, body_indices: []i32, sensors: []physics.Body,
+    bodies: []physics.Body, body_indices: []i32, sensors: []Sensor,
+    collected: []bool, flowers: i32, total_flowers: i32, last_flower: i32, picked_tick: i64,
+    heading: f32, walk_phase: f32, walking: bool,
     previous: []core.Vec3, accumulator: f64, jump_pending: bool,
 }
 
 pub fn validate_name(name: string) -> Result<(), string> { codec.validate_name(name) }
 
 pub fn empty(name: string) -> Scene {
-    Scene { name: name.clone(), gravity: core.vec3(0.0, -9.81, 0.0), entities: [] }
+    Scene { name: name.clone(), gravity: core.vec3(0.0, -9.81, 0.0), theme: .Plain, bounds: .None, entities: [] }
 }
 
 fn entity(name: string, shape: Shape, role: Role, p: core.Vec3, size: core.Vec3, mass: f32, color: core.Vec3) -> Entity {
@@ -41,18 +47,39 @@ fn entity(name: string, shape: Shape, role: Role, p: core.Vec3, size: core.Vec3,
 }
 
 pub fn demo() -> Scene {
-    mut scene := empty("First light")
-    scene.entities.push(entity("Slate platform", .Box, .Prop, core.vec3(0.0, -0.25, 0.0), core.vec3(8.6, 0.5, 4.4),
-        0.0, core.vec3(0.18, 0.25, 0.29)))
-    scene.entities.push(entity("Runner", .Sphere, .Player, core.vec3(-2.7, 0.4, 0.0), core.vec3(0.8, 0.8, 0.8),
-        1.0, core.vec3(0.04, 0.50, 0.42)))
-    scene.entities.push(entity("Hurdle", .Box, .Prop, core.vec3(0.0, 0.31, 0.0), core.vec3(0.45, 0.62, 2.4),
-        0.0, core.vec3(0.60, 0.35, 0.18)))
-    scene.entities.push(entity("Beacon", .Sphere, .Goal, core.vec3(2.7, 0.65, 0.0), core.vec3(1.0, 1.0, 1.0),
-        0.0, core.vec3(1.0, 0.62, 0.12)))
-    scene.entities.push(entity("Crate", .Box, .Prop, core.vec3(-1.5, 1.1, -1.4), core.vec3(0.7, 0.7, 0.7),
-        1.4, core.vec3(0.70, 0.46, 0.26)))
+    mut scene := empty("Blomsterskogen")
+    scene.theme = .Blossom
+    scene.bounds = .Some(Bounds { min_x: -5.0, min_z: -3.5, max_x: 5.0, max_z: 3.3 })
+    scene.entities.push(entity("Ängen", .Box, .Prop, core.vec3(0.0, -0.5, 0.0), core.vec3(30.0, 1.0, 26.0),
+        0.0, core.vec3(0.39, 0.65, 0.30)))
+    scene.entities.push(entity("Vallmo", .Sphere, .Player, core.vec3(0.0, 0.4, 1.0), core.vec3(0.8, 0.8, 0.8),
+        1.0, core.vec3(0.95, 0.31, 0.075)))
+    names := ["Smörblomma", "Blåklocka", "Prästkrage", "Skogsviol", "Gullviva"]
+    positions := [core.vec3(-2.0, 0.45, 1.1), core.vec3(2.0, 0.45, 0.1),
+        core.vec3(-2.8, 0.45, -1.75), core.vec3(-1.05, 0.45, -2.45), core.vec3(3.4, 0.45, -2.0)]
+    colors := [core.vec3(0.98, 0.69, 0.15), core.vec3(0.36, 0.41, 0.91), core.vec3(0.98, 0.93, 0.82),
+        core.vec3(0.69, 0.37, 0.83), core.vec3(0.99, 0.57, 0.20)]
+    for i in 0..names.len {
+        scene.entities.push(entity(names[i], .Sphere, .Flower, positions[i], core.vec3(0.64, 0.64, 0.64), 0.0, colors[i]))
+    }
+    trunks := [core.vec3(-4.14, 1.3, -1.61), core.vec3(4.35, 1.3, -2.05),
+        core.vec3(-5.46, 1.3, 1.86), core.vec3(5.74, 1.3, 1.18)]
+    for i in 0..trunks.len {
+        scene.entities.push(entity("Stam " + (i + 1).str(), .Box, .Collider, trunks[i], core.vec3(0.56, 2.6, 0.56),
+            0.0, core.vec3(0.0, 0.0, 0.0)))
+    }
     scene
+}
+
+fn role_name(role: Role) -> string {
+    match role { .Player => "player", .Goal => "goal", .Flower => "flower", .Collider => "collider", .Prop => "prop" }
+}
+
+fn read_role(value: string) -> Result<Role, string> {
+    match value {
+        "prop" => .Ok(.Prop), "player" => .Ok(.Player), "goal" => .Ok(.Goal), "flower" => .Ok(.Flower),
+        "collider" => .Ok(.Collider), _ => .Err("role must be prop, player, goal, flower or collider"),
+    }
 }
 
 fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
@@ -62,8 +89,7 @@ fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
     shape := if shape_name == "sphere" { Shape.Sphere } else { Shape.Box }
     if shape_name != "box" && shape_name != "sphere" { return .Err("shape must be box or sphere") }
     role_name := if doc.field(node, "role") < 0 { "prop" } else { doc.get_str(node, "role").unwrap_or_default() }
-    role := if role_name == "player" { Role.Player } else if role_name == "goal" { Role.Goal } else { Role.Prop }
-    if role_name != "prop" && role_name != "player" && role_name != "goal" { return .Err("role must be prop, player or goal") }
+    role := read_role(role_name)?
     zero := core.vec3(0.0, 0.0, 0.0)
     pos := codec.vector(doc, node, "position", zero)?
     size := codec.vector(doc, node, "size", core.vec3(1.0, 1.0, 1.0))?
@@ -76,8 +102,9 @@ fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
     if shape == .Sphere && (size.x != size.y || size.x != size.z) { return .Err("sphere diameters must match") }
     if mass < 0.0 || (mass > 0.0 && mass < 0.001) { return .Err("mass must be zero or at least 0.001") }
     if mass == 0.0 && (velocity.x != 0.0 || velocity.y != 0.0 || velocity.z != 0.0) { return .Err("a static entity cannot have initial velocity") }
+    if role == .Collider && mass != 0.0 { return .Err("a collider must have zero mass") }
     if role == .Player && mass == 0.0 { return .Err("a player requires positive mass") }
-    if role == .Goal && mass != 0.0 { return .Err("a goal must have zero mass") }
+    if (role == .Goal || role == .Flower) && mass != 0.0 { return .Err("a sensor must have zero mass") }
     if color.x < 0.0 || color.y < 0.0 || color.z < 0.0 || color.x > 1.0 || color.y > 1.0 || color.z > 1.0 { return .Err("color components must be in [0,1]") }
     if friction < 0.0 || friction > 1.0 || restitution < 0.0 || restitution > 1.0 { return .Err("friction and restitution must be in [0,1]") }
     .Ok(Entity { name: name, shape: shape, role: role, position: pos, size: size,
@@ -118,15 +145,33 @@ pub fn remove(scene: &mut Scene, name: string) -> Result<(), string> {
     .Err("unknown entity '" + name + "'")
 }
 
+fn read_bounds(doc: &json.Doc, root: i32) -> Result<Option<Bounds>, string> {
+    node := doc.field(root, "bounds")
+    if node < 0 { return .Ok(.None) }
+    if doc.kind(node) != .Array || doc.count(node) != 4 { return .Err("bounds must be [minX,minZ,maxX,maxZ]") }
+    bounds := Bounds {
+        min_x: codec.number(doc, doc.at(node, 0), "bounds")?, min_z: codec.number(doc, doc.at(node, 1), "bounds")?,
+        max_x: codec.number(doc, doc.at(node, 2), "bounds")?, max_z: codec.number(doc, doc.at(node, 3), "bounds")?,
+    }
+    if bounds.min_x >= bounds.max_x || bounds.min_z >= bounds.max_z { return .Err("bounds must enclose a positive area") }
+    .Ok(.Some(bounds))
+}
+
 pub fn decode(source: string) -> Result<Scene, string> {
     doc := json.Doc::parse_text(source)
     if !doc.ok { return .Err(doc.error.clone()) }
     root := doc.root
-    codec.fields(&doc, root, ["version", "name", "gravity", "entities"])?
+    codec.fields(&doc, root, ["version", "name", "gravity", "theme", "bounds", "entities"])?
     if doc.get_i64(root, "version").unwrap_or(0) != 1 { return .Err("expected scene version 1") }
     name := codec.name(&doc, root)?
     mut scene := empty(name)
     scene.gravity = codec.vector(&doc, root, "gravity", scene.gravity)?
+    if doc.field(root, "theme") >= 0 {
+        scene.theme = match doc.get_str(root, "theme").unwrap_or_default() {
+            "blossom" => Theme.Blossom, "plain" => Theme.Plain, _ => { return .Err("theme must be plain or blossom") },
+        }
+    }
+    scene.bounds = read_bounds(&doc, root)?
     items := doc.field(root, "entities")
     if doc.kind(items) != .Array { return .Err("entities must be an array") }
     if doc.count(items) > MAX_ENTITIES { return .Err("a scene supports at most " + MAX_ENTITIES.str() + " entities") }
@@ -152,7 +197,7 @@ fn write_entity(w: &mut json.Writer, item: &Entity) {
     w.object()
     w.key("name"); w.string(item.name)
     w.key("shape"); w.string(if item.shape == .Sphere { "sphere" } else { "box" })
-    w.key("role"); w.string(if item.role == .Player { "player" } else if item.role == .Goal { "goal" } else { "prop" })
+    w.key("role"); w.string(role_name(item.role))
     codec.vector_field(&mut w, "position", item.position)
     codec.vector_field(&mut w, "size", item.size)
     codec.vector_field(&mut w, "velocity", item.velocity)
@@ -168,6 +213,15 @@ pub fn encode(scene: &Scene) -> string {
     w.object()
     w.key("version"); w.integer(1)
     w.key("name"); w.string(scene.name)
+    w.key("theme"); w.string(if scene.theme == .Blossom { "blossom" } else { "plain" })
+    match scene.bounds {
+        .Some(b) => {
+            w.key("bounds"); w.array()
+            w.decimal(f64(b.min_x)); w.decimal(f64(b.min_z))
+            w.decimal(f64(b.max_x)); w.decimal(f64(b.max_z)); w.end()
+        },
+        .None => {},
+    }
     codec.vector_field(&mut w, "gravity", scene.gravity)
     w.key("entities"); w.array()
     for item in scene.entities { write_entity(&mut w, &item) }
@@ -198,13 +252,18 @@ pub fn start(scene: &Scene) -> Session {
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
         bodies: [], body_indices: [], sensors: [], accumulator: 0.0, jump_pending: false,
+        collected: [], flowers: 0, total_flowers: 0, last_flower: -1, picked_tick: -1,
+        heading: 0.35, walk_phase: 0.0, walking: false,
     }
-    for item in scene.entities {
-        body := make_body(&item)
+    for i in 0..scene.entities.len {
+        item := &scene.entities[i]
+        body := make_body(item)
         session.previous.push(item.position)
-        if item.role == .Goal {
+        session.collected.push(false)
+        if item.role == .Flower { session.total_flowers += 1 }
+        if item.role == .Goal || item.role == .Flower {
             session.body_indices.push(-1)
-            session.sensors.push(body)
+            session.sensors.push(Sensor { entity_index: i, body: body })
         } else {
             if item.role == .Player { session.player = session.bodies.len }
             session.body_indices.push(session.bodies.len)
@@ -232,9 +291,48 @@ fn axis(value: f32) -> f32 {
     value
 }
 
+fn stay_in_bounds(body: &mut physics.Body, bounds: &Bounds) {
+    if body.position.x < bounds.min_x { body.position.x = bounds.min_x; body.velocity.x = 0.0 }
+    if body.position.x > bounds.max_x { body.position.x = bounds.max_x; body.velocity.x = 0.0 }
+    if body.position.z < bounds.min_z { body.position.z = bounds.min_z; body.velocity.z = 0.0 }
+    if body.position.z > bounds.max_z { body.position.z = bounds.max_z; body.velocity.z = 0.0 }
+}
+
+fn update_player(s: &mut Session, before: core.Vec3) {
+    match s.scene.bounds { .Some(b) => { stay_in_bounds(&mut s.bodies[s.player], &b) }, .None => {} }
+    player := &s.bodies[s.player]
+    dx := player.position.x - before.x
+    dz := player.position.z - before.z
+    distance := (dx * dx + dz * dz).sqrt()
+    s.walking = distance > 0.00001 && player.grounded
+    if distance > 0.00001 { s.heading = f32(math.atan2(f64(dx), f64(dz))) }
+    if s.walking {
+        s.walk_phase += distance * 5.0
+        if s.walk_phase >= 6.2831853 { s.walk_phase -= (s.walk_phase / 6.2831853).floor() * 6.2831853 }
+    }
+    if s.won { return }
+    mut at_goal := false
+    for i in 0..s.sensors.len {
+        sensor := &s.sensors[i]
+        index := sensor.entity_index
+        if s.collected[index] || !physics.overlap(player, &sensor.body) { continue }
+        if s.scene.entities[index].role == .Goal { at_goal = true }
+        else {
+            s.collected[index] = true
+            s.flowers += 1
+            s.last_flower = index
+            s.picked_tick = s.tick
+        }
+    }
+    has_goal := s.sensors.len > s.total_flowers
+    s.won = s.flowers == s.total_flowers && (at_goal || (!has_goal && s.flowers > 0))
+}
+
 pub fn step(s: &mut Session, input: Input) {
     for i in 0..s.body_indices.len { s.previous[i] = position(&s, i) }
+    mut before := core.vec3(0.0, 0.0, 0.0)
     if s.player >= 0 {
+        before = s.bodies[s.player].position
         x := axis(input.x)
         z := axis(input.z)
         length := (x * x + z * z).sqrt()
@@ -247,12 +345,8 @@ pub fn step(s: &mut Session, input: Input) {
     }
     s.jump_pending = false
     s.contacts = physics.step(&mut s.bodies, s.scene.gravity, f32(TICK_SECONDS))
-    if s.player >= 0 && !s.won {
-        for i in 0..s.sensors.len {
-            if physics.overlap(&s.bodies[s.player], &s.sensors[i]) { s.won = true; break }
-        }
-    }
     s.tick += 1
+    if s.player >= 0 { update_player(&mut s, before) }
 }
 
 // The accumulator is in ticks. Preserve sub-tick time and a jump edge until a tick consumes it.
@@ -276,11 +370,19 @@ pub fn state_json(s: &Session) -> string {
     w.key("tick"); w.integer(s.tick)
     w.key("won"); w.boolean(s.won)
     w.key("contacts"); w.integer(i64(s.contacts))
+    w.key("flowers"); w.integer(i64(s.flowers))
+    w.key("total_flowers"); w.integer(i64(s.total_flowers))
+    w.key("last_flower"); w.integer(i64(s.last_flower))
+    w.key("picked_tick"); w.integer(s.picked_tick)
+    w.key("heading"); w.decimal(f64(s.heading))
+    w.key("walk_phase"); w.decimal(f64(s.walk_phase))
+    w.key("walking"); w.boolean(s.walking)
     w.key("entities"); w.array()
     for i in 0..s.body_indices.len {
         body := s.body_indices[i]
         w.object()
         w.key("name"); w.string(s.scene.entities[i].name)
+        w.key("collected"); w.boolean(s.collected[i])
         codec.vector_field(&mut w, "position", position(s, i))
         velocity := if body < 0 { core.vec3(0.0, 0.0, 0.0) } else { s.bodies[body].velocity }
         codec.vector_field(&mut w, "velocity", velocity)
