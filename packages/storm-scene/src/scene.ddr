@@ -93,7 +93,7 @@ pub struct Graph {
     materials: ecs.Pool<Material>,
 }
 
-fn matrix_for(local: &LocalTransform) -> core.Mat4 {
+pub fn matrix_for(local: &LocalTransform) -> core.Mat4 {
     c := local.rotation_y.cos()
     s := local.rotation_y.sin()
     if local.rotation_x != 0.0 || local.rotation_z != 0.0 {

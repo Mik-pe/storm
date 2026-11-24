@@ -1,6 +1,7 @@
 import ..src.animation as anim
 import ..src.scene as scene
 import core
+import std.math as _
 
 fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.0001 }
 
@@ -69,4 +70,51 @@ fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.0001 }
     assert(local.position.x == a.position.x && local.position.y == a.position.y && local.scale.y == b.scale.y)
     assert(near(local.rotation_y, 3.14159265) && !local.visible)
     assert(graph.local(parent).position.x == 5.0 && graph.geometry_revision() == revision)
+}
+
+@test fn two_bone_pitch_places_the_tip_on_its_target_for_either_bend() {
+    for bend in [anim.Bend.Positive, anim.Bend.Negative] {
+        for target in [core.vec2(-0.42, 0.18), core.vec2(-0.35, -0.22), core.vec2(0.12, 0.30)] {
+            pose := anim.solve_two_bone(0.22, 0.30, target.x, target.y, bend)
+            assert(near(-0.22 * pose.upper_pitch.cos() - 0.30 * pose.lower_pitch.cos(), target.x))
+            assert(near(-0.22 * pose.upper_pitch.sin() - 0.30 * pose.lower_pitch.sin(), target.y))
+            if bend == .Positive { assert(pose.lower_pitch > pose.upper_pitch) }
+            else { assert(pose.lower_pitch < pose.upper_pitch) }
+        }
+    }
+}
+
+@test fn two_bone_clamps_the_reach_and_folds_continuously_at_the_root() {
+    far := anim.solve_two_bone(0.25, 0.5, 0.0, 3.0, .Negative)
+    assert(near(far.reach, 0.75) && near(far.upper_pitch, -1.5707963) && near(far.lower_pitch, far.upper_pitch))
+    short := anim.solve_two_bone(0.25, 0.5, -0.01, 0.0, .Positive)
+    assert(near(short.reach, 0.25) && near(short.upper_pitch, -3.14159265) && near(short.lower_pitch, 0.0))
+    folded := anim.solve_two_bone(0.3, 0.3, 0.0, 0.0, .Negative)
+    assert(folded.reach == 0.0 && near(folded.upper_pitch, 1.5707963) && near(folded.lower_pitch, -1.5707963))
+}
+
+@test fn spline_carries_velocity_through_uneven_keys_and_holds_still_at_extrema() {
+    c := anim.clip(4.0, [
+        anim.key(0.0, 0.0, 0.0, 0.0, .Spline), anim.key(0.5, 1.0, 1.0, 0.0, .Spline),
+        anim.key(2.0, 4.0, 1.0, 0.0, .Spline), anim.key(4.0, 1.0, 0.0, 0.0, .Spline)], [], []).unwrap()
+    base := anim.identity()
+    before := anim.sample(&c, 0.499, .Clamp, base).position
+    after := anim.sample(&c, 0.501, .Clamp, base).position
+    assert((before.x - 0.998).abs() < 0.00002 && (after.x - 1.002).abs() < 0.00002)
+    assert(before.y > 0.9999 && after.y == 1.0)
+    for i in 0..401 {
+        p := anim.sample(&c, f32(i) * 0.01, .Clamp, base).position
+        assert(p.x >= 0.0 && p.x <= 4.0 && p.y >= 0.0 && p.y <= 1.0)
+    }
+}
+
+@test fn spline_joins_loop_velocities_at_matching_end_poses_and_clamps_both_ends() {
+    c := anim.clip(3.0, [], [anim.key(0.0, 1.0, 0.0, 0.0, .Spline), anim.key(0.5, 2.0, 0.0, 0.0, .Spline),
+        anim.key(2.5, 0.0, 0.0, 0.0, .Spline), anim.key(3.0, 1.0, 0.0, 0.0, .Spline)], []).unwrap()
+    base := anim.identity()
+    left := anim.sample(&c, -0.001, .Loop, base).rotation.x
+    right := anim.sample(&c, 0.001, .Loop, base).rotation.x
+    assert((left - 0.998).abs() < 0.00002 && (right - 1.002).abs() < 0.00002)
+    assert(near(anim.sample(&c, 0.001, .Clamp, base).rotation.x, 1.0))
+    assert(near(anim.sample(&c, 2.999, .Clamp, base).rotation.x, 1.0))
 }

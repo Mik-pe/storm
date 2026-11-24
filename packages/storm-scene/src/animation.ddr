@@ -3,12 +3,14 @@
 import .scene
 import core
 import ecs
+import std.math as math
 
-pub enum Ease { Step, Linear, Smooth, EaseIn, EaseOut }
+pub enum Ease { Step, Linear, Smooth, EaseIn, EaseOut, Spline }
 pub enum Playback { Clamp, Loop }
 pub struct Key { time: f32, value: core.Vec3, ease: Ease }
 pub struct Pose { position: core.Vec3, rotation: core.Vec3, scale: core.Vec3 }
-pub opaque struct Clip { duration: f32, position: []Key, rotation: []Key, scale: []Key }
+struct Track { keys: []Key, tangents: [][f64; 3] }
+pub opaque struct Clip { duration: f32, position: Track, rotation: Track, scale: Track }
 
 pub fn identity() -> Pose {
     Pose { position: core.vec3(0.0, 0.0, 0.0), rotation: core.vec3(0.0, 0.0, 0.0), scale: core.vec3(1.0, 1.0, 1.0) }
@@ -32,12 +34,55 @@ fn validate(keys: &[]Key, duration: f32, channel: string) -> Result<(), string> 
     .Ok
 }
 
+// Matching the smaller neighboring velocity keeps every component monotone.
+// Holds and extrema have zero velocity. Interior poses can pass through a key.
+fn slope(a: f32, b: f32, c: f32, left: f64, right: f64) -> f64 {
+    incoming := (f64(b) - f64(a)) / left
+    outgoing := (f64(c) - f64(b)) / right
+    if incoming * outgoing <= 0.0 { return 0.0 }
+    if incoming.abs() < outgoing.abs() { incoming } else { outgoing }
+}
+
+fn make_track(move keys: []Key, duration: f32) -> Track {
+    mut tangents: [][f64; 3] = []
+    mut curved := false
+    for k in keys { if k.ease == .Spline { curved = true; break } }
+    n := keys.len
+    if curved && n > 1 {
+        first := keys[0].value
+        last := keys[n - 1].value
+        joined := keys[0].time == 0.0 && keys[n - 1].time == duration
+        tangents.reserve(n)
+        for i in 0..n {
+            seam := joined && (i == 0 || i == n - 1)
+            before := if seam { n - 2 } else { (i + n - 1) % n }
+            after := if seam { 1 } else { (i + 1) % n }
+            outgoing := if seam { keys[0].ease } else { keys[i].ease }
+            mut t: [f64; 3] = [0.0; 3]
+            if keys[before].ease == .Spline && outgoing == .Spline {
+                mut left := f64(keys[i].time) - f64(keys[before].time)
+                mut right := f64(keys[after].time) - f64(keys[i].time)
+                if left <= 0.0 { left += f64(duration) }
+                if right <= 0.0 { right += f64(duration) }
+                a := keys[before].value
+                b := keys[i].value
+                c := keys[after].value
+                if !seam || first.x == last.x { t[0] = slope(a.x, b.x, c.x, left, right) }
+                if !seam || first.y == last.y { t[1] = slope(a.y, b.y, c.y, left, right) }
+                if !seam || first.z == last.z { t[2] = slope(a.z, b.z, c.z, left, right) }
+            }
+            tangents.push(move t)
+        }
+    }
+    Track { keys: move keys, tangents: move tangents }
+}
+
 pub fn clip(duration: f32, move position: []Key, move rotation: []Key, move scale: []Key) -> Result<Clip, string> {
     if !duration.is_finite() || duration <= 0.0 { return .Err("clip duration must be finite and positive") }
     validate(&position, duration, "position")?
     validate(&rotation, duration, "rotation")?
     validate(&scale, duration, "scale")?
-    .Ok(Clip { duration: duration, position: move position, rotation: move rotation, scale: move scale })
+    .Ok(Clip { duration: duration, position: make_track(move position, duration), rotation: make_track(move rotation, duration), scale: make_track(move scale, duration) })
 }
 
 fn weight(t: f32) -> f32 {
@@ -50,27 +95,41 @@ fn lerp(a: core.Vec3, b: core.Vec3, t: f32) -> core.Vec3 {
     core.add(core.scale(a, 1.0 - t), core.scale(b, t))
 }
 
-fn segment(a: &Key, b: &Key, at: f64, start: f64, end: f64) -> core.Vec3 {
-    t := weight(f32((at - start) / (end - start)))
+fn segment(curve: &Track, left: i32, right: i32, offset: f64, span: f64, playback: Playback) -> core.Vec3 {
+    a := &curve.keys[left]
+    b := &curve.keys[right]
+    t := weight(f32(offset / span))
     k := match a.ease {
         .Step => f32(0.0), .Linear => t, .Smooth => t * t * (3.0 - 2.0 * t),
         .EaseIn => t * t, .EaseOut => t * (2.0 - t),
+        .Spline => {
+            u := f64(t)
+            blend := u * u * (3.0 - 2.0 * u)
+            m := if playback == .Clamp && left == 0 { 0.0 } else { span * u * (1.0 - u) * (1.0 - u) }
+            n := if playback == .Clamp && right == curve.keys.len - 1 { 0.0 } else { -span * u * u * (1.0 - u) }
+            va := &curve.tangents[left]
+            vb := &curve.tangents[right]
+            return core.vec3(f32((1.0 - blend) * f64(a.value.x) + blend * f64(b.value.x) + m * va[0] + n * vb[0]),
+                f32((1.0 - blend) * f64(a.value.y) + blend * f64(b.value.y) + m * va[1] + n * vb[1]),
+                f32((1.0 - blend) * f64(a.value.z) + blend * f64(b.value.z) + m * va[2] + n * vb[2]))
+        },
     }
     lerp(a.value, b.value, k)
 }
 
-fn track(keys: &[]Key, time: f64, duration: f64, playback: Playback, base: core.Vec3) -> core.Vec3 {
+fn track(curve: &Track, time: f64, duration: f64, playback: Playback, base: core.Vec3) -> core.Vec3 {
+    keys := &curve.keys
     if keys.len == 0 { return base }
     first := &keys[0]
     if keys.len == 1 { return first.value }
     last := &keys[keys.len - 1]
     if time < f64(first.time) {
         if playback == .Clamp { return first.value }
-        return segment(last, first, time, f64(last.time) - duration, f64(first.time))
+        return segment(curve, keys.len - 1, 0, time + duration - f64(last.time), duration - f64(last.time) + f64(first.time), playback)
     }
     if time >= f64(last.time) {
         if playback == .Clamp || time == f64(last.time) { return last.value }
-        return segment(last, first, time, f64(last.time), duration + f64(first.time))
+        return segment(curve, keys.len - 1, 0, time - f64(last.time), duration - f64(last.time) + f64(first.time), playback)
     }
     mut left := 0
     mut right := keys.len - 1
@@ -78,7 +137,7 @@ fn track(keys: &[]Key, time: f64, duration: f64, playback: Playback, base: core.
         mid := left + (right - left) / 2
         if time < f64(keys[mid].time) { right = mid } else { left = mid }
     }
-    segment(&keys[left], &keys[right], time, f64(keys[left].time), f64(keys[right].time))
+    segment(curve, left, right, time - f64(keys[left].time), f64(keys[right].time) - f64(keys[left].time), playback)
 }
 
 fn wrapped(time: f64, period: f64) -> f64 {
@@ -143,4 +202,36 @@ pub fn apply(g: &mut scene.Graph, node: ecs.Entity, p: &Pose) {
     g.set_position(node, p.position)
     g.set_angles(node, p.rotation.x, p.rotation.y, p.rotation.z)
     g.set_scale(node, p.scale)
+}
+
+pub enum Bend { Positive, Negative }
+pub struct TwoBone { upper_pitch: f32, lower_pitch: f32, reach: f32 }
+
+// Solve in the local YZ plane. Both pitches are absolute angles from downward
+// (-Y) about +X. Positive bend makes lower_pitch greater than upper_pitch.
+pub fn solve_two_bone(upper_length: f32, lower_length: f32, dy: f32, dz: f32, bend: Bend) -> TwoBone {
+    if !upper_length.is_finite() || !lower_length.is_finite() || upper_length < 0.0 || lower_length < 0.0 ||
+        !dy.is_finite() || !dz.is_finite() || (upper_length == 0.0 && lower_length == 0.0) {
+        return TwoBone { upper_pitch: 0.0, lower_pitch: 0.0, reach: 0.0 }
+    }
+    upper := f64(upper_length)
+    lower := f64(lower_length)
+    distance := (f64(dy) * f64(dy) + f64(dz) * f64(dz)).sqrt()
+    reach := math.clamp(distance, (upper - lower).abs(), upper + lower)
+    side: f64 = if bend == .Positive { 1.0 } else { -1.0 }
+    if reach == 0.0 {
+        // Equal links fold back onto one another. The target has no direction.
+        quarter := f32(side * math.PI * 0.5)
+        return TwoBone { upper_pitch: -quarter, lower_pitch: quarter, reach: 0.0 }
+    }
+    aim := if distance == 0.0 { f64(0.0) } else { math.atan2(-f64(dz), -f64(dy)) }
+    // Project the knee onto the root-to-target line. The offset from that
+    // line is the shared height of the two right triangles at the knee.
+    along := math.clamp(((upper - lower) * (upper + lower) + reach * reach) / (2.0 * reach), -upper, upper)
+    height := ((upper - along) * (upper + along)).sqrt()
+    TwoBone {
+        upper_pitch: f32(aim - side * math.atan2(height, along)),
+        lower_pitch: f32(aim + side * math.atan2(height, reach - along)),
+        reach: f32(reach),
+    }
 }
