@@ -5,12 +5,13 @@ import scene.animation as anim
 import std.math as math
 
 pub struct Clips {
-    breath: anim.Clip, stride: anim.Clip, flight: anim.Clip,
+    breath: anim.Clip, stride: anim.Clip, fore_paw: anim.Clip, hind_paw: anim.Clip, flight: anim.Clip,
     launch: anim.Clip, impact: anim.Clip, blink: anim.Clip, ear: anim.Clip, listen: anim.Clip,
 }
 
 pub struct Pose {
     body: anim.Pose, chest: anim.Pose, head: core.Vec3, tail: [core.Vec3; 3], ears: [core.Vec3; 2],
+    shoulders: [core.Vec3; 4], paws: [anim.Pose; 4],
     eye_open: f32, air: f32, descent: f32, boost: f32, compression: f32,
 }
 
@@ -20,14 +21,24 @@ pub fn clips() -> Result<Clips, string> {
     breath := anim.clip(2.50, [key(0.0, -0.018, -0.056, -0.012), key(1.03, 0.025, -0.044, 0.020),
         key(2.0, -0.008, -0.069, -0.006)], [], [key(0.0, 1.0, 1.0, 1.0),
         key(0.90, 0.983, 1.034, 1.019), key(2.03, 1.012, 0.981, 0.992)])?
-    // One gallop: hinds gather under the pelvis, drive the chest up, then the forelegs catch it.
-    stride := anim.clip(1.0, [key(0.02, 0.0, -0.117, -0.034), key(0.21, 0.0, -0.077, -0.018),
-        key(0.38, 0.0, -0.020, 0.024), key(0.57, 0.0, -0.062, 0.045),
-        key(0.72, 0.0, -0.127, 0.012), key(0.87, 0.0, -0.065, -0.021)],
-        [key(0.04, -0.10, 0.0, -0.042), key(0.26, -0.21, 0.0, 0.055),
-        key(0.48, -0.012, 0.0, 0.032), key(0.67, 0.17, 0.0, -0.063), key(0.86, 0.105, 0.0, 0.024)],
-        [key(0.07, 1.044, 1.078, 0.884), key(0.39, 0.966, 0.957, 1.155),
-        key(0.61, 1.052, 0.927, 1.095), key(0.86, 1.010, 1.0, 0.94)])?
+    // Contact, yield, pass and push repeat on the opposite diagonal half a stride later.
+    stride := anim.clip(0.5, [key(0.00, 0.0, -0.064, 0.014), key(0.10, 0.0, -0.128, 0.021),
+        key(0.23, 0.0, -0.081, -0.004), key(0.36, 0.0, -0.023, -0.018), key(0.46, 0.0, -0.040, 0.001)],
+        [key(0.025, 0.040, 0.0, 0.0), key(0.125, 0.092, 0.0, 0.0), key(0.31, -0.075, 0.0, 0.0),
+        key(0.43, -0.038, 0.0, 0.0)], [key(0.08, 1.022, 0.971, 1.030), key(0.30, 0.984, 1.027, 0.989)])?
+    // The fore wrist peels sharply over its toe and folds high during the pass.
+    fore_paw := anim.clip(1.0, [key(0.0, 0.0, 0.0, 0.0), key(0.485, 0.0, 0.0, 0.0),
+        key(0.59, 0.012, 0.10, 0.0), key(0.70, 0.026, 0.228, 0.0),
+        key(0.81, 0.020, 0.156, 0.0), key(0.94, 0.003, 0.025, 0.0)],
+        [key(0.0, -0.17, 0.0, 0.0), key(0.055, 0.0, 0.0, 0.0), key(0.31, 0.0, 0.0, 0.0),
+        key(0.45, 0.43, 0.0, 0.0), key(0.57, 1.03, 0.0, 0.0), key(0.65, 1.19, 0.0, 0.0),
+        key(0.79, 0.09, 0.0, 0.0), key(0.88, -0.39, 0.0, 0.0)], [])?
+    // A hind paw drives for longer, travels closer to the ground and arrives almost flat.
+    hind_paw := anim.clip(1.0, [key(0.0, 0.0, 0.0, 0.0), key(0.505, 0.0, 0.0, 0.0),
+        key(0.62, 0.002, 0.046, 0.0), key(0.76, 0.016, 0.162, 0.0),
+        key(0.86, 0.010, 0.111, 0.0), key(0.96, 0.001, 0.012, 0.0)],
+        [key(0.0, -0.045, 0.0, 0.0), key(0.05, 0.0, 0.0, 0.0), key(0.36, 0.0, 0.0, 0.0),
+        key(0.52, 0.29, 0.0, 0.0), key(0.65, 0.59, 0.0, 0.0), key(0.84, -0.10, 0.0, 0.0)], [])?
     // Upward, apex and downward silhouettes, indexed by vertical velocity.
     flight := anim.clip(1.0, [], [key(0.0, -0.29, 0.0, 0.0), key(0.5, -0.045, 0.0, 0.0), key(1.0, 0.23, 0.0, 0.0)],
         [key(0.0, 0.94, 1.11, 1.075), key(0.5, 1.072, 1.012, 0.90), key(1.0, 0.98, 1.057, 1.074)])?
@@ -47,7 +58,7 @@ pub fn clips() -> Result<Clips, string> {
         key(1.41, -0.045, 0.23, 0.10), key(1.65, -0.12, 0.21, 0.085), key(1.97, -0.038, 0.15, 0.055),
         key(2.48, 0.0, 0.0, 0.0), key(4.18, 0.0, 0.0, 0.0), key(4.72, 0.055, -0.22, -0.10),
         key(5.45, 0.035, -0.19, -0.075), key(6.15, 0.0, 0.0, 0.0)], [])?
-    .Ok(Clips { breath: move breath, stride: move stride, flight: move flight,
+    .Ok(Clips { breath: move breath, stride: move stride, fore_paw: move fore_paw, hind_paw: move hind_paw, flight: move flight,
         launch: move launch, impact: move impact, blink: move blink, ear: move ear, listen: move listen })
 }
 
@@ -100,35 +111,54 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
     idle := (1.0 - run) * (1.0 - air)
     body.position.y -= 0.38 * dip
     if !m.grounded && m.takeoff_age >= 0.0 { body.position.y -= (1.0 - unit(m.takeoff_age / 0.09)) * 0.055 }
-    body.position.z -= 0.045 * m.drive
-    body.rotation.x -= 0.082 * m.drive
+    ground_run := run * (1.0 - air)
+    bearing := (gait - 0.22).sin() * ground_run
+    reach := (gait - 0.12).cos() * ground_run
+    body.position.x += 0.048 * bearing
+    body.position.z -= 0.072 * m.drive
+    body.rotation.x -= 0.10 * m.drive
+    body.rotation.y -= 0.11 * reach
+    body.rotation.z += 0.095 * bearing
     body.rotation.z -= 0.145 * m.bank
     mut chest := anim.identity()
-    chest.rotation = core.vec3((gait - 0.45).sin() * 0.118 * run - 0.093 * m.drive + 0.26 * dip,
-        -0.065 * m.bank + 0.038 * (m.seconds * 1.4).sin() * idle, 0.040 * sway * idle)
-    chest.position.y = 0.012 * sway * idle - 0.051 * dip
+    chest.rotation = core.vec3((2.0 * gait - 0.54).sin() * 0.066 * ground_run - 0.085 * m.drive + 0.29 * dip,
+        0.214 * reach - 0.065 * m.bank + 0.038 * (m.seconds * 1.4).sin() * idle, -0.159 * bearing + 0.040 * sway * idle)
+    chest.position.x = -0.074 * bearing
+    chest.position.y = 0.012 * sway * idle - 0.063 * dip - 0.017 * (2.0 * gait - 0.63).sin() * ground_run
     mut result := Pose {
         body: body, chest: chest, air: air, descent: descent, boost: boost, compression: dip,
         head: core.vec3(-0.052 * sway * idle - 0.57 * body.rotation.x - 0.30 * chest.rotation.x + 0.37 * dip,
-            0.145 * (m.seconds * 1.16).sin() * idle + m.bank * 0.20, 0.112 * (m.seconds * 1.54).sin() * idle + (gait - 0.68).sin() * run * 0.087),
+            0.145 * (m.seconds * 1.16).sin() * idle + m.bank * 0.20 - 0.10 * reach, 0.112 * (m.seconds * 1.54).sin() * idle + 0.052 * bearing),
         tail: [core.vec3(0.0,0.0,0.0); 3], ears: [core.vec3(0.0, 0.0, 0.0); 2],
+        shoulders: [core.vec3(0.0, 0.0, 0.0); 4], paws: [anim.identity(); 4],
         eye_open: anim.sample(&c.blink, m.seconds, .Loop, base).scale.y,
     }
     result.head = core.add(result.head, core.scale(anim.sample(&c.listen, m.seconds, .Loop, base).rotation, idle))
+    for i in 0..4 {
+        local := cycle - strike(i)
+        result.paws[i] = if i < 2 { anim.sample(&c.fore_paw, local, .Loop, base) }
+            else { anim.sample(&c.hind_paw, local, .Loop, base) }
+        angle := 6.2831853 * local
+        slide: f32 = if i < 2 { 0.073 } else { 0.049 }
+        rise: f32 = if i < 2 { 0.037 } else { 0.025 }
+        // The bearing shoulder rises on the pass; both girdles slide forward for touchdown.
+        result.shoulders[i] = core.vec3(0.0, -rise * (angle + 0.40).cos(), slide * (angle + 0.17).cos())
+        result.shoulders[i] = core.scale(result.shoulders[i], ground_run)
+    }
     for i in 0..3 {
         segment := f32(i)
         lag := segment * 0.77
-        bounce := (gait - 0.66 - lag).sin() * run * (0.25 - 0.035 * segment)
-        wag := (2.67 * m.seconds - lag).sin() * (0.19 + 0.045 * segment)
+        bounce := (2.0 * gait - 0.88 - lag).sin() * ground_run * (0.10 + 0.025 * segment)
+        wag := (2.67 * m.seconds - lag).sin() * (0.19 + 0.045 * segment) * (1.0 - 0.72 * ground_run)
         result.tail[i] = core.vec3(bounce + (sway * 0.085 + (0.32 - 0.65 * descent) * air) / (1.0 + segment) + dip * 0.72,
-            wag + 0.18 * (gait + 0.4 - lag).sin() * run - m.bank * (0.33 - 0.07 * segment),
-            (0.15 + 0.04 * segment) * (2.07 * m.seconds - lag).cos() + 0.17 * (gait - lag).cos() * run - boost * 0.19)
+            wag + 0.14 * (gait - 0.48 - lag).sin() * ground_run - m.bank * (0.23 - 0.04 * segment),
+            (0.15 + 0.04 * segment) * (2.07 * m.seconds - lag).cos() * (1.0 - ground_run) + 0.055 * (gait - lag).cos() * ground_run - boost * 0.09)
     }
     for i in 0..2 {
         mirror: f32 = if i == 0 { 1.0 } else { -1.0 }
         flick := anim.sample(&c.ear, m.seconds + f32(i) * 1.37, .Loop, base).rotation
         result.ears[i] = core.vec3(flick.x - (1.0 - descent) * air * (0.36 + boost * 0.31)
-            - (gait - 0.84).cos() * run * 0.20 + dip * 1.06,
+            - (2.0 * gait - 0.84).cos() * ground_run * (0.115 + 0.018 * mirror) + dip * 1.06,
             mirror * flick.y, mirror * (flick.z + 0.045 * sway - dip * 0.84) + m.bank * 0.09)
     }
     result
@@ -136,18 +166,22 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
 
 pub struct Leg {
     hip: core.Vec3, knee: core.Vec3, ankle: core.Vec3, sole: core.Vec3, toe: core.Vec3,
-    thigh: f32, shin: f32, thigh_rest: f32, shin_rest: f32, hind: bool, strike: f32,
+    thigh: f32, shin: f32, thigh_rest: f32, shin_rest: f32, hind: bool, index: i32,
 }
 pub struct Foot { sole: core.Vec3, pitch: f32 }
 pub struct LegAngles { roll: f32, hip: f32, knee: f32, ankle: f32 }
+
+fn strike(index: i32) -> f32 {
+    strikes: [f32; 4] = [0.527, 0.027, 0.0, 0.5]
+    strikes[index]
+}
 
 fn angle(y: f32, z: f32) -> f32 { f32(math.atan2(-f64(z), -f64(y))) }
 pub fn leg(hip: core.Vec3, knee: core.Vec3, ankle: core.Vec3, sole: core.Vec3, toe: core.Vec3, index: i32) -> Leg {
     a := core.sub(knee, hip)
     b := core.sub(ankle, knee)
-    strikes: [f32; 4] = [0.47, 0.59, 0.0, 0.12]
     Leg { hip: hip, knee: knee, ankle: ankle, sole: sole, toe: toe, thigh: core.length(a), shin: core.length(b),
-        thigh_rest: angle(a.y, a.z), shin_rest: angle(b.y, b.z), hind: index >= 2, strike: strikes[index] }
+        thigh_rest: angle(a.y, a.z), shin_rest: angle(b.y, b.z), hind: index >= 2, index: index }
 }
 
 fn yaw(v: core.Vec3, a: f32) -> core.Vec3 {
@@ -157,45 +191,77 @@ fn yaw(v: core.Vec3, a: f32) -> core.Vec3 {
 }
 
 pub fn phase(l: &Leg, gait: f32) -> f32 {
-    relative := gait / 6.2831853 - l.strike
+    relative := gait / 6.2831853 - strike(l.index)
     relative - relative.floor()
 }
 
 // Reconstruct the touchdown from simulation history. Camera frames can be skipped or replayed.
 pub fn foot(l: &Leg, p: &Pose, m: &play.PlayerMotion, s: &play.Session, exact: bool, center: core.Vec3, scale: f32) -> Foot {
     cycle := phase(l, m.walk_phase)
-    stance: f32 = 0.395
+    stance: f32 = if l.hind { 0.505 } else { 0.485 }
     reach := play.STRIDE_LENGTH / scale
     releasing := !m.grounded && p.air < 1.0
     anchor := if releasing { play.last_support_anchor(s, cycle * play.STRIDE_LENGTH) }
         else { play.stride_anchor(s, exact, cycle * play.STRIDE_LENGTH) }
     touchdown := core.add(l.sole, core.vec3(0.0, 0.0, 0.5 * stance * reach * anchor.run_weight))
     locked := core.scale(yaw(core.add(core.sub(anchor.position, center), yaw(core.scale(touchdown, scale), anchor.heading)), -m.heading), 1.0 / scale)
+    mut index := 0
+    mut remaining: f32 = 1.0
+    mut footprint := locked
+    mut settling_lift: f32 = 0.0
+    while remaining > 0.0001 {
+        stop := match play.stride_stop(s, exact, index) { .Some(value) => value, .None => { break } }
+        if stop.distance > cycle * play.STRIDE_LENGTH + 0.00001 { break }
+        // Finish the unweighted diagonal first, then gather the other pair underneath.
+        stopped_phase := cycle - stop.distance / play.STRIDE_LENGTH
+        delay: f32 = if stopped_phase > stance { 0.0 } else { 0.17 }
+        u := unit((stop.duration - delay) / 0.19)
+        if u > 0.0 {
+            neutral := core.scale(yaw(core.add(core.sub(stop.position, center), yaw(core.scale(l.sole, scale), stop.heading)), -m.heading), 1.0 / scale)
+            delta := core.sub(neutral, locked)
+            eased := u * u * (3.0 - 2.0 * u)
+            footprint = core.add(footprint, core.scale(delta, remaining * eased))
+            distance := (delta.x * delta.x + delta.z * delta.z).sqrt()
+            settling_lift += remaining * 0.087 * unit(distance / 0.22) * (3.14159265 * u).sin()
+            remaining *= 1.0 - eased
+        }
+        index += 1
+    }
     swing := unit((cycle - stance) / (1.0 - stance))
     progress := swing * swing * (3.0 - 2.0 * swing)
     next := core.add(l.sole, core.vec3(0.0, 0.0, (0.5 * stance + 1.0 - cycle) * reach * m.run_weight))
-    mut target := core.add(core.scale(locked, 1.0 - progress), core.scale(next, progress))
-    arc := (3.14159265 * swing).sin()
-    target.y = l.sole.y + arc * arc * m.run_weight * (if l.hind { f32(0.22) } else { f32(0.28) })
+    mut target := core.add(core.scale(footprint, 1.0 - progress), core.scale(next, progress))
+    paw := &p.paws[l.index]
+    side: f32 = if l.index % 2 == 0 { 1.0 } else { -1.0 }
+    target.x += side * paw.position.x * m.run_weight
+    target.y = l.sole.y + paw.position.y * m.run_weight + settling_lift * (1.0 - progress)
     if releasing {
         // The collider has already left the floor. Peel the shoe off its last footprint.
         vertical := locked.y - l.sole.y
         target.y += if vertical < -0.15 { -0.15 } else { vertical }
     }
-    mut pitch := (6.2831853 * swing).sin() * arc * 0.92 * m.run_weight
+    mut pitch := paw.rotation.x * m.run_weight
     tuck := 4.0 * p.descent * (1.0 - p.descent)
     mut flying := l.sole
+    mut air := p.air
     if l.hind {
-        flying.y += 0.035 + 0.24 * tuck + 0.075 * p.descent
-        flying.z += -0.24 + 0.41 * tuck + 0.13 * p.descent - p.boost * 0.065
+        // The rear toes finish the push before tucking under the pelvis.
+        if !m.grounded { air = unit((air - 0.17) / 0.83) }
+        else if m.landing_age >= 0.0 { air = (1.0 - unit((m.landing_age - 0.025) / 0.095)) * unit(m.landing_strength / 0.25) }
+        flying.y += 0.025 + 0.245 * tuck + 0.082 * p.descent
+        flying.z += -0.265 + 0.46 * tuck + 0.18 * p.descent - p.boost * 0.07
     } else {
-        flying.y += 0.16 * (1.0 - p.descent) + 0.25 * tuck
-        flying.z += 0.085 + 0.22 * p.descent - 0.22 * tuck
+        flying.y += 0.195 * (1.0 - p.descent) + 0.24 * tuck
+        flying.z += 0.08 + 0.205 * p.descent - 0.205 * tuck
     }
-    target = core.add(core.scale(target, 1.0 - p.air), core.scale(flying, p.air))
-    pitch += ((if l.hind { f32(0.75) } else { f32(-0.24) }) + 0.71 * tuck - 0.24 * p.descent - pitch) * p.air
-    // A heel catches first on descent. At push-off the toe carries the weight.
-    target.y += (l.toe.z - l.sole.z) * pitch.sin().abs()
+    target = core.add(core.scale(target, 1.0 - air), core.scale(flying, air))
+    in_flight := if l.hind { 0.50 + 0.48 * tuck - 0.29 * p.descent }
+        else { 0.34 + 0.91 * tuck - 0.77 * p.descent }
+    pitch += (in_flight - pitch) * air
+    // Rotate about the planted toe or heel. The contact patch stays in world space as the wrist rolls.
+    edge := l.toe.z - l.sole.z
+    target.y += edge * pitch.sin().abs()
+    target.z += (if pitch > 0.0 { edge } else { -edge }) * (1.0 - pitch.cos())
     Foot { sole: target, pitch: pitch }
 }
 
