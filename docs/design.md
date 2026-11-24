@@ -32,20 +32,24 @@
 ## 1. Nuläge (mätt i koden, 2026-11-24)
 
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
-  som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `Vertex` och `PostProcess`.
-  `trait Backend` beskriver pass, ritning och bildexport. Anrop som kan misslyckas
+  som bitar i en `u32`), `Mouse` (med `scroll`), `Sky`, `Surface`, `Vertex` och `PostProcess`.
+  `trait Backend` beskriver pass, ritning och bildexport i 20 metoder
+  (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet. Åtta tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
   Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
-  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Fyra
-  `sType: 18` skrivs också för hand (`ui.ddr` ×2, `post.ddr` ×2) — de är
-  strukturtagningsnummer, inte enums, men samma sorts tal-utan-vittne.
+  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Däremot skrivs
+  **130 råa `sType`-tal** för hand i nio moduler (`ibl` 25, `device` 23,
+  `shadow` 23, `pipeline` 19, `ui` 18, `post` 12, `vulkan` 5, `headless` 4,
+  `depth` 1; varken enum eller konstant). De är strukturtagningsnummer, inte
+  enums, men samma sorts tal-utan-vittne som blend-faktorerna var — och det är
+  den första vinsten med `layout.ddr` genererad ur `vk.xml` (§6).
 - **Enums är ett eget lager:** `enums.ddr` har 34 `pub enum` och 42
   `pub fn`: 40 konverterare/namngivna värden och två skrivare av C-poster
   (`apply_blend`, `apply_vertex_input`). Endast två
   namngivna `u32`-konstanter lever kvar i `layout.ddr`
   (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
-- `state.ddr` `Renderer`: **127 fält** (var ~60 när steget skrevs; IBL,
+- `state.ddr` `Renderer`: **121 fält** (var ~60 när steget skrevs; IBL,
   djup, skuggor, post, UI och headless har alla lagt till sina). Varje
   modul tar `&mut Renderer`.
 - **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
@@ -74,42 +78,43 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen omfattade **140 egna
-  `@test`** (146 gröna: 27 rot + 113 paket, varje svit lika många som den
-  har `@test`; Skrifts två följer med i roten, `storm-text` och
-  `storm-ui`) och Metal-självtestets kontroller i ett riktigt fönster.
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`5a0a9ec`,
+  Dunder 0.12.0, låst session) omfattade **188 egna `@test`** — 43 i roten
+  och 145 i de 15 paketen — alla gröna, varje svit lika många som den har
+  `@test` (Skrifts två följer med i `storm-text` och `storm-ui`). 16 sviter
+  kördes med `dunder test` i roten och i varje `packages/*`.
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **14 900–15 100 ms** på `a84ade9` med Dunder 0.12.0 (`--timings`:
-  1 238 funktioner, 386 871 MIR-operationer; `--profile-compiler`:
-  `mir_pipeline` 10,4 s av 14,6 s). Dagen innan var trädet `54214f3`
-  6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med 0.11.3, och `77d9b0c`
-  15 100–15 700 ms med 0.11.3 (1 176 funktioner, 346 512 operationer) —
-  skillnaden sedan igår är hälften kompilator, hälften spelet (fynd 70), och
-  0.12.0 tar +62 funktioner och +40 k operationer utan att väggklockan flyttar.
-  En stubb-`main` med hela manifestet bygger på 207 ms och
-  `shader.ddr`s 12 579 inbäddade SPIR-V-ord kostar 70 ms, så nästa
+  mätte **16 036 ms** på `5a0a9ec` med Dunder 0.12.0. Trädet på
+  `a84ade9` gav 14 900–15 100 ms med samma kompilator (`--timings`: 1 238 funktioner,
+  386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av
+  14,6 s), `54214f3` 6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med
+  0.11.3, och `77d9b0c` 15 100–15 700 ms med 0.11.3 (1 176 funktioner,
+  346 512 operationer) — skillnaden sedan igår är hälften kompilator, hälften
+  spelet (fynd 70), och 0.12.0 tar +62 funktioner och +40 k operationer utan
+  att väggklockan flyttar. En stubb-`main` med hela manifestet bygger på
+  207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Lagren i storm-vulkan (5 071 rader + 3 223 genererad `shader.ddr`):
+Lagren i storm-vulkan (5 202 rader + 4 212 genererad `shader.ddr`):
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 239 |
+| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 259 |
 | Enums vid gränsen | `enums.ddr` | 357 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 070 |
-| App-nära kod | `ui.ddr`, `post.ddr` | 561 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 844 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 149 |
+| App-nära kod | `ui.ddr`, `post.ddr` | 562 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 875 |
 
-Lagren i storm-metal (2 257 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
+Lagren i storm-metal (2 266 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | Runtingen | `objc.ddr` | 280 |
 | Ramverkens värden | `enums.ddr`, `records.ddr` | 189 |
 | Fönstret och input | `appkit.ddr` | 508 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 350 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 345 |
 | Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr` | 295 |
-| Orkestrering | `metal.ddr` | 635 |
+| Orkestrering | `metal.ddr` | 649 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
@@ -246,9 +251,9 @@ Varje steg lämnar träd och tester grönt. Capture-filer före/efter måste
 vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 1. **Skapa `storm-vk` med enums + bindings.** *Status: enums-modulen finns
-    (`packages/storm-vulkan/src/enums.ddr`, 33 enums, 228 anrop);
-    paketdelningen är kvar.*
-2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
+   (`packages/storm-vulkan/src/enums.ddr`, 34 enums, 266 anrop);
+   paketdelningen är kvar.*
+2. **Ersätt de 135 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
    *Status: klart 2026-11-23. 135 → **0** råa enum-heltal i structfält: de
    sista tre var vertexlayouten i `shadow.ddr` (`inputRate: 0`,
@@ -262,7 +267,7 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
    (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
    `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
-   `Renderer`-structen (127 fält) är kvar.*
+   `Renderer`-structen (121 fält) är kvar.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
@@ -363,7 +368,8 @@ renderaren mutabelt vid sidan av en pekare in i den.
   på en handskriven lista. `layout.ddr` (698 rader `@c_layout`) och
   `enums.ddr` (34 enums) är nästa med samma taggläsare; där är vinsten större,
   för de är 800 rader mot 80. För Metal behövs det inte på samma sätt: det
-  som hålls för hand är 107 selektorer och 40 typer av meddelanden, och det
+  som hålls för hand är 109 selektorer och 53 deklarerade meddelandetyper
+  (34 unika signaturer), och det
   som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin
   tur vore naturlig som ett Dunder-verktyg i `tools/`, när den ska köras av
   fler än den som skrev den.

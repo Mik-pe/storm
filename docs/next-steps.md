@@ -18,25 +18,29 @@ Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. 
 **Efter 0f och 3a** kommer textursampling för meshmaterial och glTF-bilder (3b–3c); 3b:s beslut är researchade och mätta (se "Beslut inför 3b" under avsnitt 3b: sRGB-blit i linjärt rum enligt spec, `BLIT_SRC` frågas vid uppstart, materialtextur som set 1 byggd på `device.sampled_texture`, anisotropi 8 mot `maxSamplerAnisotropy` 16, glTF-filter utan spec-default väljs linjära, PNG via `packages/zlib`). Studion läser redan scenens noder och materialfaktorer (avsnitt 4). Sedan det som
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
 (genererade bindings). Första delen är landad: `tools/vk.ddr` skriver
-`api.ddr` ur `vk.xml` (80 prototyper + `load()`, `--check` som `fmt --check`;
-design.md §6). Kvar: `layout.ddr` (698 rader `@c_layout`, de fel som är
-tyst minneskorruption) och `enums.ddr` (34 enums som i dag pinnas av tester
-mot Khronos-tabellerna) med samma taggläsare, och paketet som eget namn.
-Sedan **Renderer-uppdelningen** (design.md §5,
-Instancing (5), fler ljus
-(7), och input (8) kommer efter det.
+`api.ddr` ur `vk.xml` (80 prototyper + `load()`), och `--check` är som
+`fmt --check` (utgång 1 om filen skiljer sig från registriet). Anropet är
+`dunder run tools/vk.ddr -- /tmp/vk.xml --check` — `--` krävs, annars äter
+`dunder run` flaggan själv (`unknown option: --check`). Kvar: `layout.ddr`
+(698 rader `@c_layout`, de fel som är tyst minneskorruption) och `enums.ddr`
+(34 enums som i dag pinnas av tester mot Khronos-tabellerna) med samma
+taggläsare, och paketet som eget namn. Sedan **Renderer-uppdelningen**
+(design.md §5). Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy
 
-Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Budgeten är 20 s. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Samma träd på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
+Senaste mätningen: `5a0a9ec` (den genererade `api.ddr` och researchen för 3b) på **16 036 ms** med Dunder 0.12.0 på Mikparchy. Budgeten är 20 s.
+
+Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Trädet på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 
 `tools/build-time.ddr` mätte tidigare **15 079–15 700 ms** på
 `77d9b0c`. Dagen innan var trädet 6 850 ms. Halva ökningen är kompilatorn
 (samma commit `54214f3`, Dunder 0.11.0 → 0.11.3: 6,9 → 9,1–10,3 s, fynd
 70); den andra halvan är spelets +496 emitterade funktioner (680 → 1 176)
 och +115 000 MIR-operationer. Det finns inget enkelt offer: en stubb-`main`
-med hela manifestet bygger på 207 ms, `shader.ddr`s 12 579 ord kostar 70 ms,
-och `--timings` visar `mir_pipeline` = 10,0 s av 14,1 s utspridda på allt.
+med hela manifestet bygger på 207 ms, `shader.ddr`s inbäddade SPIR-V-ord
+(16 982 ord i 28 shaderfunktioner) kostar 70 ms, och `--timings` visar
+`mir_pipeline` = 10,0 s av 14,1 s utspridda på allt.
 
 Beslut tills vidare:
 
@@ -289,9 +293,12 @@ Push constants räcker för en sol. Nästa steg är en uniform buffer per frame
 
 ## 8. Input
 
-`storm-input` har scancodes och en fly-kamera. Kvar: `keys_pressed` som
-engångshändelser i ECS, mushjul, textinmatning (`SDL_TextInputEvent`) och
-gamepad via `SDL_GameController`.
+`gfx.Input` har `down(key)` för hållna tangenter, `hit(key)` för
+engångshändelser (används av spelet och studion för Q, R, E, T, G, F, Esc)
+och `mouse.scroll` (inspektorn rullar med hjulet). `storm-input` har
+scancodes och en fly-kamera. Kvar: tangenthändelser som händelsekomponent i
+ECS (idag läses `hit` direkt i `app.ddr`), textinmatning
+(`SDL_TextInputEvent`) och gamepad via `SDL_GameController`.
 
 ## 9. Klart – fast speltick
 
@@ -306,7 +313,9 @@ gamepad via `SDL_GameController`.
 - Djupbuffert finns men inget reverserar det: glaset skriver inte djup, så två
   glaspaneler som överlappar varandra blandas i sorteringsordning, inte per pixel.
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
-- Vertexbufferten är 4 MiB och mappad permanent; en mesh-ström per draw.
+- Vertexbufferten börjar på 4 MiB (`gfx.INITIAL_VERTEX_BYTES`) och växer med
+  50 % över högsta använda mängden (`gfx.frame_vertex_capacity`); den är
+  mappad permanent och rymmer en mesh-ström per draw.
 - Meshpasset skickar 240 byte konstanter per draw. På Vulkan är de push
   constants och enhetsvalet kontrollerar `maxPushConstantsSize`; på Metal är
   de ett block per stage (`setVertexBytes:`/`setFragmentBytes:`, högst 4 KB
@@ -324,7 +333,6 @@ gamepad via `SDL_GameController`.
   hela ytan); en horisontlinje *inom* en yta syns först på krökta ytor.
 - Marktonen under horisonten är en fast gradient (ljusast vid horisonten), inte
   en rendering av golvet, så golvet syns inte i kuberna.
-- Ingen `vkDestroySurfaceKHR`-anrop: `vkDestroyInstance` städar ytan.
 - Fönsterläge (`--frames N` utan `--capture`) på en **låst** session avslutas
   med SIGSEGV i **första** framen (sett 2026-11-24 på `ac268f0`, spårat med
   `--trace`): sista markören är `acquired image 0`, nästa (`render pass

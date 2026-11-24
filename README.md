@@ -19,7 +19,9 @@ av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexp
 
 ## Förutsättningar
 
-- `dunder` 0.11.3 eller senare. Version 0.11.3 stöder den paketrelativa Metal-shadern och de lånade ECS-frågorna som används i spelet.
+- `dunder` 0.11.3 eller senare; senast verifierad med 0.12.0. Version 0.11.3
+  införde den paketrelativa Metal-shadern och de lånade ECS-frågorna som
+  används i spelet.
 - Git i `PATH` och nätåtkomst vid första bygget. Dunder hämtar de låsta revisionerna av `dunder-skrift` och dess zlib-beroende automatiskt.
 - **Linux:** `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …)
   och `sdl2` för fönstret. `glslangValidator` behövs bara när GLSL-shaders
@@ -161,7 +163,7 @@ _ := schedule.add_pass(.Transparent, "transparent", ["scene_color"], ["scene_col
 _ := schedule.add_pass(.PostProcess, "post", ["display"], ["scene_color"])
 _ := schedule.add_pass(.Ui, "ui", ["display"], ["display"])
 plan := schedule.compile()
-for step in 0..plan.steps.len { kind := plan.steps[step].kind }
+for step in 0..plan.steps.len { kind := plan.steps[step].kind; _ := kind }
 ```
 
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
@@ -244,7 +246,7 @@ mut allocator := ecs.EntityAllocator::new()
 mut positions := ecs.Pool<Position>::new()
 e := allocator.create()
 _ := positions.insert(e, Position { x: 1.0, y: 2.0 })
-positions.get(e).x            // 1.0
+print(positions.get(e).x)      // 1.0
 positions.get_mut(e).x = 3.0
 _ := positions.remove(e)      // .Some(Position) — swap-remove behåller packning
 ```

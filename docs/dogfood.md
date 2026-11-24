@@ -488,6 +488,8 @@ säger `void`. De 79 andra var identiska med genereringen.
 
 **74. `i32(u32)` avbryter programmet när teckenbiten är satt — så ett `u32`-ord ur minnet kan inte bli ett `f32` via `from_bits`.** Symptom: `i32(w)` där `w: u32 >= 0x80000000` skriver `integer overflow or conversion out of range` och avslutar med utgång **101**. Den enda bitvägen till ett flyttal är `f32.from_bits(i32)` (fynd 55), och den vanliga källan till ett ord är `bytes.u32_le`/ett `[]u32`, alltså `u32`. Konsekvensen: varje negativt flyttal i en binär fil (en glTF-ACCESSOR med min/-max, en normals komponent, en `-0.0`) är oläslig på det sätt dokumentationen rekommenderar. Minimal repro: `w: u32 = 0xC1200000` (bitmönstret för −10.0); `i32(w)` dör på raden. Workaround här: magnitud plus aritmetisk negation (`m := f32.from_bits(i32(w.bit_and(0x7FFFFFFF))); v := 0.0 - m`), vilket stämmer för alla ändliga värden utom `-0.0` (blir `+0.0`) och NaN (blir `-NaN`, fortfarande NaN). Probemätningen av drivrutinsgränser träffade det: `maxSamplerAnisotropy` lästes på fel ord (ett teckenbitat mönster) och tolkades först som en kompilatorbugg. Rekommendation: `i32.from_bits(u32)`/`u32.from_bits(i32)` som syskon till `f32.from_bits`, eller att `i32(u32)` definieras som omtolkning (wrapping) på samma sätt som Rusts `as`.
 
+**75. `dunder run fil.ddr arg` ger tre olika missvisande meddelanden — inget nämner `--`.** `dunder --help` dokumenterar `dunder run [input.ddr] [-- program-args...]`, men när `--` glöms är diagnostiken annorlande beroende på argumentet och leder fel: `dunder run tools/vk.ddr --check` → `unknown option: --check` (utgång 2; låter som att *programmet* inte känner flaggan, som `git foo --bad`), `dunder run fil.ddr foo bar` → `expected a single source file` (låter som att två källfiler gavs), och `dunder run fil.ddr -x` → `unknown option: -x`. Samma för `build --help`. Orsak: `run` parserar allt efter filnamnet som kompilatorflaggor tills en `--` kommer. Konsekvensen i Storm: `tools/vk.ddr` dokumenterar `--check` i sin usage-rad, men raden som står i design.md/next-steps saknade `--`, och första körningen vid dokumentationsgenomgången tog fel väg. Minimal repro: ett program med `fn main() -> i32 { print(sys.arg_count().str()); 0 }`; `dunder run p.ddr --check` dör innan `main`. Workaround här: alltid `dunder run tools/vk.ddr -- /tmp/vk.xml --check` (nu skrivet så i next-steps och i verktygets usage-rad). Rekommendation: (a) när en okänd flagga följer källfilen, säg "program arguments require `--`: dunder run FIL -- ARGS"; (b) när ett andra icke-flaggargument följer källfilen, samma text i stället för "expected a single source file"; (c) `dunder run --help` ska visa `run`-användningen, inte "unknown option".
+
 ## Grafikobservationer på macOS (Metal)
 
 Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen
@@ -578,6 +580,15 @@ pipeline-cache). 2 400 bildrutor på 20,5 s med displayens synk, cirka 117 Hz,
 och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 
 ## Verifiering
+
+Mätning på Mikparchy, 2026-11-24 (låst session, `5a0a9ec`, Dunder 0.12.0,
+vid genomgången av dokumentationen mot koden): **188 egna tester gröna** —
+43 i roten och 145 i de 15 paketen, 16 sviter, varje svit lika många som sin
+`@test`-räkning (Skrifts två följer med i `storm-text` och `storm-ui`) —
+`dunder check` 0 varningar i Storms paket, `check --unused-functions` rent
+i roten, `tools/build-time.ddr` **16 036 ms** av 20 000, och `tools/vk.ddr
+-- /tmp/vk.xml --check` grönt mot den committade `api.ddr` (80 kommandon).
+Bara dokumentation rördes, så ingen capture togs.
 
 Storm `4123d5a` gav 185 godkända test i roten och de 15 paketen på både
 Macen och Mikparchy. Tabellen jämför Dunder 0.12.0 med `5a1ed4e` på
