@@ -1,0 +1,133 @@
+// The frame executor's scene gather, without a window: what the frame's
+// passes are handed, and when the mesh copy is taken.
+import ..src.app as app
+import core
+import ecs
+import gfx
+import scene as scenegraph
+
+fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity {
+    e := graph.create_root(at)
+    _ := graph.set_shape(e, .Cube)
+    _ := graph.set_material(e, scenegraph.material(0.8, 0.5, 0.3, alpha, 0.0, 0.5))
+    e
+}
+
+@test fn gather_splits_opaque_from_glass_and_sorts_glass_far_to_near() {
+    mut world := scenegraph.Graph::new()
+    near := shape(&mut world, core.vec3(0.0, 1.0, -2.0), 0.3)
+    far := shape(&mut world, core.vec3(0.0, 1.0, -20.0), 0.3)
+    solid := shape(&mut world, core.vec3(0.0, 1.0, -10.0), 1.0)
+    hidden := shape(&mut world, core.vec3(0.0, 1.0, -5.0), 1.0)
+    _ := world.set_visible(hidden, false)
+    world.propagate()
+
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 2.2, 9.5))
+    // Only what is visible is drawn; the opaque list keeps declaration order,
+    // the glass list is far to near so blending reads what is behind it.
+    assert(frame.solids().len == 1 && frame.solids()[0].entity.index == solid.index)
+    assert(frame.glass().len == 2)
+    assert(frame.glass()[0].entity.index == far.index && frame.glass()[1].entity.index == near.index)
+    assert(frame.glass()[0].depth > frame.glass()[1].depth)
+}
+
+@test fn mesh_copy_is_taken_when_geometry_changes_and_only_then() {
+    mut world := scenegraph.Graph::new()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.meshes().len == 0)
+
+    body := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := world.set_mesh(body, [1.0, 2.0, 3.0, 4.0])
+    world.propagate()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.meshes().len == 1 && frame.meshes()[0].vertices.len == 4)
+
+    // Moving a node is not a geometry change: the copy is reused, the draw
+    // list is still this frame's.
+    _ := world.set_position(body, core.vec3(5.0, 0.0, 0.0))
+    world.propagate()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.solids().len == 1)
+    assert(frame.solids()[0].model.m[12] == 5.0)
+
+    // New geometry: the copy follows.
+    _ := world.set_mesh(body, [9.0])
+    world.propagate()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.meshes()[0].vertices[0] == 9.0)
+
+    // A second world that has counted its geometry revision to the same number
+    // as the first must not be mistaken for it: without invalidate() the stale
+    // copy would be drawn against a world it is not from. (world: two set_mesh
+    // = revision 2; other: one set_mesh = 1, so one more brings it level.)
+    mut other := scenegraph.Graph::new()
+    fresh := other.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := other.set_mesh(fresh, [7.0])
+    _ := other.set_mesh(fresh, [7.0, 8.0])
+    other.propagate()
+    assert(other.geometry_revision() == world.geometry_revision())
+    app.gather(&mut frame, &other, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.meshes()[0].vertices[0] == 9.0)
+    frame.invalidate()
+    app.gather(&mut frame, &other, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.meshes().len == 1 && frame.meshes()[0].vertices[0] == 7.0)
+}
+
+@test fn vertex_bytes_counts_every_shape_and_a_shared_mesh_per_instance() {
+    mut world := scenegraph.Graph::new()
+    _ := shape(&mut world, core.vec3(0.0, 0.0, 0.0), 1.0)
+    plane := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := world.set_shape(plane, .Plane)
+    sphere := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := world.set_shape(sphere, .Sphere)
+    first := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := world.set_mesh(first, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    second := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := world.share_mesh(second, first)
+    world.propagate()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.solids().len == 5)
+    // A shared instance is its own (empty) mesh row; its drawable points at
+    // the owner's row through mesh_index, so the stream is counted per draw.
+    assert(frame.meshes().len == 5)
+    assert(frame.meshes()[3].vertices.len == 6 && frame.meshes()[4].vertices.len == 0)
+    mut shared_index := -1
+    for item in frame.solids() { if item.entity.index == second.index { shared_index = item.mesh_index } }
+    assert(shared_index == 3)
+
+    // cube: 8 floats, plane: 2 floats, sphere: 3 floats -- the stream sizes
+    // only the caller knows; mesh: the shared 6 floats, twice.
+    bytes := app.vertex_bytes(frame.solids(), frame.meshes(), 8, 2, 3)
+    assert(bytes == u64((8 + 2 + 3 + 6 + 6) * 4))
+    assert(app.vertex_bytes(frame.glass(), frame.meshes(), 8, 2, 3) == 0)
+}
+
+@test fn loaded_model_is_scaled_to_the_frame_and_rests_on_the_ground() {
+    mut world := scenegraph.Graph::new()
+    // Khronos' Box.glb: a unit cube centred at the origin, 0.5 out on each side.
+    loaded := app.load_model(&mut world, "packages/storm-gltf/tests/fixtures/Box.glb", core.vec3(1.0, 0.0, 2.0))
+    assert(loaded.is_ok())
+    world.propagate()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.solids().len == 1)
+    draw := &frame.solids()[0]
+    // The longest side (1.0) becomes MODEL_SIZE, the cube's centre moves to
+    // `at`, and its bottom sits on y = 0.
+    scale := draw.model.m[0]
+    assert((scale - app.MODEL_SIZE).abs() < 0.0001)
+    assert((draw.model.m[12] - 1.0).abs() < 0.0001 && (draw.model.m[14] - 2.0).abs() < 0.0001)
+    assert((draw.model.m[13] - app.MODEL_SIZE * 0.5).abs() < 0.0001)
+    // Every vertex of the box is at rest on or above the ground after scale.
+    mesh := &frame.meshes()[0]
+    mut lowest: f32 = 1.0e20
+    for v in 0..mesh.vertices.len / gfx.VERTEX_FLOATS {
+        y := mesh.vertices[v * gfx.VERTEX_FLOATS + 1]
+        if y < lowest { lowest = y }
+    }
+    assert((lowest + 0.5).abs() < 0.001)
+    assert((lowest * scale + draw.model.m[13]).abs() < 0.001)
+}

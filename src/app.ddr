@@ -45,8 +45,8 @@ fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
 // Loads a .glb into the scene as a node with its own vertex stream, scaled to
 // MODEL_SIZE units on its longest side and resting on y = 0, so any model
 // lands in view whatever units it was authored in.
-const MODEL_SIZE: f32 = 2.4
-fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
+pub const MODEL_SIZE: f32 = 2.4
+pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
     doc := gltf.load(path)
     model := gltf.asset(&doc)?
     mut lo := core.vec3(0.0,0.0,0.0)
@@ -121,7 +121,10 @@ fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items
     .Ok
 }
 
-fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube: i32, plane: i32, sphere: i32) -> u64 {
+// Bytes of f32 vertices the frame's draws read: what `begin_with_vertices`
+// is asked for. Each shape reads its own stream, so a shared mesh counts once
+// per instance that draws it.
+pub fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube: i32, plane: i32, sphere: i32) -> u64 {
     mut total: u64 = 0
     for item in items {
         count := match item.shape { .Mesh => meshes[item.mesh_index].vertices.len, .Cube => cube, .Plane => plane, .Sphere => sphere }
@@ -130,14 +133,27 @@ fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube:
     total
 }
 
-struct FrameGeometry {
+// The scene as the frame's passes read it: a mesh copy taken when the geometry
+// last changed, and this frame's draws split into what casts shadows (and is
+// drawn opaque) and what is blended, sorted far to near.
+pub struct FrameGeometry {
     revision: i64,
     meshes: []scenegraph.Mesh,
     solids: []scenegraph.Drawable,
     glass: []scenegraph.Drawable,
 }
 
-fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
+impl FrameGeometry {
+    pub fn new() -> Self { Self { revision: -1, meshes: [], solids: [], glass: [] } }
+    pub fn meshes(&self) -> &[]scenegraph.Mesh { &self.meshes }
+    pub fn solids(&self) -> &[]scenegraph.Drawable { &self.solids }
+    pub fn glass(&self) -> &[]scenegraph.Drawable { &self.glass }
+    // Forget the mesh copy so the next gather takes a fresh one: a different
+    // world can have counted its revision to the same number as this one.
+    pub fn invalidate(&mut self) { self.revision = -1 }
+}
+
+pub fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
     if frame.revision != world.geometry_revision() {
         frame.meshes = world.mesh_snapshot()
         frame.revision = world.geometry_revision()
@@ -313,7 +329,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut planned_shadows := false
     mut planned_glass := false
     mut planned_filter := false
-    mut geometry := FrameGeometry { revision: -1, meshes: [], solids: [], glass: [] }
+    mut geometry := FrameGeometry::new()
     mut mesh_world_is_game := false
     mut frames: i64 = 0
     mut previous := 0.0
@@ -349,7 +365,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                                 .Ok(view) => view, .Err(err) => { return stop(move window, err) },
                             }
                             sphere_vertices = play_view.sphere_geometry(&level)
-                            geometry.revision = -1
+                            geometry.invalidate()
                         },
                         .None => {},
                     }
@@ -435,7 +451,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         inv_view_projection := input.inverse_view_projection(&view_camera, aspect)
 
         // --- scene contents for this frame: everything the scene says is drawable ---
-        if mesh_world_is_game != playing { geometry.revision = -1; mesh_world_is_game = playing }
+        if mesh_world_is_game != playing { geometry.invalidate(); mesh_world_is_game = playing }
         if playing { gather(&mut geometry, &game_view.graph, view_camera.position) }
         else { gather(&mut geometry, &graph, view_camera.position) }
         shadows := studio.shadows && geometry.solids.len > 0
