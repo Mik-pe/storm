@@ -327,13 +327,12 @@ ECS (idag läses `hit` direkt i `app.ddr`), textinmatning
   hela ytan); en horisontlinje *inom* en yta syns först på krökta ytor.
 - Marktonen under horisonten är en fast gradient (ljusast vid horisonten), inte
   en rendering av golvet, så golvet syns inte i kuberna.
-- Fönsterläge (`--frames N` utan `--capture`) på en **låst** session avslutas
-  med SIGSEGV i **första** framen (sett 2026-11-24 på `ac268f0`, spårat med
-  `--trace`): sista markören är `acquired image 0`, nästa (`render pass
-  begun`) nås aldrig — alltså faller det mellan `AcquireNextImageKHR` och
-  `CmdBeginRenderPass` i `begin_frame`. Capture-vägen går genom samma rader
-  och fungerar låst; den enda skillnaden där är `pass.framebuffer`
-  (swapchain-framebuffern i stället för capture-framebuffern). QA-punkt:
-  markör per anrop i det fönstret, rapportera "session locked" och avsluta
-  med status i stället för krasch.
 - Valideringslager aktiveras inte automatiskt.
+- Fönsterläget (`--frames N` utan `--capture`) går på en **låst** session
+  (`a919b02`, 10/10 och fem varianter à 20 frames, status 0) men syns inte
+  där: skärmdump och `grim` blockeras av låsytan. Bilder tas därför med
+  `--capture` oavsett låsning. Den SIGSEGV i första framen som `ac268f0` gav
+  på låst session finns inte kvar; vilken commit som tog bort den är inte
+  isolerad (bisektionen mellan `ac268f0` och `a84ade9` är icke-monoton:
+  `bc2b300` grönt, `38942e5` kraschar, `fb4d5a7` grönt, och fyra commits
+  däremellan bygger inte med 0.12.0).

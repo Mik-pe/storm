@@ -722,7 +722,34 @@ inverterade områden. En visionmodell som skulle läsa effects-capturen fick
 i stället fox-capturen förbi (samma filnamn, ny konvertering) - därför står
 pixelproberna här, inte bildbeskrivningen. `--frames 5` utan capture på den
 låsta sessionen: SIGSEGV i första framen mellan `acquired image 0` och
-`render pass begun` (next-steps, kända begränsningar).
+`render pass begun` (next-steps, kända begränsningar). *Rättat samma kväll,
+se nästa stycke: på `a919b02` kraschar det inte.*
+
+**QA 2026-11-24 kväll (låst session, `a919b02`, Dunder 0.12.0, tolv captures på
+1280 × 800 och fönsterläge).** Fönsterläget på den låsta sessionen: `--frames 5`
+**status 0, 10/10**, 4,4 s; `--frames 20` med `--studio`, `--play`, `--glb
+Fox.glb`, `--effects`, `--no-post --no-aa`: alla status 0 på 4,6–5,1 s, och
+`--trace` visar `acquired image` → `render pass begun` → `present` →
+`presented 0` för varje frame. Samma commit-bygge av `ac268f0` i en worktree
+med samma kompilator: SIGSEGV **0/10**. Bisektionen dem emellan är icke-monoton
+(`bc2b300` grönt, `38942e5` kraschar, `fb4d5a7` grönt; `924dd7e`, `7c17c6d`,
+`a2ccbf3`, `a823658` bygger inte med 0.12.0: `E3006 non-exhaustive match` i
+`app.ddr`), så ingen enskild fix-commit kan namnges. Captures mot standard:
+`--eye 6 4 -7` AE 172 373 (16,8 %), `--eye 0 0 4.2` AE 175 318,
+`--glb Fox.glb` AE 419 764 (räven vit: Fox.glb har `baseColorTexture` men
+ingen `baseColorFactor`, så spec-default `[1,1,1,1]` gäller tills 3c),
+`--studio` AE 418 555, `--no-shadows` AE 39 599, `--no-post` AE 6 958,
+`--no-aa` AE 1 564. **AE = 0**: `--play` (standard är redan spelet),
+`--effects` (redan på i Blomsterskogen) och `--no-glass` i spelet (inget
+transparent i play-scenen). `--no-glass` i studion fungerar: reglaget Glass
+står av och `Glass / left`/`right` är borta ur scenträdet, AE 372 på
+standardkameran (panelerna står vid cyclorama-väggen på z = −2,8 med alfa
+0,20 och syns knappt), AE 104 med kameran rakt mot dem. Färgtoningen är
+avsiktligt diskret: `--no-post` skiftar 1–5 per kanal (himlen `(252,201,209)`
+mot `(251,198,208)`, marken `(191,216,198)` mot `(186,214,197)`); i studion
+är `--effects` 2 421 pixlar. Felvägarna ger alla status 1 med text:
+`--capture` utan fil, `--glb` utan fil, `--scene` utan fil; `--frames abc`
+och `--eye 1 2` faller till default.
 
 **På macOS, 2026-11-23 (gränssnittet och Metal).** Dunder 0.11.0, Apple M5,
 macOS 27.2. Trädet kompilerade inte på macOS innan detta arbete

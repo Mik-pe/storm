@@ -152,7 +152,7 @@ skärmgradient.
 
 När kantutjämning eller färgeffekter används ritas scenen först till en färgtextur. Ett fullskärmspass läser texturen och jämnar ut diagonala kanter med FXAA, färgtonar bilden och ger ljusa partier en mjuk glöd enligt de valda inställningarna. Därefter ritas HUD och text i skärmens egen upplösning. Med båda inställningarna avstängda ritas scenen direkt till slutbilden. [Jämför kantutjämningen](docs/kantutjamning.png)
 
-FXAA är på från start i både spelet och Studio. Färgtoning och glöd är på i Blomsterskogen och av i materialstudien och banor utan blomskogstemat. **E** växlar färgtoning och glöd under körning. `--no-aa` stänger av kantutjämningen vid start. `--no-post` stänger av färgtoning och glöd vid start, medan `--effects` slår på dem. Ange `--no-aa --no-post` för att jämföra med direktrendering.
+FXAA är på från start i både spelet och Studio. Färgtoning och glöd är på i Blomsterskogen och av i materialstudien och banor utan blomskogstemat. **E** växlar färgtoning och glöd under körning. `--no-aa` stänger av kantutjämningen vid start. `--no-post` stänger av färgtoning och glöd vid start, medan `--effects` slår på dem — i Blomsterskogen, där de redan är på, ändrar `--effects` därför ingenting (capture **AE = 0** mot standard), och i studion är skillnaden 2 421 pixlar av 1 024 000: tonen är avsiktligt diskret (±0,03–0,09 i linjärt rum, `post.frag`). Ange `--no-aa --no-post` för att jämföra med direktrendering.
 
 ```dunder
 mut schedule := render.Graph::new()
@@ -227,11 +227,14 @@ cd packages/storm-metal && dunder run tools/selftest.ddr
 
 ### Kör på Linux
 
-Fönstret kräver en **olåst** Wayland-session (`hyprctl monitors` visar
-`solitaryBlockedBy`). Under en låst session kan Storm inte hämta nästa
-swapchain-bild efter de första frame-rutorna — det är kompositorn, inte
-renderaren (dogfood fynd 16 och 20). Då är `--capture fil.ppm --frames 1` vägen
-till en bild. Den vägen använder Vulkan direkt och fungerar även över SSH utan grafisk session.
+Fönstret kan öppnas på en **låst** Wayland-session (`hyprctl monitors` visar
+`solitaryBlockedBy`): `--frames N` presenterar och avslutar med status 0 —
+mätt 10/10 på `a919b02` och med fem varianter (`--studio`, `--play`, `--glb`,
+`--effects`, `--no-post --no-aa`) à 20 frames. Det fanns en tid (fynd 16 och 20,
+och en SIGSEGV på `ac268f0`) då låset stoppade presentationen; det gäller inte
+trädet längre. Däremot syns bilden inte: skärmdump och `grim` blockeras av
+låsytan, så `--capture fil.ppm --frames 1` är vägen till en **bild** oavsett
+låsning. Den vägen använder Vulkan direkt och fungerar även över SSH utan grafisk session.
 `dunder run --example scene` kör ECS och textlayout helt utan fönster.
 
 Från en Mac kan Vulkan-sidan ändå hållas grön i typ: `dunder check --target
