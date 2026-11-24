@@ -58,16 +58,6 @@ pub fn translation(x: f32, y: f32, z: f32) -> Mat4 {
     }
 }
 
-// Non-uniform scale. Column-major: the diagonal sits at 0, 5, 10, 15.
-pub fn scaling(v: Vec3) -> Mat4 {
-    Mat4 {
-        m: [v.x, 0.0, 0.0, 0.0,
-            0.0, v.y, 0.0, 0.0,
-            0.0, 0.0, v.z, 0.0,
-            0.0, 0.0, 0.0, 1.0]
-    }
-}
-
 // Orthographic projection for the shadow pass. Like perspective() it negates Y
 // because Vulkan clip space points down, and it maps the view-space z range to
 // [0, 1] instead of OpenGL's [-1, 1].

@@ -397,9 +397,6 @@ impl Graph {
     // `nodes()` by hand. Borrowed for the call; clone rows out, as ever.
     pub fn locals(&self) -> &ecs.Pool < LocalTransform > from self { &self.locals }
     pub fn names(&self) -> &ecs.Pool < Name > from self { &self.names }
-    pub fn meshes(&self) -> &ecs.Pool < Mesh > from self { &self.meshes }
-    pub fn materials(&self) -> &ecs.Pool < Material > from self { &self.materials }
-    pub fn worlds(&self) -> &ecs.Pool < WorldTransform > from self { &self.worlds }
 
     pub fn is_alive(&self, entity: ecs.Entity) -> bool { self.allocator.is_alive(entity) }
 

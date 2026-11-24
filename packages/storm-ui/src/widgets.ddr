@@ -68,7 +68,6 @@ pub fn hit(p: &Pointer, x: f32, y: f32, w: f32, h: f32) -> bool {
 impl State {
     pub fn new() -> Self { Self { hot: 0, active: 0 } }
 
-    pub fn hot(&self) -> i32 { self.hot }
     pub fn active(&self) -> i32 { self.active }
 
     // Call once per frame before drawing widgets: a widget only becomes hot

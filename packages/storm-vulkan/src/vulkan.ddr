@@ -235,7 +235,7 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     _ := r.api.ResetCommandBuffer(r.commands[slot], 0)
     // Per-frame cursors: every stream is appended anew, by the frame itself.
     r.vertexCursor = 0
-    r.uiCursor = 0
+    ui.reset(&mut r)
     mut begin: vk.CommandBufferBeginInfo = zeroed()
     begin.sType = 42
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)

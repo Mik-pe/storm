@@ -337,6 +337,8 @@ pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) ->
     true
 }
 
+// The frame's UI stream starts empty; draw() appends to it. Called by
+// begin_frame, the one place that knows a frame has begun.
 pub unsafe fn reset(r: &mut state.Renderer) {
     r.uiCursor = 0
 }
