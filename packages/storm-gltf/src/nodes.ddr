@@ -50,22 +50,28 @@ fn enqueue(j: &json.Doc, children: i32, parent: core.Mat4, count: i32, waiting: 
     .Ok
 }
 
+pub fn active_scene(j: &json.Doc) -> Result<i32, string> {
+    scenes := j.field(j.root, "scenes")
+    if scenes < 0 { return .Ok(-1) }
+    index := j.get_i64(j.root, "scene").unwrap_or(0)
+    if index < 0 || index >= i64(j.count(scenes)) { return .Err("invalid glTF scene index") }
+    .Ok(j.at(scenes, i32(index)))
+}
+
 pub fn placements(j: &json.Doc, mesh_count: i32) -> Result<[]Placement, string> {
     mut out: []Placement = []
-    scenes := j.field(j.root, "scenes")
-    if scenes < 0 {
+    selected := active_scene(j)?
+    if selected < 0 {
         for i in 0..mesh_count { out.push(Placement { mesh: i, world: core.identity() }) }
         return .Ok(move out)
     }
-    selected := j.get_i64(j.root, "scene").unwrap_or(0)
-    if selected < 0 || selected >= i64(j.count(scenes)) { return .Err("invalid glTF scene index") }
     nodes := j.field(j.root, "nodes")
     count := j.count(nodes)
     mut visited: []bool = []
     visited.reserve(count)
     for _ in 0..count { visited.push(false) }
     mut waiting: []Pending = []
-    enqueue(j, j.field(j.at(scenes, i32(selected)), "nodes"), core.identity(), count, &mut waiting)?
+    enqueue(j, j.field(selected, "nodes"), core.identity(), count, &mut waiting)?
     while waiting.len > 0 {
         item := waiting.pop()
         if visited[item.node] { return .Err("a node appears twice in the glTF scene") }

@@ -1,7 +1,10 @@
 // The playable art travels in the executable on every platform.
 import gltf
+import gltf.nodes as nodes
+import std.json as json
+import .model
 
-pub fn load(name: string) -> Result<gltf.Asset, string> {
+fn document(name: string) -> Result<gltf.Document, string> {
     data: []u8 = match name {
         "cloud" => @embed_bytes("assets/blomsterskogen/cloud.glb"),
         "boost_cloud" => @embed_bytes("assets/blomsterskogen/boost_cloud.glb"),
@@ -14,5 +17,22 @@ pub fn load(name: string) -> Result<gltf.Asset, string> {
         _ => { return .Err("unknown art asset: " + name) },
     }
     doc := gltf.load_bytes(&data)
+    if !doc.ok { return .Err(doc.error) }
+    .Ok(move doc)
+}
+
+pub fn load(name: string) -> Result<gltf.Asset, string> {
+    doc := document(name)?
     gltf.asset(&doc)
+}
+
+pub struct Rigged { art: gltf.Asset, rig: model.Rig }
+
+pub fn load_rigged(name: string) -> Result<Rigged, string> {
+    doc := document(name)?
+    j := json.Doc::parse_text(doc.json_text.clone())
+    selected := nodes.active_scene(&j)?
+    extras := j.field(selected, "extras")
+    rig := model.read_rig(&j, j.field(extras, "storm_rig"))?
+    .Ok(Rigged { art: gltf.asset_from_json(&doc, &j)?, rig: move rig })
 }

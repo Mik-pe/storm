@@ -308,10 +308,16 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
 pub fn asset(doc: &Document) -> Result<Asset,string> {
     if !doc.ok { return .Err(doc.error.clone()) }
     j := json.Doc::parse_text(doc.json_text.clone())
+    asset_from_json(doc, &j)
+}
+
+// Callers reading application-specific extras can share the parsed document.
+pub fn asset_from_json(doc: &Document, j: &json.Doc) -> Result<Asset,string> {
+    if !doc.ok { return .Err(doc.error.clone()) }
     meshes := j.field(j.root, "meshes")
     if j.kind(meshes) != .Array || j.count(meshes) == 0 { return .Err("glTF has no meshes") }
     mut parts: []Part = []
-    placed := nodes.placements(&j, j.count(meshes))?
+    placed := nodes.placements(j, j.count(meshes))?
     for instance in placed {
         m := instance.mesh
         mesh := j.at(meshes, m)
@@ -319,7 +325,7 @@ pub fn asset(doc: &Document) -> Result<Asset,string> {
         primitives := j.field(mesh, "primitives")
         if j.kind(primitives) != .Array || j.count(primitives) == 0 { return .Err(name + " has no primitives") }
         for p in 0..j.count(primitives) {
-            match part(doc, &j, j.at(primitives, p), name.clone()) {
+            match part(doc, j, j.at(primitives, p), name.clone()) {
                 .Ok(value) => {
                     mut placed_part := move value
                     nodes.bake(&mut placed_part.vertices, &instance.world)

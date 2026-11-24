@@ -1,0 +1,25 @@
+import ..src.model
+import std.json as json
+
+@test fn rig_reads_model_space_landmarks_and_resolves_unordered_parents() {
+    doc := json.Doc::parse_text(r#"{"version":1,"joints":[
+        {"name":"Foot","parent":"Body","pivot":[1,2,3],"sole":[1,0,3],"toe":[1,0,4]},
+        {"name":"Body","parent":"","pivot":[0,0,0]}]}"#)
+    rig := model.read_rig(&doc, doc.root).unwrap()
+    foot := rig.get("Foot").unwrap()
+    assert(foot.parent == "Body" && foot.pivot.y == 2.0 && foot.sole.unwrap().y == 0.0 && foot.toe.unwrap().z == 4.0)
+    assert(rig.get("Body").unwrap().toe.is_none() && rig.get("Ear").is_err())
+}
+
+@test fn unusable_rig_hierarchies_and_landmarks_fail_at_load() {
+    for source in [
+        r#"{"version":2,"joints":[]}"#,
+        r#"{"version":1,"joints":[{"name":"Root","parent":"Missing","pivot":[0,0,0]}]}"#,
+        r#"{"version":1,"joints":[{"name":"A","parent":"B","pivot":[0,0,0]},{"name":"B","parent":"A","pivot":[0,0,0]}]}"#,
+        r#"{"version":1,"joints":[{"name":"A","parent":"","pivot":[0,0,0]},{"name":"A","parent":"","pivot":[1,0,0]}]}"#,
+        r#"{"version":1,"joints":[{"name":"Foot","parent":"","pivot":[0,0,0],"sole":[0,0]}]}"#,
+    ] {
+        doc := json.Doc::parse_text(source)
+        assert(model.read_rig(&doc, doc.root).is_err())
+    }
+}
