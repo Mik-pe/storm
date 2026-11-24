@@ -12,7 +12,7 @@ och Metal (macOS), genom `storm-gfx`.
 (genererade bindings; 77 `extern fn` och 19 `u32` i `state.ddr` är skuld, men
 ingen funktion saknas för den) och **Renderer-uppdelningen** (design.md §5,
 steg 3–6), som Metal-redan har och Vulkan inte. Instancing (5), fler ljus
-(7), input (8) och tid (9) kommer efter det.
+(7), och input (8) kommer efter det.
 
 Varje steg som rör vad en backend ritar vidrör nu **två backends och två
 shaderuppsättningar**: `packages/storm-vulkan/shaders/*.glsl` och
@@ -24,7 +24,7 @@ från en Mac håller den andra typgrön.
 ## 0. Klart: skuggor, transparens och dynamisk graf
 
 Skuggpass med MAX-blending i en R32-bild, transparent pass med egen blend-pipeline
-och en rendergraph som byggs om varje frame utifrån scenens innehåll. Kvar nedan.
+och en rendergraf som återanvänder passföljden tills scenens aktiva pass ändras. Kvar nedan.
 
 ## 0b. Klart: textrenderingen
 
@@ -210,7 +210,7 @@ bygge (fynd 56: det är Dunders kompilator).
 med 18 metoder som alla fallibla en `Result`, och geometrihjälparna som äger
 vertexformatet. `src/app.ddr` kör rendergrafen genom `B: gfx.Backend`.
 `src/editor.ddr` äger panelerna, `src/game.ddr` spellogiken och `src/gallery.ddr` materialstudien.
-`src/main.ddr` är två rader som väljer backend;
+`src/main.ddr` väljer backend för fönster och bildexport.
 `storm-input` tar ett `Input`-värde och importerar ingen backend.
 `storm-metal` är den andra implementationen: AppKit-fönster och `CAMetalLayer`
 genom Objective-C:s runtingen, med upplägg och beslut i design.md §5c.
@@ -258,16 +258,13 @@ Push constants räcker för en sol. Nästa steg är en uniform buffer per frame
 engångshändelser i ECS, mushjul, textinmatning (`SDL_TextInputEvent`) och
 gamepad via `SDL_GameController`.
 
-## 9. Tid och fast steg
+## 9. Klart – fast speltick
 
-`Frame.time` är väggklocka. En `Time`-resurs med `dt`, `elapsed` och en
-ackumulator för fasta fysiksteg (t.ex. 120 Hz) hör till kärnan.
+`storm-play` driver fysik och spelregler vid 60 Hz. Fönstret ackumulerar förfluten tid och interpolerar positioner mellan uppdateringarna. Agenten kan stega samma session exakt en tick och läsa resultatet. [Spel och agentverktyg](spel.md)
 
 ## Klart: headless capture
 
-`--capture fil.ppm` skriver en bildruta från en mappad Vulkan-bild.
-Över SSH behöver SDL fortfarande tillgång till den grafiska sessionen.
-Capture-vägen läser den mappade bilden. [Grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy)
+`--capture fil.ppm` renderar 1280 × 800 pixlar utan fönster. Vulkan skriver till en textur och kopierar bilden till en läsbar buffer. Metal använder en egen färgtextur. MCP använder samma grafikväg för att leverera en PNG av den aktuella simuleringsticken. [Grafikobservationerna](dogfood.md#grafikobservationer-på-mikparchy)
 
 ## Kända begränsningar i dag
 

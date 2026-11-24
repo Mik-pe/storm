@@ -9,7 +9,7 @@ Samma editor och samma spelloop körs på två grafikbackends: **Vulkan på
 Linux** (i ett SDL-fönster) och **Metal på macOS** (i ett AppKit-fönster, som
 Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
 Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
-av dem; vilken backend en maskin får bestäms av två rader i `src/main.ddr`.
+av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexport.
 
 Materialstudien visar en mässingsring, en räfflad keramikvas och en porslinskula på ett roterande podium. Ett välvt studiogolv, två glaspaneler, skuggor och miljöreflexer gör materialen lätta att jämföra. Välj ett föremål i scenträdet för att ändra yta och position, eller tryck **F** för att se scenen i fokusläge. Åtta kristaller går att samla i scenen.
 
@@ -41,6 +41,18 @@ dunder run --example scene      # ECS + glTF + textlayout, utan fönster
 dunder test                     # rotpaketets tester
 ```
 
+## Spela och bygg med en agent
+
+Klicka på **Play** i studion för att spela *First light*. Styr kulan med WASD eller piltangenterna, hoppa med mellanslag och nå den gyllene kulan. **Q** pausar och **Step** flyttar spelet exakt en tick. **R** startar om.
+
+```sh
+dunder build -o build/storm
+./build/storm --play
+./build/storm --scene bana.storm.json --watch
+```
+
+Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporoten. En agent kan bygga en bana, provspela bestämda indata och få både positioner och en PNG från GPU:n. Med `--watch` syns nästa sparade banändring i samma fönster. [Scenformat och en provkörning från start till mål](docs/spel.md)
+
 ## Paket
 
 Repot är ett monorepo med ett paket per ansvarsområde. Beroenden deklareras med
@@ -57,12 +69,15 @@ för sig.
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Läser riktiga Khronos-filer. | — |
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och djup-först-propagering till `WorldTransform`. `drawables()` är vad renderaren konsumerar. | `core`, `ecs` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
+| [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
+| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll och målsensorer. | `core`, `physics` |
+| [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
+| [`packages/storm-image`](packages/storm-image) | Omvandlar renderarens bild till en PNG med systemets zlib. | — |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
 
-`src/main.ddr` är sammansättningens rot: de två raderna som namnger en
-backend. Allt annat i `src/` (editorn, spelet, exekutorn som mappar varje
+`src/main.ddr` väljer backend. Allt annat i `src/` (editorn, spelet, exekutorn som mappar varje
 `PassKind` till backendanrop) är skrivet mot `gfx.Backend` och är samma kod
 på båda backends.
 
@@ -122,8 +137,7 @@ Solens direkta term och skuggorna är oförändrade. Se
 världsrymdsstråle ur `inv_view_proj`, så himlen är en riktig dom, inte en
 skärmgradient.
 
-Rendergrafen i `src/app.ddr` deklarerar passen varje frame utifrån vad scenen
-faktiskt innehåller — en avstängd pass är inte i schemat alls, inte en no-op:
+Rendergrafen i `src/app.ddr` kompilerar om schemat när scenen börjar eller slutar använda skuggor, transparens eller filmeffekter. Mellan ändringarna körs samma passföljd.
 
 ```dunder
 mut schedule := render.Graph::new()
@@ -157,7 +171,7 @@ för blendingens skull.
   Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
-- `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
+- `--capture fil.ppm` – rendera en bildruta till PPM, 1280 × 800 pixlar, utan att öppna ett fönster.
   Fungerar på en låst session; det är så QA görs utan tangentbord.
 - `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
   (`--at x y z` ändrar målet; `--yaw a`/`--pitch b` ger en egen vinkel). Utan
@@ -200,7 +214,7 @@ Fönstret kräver en **olåst** Wayland-session (`hyprctl monitors` visar
 `solitaryBlockedBy`). Under en låst session kan Storm inte hämta nästa
 swapchain-bild efter de första frame-rutorna — det är kompositorn, inte
 renderaren (dogfood fynd 16 och 20). Då är `--capture fil.ppm --frames 1` vägen
-till en bild; över SSH fungerar den om SDL når Wayland-sessionen.
+till en bild. Den vägen använder Vulkan direkt och fungerar även över SSH utan grafisk session.
 `dunder run --example scene` kör ECS och textlayout helt utan fönster.
 
 Från en Mac kan Vulkan-sidan ändå hållas grön i typ: `dunder check --target

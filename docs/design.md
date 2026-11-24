@@ -27,15 +27,7 @@
    fel. `Result<T, E>` är typat, testbart och självbeskrivande.
 6. **Pixelbevis krävs för grafik.** En capture är ett faktum. Ännu bättre
    är en self-test som läser pixlar och input och kan köras igen.
-7. **Multiplatform är planerat, inte hypotetiskt — och nu genomfört.** Metal
-   på macOS lades till utan att röra ett enda paket ovanför backenden.
-   Regeln som gjorde det verkligt: appen och pakagen talar med
-   `storm-gfx`-kontraktet, aldrig med en backend. Uppmätt 2026-11-23:
-   `src/app.ddr` namnger ingen backend och gör 0 anrop mot en
-   sådan; `storm-input` importerar ingen backend; i hela trädet finns
-   backendnamn utanför de två backendpaketen bara på två rader, i
-   `src/main.ddr` (11 rader). Ett gränssnitt som inte går att beskriva utan
-   att nämna Vulkan (eller Metal) är fel designat.
+7. **Plattformsvalet görs i `src/main.ddr`.** Där väljs både det interaktiva fönstret och renderaren för bildexport. Spel, editor och agentprotokoll använder samma scen och renderingskontrakt på båda plattformarna.
 
 ## 1. Nuläge (mätt i koden, 2026-11-23)
 
@@ -68,7 +60,7 @@
   backend, inga capabilities), `storm-text -> dunder-skrift` via
   `../../../dunder-skrift` (syskonkatalog utan versionslås),
   `src/main.ddr -> storm-vulkan, storm-metal` (de enda).
-- **Ett gränssnitt, två implementationer.** Materialstudien och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den delade vertexströmmen. Den senaste kontrollen omfattade 97 egna tester och 63 kontroller av Metal i ett riktigt fönster.
+- **Ett gränssnitt, två implementationer.** Materialstudien och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den delade vertexströmmen. Metals självtest täcker både fönstret och bildexporten till en fristående textur.
 
 Lagren i storm-vulkan (4 973 rader + 2 900 genererad SPIR-V):
 
@@ -99,7 +91,7 @@ storm-gfx        kontraktet: typer, trait Backend, vertexformat. Känner ingen b
     ▲        ▲
 storm-vulkan  storm-metal    implementationer av kontraktet (Linux, macOS)
     ▲        ▲
-    └── src/main.ddr        sammansättningens rot: två rader som väljer backend
+    └── src/main.ddr        väljer backend och fönster eller bildexport
             src/app.ddr     bildrutans exekutor — generisk över B: gfx.Backend
 ```
 
@@ -241,6 +233,14 @@ Materialstudien byggs i `src/gallery.ddr`. `src/editor.ddr` äger paneler, objek
 ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrin ändras. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
 
 `src/app.ddr` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
+
+`storm-play` äger spelets startscen och det föränderliga tillståndet under en provspelning. Varje tick tar samma indata från fönstret eller MCP. Fysikpaketet löser kontakterna, spelmodulen avgör om spelaren nått en målsensor och `src/play_view.ddr` översätter kropparnas positioner till scennoder. Fönstret interpolerar mellan två tick. Vid paus, ensteg och bildexport används den exakta positionen för aktuell tick.
+
+`storm-mcp` håller en session per klientprocess och tar emot en renderingsfunktion från `src/main.ddr`. Agentens bildexport kör den vanliga rendergrafen mot en fristående textur. Simuleringen kan köras utan GPU. `--watch` låter ett öppet spel ta emot en sparad bana från en agent. Fönstret byter spelvärld när hela filen har validerats.
+
+Förändringar i scenträdet bygger om traverseringsordningen. Mellan ändringar uppdateras världsmatriserna i den sparade ordningen med föräldern före barnet. Rendergrafens kompilerade passordning återanvänds tills skuggor, transparens eller filmeffekter ändras.
+
+Mätfallen finns i `tools/bench-frame.ddr`. Kör `dunder run tools/bench-frame.ddr` för 300 uppdateringar av 1 024 noder och lägg till `-- --editor` för 4 000 omritningar. Vid isolering av respektive ändring på Apple M5 sjönk medianen för processens CPU-tid från 3,184 till 0,166 sekunder för scenträdet och från 0,624 till 0,553 sekunder för editorn över sju varv. Tre par körningar av 600 visade bildrutor gav 5,95 sekunder före och 6,07 efter.
 
 Texten rastreras med displayens täthet: atlasen vet sin egen
 `raster_size` och `ui.Canvas` frågar den, så det inte finns någon täthet att
