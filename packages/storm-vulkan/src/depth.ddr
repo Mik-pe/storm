@@ -11,6 +11,16 @@ import .state as state
 // the second attachment of the main render pass and is cleared to 1.0 every
 // frame together with the colour attachment.
 
+// What this module owns: the image, its memory and its view. Zeroed with
+// the renderer; `create` fills it, `destroy` empties it, and nobody else
+// writes it. The one reader outside is the colour framebuffer (`device.ddr`).
+@c_layout
+pub struct Depth {
+    image: ptr,
+    memory: ptr,
+    view: ptr,
+}
+
 pub fn float_bits(value: f32) -> u32 {
     u32(i64(value.to_bits()).bit_and(0xffffffff))
 }
@@ -58,17 +68,17 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.S
         r.api.DestroyImage(r.device, image, ptr(0))
         return device.fail(&mut r, code, .DepthBuffer)
     }
-    r.depthImage = image
-    r.depthMemory = memory
-    r.depthView = view
+    r.depth.image = image
+    r.depth.memory = memory
+    r.depth.view = view
     .Ready
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
-    if r.depthView != ptr(0) { r.api.DestroyImageView(r.device, r.depthView, ptr(0)) }
-    if r.depthImage != ptr(0) { r.api.DestroyImage(r.device, r.depthImage, ptr(0)) }
-    if r.depthMemory != ptr(0) { r.api.FreeMemory(r.device, r.depthMemory, ptr(0)) }
-    r.depthView = ptr(0)
-    r.depthImage = ptr(0)
-    r.depthMemory = ptr(0)
+    if r.depth.view != ptr(0) { r.api.DestroyImageView(r.device, r.depth.view, ptr(0)) }
+    if r.depth.image != ptr(0) { r.api.DestroyImage(r.device, r.depth.image, ptr(0)) }
+    if r.depth.memory != ptr(0) { r.api.FreeMemory(r.device, r.depth.memory, ptr(0)) }
+    r.depth.view = ptr(0)
+    r.depth.image = ptr(0)
+    r.depth.memory = ptr(0)
 }

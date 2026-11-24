@@ -1,6 +1,7 @@
 capability unsafe
 
 import .api as vk
+import .depth as depth
 import .layout as vkl
 import .sdl as sdl
 import .texture as texture
@@ -129,9 +130,7 @@ pub struct Renderer {
     skyFragmentShader: ptr,
     framebuffers: [ptr; 8],
     // Depth attachment, recreated together with the swapchain.
-    depthImage: ptr,
-    depthMemory: ptr,
-    depthView: ptr,
+    depth: depth.Depth,
     shadowInitialized: u32,
     shadowImage: ptr,
     shadowMemory: ptr,

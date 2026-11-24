@@ -316,14 +316,22 @@ import ..src.texture as texture
     assert(!enums.is_out_of_date(-1000001003))
 }
 
+// Every step the enum has, in enum order. `Ready` is left out: it is the
+// sentinel for "no step failed", not a step. A new variant that is not added
+// here leaves these two tests one step shorter than the enum.
+fn setup_steps() -> [state.SetupStep; 17] {
+    [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
+        .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget,
+        .Texture]
+}
+
 // fail() is the one place a Vulkan code becomes a setup failure: it must hand
 // back the step it was given (the step is the return value, not a field) and
 // record the code for describe(). Every step takes the same path, so check all.
 @test fn fail_hands_back_its_step_and_records_the_code() {
     unsafe {
         mut r: state.Renderer = zeroed()
-        steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
-            .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+        steps := setup_steps()
         mut i := 0
         while i < steps.len {
             r.lastResult = 0
@@ -340,8 +348,7 @@ import ..src.texture as texture
 // print as an empty string and the message would start with a space.
 @test fn every_setup_step_is_named_and_ready_is_the_sentinel() {
     assert(state.SetupStep.Ready.name() == "ready")
-    steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
-        .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+    steps := setup_steps()
     mut i := 0
     while i < steps.len {
         text := steps[i].name()
@@ -350,4 +357,16 @@ import ..src.texture as texture
         i = i + 1
     }
     assert(enums.result_name(-13) == "VK_ERROR_UNKNOWN")
+}
+
+// Each module owns its resources as one record, not as loose fields on the
+// renderer (texture.Material, depth.Depth). The renderer is what the registry
+// allocates by `size_of`, so the next cluster that moves into a record changes
+// this number — deliberately, here, where it is written once.
+@test fn owned_records_keep_their_size() {
+    unsafe {
+        assert(size_of(depth.Depth) == 24)
+        assert(size_of(texture.Material) == 40)
+        assert(size_of(state.Renderer) == 6136)
+    }
 }

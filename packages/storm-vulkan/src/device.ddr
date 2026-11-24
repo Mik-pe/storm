@@ -162,7 +162,7 @@ pub unsafe fn set_frame_viewport(r: &state.Renderer) {
 }
 
 pub unsafe fn color_framebuffer(r: &state.Renderer, view: ptr, output: ptr) -> i32 {
-    views := [view, r.depthView]
+    views := [view, r.depth.view]
     mut info: vk.FramebufferCreateInfo = vk.FramebufferCreateInfo::new()
     info.renderPass = r.renderPass
     info.attachmentCount = 2
