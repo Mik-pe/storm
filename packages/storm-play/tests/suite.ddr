@@ -181,7 +181,7 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     scene := play.demo()
     mut s := play.start(&scene)
     spawn := play.render_motion(&s, true)
-    assert(spawn.seconds == 0.0 && spawn.grounded && spawn.takeoff_age < 0.0 && spawn.landing_age < 0.0)
+    assert(spawn .seconds == 0.0 && spawn .grounded && spawn .takeoff_age < 0.0 && spawn .landing_age < 0.0)
     assert(play.render_tick_offset(&s, false) == 0.0)
     play.step(&mut s, command(0.0, true))
     leap := play.render_motion(&s, true)
@@ -484,4 +484,105 @@ fn meadow() -> play.Scene {
     assert(play.stride_stop(&s, true, -1).is_none())
     assert(play.stride_stop(&s, true, 1).is_some())
     assert(play.stride_stop(&s, true, 8).is_none())
+}
+
+@test fn cozy_sit_pet_emote_interpolate_and_cancel_on_movement_or_jump() {
+    scene := meadow()
+    mut s := play.start(&scene)
+    initial := play.render_cozy(&s, true)
+    assert(!initial.sitting && initial.sit_weight == 0.0)
+    assert(initial.sit_age < 0.0 && initial.pet_age < 0.0 && initial.emote_age < 0.0)
+    assert(initial.flower_age < 0.0 && initial.butterfly_age < 0.0)
+
+    // Toggle sit on grounded player and check sub-tick interpolation over 0.42s.
+    play.toggle_sit(&mut s)
+    assert(s.cozy_sitting && s.sit_tick == 0)
+    assert(play.render_cozy(&s, true).sit_age == 0.0)
+    play.step(&mut s, command(0.0, false))
+    after_one := play.render_cozy(&s, true)
+    expected_step := f32(play.TICK_SECONDS) / 0.42
+    assert(after_one.sitting && (after_one.sit_weight - expected_step).abs() < 0.00001)
+    assert((after_one.sit_age - f32(play.TICK_SECONDS)).abs() < 0.00001)
+
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 0)
+    mid := play.render_cozy(&s, false)
+    assert((mid.sit_weight - expected_step * 0.5).abs() < 0.00001)
+    assert((mid.sit_age - f32(play.TICK_SECONDS * 0.5)).abs() < 0.00001)
+
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 1)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 0)
+    mid2 := play.render_cozy(&s, false)
+    assert((mid2.sit_weight - expected_step * 1.5).abs() < 0.00001)
+    assert((mid2.sit_age - f32(play.TICK_SECONDS * 1.5)).abs() < 0.00001)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 1)
+
+    // Finish sitting over 0.42s (about 26 ticks total).
+    walk(&mut s, 0.0, 0.0, 30)
+    seated := play.render_cozy(&s, true)
+    assert(seated.sitting && seated.sit_weight == 1.0)
+
+    // Movement cancels sit and ramps sit_weight back to 0.0 over 0.22s.
+    play.step(&mut s, play.Input { x: 0.2, z: 0.0, jump: false })
+    rising := play.render_cozy(&s, true)
+    rise_step := f32(play.TICK_SECONDS) / 0.22
+    assert(!rising.sitting && rising.sit_age < 0.0)
+    assert((rising.sit_weight - (1.0 - rise_step)).abs() < 0.00001)
+    walk(&mut s, 0.0, 0.0, 15)
+    assert(play.render_cozy(&s, true).sit_weight == 0.0)
+
+    // Toggle sit on, then toggle off manually, then sit again and cancel with buffered jump.
+    play.toggle_sit(&mut s)
+    assert(s.cozy_sitting)
+    play.toggle_sit(&mut s)
+    assert(!s.cozy_sitting && s.sit_tick == -1)
+
+    play.toggle_sit(&mut s)
+    walk(&mut s, 0.0, 0.0, 10)
+    assert(s.cozy_sitting && s.sit_weight > 0.3)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, true)) == 0)
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 1)
+    assert(!s.cozy_sitting && s.sit_tick == -1 && !s.bodies[s.player].grounded)
+    // Cannot enter sit while airborne.
+    play.toggle_sit(&mut s)
+    assert(!s.cozy_sitting && s.sit_tick == -1)
+    walk(&mut s, 0.0, 0.0, 80)
+    assert(s.bodies[s.player].grounded)
+
+    // Pet and emote ages advance on the render clock, and play.start resets all cozy state.
+    play.pet(&mut s)
+    play.step(&mut s, command(0.0, false))
+    play.emote(&mut s)
+    play.step(&mut s, command(0.0, false))
+    assert(play.advance(&mut s, play.TICK_SECONDS * 0.5, command(0.0, false)) == 0)
+    cozy := play.render_cozy(&s, false)
+    assert((cozy.pet_age - f32(play.TICK_SECONDS * 1.5)).abs() < 0.00001)
+    assert((cozy.emote_age - f32(play.TICK_SECONDS * 0.5)).abs() < 0.00001)
+
+    reset := play.start(&scene)
+    assert(!reset.cozy_sitting && reset.sit_tick == -1 && reset.sit_weight == 0.0 && reset.prev_sit_weight == 0.0)
+    assert(reset.pet_tick == -1 && reset.emote_tick == -1)
+    rc := play.render_cozy(&reset, false)
+    assert(!rc.sitting && rc.sit_weight == 0.0 && rc.sit_age < 0.0 && rc.pet_age < 0.0 && rc.emote_age < 0.0)
+}
+
+@test fn cozy_flower_and_butterfly_ages_track_pickups() {
+    original := play.demo()
+    mut s := play.start(&original)
+    walk(&mut s, -1.0, 0.0, 27)
+    assert(s.flowers == 1 && s.picked_tick > 0)
+    cozy := play.render_cozy(&s, true)
+    assert((cozy.flower_age - f32(s.tick - s.picked_tick) * f32(play.TICK_SECONDS)).abs() < 0.00001)
+    assert(cozy.butterfly_age < 0.0)
+
+    mut garden := play.empty("Wing")
+    assert(play.upsert(&mut garden, "{\"name\":\"ground\",\"shape\":\"box\",\"size\":[10,1,10],\"position\":[0,-0.5,0]}").is_ok())
+    assert(play.upsert(&mut garden, "{\"name\":\"player\",\"role\":\"player\",\"shape\":\"sphere\",\"mass\":1,\"position\":[0,0.5,0]}").is_ok())
+    assert(play.upsert(&mut garden, "{\"name\":\"wing\",\"role\":\"super_butterfly\",\"shape\":\"sphere\",\"position\":[1.2,0.5,0]}").is_ok())
+    mut g := play.start(&garden)
+    walk(&mut g, 1.0, 0.0, 15)
+    assert(g.butterflies == 1 && g.butterfly_tick > 0)
+    assert(play.advance(&mut g, play.TICK_SECONDS * 0.5, command(0.0, false)) == 0)
+    wing_cozy := play.render_cozy(&g, false)
+    expected_wing := (f32(g.tick - 1 - g.butterfly_tick) + 0.5) * f32(play.TICK_SECONDS)
+    assert((wing_cozy.butterfly_age - expected_wing).abs() < 0.00001)
 }

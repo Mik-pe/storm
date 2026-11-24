@@ -39,6 +39,9 @@ pub struct PlayerMotion {
     bank: f32, drive: f32,
     takeoff_age: f32, landing_age: f32, boost_age: f32, landing_strength: f32,
 }
+pub struct CozyState {
+    sitting: bool, sit_weight: f32, sit_age: f32, pet_age: f32, emote_age: f32, flower_age: f32, butterfly_age: f32,
+}
 struct MotionTick {
     heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, platform: i32, vertical_velocity: f32,
     bank: f32, drive: f32,
@@ -53,6 +56,7 @@ pub struct Session {
     heading: f32, walk_phase: f32, walking: bool,
     motion: MotionTick, previous_motion: MotionTick, forward_speed: f32, trail: stride.Trail,
     previous: []core.Vec3, accumulator: f64, jump_pending: bool,
+    cozy_sitting: bool, sit_tick: i64, sit_weight: f32, prev_sit_weight: f32, pet_tick: i64, emote_tick: i64,
 }
 
 pub fn validate_name(name: string) -> Result<(), string> { codec.validate_name(name) }
@@ -62,8 +66,10 @@ pub fn empty(name: string) -> Scene {
 }
 
 fn entity(name: string, shape: Shape, role: Role, p: core.Vec3, size: core.Vec3, mass: f32, color: core.Vec3) -> Entity {
-    Entity { name: name.clone(), shape: shape, role: role, position: p, size: size, mass: mass,
-        velocity: core.vec3(0.0, 0.0, 0.0), restitution: 0.0, friction: 0.6, color: color }
+    Entity {
+        name: name.clone(), shape: shape, role: role, position: p, size: size, mass: mass,
+        velocity: core.vec3(0.0, 0.0, 0.0), restitution: 0.0, friction: 0.6, color: color
+    }
 }
 
 pub fn demo() -> Scene {
@@ -108,8 +114,10 @@ pub fn demo() -> Scene {
 }
 
 fn role_name(role: Role) -> string {
-    match role { .Player => "player", .Goal => "goal", .Flower => "flower", .Collider => "collider", .Prop => "prop",
-        .Cloud => "cloud", .BoostCloud => "boost_cloud", .SuperButterfly => "super_butterfly" }
+    match role {
+        .Player => "player", .Goal => "goal", .Flower => "flower", .Collider => "collider", .Prop => "prop",
+        .Cloud => "cloud", .BoostCloud => "boost_cloud", .SuperButterfly => "super_butterfly"
+    }
 }
 
 fn read_role(value: string) -> Result<Role, string> {
@@ -147,8 +155,10 @@ fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
     if (role == .Goal || role == .Flower || role == .SuperButterfly) && mass != 0.0 { return .Err("a sensor must have zero mass") }
     if color.x < 0.0 || color.y < 0.0 || color.z < 0.0 || color.x > 1.0 || color.y > 1.0 || color.z > 1.0 { return .Err("color components must be in [0,1]") }
     if friction < 0.0 || friction > 1.0 || restitution < 0.0 || restitution > 1.0 { return .Err("friction and restitution must be in [0,1]") }
-    .Ok(Entity { name: name, shape: shape, role: role, position: pos, size: size,
-        velocity: velocity, mass: mass, friction: friction, restitution: restitution, color: color })
+    .Ok(Entity {
+        name: name, shape: shape, role: role, position: pos, size: size,
+        velocity: velocity, mass: mass, friction: friction, restitution: restitution, color: color
+    })
 }
 
 fn place(scene: &mut Scene, move value: Entity, replace: bool) -> Result<(), string> {
@@ -281,7 +291,7 @@ pub fn save(scene: &Scene, path: string) -> Result<(), string> {
 
 fn make_body(e: &Entity) -> physics.Body {
     mut body := if e.shape == .Sphere { physics.sphere(e.position, e.size.x * 0.5, e.mass) }
-        else { physics.box_body(e.position, core.scale(e.size, 0.5), e.mass) }
+    else { physics.box_body(e.position, core.scale(e.size, 0.5), e.mass) }
     body.one_way = e.role == .Cloud || e.role == .BoostCloud
     body.velocity = e.velocity
     body.friction = e.friction
@@ -290,9 +300,11 @@ fn make_body(e: &Entity) -> physics.Body {
 }
 
 pub fn start(scene: &Scene) -> Session {
-    rest := MotionTick { heading: 0.35, walk_phase: 0.0, run_weight: 0.0, bank: 0.0, drive: 0.0,
+    rest := MotionTick {
+        heading: 0.35, walk_phase: 0.0, run_weight: 0.0, bank: 0.0, drive: 0.0,
         grounded: false, platform: -1, vertical_velocity: 0.0,
-        takeoff_tick: -1, landing_tick: -1, boost_tick: -1, rest_tick: 0, rest_weight: 1.0, landing_strength: 0.0 }
+        takeoff_tick: -1, landing_tick: -1, boost_tick: -1, rest_tick: 0, rest_weight: 1.0, landing_strength: 0.0
+    }
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
         bodies: [], body_indices: [], sensors: [], accumulator: 0.0, jump_pending: false,
@@ -301,6 +313,7 @@ pub fn start(scene: &Scene) -> Session {
         last_cloud: -1, cloud_tick: -1, cloud_origin: core.vec3(0.0, 0.0, 0.0), body_entities: [], has_goal: false,
         heading: rest.heading, walk_phase: 0.0, walking: false, motion: rest, previous_motion: rest, forward_speed: 0.0,
         trail: stride.start(core.vec3(0.0, 0.0, 0.0), rest.heading, 0.0),
+        cozy_sitting: false, sit_tick: -1, sit_weight: 0.0, prev_sit_weight: 0.0, pet_tick: -1, emote_tick: -1,
     }
     for i in 0..scene.entities.len {
         item := &scene.entities[i]
@@ -404,8 +417,43 @@ pub struct Rest { age: f32, weight: f32 }
 // A short tap can interrupt an ongoing gesture. Rewind it only after it has completely faded.
 pub fn render_rest(s: &Session, exact: bool) -> Rest {
     if exact || s.tick == 0 { return Rest { age: event_age(s.tick, s.motion.rest_tick, 0.0), weight: s.motion.rest_weight } }
-    Rest { age: event_age(s.tick - 1, s.previous_motion.rest_tick, s.accumulator),
-        weight: s.previous_motion.rest_weight + f32(s.accumulator) * (s.motion.rest_weight - s.previous_motion.rest_weight) }
+    Rest {
+        age: event_age(s.tick - 1, s.previous_motion.rest_tick, s.accumulator),
+        weight: s.previous_motion.rest_weight + f32(s.accumulator) * (s.motion.rest_weight - s.previous_motion.rest_weight)
+    }
+}
+
+pub fn pet(s: &mut Session) { s.pet_tick = s.tick }
+
+pub fn emote(s: &mut Session) { s.emote_tick = s.tick }
+
+pub fn toggle_sit(s: &mut Session) {
+    if s.cozy_sitting {
+        s.cozy_sitting = false
+        s.sit_tick = -1
+        return
+    }
+    if s.player >= 0 && s.bodies[s.player].grounded {
+        s.cozy_sitting = true
+        s.sit_tick = s.tick
+    }
+}
+
+pub fn render_cozy(s: &Session, exact: bool) -> CozyState {
+    at_tick := exact || s.tick == 0
+    tick := if at_tick { s.tick } else { s.tick - 1 }
+    fraction := if at_tick { f64(0.0) } else { s.accumulator }
+    weight := if at_tick { s.sit_weight }
+    else { s.prev_sit_weight + f32(s.accumulator) * (s.sit_weight - s.prev_sit_weight) }
+    CozyState {
+        sitting: s.cozy_sitting,
+        sit_weight: weight,
+        sit_age: event_age(tick, s.sit_tick, fraction),
+        pet_age: event_age(tick, s.pet_tick, fraction),
+        emote_age: event_age(tick, s.emote_tick, fraction),
+        flower_age: event_age(tick, s.picked_tick, fraction),
+        butterfly_age: event_age(tick, s.butterfly_tick, fraction),
+    }
 }
 
 pub fn stride_stop(s: &Session, exact: bool, index: i32) -> Option<stride.Stop> {
@@ -425,7 +473,7 @@ pub fn render_motion(s: &Session, exact: bool) -> PlayerMotion {
     // the first sample at the tick that registered the impact or takeoff.
     impulse := current.takeoff_tick == s.tick || current.landing_tick == s.tick
     dy := if !impulse { current.vertical_velocity - from.vertical_velocity }
-        else if from.grounded { f32(0.0) } else { s.scene.gravity.y * f32(TICK_SECONDS) }
+    else if from.grounded { f32(0.0) } else { s.scene.gravity.y * f32(TICK_SECONDS) }
     PlayerMotion {
         seconds: f32((f64(tick) + fraction) * TICK_SECONDS),
         heading: from.heading + stride.near_angle(from.heading, current.heading) * t,
@@ -484,7 +532,7 @@ fn update_player(s: &mut Session, before: core.Vec3) {
     resting := player.grounded && !s.walking
     if resting && was_moving && s.motion.rest_weight <= 0.0 { s.motion.rest_tick = s.tick }
     s.motion.rest_weight = if resting { approach(s.motion.rest_weight, 1.0, f32(TICK_SECONDS) / 0.30) }
-        else { approach(s.motion.rest_weight, 0.0, f32(TICK_SECONDS) / 0.22) }
+    else { approach(s.motion.rest_weight, 0.0, f32(TICK_SECONDS) / 0.22) }
     support := player.grounded || s.motion.boost_tick == s.tick
     stride.record(&mut s.trail, before, player.position, s.motion.heading, s.motion.run_weight, s.previous_motion.grounded, support, f32(TICK_SECONDS))
     s.motion.platform = if player.platform >= 0 { s.body_entities[player.platform] } else { -1 }
@@ -519,14 +567,19 @@ fn update_player(s: &mut Session, before: core.Vec3) {
 
 pub fn step(s: &mut Session, input: Input) {
     s.previous_motion = s.motion
+    s.prev_sit_weight = s.sit_weight
     for i in 0..s.body_indices.len { s.previous[i] = position(&s, i) }
+    x := axis(input.x)
+    z := axis(input.z)
+    if x != 0.0 || z != 0.0 || input.jump || s.jump_pending || (s.player >= 0 && !s.bodies[s.player].grounded) {
+        s.cozy_sitting = false
+        s.sit_tick = -1
+    }
     mut before := core.vec3(0.0, 0.0, 0.0)
     mut old_platform := -1
     if s.player >= 0 {
         old_platform = s.bodies[s.player].platform
         before = s.bodies[s.player].position
-        x := axis(input.x)
-        z := axis(input.z)
         length := (x * x + z * z).sqrt()
         speed := if length > 1.0 { RUN_SPEED / length } else { RUN_SPEED }
         s.bodies[s.player].velocity.x = x * speed
@@ -561,6 +614,19 @@ pub fn step(s: &mut Session, input: Input) {
             }
         }
         update_player(&mut s, before)
+        if !s.bodies[s.player].grounded {
+            s.cozy_sitting = false
+            s.sit_tick = -1
+        }
+        s.sit_weight = if s.cozy_sitting && s.bodies[s.player].grounded {
+            approach(s.sit_weight, 1.0, f32(TICK_SECONDS) / 0.42)
+        } else {
+            approach(s.sit_weight, 0.0, f32(TICK_SECONDS) / 0.22)
+        }
+    } else {
+        s.cozy_sitting = false
+        s.sit_tick = -1
+        s.sit_weight = approach(s.sit_weight, 0.0, f32(TICK_SECONDS) / 0.22)
     }
 }
 
