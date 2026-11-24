@@ -58,9 +58,11 @@ Räven, gläntan och smådjuren har redigerbara Blender-original. [Räven](asset
 
 Molnbanan har en egen Blenderfil med separata scener för det vita molnet, det rosa studsmolnet och bonusfjärilen. De exporteras till `cloud.glb`, `boost_cloud.glb` och `super_butterfly.glb`. [Molnbanans Blender-original](assets/blomsterskogen/canopy.blend)
 
-Vallmos rigg i `fox.blend` har elva poserbara leder. Ögon och öron följer huvudet. Rävens andetag, blinkning, steg, avstamp och landning har egna klipp. I `clips()` kan du ändra nyckelposer och tajming. Löpcykeln följer sträckan som Vallmo faktiskt färdas, och hur hårt hon landar avgör hur mycket kroppen trycks ihop. [Rörelserna i spelet](docs/vallmo.png) · [Vallmos animationsklipp](src/fox_animation.ddr)
+Vallmo sätter ner tassarna en i taget i galoppen. Bakbenen tar vikt och skjuter ifrån, bröstet sjunker vid landning och svansens spets följer efter när hon svänger. Steglängden följer sträckan hon färdas. Ändra nyckelposer och tajming i `clips()`. [Jämför samma löpning och hopp före och efter](docs/vallmos-steg.mp4) · [Vallmos animationsklipp](src/fox_animation.ddr)
 
-I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `PawFL_`, `Tail_` och `WingL_`. Storm animerar dem kring modellens leder.
+I `fox.blend` kan du posera 22 leder med kontrollerna `Pose · …`. Ledernas vilolägen och tassarnas kontaktpunkter finns i egenskapen `storm_rig` på samlingen **Fox · Export geometry**. Återställ kontrollerna till viloposen och kör samlingens sparade export **Storm · fox.glb** för att få med både geometri och rigg. [Vallmos poser i spelet](docs/vallmo.png)
+
+I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `WingL_` och `WingR_`. Storm animerar dem kring modellens leder.
 
 Granska exportens geometri och material direkt med `./build/storm --glb assets/blomsterskogen/fox.glb`. För att använda en ny export i basspelet, ersätt motsvarande GLB och bygg Storm igen. Modellerna följer med i binären och Mac-appen.
 
