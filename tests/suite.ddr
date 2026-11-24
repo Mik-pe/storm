@@ -262,3 +262,27 @@ import ui.widgets as widgets
 
 import .play_view as _
 import .scene_file as _
+
+import ..src.app as app
+import render
+
+@test fn post_process_runs_after_scene_color_and_before_the_hud() {
+    for shadows in [false, true] {
+        for glass in [false, true] {
+            for smooth in [false, true] {
+                for strength in [0.0, 1.0] {
+                    finish := gfx.PostProcess { antialias: smooth, strength: f32(strength) }
+                    plan := app.frame_plan(shadows, glass, finish.enabled())
+                    assert(finish.valid() && plan.ok)
+                    mut i := 0
+                    if shadows { assert(plan.steps[i].kind == render.PassKind.Shadow); i += 1 }
+                    assert(plan.steps[i].kind == render.PassKind.Sky && plan.steps[i+1].kind == render.PassKind.Opaque)
+                    i += 2
+                    if glass { assert(plan.steps[i].kind == render.PassKind.Transparent); i += 1 }
+                    if smooth || strength > 0.0 { assert(plan.steps[i].kind == render.PassKind.PostProcess); i += 1 }
+                    assert(i+1 == plan.steps.len && plan.steps[i].kind == render.PassKind.Ui)
+                }
+            }
+        }
+    }
+}

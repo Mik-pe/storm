@@ -1,29 +1,22 @@
-capability unsafe, stdio
+capability unsafe
 
-import std.sys as sys
+import gfx
 import .device as device
 import .enums as enums
 import .layout as vk2
 import .shader as shader
 import .state as state
 
-// Cinematic overlay drawn over the finished scene.
-//
-// The frame renders straight into its target (the swapchain image or the
-// capture image) and this pass paints a fullscreen triangle on top with
-// vignette, grain, scanlines and a cool grade. It needs no scene texture, so
-// the whole thing stays inside the scene render pass.
-
 unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
-    vert := shader.overlay_vertex()
-    frag := shader.overlay_fragment()
+    vert := shader.post_vertex()
+    frag := shader.post_fragment()
     mut vert_module := ptr(0)
     mut code := device.shader_module(&r, addr(&vert[0]), usize(vert.len * 4), addr(&mut vert_module))
-    if code != 0 { return device.fail(&mut r, code, .Overlay) }
+    if code != 0 { return device.fail(&mut r, code, .PostProcess) }
+    r.postVertShader = vert_module
     mut frag_module := ptr(0)
     code = device.shader_module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module))
-    if code != 0 { return device.fail(&mut r, code, .Overlay) }
-    r.postVertShader = vert_module
+    if code != 0 { return device.fail(&mut r, code, .PostProcess) }
     r.postFragShader = frag_module
 
     mut encoding: vk2.DisplayEncoding = zeroed()
@@ -39,19 +32,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     assembly.sType = 20
     assembly.topology = enums.primitive_topology(.TriangleList)
 
-    mut viewport: vk2.Viewport = zeroed()
-    viewport.width = f32(r.width)
-    viewport.height = f32(r.height)
-    viewport.maxDepth = 1.0
-    mut scissor: vk2.Rect2D = zeroed()
-    scissor.extent.width = r.width
-    scissor.extent.height = r.height
-    mut viewport_state: vk2.PipelineViewportStateCreateInfo = zeroed()
-    viewport_state.sType = 22
-    viewport_state.viewportCount = 1
-    viewport_state.pViewports = addr(&mut viewport)
-    viewport_state.scissorCount = 1
-    viewport_state.pScissors = addr(&mut scissor)
+    mut view: vk2.FrameViewport = zeroed()
+    device.frame_viewport(&mut view)
 
     mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
@@ -68,9 +50,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     depth.sType = 25
 
     mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
-    // The same alpha-over as the UI. With the old 5/6 factors the dark grade
-    // was added on top of the scene instead of covering it (finding 40).
-    enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
+    blend_attachment.colorWriteMask = enums.color_component(.RGBA)
 
     mut blend: vk2.PipelineColorBlendStateCreateInfo = zeroed()
     blend.sType = 26
@@ -83,10 +63,12 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
 
     mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
     layout_info.sType = 30
+    layout_info.setLayoutCount = 1
+    layout_info.pSetLayouts = addr(&r.postTexture.layout)
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&mut push_range)
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout))
-    if code != 0 { return device.fail(&mut r, code, .Overlay) }
+    if code != 0 { return device.fail(&mut r, code, .PostProcess) }
 
     mut info: vk2.GraphicsPipelineCreateInfo = zeroed()
     info.sType = 28
@@ -94,7 +76,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&mut vertex_input)
     info.pInputAssemblyState = addr(&mut assembly)
-    info.pViewportState = addr(&mut viewport_state)
+    info.pViewportState = addr(&view.viewport)
+    info.pDynamicState = addr(&view.dynamic)
     info.pRasterizationState = addr(&mut raster)
     info.pMultisampleState = addr(&mut multisample)
     info.pDepthStencilState = addr(&mut depth)
@@ -104,34 +87,117 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     info.subpass = 0
     info.basePipelineIndex = -1
     code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.postPipeline))
-    if code != 0 { return device.fail(&mut r, code, .Overlay) }
+    if code != 0 { return device.fail(&mut r, code, .PostProcess) }
     .Ready
 }
 
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
-    if create_pipeline(&mut r) != .Ready {
-        _ := sys.eprint("overlay: pipeline failed")
-        return .Overlay
-    }
-    .Ready
+    result := device.sampled_texture(&r.api, r.device, &mut r.postTexture)
+    if result != 0 { return device.fail(&mut r, result, .PostProcess) }
+    create_pipeline(&mut r)
 }
 
-// Draw the overlay inside the open scene pass.
-pub unsafe fn draw(r: &mut state.Renderer, time: f32, amount: f32) -> bool {
-    if r.recording == 0 || r.postPipeline == ptr(0) { return false }
-    if amount <= 0.0 { return true }
-    slot := r.current
-    r.api.CmdBindPipeline(r.commands[slot], 0, r.postPipeline)
-    mut push := [f32(r.width), f32(r.height), time, amount]
-    r.api.CmdPushConstants(r.commands[slot], r.postPipelineLayout, enums.shader_stage(.Fragment), 0, 16, addr(&mut push[0]))
-    r.api.CmdDraw(r.commands[slot], 3, 1, 0, 0)
-    true
+pub unsafe fn destroy_target(r: &mut state.Renderer) {
+    r.api.DestroyFramebuffer(r.device, r.sceneFramebuffer, ptr(0))
+    r.api.DestroyImageView(r.device, r.sceneSampleView, ptr(0))
+    r.api.DestroyImageView(r.device, r.sceneView, ptr(0))
+    r.api.DestroyImage(r.device, r.sceneImage, ptr(0))
+    r.api.FreeMemory(r.device, r.sceneMemory, ptr(0))
+    r.sceneFramebuffer = ptr(0)
+    r.sceneSampleView = ptr(0)
+    r.sceneView = ptr(0)
+    r.sceneImage = ptr(0)
+    r.sceneMemory = ptr(0)
+}
+
+unsafe fn create_target(r: &mut state.Renderer) -> i32 {
+    // Match the scene attachment's transfer function to the display target.
+    // The sampling view always reads the resulting display-encoded bytes.
+    sampled := if enums.format_is_bgra(r.format) { enums.format(.B8G8R8A8_UNORM) } else { enums.format(.R8G8B8A8_UNORM) }
+    mut info := device.image_2d_info(r.format, r.width, r.height, enums.image_tiling(.Optimal), enums.image_usage(.ColorAttachmentSampled))
+    if sampled != r.format { info.flags = enums.image_create(.MutableFormat) }
+    mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut r.sceneImage))
+    if code != 0 { return code }
+    mut req: vk2.MemoryRequirements = zeroed()
+    r.api.GetImageMemoryRequirements(r.device, r.sceneImage, addr(&mut req))
+    mut memory := ptr(0)
+    code = device.allocate(&r, &req, 1, addr(&mut memory))
+    r.sceneMemory = memory
+    if code != 0 { return code }
+    code = r.api.BindImageMemory(r.device, r.sceneImage, memory, 0)
+    if code != 0 { return code }
+    mut view: vk2.ImageViewCreateInfo = zeroed()
+    view.sType = 15
+    view.image = r.sceneImage
+    view.viewType = enums.image_view_type(.Type2D)
+    view.format = r.format
+    view.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    view.subresourceRange.levelCount = 1
+    view.subresourceRange.layerCount = 1
+    code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.sceneView))
+    if code != 0 { return code }
+    mut sample_view := r.sceneView
+    if sampled != r.format {
+        view.format = sampled
+        code = r.api.CreateImageView(r.device, addr(&view), ptr(0), addr(&mut r.sceneSampleView))
+        if code != 0 { return code }
+        sample_view = r.sceneSampleView
+    }
+    mut framebuffer := ptr(0)
+    code = device.color_framebuffer(&r, r.sceneView, addr(&mut framebuffer))
+    r.sceneFramebuffer = framebuffer
+    if code == 0 { device.sample_view(&r, &r.postTexture, sample_view) }
+    code
+}
+
+pub unsafe fn ensure_target(r: &mut state.Renderer) -> state.SetupStep {
+    if r.sceneFramebuffer != ptr(0) { return .Ready }
+    if !enums.format_has_bytes(r.format) { return .Format }
+    code := create_target(&mut r)
+    if code == 0 { return .Ready }
+    destroy_target(&mut r)
+    device.fail(&mut r, code, .PostProcess)
+}
+
+pub unsafe fn composite(r: &mut state.Renderer, settings: &gfx.PostProcess) -> Result<(), string> {
+    if r.pass != state.PASS_FILTERED { return .Err("post-processing requires an open filtered scene") }
+    if !settings.valid() { return .Err("post-process strength must be between 0 and 1") }
+    cmd := r.commands[r.current]
+    r.api.CmdEndRenderPass(cmd)
+    mut barrier: vk2.ImageMemoryBarrier = zeroed()
+    barrier.sType = 45
+    barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
+    barrier.dstAccessMask = enums.access(.ShaderRead)
+    barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
+    barrier.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
+    barrier.srcQueueFamilyIndex = 4294967295
+    barrier.dstQueueFamilyIndex = 4294967295
+    barrier.image = r.sceneImage
+    barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    barrier.subresourceRange.levelCount = 1
+    barrier.subresourceRange.layerCount = 1
+    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.ColorAttachmentOutput), enums.pipeline_stage(.FragmentShader),
+        0, 0, ptr(0), 0, ptr(0), 1, addr(&barrier))
+    mut pass := r.pendingPass.clone()
+    pass.renderPass = r.compositePass
+    pass.clearValueCount = 0
+    r.api.CmdBeginRenderPass(cmd, addr(&pass), 0)
+    r.api.CmdBindPipeline(cmd, 0, r.postPipeline)
+    r.api.CmdBindDescriptorSets(cmd, 0, r.postPipelineLayout, 0, 1, addr(&r.postTexture.set), 0, ptr(0))
+    aa := if settings.antialias { 1.0 } else { 0.0 }
+    push := [f32(1.0) / f32(r.width), f32(1.0) / f32(r.height), f32(aa), settings.strength]
+    r.api.CmdPushConstants(cmd, r.postPipelineLayout, enums.shader_stage(.Fragment), 0, 16, addr(&push[0]))
+    r.api.CmdDraw(cmd, 3, 1, 0, 0)
+    r.pass = state.PASS_COMPOSITE
+    .Ok
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.device == ptr(0) { return }
+    destroy_target(&mut r)
     r.api.DestroyShaderModule(r.device, r.postVertShader, ptr(0))
     r.api.DestroyShaderModule(r.device, r.postFragShader, ptr(0))
-    if r.postPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.postPipeline, ptr(0)) }
-    if r.postPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.postPipelineLayout, ptr(0)) }
+    r.api.DestroyPipeline(r.device, r.postPipeline, ptr(0))
+    r.api.DestroyPipelineLayout(r.device, r.postPipelineLayout, ptr(0))
+    device.destroy_texture(&r, &r.postTexture)
 }

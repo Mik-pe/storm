@@ -1,5 +1,5 @@
 #version 450
-// Fullscreen triangle for the overlay pass.
+// The resolve covers the entire output; its fragment coordinates address the scene color.
 void main() {
     vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
     gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);

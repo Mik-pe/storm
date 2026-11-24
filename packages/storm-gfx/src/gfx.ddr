@@ -84,7 +84,7 @@ pub struct Sky {
     sun_color: [f32; 4],
     diffuse_fill: f32, // hemispherical diffuse light from the horizon and zenith colors
     zenith: [f32; 4],
-    horizon: [f32; 4],
+    horizon: [f32; 4], // rgb horizon color, w = strength of below-horizon darkening
     light_vp: [f32; 16], // sun view-projection for the shadow lookup
     light_dir_c: [f32; 4], // xyz towards the sun, w = dot(light_origin, dir)
 }
@@ -102,13 +102,22 @@ pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon:
 // writing it.
 pub enum Surface { Opaque = 0, Blended = 1 }
 
+// Frame finishing after transparency, before UI. Strength is the amount of
+// highlight glow and color grading in [0,1]. Edge smoothing is independent.
+pub struct PostProcess { antialias: bool, strength: f32 }
+
+impl PostProcess {
+    pub fn valid(&self) -> bool { self.strength >= 0.0 && self.strength <= 1.0 }
+    pub fn enabled(&self) -> bool { self.antialias || self.strength > 0.0 }
+}
+
 // The backend contract. A frame is recorded like this:
 //
 //   poll()                          input, size, and whether to stop
 //   begin()                         take a frame to record into
 //   shadow_begin / shadow_mesh / shadow_end
-//   begin_pass
-//   sky, mesh, overlay, ui_draw
+//   begin_scene(filtered)
+//   sky, mesh, post_process (when filtered), ui_draw
 //   end()                           show it
 //
 // Every operation that can fail says why in its error.
@@ -143,7 +152,8 @@ pub trait Backend {
     fn shadow_end(&mut self) -> Result<(), string>
 
     // Open the main pass: colour and depth, cleared.
-    fn begin_pass(&mut self) -> Result<(), string>
+    fn begin_scene(&mut self, filtered: bool) -> Result<(), string>
+    fn begin_pass(&mut self) -> Result<(), string> { self.begin_scene(false) }
 
     fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string>
 
@@ -152,8 +162,8 @@ pub trait Backend {
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
         params: &[f32; 4], camera: &[f32; 3], sky: &Sky, surface: Surface) -> Result<(), string>
 
-    // Paint the cinematic overlay over the finished scene.
-    fn overlay(&mut self, time: f32, amount: f32) -> Result<(), string>
+    // Finish the sampled scene and open its display target for native-resolution UI.
+    fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>
 
     // Upload the packed glyph coverage atlas: one byte per pixel.
     fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string>

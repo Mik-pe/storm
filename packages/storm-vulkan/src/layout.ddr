@@ -337,6 +337,18 @@ pub struct PipelineViewportStateCreateInfo {
 }
 
 @c_layout
+pub struct PipelineDynamicStateCreateInfo {
+    sType: u32, pNext: ptr, flags: u32, dynamicStateCount: u32, pDynamicStates: ptr,
+}
+
+@c_layout
+pub struct FrameViewport {
+    viewport: PipelineViewportStateCreateInfo,
+    dynamic: PipelineDynamicStateCreateInfo,
+    states: [u32; 2],
+}
+
+@c_layout
 pub struct PipelineRasterizationStateCreateInfo {
     sType: u32,
     pNext: ptr,

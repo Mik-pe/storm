@@ -21,7 +21,7 @@ pub enum PassKind {
     Sky = 1,
     Opaque = 2,
     Transparent = 3,
-    Overlay = 4,
+    PostProcess = 4,
     Ui = 5,
 }
 

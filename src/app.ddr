@@ -145,18 +145,17 @@ fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
     core.multiply(projection, view)
 }
 
-fn frame_plan(shadows: bool, glass: bool, effects: bool) -> render.Compiled {
+pub fn frame_plan(shadows: bool, glass: bool, filtered: bool) -> render.Compiled {
     mut schedule := render.Graph::new()
+    scene_color := if filtered { "scene_color" } else { "display" }
     if shadows { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
-    _ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
-    if shadows {
-        _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
-    } else {
-        _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth"])
-    }
-    if glass { _ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]) }
-    if effects { _ := schedule.add_pass(.Overlay, "overlay", ["color"], ["color"]) }
-    _ := schedule.add_pass(.Ui, "ui", ["color"], ["color"])
+    _ := schedule.add_pass(.Sky, "sky", [scene_color.clone(), "depth"], [])
+    mut reads: []string = [scene_color.clone(), "depth"]
+    if shadows { reads.push("shadow_map") }
+    _ := schedule.add_pass(.Opaque, "opaque", [scene_color.clone(), "depth"], move reads)
+    if glass { _ := schedule.add_pass(.Transparent, "transparent", [scene_color.clone()], [scene_color.clone(), "depth"]) }
+    if filtered { _ := schedule.add_pass(.PostProcess, "post", ["display"], [scene_color.clone()]) }
+    _ := schedule.add_pass(.Ui, "ui", ["display"], ["display"])
     schedule.compile()
 }
 
@@ -216,7 +215,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         .Ok(view) => view, .Err(err) => { return stop(move window, err) },
     }
     custom_eye := args.flag(argv, "--eye")
-    forest_horizon: [f32; 4] = [0.99, 0.78, 0.82, 1.0]
+    forest_horizon: [f32; 4] = [0.99, 0.78, 0.82, 0.16]
     forest_zenith: [f32; 4] = [0.63, 0.65, 0.86, 1.0]
     backdrop: [f32; 4] = [0.24, 0.34, 0.38, 1.0]
     mut hud := widgets.State::new()
@@ -255,7 +254,11 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     environment := window.build_environment(&sky)
     if environment.is_err() { return stop(move window, environment.unwrap_err()) }
 
-    mut studio := editor.new(study.ring, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), args.flag(argv, "--effects"))
+    disable_post := args.flag(argv, "--no-post")
+    enable_post := args.flag(argv, "--effects") && !disable_post
+    mut game_grade: Option<bool> = if disable_post { .Some(false) } else if enable_post { .Some(true) } else { .None }
+    mut studio := editor.new(study.ring, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), enable_post)
+    studio.antialias = !args.flag(argv, "--no-aa")
     mut glass_visible := true
     mut score: i32 = 0
     mut total: i32 = game.orbs_left(&graph)
@@ -287,7 +290,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut plan := render.Compiled { ok: true, error: "", steps: [] }
     mut planned_shadows := false
     mut planned_glass := false
-    mut planned_effects := false
+    mut planned_filter := false
     mut geometry := FrameGeometry { revision: -1, meshes: [], solids: [], glass: [] }
     mut mesh_world_is_game := false
     mut frames: i64 = 0
@@ -354,6 +357,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             }
         }
         if playing {
+            if frame.input.hit(.E) { game_grade = .Some(!game_grade.unwrap_or(session.scene.theme == .Blossom)) }
             if action == .Restart || frame.input.hit(.R) {
                 session = play.start(&session.scene)
                 paused = false
@@ -414,12 +418,15 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         else { gather(&mut geometry, &graph, view_camera.position) }
         shadows := studio.shadows && geometry.solids.len > 0
         transparent := geometry.glass.len > 0
-        if plan.steps.len == 0 || shadows != planned_shadows || transparent != planned_glass || studio.effects != planned_effects {
-            plan = frame_plan(shadows, transparent, studio.effects)
+        grade := if playing { game_grade.unwrap_or(session.scene.theme == .Blossom) } else { studio.effects }
+        finish := gfx.PostProcess { antialias: studio.antialias, strength: if grade { 1.0 } else { 0.0 } }
+        filtered := finish.enabled()
+        if plan.steps.len == 0 || shadows != planned_shadows || transparent != planned_glass || filtered != planned_filter {
+            plan = frame_plan(shadows, transparent, filtered)
             if !plan.ok { return stop(move window, plan.error) }
             planned_shadows = shadows
             planned_glass = transparent
-            planned_effects = studio.effects
+            planned_filter = filtered
         }
 
         solid_bytes := vertex_bytes(&geometry.solids, &geometry.meshes, cube_vertices.len, plane_vertices.len, sphere_vertices.len)
@@ -451,7 +458,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                 continue
             }
             if !main_pass_open {
-                match window.begin_pass() {
+                match window.begin_scene(filtered) {
                     .Ok => { main_pass_open = true },
                     .Err(message) => { return stop(move window, message) },
                 }
@@ -468,8 +475,8 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                     record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, false, kind)
                 }
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
-            } else if kind == render.PassKind.Overlay {
-                match window.overlay(f32(frame.time), 1.0) {
+            } else if kind == render.PassKind.PostProcess {
+                match window.post_process(&finish) {
                     .Ok => {},
                     .Err(message) => { return stop(move window, message) },
                 }

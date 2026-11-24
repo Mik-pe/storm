@@ -15,8 +15,9 @@ void main() {
     vec3 dir = normalize(view_ray);
     float height = clamp(dir.y, -1.0, 1.0);
     vec3 base = mix(sky.horizon.rgb, sky.zenith.rgb, pow(clamp(height, 0.0, 1.0), 0.55));
-    // Fade towards a dim ground haze below the horizon.
-    base = mix(base * 0.5, base, smoothstep(-0.18, 0.02, height));
+    // A clearing may keep the distant haze light when seen above the treetops.
+    float haze = 1.0 - 0.5 * sky.horizon.w;
+    base = mix(base * haze, base, smoothstep(-0.18, 0.02, height));
 
     vec3 sun_dir = normalize(sky.sun_direction.xyz);
     float cos_angle = max(dot(dir, sun_dir), 0.0);

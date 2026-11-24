@@ -23,6 +23,7 @@
 capability unsafe, filesystem, stdio
 
 import gfx
+import std.bytes as bytes
 import std.dl as dl
 import std.sys as sys
 import ..src.appkit as appkit
@@ -217,6 +218,98 @@ fn plane_facing(towards: bool) -> [f32; 16] {
         0.0, 0.0, s, 0.0,
         0.0, 0.0 - s, 0.0, 0.0,
         0.0, 0.0, 0.5, 1.0]
+}
+
+// The mesh and HUD both have oblique edges. Only the mesh crosses the filter.
+fn post_frame(r: &mut metal.Renderer, sky: &gfx.Sky, settings: Option<gfx.PostProcess>) -> Result<Image, string> {
+    frame := r.poll()
+    w := f32(frame.width)
+    h := f32(frame.height)
+    mut mesh: []f32 = []
+    gfx.push_triangle(&mut mesh, gfx.vertex(-0.8, -0.8, 0.45, 0.0, 0.0, -1.0, 0.0, 0.0),
+        gfx.vertex(-0.8, 0.52, 0.45, 0.0, 0.0, -1.0, 0.0, 1.0),
+        gfx.vertex(0.8, -0.8, 0.45, 0.0, 0.0, -1.0, 1.0, 0.0))
+    hud: []f32 = [
+        0.62 * w, 0.67 * h, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+        0.90 * w, 0.67 * h, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+        0.62 * w, 0.92 * h, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0,
+    ]
+    view := identity()
+    // The mint has headroom for the grade, unlike a saturated primary.
+    color: [f32; 4] = [0.045, 0.42, 0.07, 1.0]
+    emitting: [f32; 4] = [0.0, 1.0, 3.0, 0.0]
+    eye: [f32; 3] = [0.0, 0.0, 0.0]
+    r.begin()?
+    r.begin_scene(settings.is_some())?
+    r.mesh(&mesh, &view, &view, &color, &emitting, &eye, sky, .Opaque)?
+    match settings { .Some(post) => { r.post_process(&post)? }, .None => {} }
+    r.ui_draw(hud, [w, h])?
+    _ := r.end()?
+    r.save_capture(capture_path())?
+    captured := read_capture()
+    if !captured.ok { return .Err(captured.error) }
+    .Ok(captured)
+}
+
+fn sample(img: &Image, u: f32, v: f32) -> [i32; 3] {
+    under(img, u * f32(img.width), v * f32(img.height), 1.0)
+}
+
+fn mint(c: [i32; 3]) -> bool { c[1] > 180 && c[1] > c[0] + 30 && c[1] > c[2] + 20 }
+
+fn color_change(a: [i32; 3], b: [i32; 3]) -> i32 {
+    (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()
+}
+
+// Count subpixel coverage along the mesh diagonal, away from its ends.
+fn soft_edge(img: &Image) -> i32 {
+    mut count := 0
+    high := sample(img, 0.20, 0.20)[1] - 8
+    for x in img.width / 4..img.width * 3 / 4 {
+        u := (f32(x) + 0.5) / f32(img.width)
+        y := i32(f32(img.height) * (0.76 - (u - 0.10) * 0.66 / 0.80))
+        for j in 0..7 {
+            green := under(img, f32(x), f32(y + j - 3), 1.0)[1]
+            if green > 8 && green < high { count += 1 }
+        }
+    }
+    count
+}
+
+fn same_hud_edge(a: &Image, b: &Image) -> bool {
+    for x in a.width * 65 / 100..a.width * 87 / 100 {
+        u := (f32(x) + 0.5) / f32(a.width)
+        y := i32(f32(a.height) * (0.92 - (u - 0.62) * 0.25 / 0.28))
+        for j in 0..5 {
+            py := f32(y + j - 2)
+            if color_change(under(a, f32(x), py, 1.0), under(b, f32(x), py, 1.0)) > 1 { return false }
+        }
+    }
+    true
+}
+
+fn post_checks(failures: &mut i32, r: &mut metal.Renderer, sky: &gfx.Sky) -> Result<(), string> {
+    direct := post_frame(&mut r, sky, .None)?
+    aa := post_frame(&mut r, sky, .Some(gfx.PostProcess { antialias: true, strength: 0.0 }))?
+    graded := post_frame(&mut r, sky, .Some(gfx.PostProcess { antialias: false, strength: 1.0 }))?
+    raw_edge := soft_edge(&direct)
+    filtered_edge := soft_edge(&aa)
+    expect(&mut failures, "AA adds fractional coverage along the mesh diagonal (" + raw_edge.str() + " to " + filtered_edge.str() + " pixels)",
+        filtered_edge > raw_edge + aa.width / 16)
+    top := sample(&aa, 0.20, 0.20)
+    bottom := sample(&aa, 0.20, 0.80)
+    expect(&mut failures, "the filtered green mesh is above the red background and their flat interiors retain their colors",
+        mint(top) && is_red(bottom) && color_change(top, sample(&direct, 0.20, 0.20)) <= 1 &&
+        color_change(bottom, sample(&direct, 0.20, 0.80)) <= 1)
+    white: [i32; 3] = [255, 255, 255]
+    expect(&mut failures, "AA leaves the white HUD and its diagonal pixel-exact",
+        color_change(sample(&aa, 0.66, 0.70), white) == 0 && same_hud_edge(&direct, &aa))
+    change := color_change(sample(&graded, 0.20, 0.20), top) + color_change(sample(&graded, 0.20, 0.80), bottom)
+    expect(&mut failures, "grading alone changes scene colors while HUD white stays white (RGB difference " + change.str() + ")",
+        change >= 3 && color_change(sample(&graded, 0.66, 0.70), white) == 0)
+    bypass := post_frame(&mut r, sky, .Some(gfx.PostProcess { antialias: false, strength: 0.0 }))?
+    expect(&mut failures, "turning off both filters restores every pixel of the direct capture", bytes.equal(&direct.pixels, &bypass.pixels))
+    .Ok
 }
 
 // ---- the input path, on a window of its own ----
@@ -454,6 +547,9 @@ fn frame_checks(failures: &mut i32) {
     expect(&mut failures, "its back face is culled: the clear colour shows where it would be: rgb " + rgb(under(&back, centre, middle, scale)),
         back.ok && is_red(under(&back, centre, middle, scale)))
 
+    result := post_checks(&mut failures, &mut window, &sky)
+    worked(&mut failures, "the post-process comparison frames are captured", move result)
+
     // A resize is followed: the window reports the new size, and the frame
     // after it is drawn at it, every corner in place.
     window.resize(900, 520)
@@ -467,6 +563,15 @@ fn frame_checks(failures: &mut i32) {
     expect(&mut failures, "at the new size", resized.ok && resized.width == i32(900.0 * scale) && resized.height == i32(520.0 * scale))
     expect(&mut failures, "with the quads in its corners, not the old frame's",
         resized.ok && is_blue(under(&resized, 40.0, 40.0, scale)) && is_green(under(&resized, 860.0, 480.0, scale)))
+    match post_frame(&mut window, &sky, .Some(gfx.PostProcess { antialias: true, strength: 0.0 })) {
+        .Ok(img) => {
+            expect(&mut failures, "the resized post target covers the new drawable, its diagonal and its HUD",
+                img.width == resized.width && img.height == resized.height && soft_edge(&img) > img.width / 16 &&
+                mint(sample(&img, 0.20, 0.20)) && is_red(sample(&img, 0.20, 0.80)) &&
+                color_change(sample(&img, 0.66, 0.70), [255, 255, 255]) == 0)
+        },
+        .Err(err) => { expect(&mut failures, "the resized post target renders (" + err + ")", false) },
+    }
     // And back again.
     window.resize(WIDTH, HEIGHT)
     expect(&mut failures, "and back", window.poll().width == WIDTH && window.poll().height == HEIGHT)

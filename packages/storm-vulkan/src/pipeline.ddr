@@ -22,12 +22,12 @@ unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     depth.format = enums.format(.D32_SFLOAT)
     depth.samples = enums.samples(.Type1)
     depth.loadOp = enums.attachment_load_op(.Clear)
-    depth.storeOp = enums.attachment_store_op(.DontCare) // nothing reads it after the pass
+    depth.storeOp = enums.attachment_store_op(.DontCare)
     depth.stencilLoadOp = enums.attachment_load_op(.DontCare)
     depth.stencilStoreOp = enums.attachment_store_op(.DontCare)
     depth.initialLayout = enums.image_layout(.Undefined) // cleared anyway
     depth.finalLayout = enums.image_layout(.DepthStencilAttachmentOptimal)
-    attachments := vk.Attachments { color: color, depth: depth }
+    mut attachments := vk.Attachments { color: color, depth: depth }
     mut color_ref: vk.AttachmentReference = zeroed()
     color_ref.attachment = 0
     color_ref.layout = enums.image_layout(.ColorAttachmentOptimal)
@@ -45,10 +45,10 @@ unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     mut before: vk.SubpassDependency = zeroed()
     before.srcSubpass = enums.SUBPASS_EXTERNAL
     before.dstSubpass = 0
-    before.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
-    before.dstStageMask = enums.pipeline_stage(.ColorAttachmentOutputEarlyFragmentTests)
-    before.srcAccessMask = enums.access(.None)
-    before.dstAccessMask = enums.access(.ColorDepthWrite)
+    before.srcStageMask = enums.pipeline_stage(.ColorAndDepthStages)
+    before.dstStageMask = enums.pipeline_stage(.ColorAndDepthStages)
+    before.srcAccessMask = enums.access(.ColorDepthWrite)
+    before.dstAccessMask = enums.access(.ColorDepthWrite) + enums.access(.DepthStencilAttachmentRead)
     mut after: vk.SubpassDependency = zeroed()
     after.srcSubpass = 0
     after.dstSubpass = enums.SUBPASS_EXTERNAL
@@ -68,21 +68,24 @@ unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     pass.pDependencies = addr(&dependencies)
     mut code := r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.renderPass))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
+    // The filtered scene keeps depth for its compatible composite/HUD pass.
+    attachments.depth.storeOp = enums.attachment_store_op(.Store)
+    code = r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.scenePass))
+    if code != 0 { return device.fail(&mut r, code, .PostProcess) }
+    attachments.depth.loadOp = enums.attachment_load_op(.Load)
+    attachments.depth.initialLayout = enums.image_layout(.DepthStencilAttachmentOptimal)
+    attachments.depth.storeOp = enums.attachment_store_op(.DontCare)
+    attachments.color.loadOp = enums.attachment_load_op(.DontCare)
+    code = r.api.CreateRenderPass(r.device, addr(&pass), ptr(0), addr(&mut r.compositePass))
+    if code != 0 { return device.fail(&mut r, code, .PostProcess) }
     .Ready
 }
 
 unsafe fn framebuffers(r: &mut state.Renderer) -> state.SetupStep {
     for i in 0..r.imageCount {
-        mut views: [ptr; 2] = [r.views[i], r.depthView]
-        mut info: vk.FramebufferCreateInfo = zeroed()
-        info.sType = 37
-        info.renderPass = r.renderPass
-        info.attachmentCount = 2
-        info.pAttachments = addr(&mut views[0])
-        info.width = r.width
-        info.height = r.height
-        info.layers = 1
-        mut code := r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), addr(&mut r.framebuffers[i]))
+        mut framebuffer := ptr(0)
+        code := device.color_framebuffer(&r, r.views[i], addr(&mut framebuffer))
+        r.framebuffers[i] = framebuffer
         if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     }
     .Ready
@@ -143,20 +146,8 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     assembly.sType = 20
     assembly.topology = enums.primitive_topology(.TriangleList)
 
-    mut viewport: vk.Viewport = zeroed()
-    viewport.width = f32(r.width)
-    viewport.height = f32(r.height)
-    viewport.minDepth = 0.0
-    viewport.maxDepth = 1.0
-    mut scissor: vk.Rect2D = zeroed()
-    scissor.extent.width = r.width
-    scissor.extent.height = r.height
-    mut view: vk.PipelineViewportStateCreateInfo = zeroed()
-    view.sType = 22
-    view.viewportCount = 1
-    view.pViewports = addr(&viewport)
-    view.scissorCount = 1
-    view.pScissors = addr(&scissor)
+    mut view: vk.FrameViewport = zeroed()
+    device.frame_viewport(&mut view)
 
     mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
@@ -191,7 +182,8 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&input)
     info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&view)
+    info.pViewportState = addr(&view.viewport)
+    info.pDynamicState = addr(&view.dynamic)
     info.pRasterizationState = addr(&raster)
     info.pMultisampleState = addr(&samples)
     info.pDepthStencilState = addr(&depth_state)
@@ -256,20 +248,8 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     assembly.sType = 20
     assembly.topology = enums.primitive_topology(.TriangleList)
 
-    mut viewport: vk.Viewport = zeroed()
-    viewport.width = f32(r.width)
-    viewport.height = f32(r.height)
-    viewport.minDepth = 0.0
-    viewport.maxDepth = 1.0
-    mut scissor: vk.Rect2D = zeroed()
-    scissor.extent.width = r.width
-    scissor.extent.height = r.height
-    mut view: vk.PipelineViewportStateCreateInfo = zeroed()
-    view.sType = 22
-    view.viewportCount = 1
-    view.pViewports = addr(&viewport)
-    view.scissorCount = 1
-    view.pScissors = addr(&scissor)
+    mut view: vk.FrameViewport = zeroed()
+    device.frame_viewport(&mut view)
 
     mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
@@ -301,7 +281,8 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&input)
     info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&view)
+    info.pViewportState = addr(&view.viewport)
+    info.pDynamicState = addr(&view.dynamic)
     info.pRasterizationState = addr(&raster)
     info.pMultisampleState = addr(&samples)
     info.pDepthStencilState = addr(&depth_state)

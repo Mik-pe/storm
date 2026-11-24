@@ -33,7 +33,7 @@ fn names(c: &graph.Compiled) -> []string {
     mut g := graph.Graph::new()
     assert(g.add_pass(.Sky, "sky", ["color"], []))
     assert(g.add_pass(.Opaque, "opaque", ["color", "depth"], ["color"]))
-    assert(g.add_pass(.Overlay, "fog", ["color"], ["color", "depth"]))
+    assert(g.add_pass(.PostProcess, "fog", ["color"], ["color", "depth"]))
     compiled := g.compile()
     assert(compiled.ok && compiled.steps.len == 3)
     // Declaration order already encodes the chain; no pass moves ahead.
@@ -51,7 +51,7 @@ fn names(c: &graph.Compiled) -> []string {
 @test fn disabled_passes_are_skipped_and_can_come_back() {
     mut g := graph.Graph::new()
     assert(g.add_pass(.Sky, "sky", ["color"], []))
-    assert(g.add_pass(.Overlay, "debug", ["color"], ["color"]))
+    assert(g.add_pass(.PostProcess, "debug", ["color"], ["color"]))
     assert(g.disable("debug"))
     assert(!g.is_enabled("debug"))
     first := g.compile()
@@ -60,7 +60,7 @@ fn names(c: &graph.Compiled) -> []string {
     assert(g.enable("debug"))
     second := g.compile()
     assert(second.ok && second.steps.len == 2)
-    assert(second.steps[1].kind == graph.PassKind.Overlay)
+    assert(second.steps[1].kind == graph.PassKind.PostProcess)
 }
 
 // The frame's real shape: the shadow pass is declared before the opaque pass

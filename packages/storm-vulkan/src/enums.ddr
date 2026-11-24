@@ -135,7 +135,7 @@ pub fn stages_word(count: u32, stages: ShaderStage) -> u64 {
 pub enum PipelineStage {
     None = 0, TopOfPipe = 1, VertexInput = 4, VertexShader = 8, FragmentShader = 128,
     EarlyFragmentTests = 256, LateFragmentTests = 512, ColorAttachmentOutput = 1024,
-    ColorAttachmentOutputEarlyFragmentTests = 1280, // the main pass's dst mask
+    ColorAndDepthStages = 1792, // COLOR_ATTACHMENT_OUTPUT | EARLY_FRAGMENT_TESTS | LATE_FRAGMENT_TESTS
     Transfer = 4096, BottomOfPipe = 8192, Host = 16384, AllGraphics = 32768, AllCommands = 65536,
 }
 
@@ -194,7 +194,7 @@ pub enum BufferUsage {
 pub fn buffer_usage(v: BufferUsage) -> u32 { u32(i32(v)) }
 
 pub enum ImageCreate {
-    CubeCompatible = 16,
+    MutableFormat = 8, CubeCompatible = 16,
 }
 
 pub fn image_create(v: ImageCreate) -> u32 { u32(i32(v)) }

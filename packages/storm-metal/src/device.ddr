@@ -153,7 +153,7 @@ pub unsafe fn attachment(rt: &objc.Runtime, array: ptr, index: u64) -> ptr {
     object(array, objc.selector(rt, cstr("objectAtIndexedSubscript:")), index)
 }
 
-// Alpha-over, the one blend Storm uses: glass, the overlay and the UI.
+// Alpha-over blending for glass and the UI.
 unsafe fn alpha_over(rt: &objc.Runtime, colour: ptr) {
     objc.tell_number(rt, colour, cstr("setBlendingEnabled:"), 1)
     objc.tell_number(rt, colour, cstr("setSourceRGBBlendFactor:"), enums.blend_factor(.SourceAlpha))

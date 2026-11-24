@@ -85,6 +85,19 @@ import ..src.state as state
     }
 }
 
+@test fn frame_pipelines_take_the_viewport_and_scissor_from_the_current_extent() {
+    unsafe {
+        mut view: vk.FrameViewport = zeroed()
+        device.frame_viewport(&mut view)
+        assert(size_of(vk.PipelineDynamicStateCreateInfo) == 32)
+        assert(view.viewport.sType == 22 && view.dynamic.sType == 27)
+        assert(view.viewport.viewportCount == 1 && view.viewport.scissorCount == 1)
+        assert(view.viewport.pViewports == ptr(0) && view.viewport.pScissors == ptr(0))
+        assert(view.dynamic.dynamicStateCount == 2 && view.dynamic.pDynamicStates == addr(&view.states[0]))
+        assert(view.states[0] == 0 && view.states[1] == 1)
+    }
+}
+
 @test fn capture_buffer_has_four_bytes_per_pixel_including_odd_widths() {
     assert(headless.readback_size(719, 451) == 1297076)
     assert(headless.readback_size(8192, 8192) == 268435456)
@@ -207,7 +220,7 @@ import ..src.state as state
     assert(enums.color_component(.RGBA) == 15)
     assert(enums.samples(.Type1) == 1)
     // The blend attachment is a value, not five integers: ALPHA_OVER is the
-    // one every alpha-over pipeline (UI, overlay, glass) writes.
+    // one every alpha-over pipeline (UI and glass) writes.
     unsafe {
         mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
         enums.apply_blend(&mut attachment, &enums.alpha_over())
@@ -257,7 +270,7 @@ import ..src.state as state
     unsafe {
         mut r: state.Renderer = zeroed()
         steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
-            .Shadow, .Pipeline, .Overlay, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+            .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
         mut i := 0
         while i < steps.len {
             r.lastResult = 0
@@ -275,7 +288,7 @@ import ..src.state as state
 @test fn every_setup_step_is_named_and_ready_is_the_sentinel() {
     assert(state.SetupStep.Ready.name() == "ready")
     steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
-        .Shadow, .Pipeline, .Overlay, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+        .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
     mut i := 0
     while i < steps.len {
         text := steps[i].name()

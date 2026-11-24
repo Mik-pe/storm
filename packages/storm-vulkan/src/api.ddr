@@ -66,6 +66,8 @@ pub struct Api {
     EndCommandBuffer: extern fn(ptr) -> i32,
     ResetCommandBuffer: extern fn(ptr, u32) -> i32,
     CmdBeginRenderPass: extern fn(ptr, ptr, u32),
+    CmdSetViewport: extern fn(ptr, u32, u32, ptr),
+    CmdSetScissor: extern fn(ptr, u32, u32, ptr),
     CmdEndRenderPass: extern fn(ptr),
     CmdBindPipeline: extern fn(ptr, u32, ptr),
     CmdBindVertexBuffers: extern fn(ptr, u32, u32, ptr, ptr),
@@ -272,6 +274,12 @@ pub unsafe fn load(api: &mut Api, library: ptr, windowed: bool) -> bool {
     symbol = dl.symbol(library, cstr("vkCmdBeginRenderPass"))
     if symbol == ptr(0) { return false }
     api.CmdBeginRenderPass = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCmdSetViewport"))
+    if symbol == ptr(0) { return false }
+    api.CmdSetViewport = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkCmdSetScissor"))
+    if symbol == ptr(0) { return false }
+    api.CmdSetScissor = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkCmdEndRenderPass"))
     if symbol == ptr(0) { return false }
     api.CmdEndRenderPass = ffi_fn(symbol)

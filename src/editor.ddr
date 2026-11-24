@@ -29,13 +29,14 @@ pub struct State {
     glass: bool,
     shadows: bool,
     effects: bool,
+    antialias: bool,
 }
 
 pub fn new(selected: ecs.Entity, glass: bool, shadows: bool, effects: bool) -> State {
     State {
         controls: widgets.State::new(), selected: selected, focus: false, play_requested: false, compact_panel: .Closed, expand_orbs: false,
         tree_revision: -1, rows: [], orbs: 0,
-        first_node: 0, inspector_scroll: 0.0, glass: glass, shadows: shadows, effects: effects
+        first_node: 0, inspector_scroll: 0.0, glass: glass, shadows: shadows, effects: effects, antialias: true
     }
 }
 
@@ -143,7 +144,7 @@ fn inspector(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut s
     node := state.selected
     material := graph.is_alive(node) && graph.has_material(node)
     surface_height: f32 = if material { 0.0 } else { 220.0 }
-    max_scroll := 665.0 - surface_height - (height - FOOT)
+    max_scroll := 696.0 - surface_height - (height - FOOT)
     if widgets.hit(p, x, BAR, RIGHT, height - BAR - FOOT) {
         if wheel > 0.0 { state.inspector_scroll = state.inspector_scroll - 32.0 }
         if wheel < 0.0 { state.inspector_scroll = state.inspector_scroll + 32.0 }
@@ -185,7 +186,8 @@ fn inspector(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut s
     label(&mut c, a, "Rendering", px, 522.0 - offset - surface_height, 14.0, &t.ink)
     state.glass = toggle(&mut c, a, p, t, px, 551.0 - offset - surface_height, w, "Glass", "T", state.glass)
     state.shadows = toggle(&mut c, a, p, t, px, 582.0 - offset - surface_height, w, "Shadows", "G", state.shadows)
-    state.effects = toggle(&mut c, a, p, t, px, 613.0 - offset - surface_height, w, "Film effects", "E", state.effects)
+    state.effects = toggle(&mut c, a, p, t, px, 613.0 - offset - surface_height, w, "Color and glow", "E", state.effects)
+    state.antialias = toggle(&mut c, a, p, t, px, 644.0 - offset - surface_height, w, "Anti-aliasing", "", state.antialias)
 }
 
 pub fn in_viewport(state: &State, x: f32, y: f32, width: f32, height: f32) -> bool {

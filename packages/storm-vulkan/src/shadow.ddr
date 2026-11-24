@@ -1,5 +1,6 @@
 capability unsafe, stdio
 
+import core
 import gfx
 import std.sys as sys
 import .device as device
@@ -359,7 +360,7 @@ unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32
 // --- recording ---
 
 pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
-    if r.recording == 0 || r.shadowPass == ptr(0) { return false }
+    if r.pass != state.PASS_WAITING || r.shadowPass == ptr(0) { return false }
     if !set_light(&r, light_vp, light_dir_c) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
@@ -378,6 +379,7 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     pass.renderArea.extent.height = SHADOW_SIZE
     pass.clearValueCount = 1
     pass.pClearValues = addr(&mut clear[0])
+    r.pass = state.PASS_SHADOW
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
     r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadowPipeline)
     // light_vp(64) + model(64, filled per draw) + light_dir_c(16) = 144 bytes.
@@ -389,7 +391,7 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
 }
 
 pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) -> bool {
-    if r.recording == 0 { return false }
+    if r.pass != state.PASS_SHADOW { return false }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
     bytes := u64(vertices.len) * 4
     offset := r.vertexCursor
@@ -407,8 +409,10 @@ pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) 
 }
 
 pub unsafe fn end(r: &mut state.Renderer) -> bool {
-    if r.recording == 0 { return false }
+    if r.pass != state.PASS_SHADOW { return false }
     r.api.CmdEndRenderPass(r.commands[r.current])
+    r.pass = state.PASS_WAITING
+    r.shadowInitialized = 1
     true
 }
 
@@ -418,6 +422,14 @@ pub unsafe fn bind(r: &state.Renderer) -> bool {
     true
 }
 
+
+// The mesh descriptor also exists when the optional shadow pass is skipped.
+pub unsafe fn ensure_readable(r: &mut state.Renderer) -> bool {
+    if r.shadowInitialized != 0 { return true }
+    id := core.identity()
+    light: [f32; 4] = [0.0, 1.0, 0.0, 1.0]
+    begin(&mut r, &id.m, &light) && end(&mut r)
+}
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
     r.api.DestroyPipeline(r.device, r.shadowPipeline, ptr(0))

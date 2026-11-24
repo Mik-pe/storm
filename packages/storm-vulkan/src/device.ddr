@@ -1,5 +1,6 @@
 capability unsafe
 
+import .api as vkapi
 import .enums as enums
 import .layout as vk
 import .state as state
@@ -141,6 +142,96 @@ unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateCommandPool(r.device, addr(&pool), ptr(0), addr(&mut r.pool))
     if code != 0 { return fail(&mut r, code, .Device) }
     .Ready
+}
+
+pub unsafe fn frame_viewport(view: &mut vk.FrameViewport) {
+    view.viewport.sType = 22
+    view.viewport.viewportCount = 1
+    view.viewport.scissorCount = 1
+    view.states = [0, 1] // VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR
+    view.dynamic.sType = 27
+    view.dynamic.dynamicStateCount = 2
+    view.dynamic.pDynamicStates = addr(&view.states[0])
+}
+
+pub unsafe fn set_frame_viewport(r: &state.Renderer) {
+    mut viewport: vk.Viewport = zeroed()
+    viewport.width = f32(r.width)
+    viewport.height = f32(r.height)
+    viewport.maxDepth = 1.0
+    mut scissor: vk.Rect2D = zeroed()
+    scissor.extent.width = r.width
+    scissor.extent.height = r.height
+    cmd := r.commands[r.current]
+    r.api.CmdSetViewport(cmd, 0, 1, addr(&viewport))
+    r.api.CmdSetScissor(cmd, 0, 1, addr(&scissor))
+}
+
+pub unsafe fn color_framebuffer(r: &state.Renderer, view: ptr, output: ptr) -> i32 {
+    views := [view, r.depthView]
+    mut info: vk.FramebufferCreateInfo = zeroed()
+    info.sType = 37
+    info.renderPass = r.renderPass
+    info.attachmentCount = 2
+    info.pAttachments = addr(&views[0])
+    info.width = r.width
+    info.height = r.height
+    info.layers = 1
+    r.api.CreateFramebuffer(r.device, addr(&info), ptr(0), output)
+}
+
+// A single linearly sampled 2D texture at fragment binding zero.
+pub unsafe fn sampled_texture(api: &vkapi.Api, dev: ptr, texture: &mut state.SampledTexture) -> i32 {
+    mut sampler: vk.SamplerCreateInfo = zeroed()
+    sampler.sType = 31
+    sampler.minFilter = enums.filter(.Linear)
+    sampler.magFilter = enums.filter(.Linear)
+    sampler.addressModeU = enums.sampler_address_mode(.ClampToEdge)
+    sampler.addressModeV = enums.sampler_address_mode(.ClampToEdge)
+    sampler.addressModeW = enums.sampler_address_mode(.ClampToEdge)
+    mut code := api.CreateSampler(dev, addr(&sampler), ptr(0), addr(&mut texture.sampler))
+    if code != 0 { return code }
+    mut binding: vk.DescriptorSetLayoutBinding = zeroed()
+    binding.descriptorType = enums.descriptor_type(.CombinedImageSampler)
+    binding.descriptorCount = 1
+    binding.stageFlags = enums.shader_stage(.Fragment)
+    mut layout: vk.DescriptorSetLayoutCreateInfo = zeroed()
+    layout.sType = 32
+    layout.bindingCount = 1
+    layout.pBindings = addr(&binding)
+    code = api.CreateDescriptorSetLayout(dev, addr(&layout), ptr(0), addr(&mut texture.layout))
+    if code != 0 { return code }
+    size := vk.DescriptorPoolSize { type: binding.descriptorType, descriptorCount: 1 }
+    mut pool: vk.DescriptorPoolCreateInfo = zeroed()
+    pool.sType = 33
+    pool.maxSets = 1
+    pool.poolSizeCount = 1
+    pool.pPoolSizes = addr(&size)
+    code = api.CreateDescriptorPool(dev, addr(&pool), ptr(0), addr(&mut texture.pool))
+    if code != 0 { return code }
+    mut allocation: vk.DescriptorSetAllocateInfo = zeroed()
+    allocation.sType = 34
+    allocation.descriptorPool = texture.pool
+    allocation.descriptorSetCount = 1
+    allocation.pSetLayouts = addr(&texture.layout)
+    api.AllocateDescriptorSets(dev, addr(&allocation), addr(&mut texture.set))
+}
+
+pub unsafe fn sample_view(r: &state.Renderer, texture: &state.SampledTexture, view: ptr) {
+    image := vk.DescriptorImageInfo { sampler: texture.sampler, imageView: view, imageLayout: enums.image_layout(.ShaderReadOnlyOptimal) }
+    mut write: vk.WriteDescriptorSet = zeroed()
+    write.sType = 35
+    write.dstSet = texture.set
+    write.descriptorCount = 1
+    write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
+    write.pImageInfo = addr(&image)
+    r.api.UpdateDescriptorSets(r.device, 1, addr(&write), 0, ptr(0))
+}
+
+pub unsafe fn destroy_texture(r: &state.Renderer, texture: &state.SampledTexture) {
+    r.api.DestroyDescriptorPool(r.device, texture.pool, ptr(0))
+    r.api.DestroyDescriptorSetLayout(r.device, texture.layout, ptr(0))
+    r.api.DestroySampler(r.device, texture.sampler, ptr(0))
 }
 
 // Display shaders emit the same authored colors on byte and sRGB attachments.
@@ -294,6 +385,8 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
         r.api.DestroyShaderModule(r.device, r.fragmentShader, ptr(0))
         r.api.DestroyShaderModule(r.device, r.skyVertexShader, ptr(0))
         r.api.DestroyShaderModule(r.device, r.skyFragmentShader, ptr(0))
+        r.api.DestroyRenderPass(r.device, r.scenePass, ptr(0))
+        r.api.DestroyRenderPass(r.device, r.compositePass, ptr(0))
         r.api.DestroyRenderPass(r.device, r.renderPass, ptr(0))
         if r.pool != ptr(0) { r.api.DestroyCommandPool(r.device, r.pool, ptr(0)) }
         r.api.DestroyDevice(r.device, ptr(0))

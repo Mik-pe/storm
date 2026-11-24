@@ -3,8 +3,8 @@
 // promises is written there. Nothing outside this package needs to know that
 // Metal, AppKit or Objective-C exist, and nothing has to be installed for it.
 //
-// A frame is one command buffer with two render passes at most (the sun's
-// shadow map, then colour and depth), shown by the layer. What Vulkan passes
+// A frame records its shadow map, scene and optional fullscreen color pass
+// in one command buffer. The UI shares the final target. What Vulkan passes
 // as push constants is a struct in the constant address space, handed to a
 // stage as bytes with the draw.
 //
@@ -50,7 +50,7 @@ fn clear() -> records.ClearColor { records.ClearColor { red: 1.0, green: 0.0, bl
 
 // Which pass is open, if any. A draw meant for one pass is refused in the
 // other instead of landing in it.
-pub enum Pass { None = 0, Shadow = 1, Main = 2 }
+pub enum Pass { None = 0, Shadow = 1, Main = 2, FilteredScene = 3, Composite = 4 }
 
 pub struct Renderer {
     objc: objc.Runtime,
@@ -65,13 +65,14 @@ pub struct Renderer {
     glass_pipeline: device.Pipeline,
     sky_pipeline: device.Pipeline,
     shadow_pipeline: device.Pipeline,
-    overlay_pipeline: device.Pipeline,
+    post_pipeline: device.Pipeline,
     depth_write: ptr,
     depth_test: ptr,
     depth_off: ptr,
     shadow_sampler: ptr,
     shadow_map: ptr,
     depth_buffer: ptr,
+    scene_color: ptr,
     environment: ibl.Environment,
     atlas: ui.Atlas,
     vertices: device.Buffer,
@@ -111,9 +112,9 @@ unsafe fn empty() -> Renderer {
         window: appkit.empty(), preview_target: ptr(0),
         device: ptr(0), queue: ptr(0), library: ptr(0),
         mesh_pipeline: device.no_pipeline(), glass_pipeline: device.no_pipeline(), sky_pipeline: device.no_pipeline(),
-        shadow_pipeline: device.no_pipeline(), overlay_pipeline: device.no_pipeline(),
+        shadow_pipeline: device.no_pipeline(), post_pipeline: device.no_pipeline(),
         depth_write: ptr(0), depth_test: ptr(0), depth_off: ptr(0),
-        shadow_sampler: ptr(0), shadow_map: ptr(0), depth_buffer: ptr(0),
+        shadow_sampler: ptr(0), shadow_map: ptr(0), depth_buffer: ptr(0), scene_color: ptr(0),
         environment: ibl.empty(),
         atlas: ui.empty(),
         vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
@@ -172,8 +173,7 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
     fullscreen := device.Style { vertices: .None, blend: false }
     r.sky_pipeline = device.pipeline(&r.objc, r.device, r.library, "sky_vertex", "sky_fragment", on_screen, depth, &fullscreen)?
     r.shadow_pipeline = shadow_pipeline(r)?
-    blended := device.Style { vertices: .None, blend: true }
-    r.overlay_pipeline = device.pipeline(&r.objc, r.device, r.library, "overlay_vertex", "overlay_fragment", on_screen, depth, &blended)?
+    r.post_pipeline = device.pipeline(&r.objc, r.device, r.library, "post_vertex", "post_fragment", on_screen, depth, &fullscreen)?
     r.depth_write = device.depth_state(&r.objc, r.device, .Less, true)?
     r.depth_test = device.depth_state(&r.objc, r.device, .Less, false)?
     r.depth_off = device.depth_state(&r.objc, r.device, .Always, false)?
@@ -269,10 +269,11 @@ unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string
     width := objc.number(&r.objc, r.target, cstr("width"))
     height := objc.number(&r.objc, r.target, cstr("height"))
     if r.depth_buffer == ptr(0) || width != r.width || height != r.height {
-        // The depth buffer shares the drawable's size and follows it.
-        if r.depth_buffer != ptr(0) { r.objc.release(r.depth_buffer); r.depth_buffer = ptr(0) }
+        // Recreate size-dependent attachments only after the previous GPU reads retire.
         made := device.texture(&r.objc, r.device, .Type2D, .Depth32Float, width, height, 1, .RenderTarget, .Private)
         if made.is_err() { return refuse(&mut r, made.unwrap_err()) }
+        if r.depth_buffer != ptr(0) { r.objc.release(r.depth_buffer) }
+        if r.scene_color != ptr(0) { r.objc.release(r.scene_color); r.scene_color = ptr(0) }
         r.depth_buffer = made.unwrap()
         r.width = width
         r.height = height
@@ -353,17 +354,24 @@ unsafe fn record_end_pass(r: &mut Renderer) -> Result<(), string> {
     .Ok
 }
 
-unsafe fn record_main(r: &mut Renderer) -> Result<(), string> {
-    descriptor := pass.descriptor(&r.objc, r.target, 0, 0, r.depth_buffer, false, clear())
-    open_pass(&mut r, descriptor, r.width, r.height, r.depth_off, .Main)?
-    trace(r, "main pass")
-    .Ok
+unsafe fn color_pass(r: &mut Renderer, target: ptr, which: Pass) -> Result<(), string> {
+    descriptor := pass.descriptor(&r.objc, target, 0, 0, r.depth_buffer, false, clear())
+    open_pass(&mut r, descriptor, r.width, r.height, r.depth_off, which)
 }
 
-// A draw in the main pass, or the reason there is none. The draw then binds
-// its own pipeline and depth state, with borrows of the renderer it shares.
+unsafe fn record_scene(r: &mut Renderer, filtered: bool) -> Result<(), string> {
+    if r.command_buffer == ptr(0) { return .Err("a pass began outside a frame") }
+    if r.pass != .None { return .Err("a pass is already open") }
+    if !filtered { return color_pass(&mut r, r.target, .Main) }
+    if r.scene_color == ptr(0) {
+        r.scene_color = device.texture(&r.objc, r.device, .Type2D, .BGRA8Unorm,
+            r.width, r.height, 1, .RenderTargetAndShaderRead, .Private)?
+    }
+    color_pass(&mut r, r.scene_color, .FilteredScene)
+}
+
 unsafe fn require_main(r: &Renderer) -> Result<(), string> {
-    if r.pass != .Main { return .Err("a draw was made outside the main pass") }
+    if r.pass != .Main && r.pass != .FilteredScene { return .Err("a scene draw was made outside the scene pass") }
     .Ok
 }
 
@@ -424,21 +432,24 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     .Ok
 }
 
-// The overlay over the finished scene: `time` in seconds, `amount` 0 to 1.
-unsafe fn record_overlay(r: &mut Renderer, time: f32, amount: f32) -> Result<(), string> {
-    if amount <= 0.0 { return .Ok }
-    require_main(&r)?
-    use_pipeline(r, &r.overlay_pipeline, r.depth_off)
-    // The overlay places its grain in pixels, so its size is the drawable's.
-    push := [f32(r.width), f32(r.height), time, amount]
-    pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), 16, 0)
+// The scene texture is stored by the previous encoder. Both encoders use
+// identical pixel viewports; the fragment samples at the destination pixel centre.
+unsafe fn record_post(r: &mut Renderer, settings: &gfx.PostProcess) -> Result<(), string> {
+    if r.pass != .FilteredScene { return .Err("post-processing requires an open filtered scene") }
+    if !settings.valid() { return .Err("post-process strength must be finite and between zero and one") }
+    record_end_pass(&mut r)?
+    opened := color_pass(&mut r, r.target, .Composite)
+    if opened.is_err() { return refuse(&mut r, opened.unwrap_err()) }
+    use_pipeline(r, &r.post_pipeline, r.depth_off)
+    push: [f32; 4] = [1.0 / f32(r.width), 1.0 / f32(r.height), if settings.antialias { 1.0 } else { 0.0 }, settings.strength]
     pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), 16, 0)
+    pass.fragment_texture(&r.objc, r.encoder, r.scene_color, 0)
     pass.triangles(&r.objc, r.encoder, 3)
     .Ok
 }
 
 unsafe fn record_ui(r: &mut Renderer, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
-    if r.pass != .Main { return .Err("the UI was drawn outside the main pass") }
+    if r.pass != .Main && r.pass != .FilteredScene && r.pass != .Composite { return .Err("the UI was drawn outside a color pass") }
     ui.draw(&r.objc, &mut r.atlas, r.encoder, r.depth_off, &vertices, screen)
 }
 
@@ -473,8 +484,9 @@ unsafe fn finish(r: &mut Renderer) -> Result<(), string> {
 unsafe fn record_end(r: &mut Renderer) -> Result<i64, string> {
     if r.pool == ptr(0) { return .Err("end without begin") }
     // A pass a caller left open is closed here, so nothing outlives the frame.
+    missing_post := r.pass == .FilteredScene
     if r.encoder != ptr(0) { _ := record_end_pass(&mut r) }
-    outcome := finish(&mut r)
+    outcome: Result<(), string> = if missing_post { .Err("the filtered scene was never composited") } else { finish(&mut r) }
     r.objc.poolPop(r.pool)
     r.pool = ptr(0)
     r.drawable = ptr(0)
@@ -497,18 +509,19 @@ unsafe fn destroy(r: &mut Renderer) {
     device.release_buffer(&r.objc, &mut r.vertices)
     ui.destroy(&r.objc, &mut r.atlas)
     ibl.destroy(&r.objc, &mut r.environment)
-    for owned in [r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
-        r.overlay_pipeline.state, r.shadow_pipeline.state, r.sky_pipeline.state, r.glass_pipeline.state, r.mesh_pipeline.state,
+    for owned in [r.scene_color, r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
+        r.post_pipeline.state, r.shadow_pipeline.state, r.sky_pipeline.state, r.glass_pipeline.state, r.mesh_pipeline.state,
         r.library, r.queue, r.preview_target] {
         if owned != ptr(0) { r.objc.release(owned) }
     }
+    r.scene_color = ptr(0)
     r.depth_buffer = ptr(0)
     r.shadow_map = ptr(0)
     r.shadow_sampler = ptr(0)
     r.depth_off = ptr(0)
     r.depth_test = ptr(0)
     r.depth_write = ptr(0)
-    r.overlay_pipeline = device.no_pipeline()
+    r.post_pipeline = device.no_pipeline()
     r.shadow_pipeline = device.no_pipeline()
     r.sky_pipeline = device.no_pipeline()
     r.glass_pipeline = device.no_pipeline()
@@ -594,11 +607,12 @@ impl gfx.Backend for Renderer {
     }
 
     fn shadow_end(&mut self) -> Result<(), string> {
+        if self.pass != .Shadow { return .Err("no shadow pass is open") }
         unsafe { record_end_pass(&mut self) }
     }
 
-    fn begin_pass(&mut self) -> Result<(), string> {
-        unsafe { record_main(&mut self) }
+    fn begin_scene(&mut self, filtered: bool) -> Result<(), string> {
+        unsafe { record_scene(&mut self, filtered) }
     }
 
     fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> {
@@ -610,8 +624,8 @@ impl gfx.Backend for Renderer {
         unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, surface == gfx.Surface.Blended) }
     }
 
-    fn overlay(&mut self, time: f32, amount: f32) -> Result<(), string> {
-        unsafe { record_overlay(&mut self, time, amount) }
+    fn post_process(&mut self, settings: &gfx.PostProcess) -> Result<(), string> {
+        unsafe { record_post(&mut self, settings) }
     }
 
     fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> {

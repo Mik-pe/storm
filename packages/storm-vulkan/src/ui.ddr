@@ -19,7 +19,7 @@ import .state as state
 const FLOATS_PER_VERTEX: u32 = 8
 const ATLAS_SIZE: u32 = 1024
 
-// The alpha-over blend shared with the overlay pipeline: colour and alpha are
+// UI uses alpha-over blending. Colour and alpha are
 // weighted by the source alpha, so a quad with zero coverage leaves the target
 // untouched. The earlier 5/6 pair was ONE_MINUS_DST_COLOR / SRC_ALPHA, which
 // inverts whatever is underneath and painted a box around every glyph (dogfood
@@ -66,65 +66,12 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    mut sampler_info: vk2.SamplerCreateInfo = zeroed()
-    sampler_info.sType = 31
-    // Glyph quads are drawn at roughly 0.8 of the rasterized size, so the
-    // lookup lands between texels: LINEAR filtering keeps the strokes smooth.
-    sampler_info.magFilter = enums.filter(.Linear)
-    sampler_info.minFilter = enums.filter(.Linear)
-    sampler_info.mipmapMode = enums.sampler_mipmap_mode(.Nearest) // single level
-    sampler_info.addressModeU = enums.sampler_address_mode(.ClampToEdge)
-    sampler_info.addressModeV = enums.sampler_address_mode(.ClampToEdge)
-    sampler_info.addressModeW = enums.sampler_address_mode(.ClampToEdge)
-    sampler_info.maxLod = 1.0
-    mut sampler := ptr(0)
-    code = r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-
-    mut binding: [u64; 3] = [0; 3]
-    binding[0] = enums.binding_word(0, .CombinedImageSampler)
-    binding[1] = enums.stages_word(1, .Fragment)
-    mut layout_info: vk2.DescriptorSetLayoutCreateInfo = zeroed()
-    layout_info.sType = 32
-    layout_info.bindingCount = 1
-    layout_info.pBindings = ptr(usize(addr(&mut binding[0])))
-    code = r.api.CreateDescriptorSetLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiSetLayout))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-
-    mut pool_size: [u32; 2] = [1, 1]
-    mut pool_info: vk2.DescriptorPoolCreateInfo = zeroed()
-    pool_info.sType = 33
-    pool_info.maxSets = 1
-    pool_info.poolSizeCount = 1
-    pool_info.pPoolSizes = ptr(usize(addr(&mut pool_size[0])))
-    code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut r.uiPool))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-
-    mut allocate_info: vk2.DescriptorSetAllocateInfo = zeroed()
-    allocate_info.sType = 34
-    allocate_info.descriptorPool = r.uiPool
-    allocate_info.descriptorSetCount = 1
-    allocate_info.pSetLayouts = addr(&mut r.uiSetLayout)
-    code = r.api.AllocateDescriptorSets(r.device, addr(&allocate_info), addr(&mut r.uiSet))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-
-    mut image_info: vk2.DescriptorImageInfo = zeroed()
-    image_info.sampler = sampler
-    image_info.imageView = view
-    image_info.imageLayout = enums.image_layout(.ShaderReadOnlyOptimal)
-    mut write: vk2.WriteDescriptorSet = zeroed()
-    write.sType = 35
-    write.dstSet = r.uiSet
-    write.dstBinding = 0
-    write.descriptorCount = 1
-    write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
-    write.pImageInfo = addr(&mut image_info)
-    r.api.UpdateDescriptorSets(r.device, 1, addr(&mut write), 0, ptr(0))
-
     r.uiAtlasImage = image
     r.uiAtlasMemory = memory
     r.uiAtlasView = view
-    r.uiSampler = sampler
+    code = device.sampled_texture(&r.api, r.device, &mut r.uiTexture)
+    if code != 0 { return device.fail(&mut r, code, .Ui) }
+    device.sample_view(&r, &r.uiTexture, view)
     .Ready
 }
 
@@ -168,21 +115,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     assembly.sType = 20
     assembly.topology = enums.primitive_topology(.TriangleList)
 
-    // A fixed viewport must be supplied: without pViewports the pipeline draws
-    // nothing at all on this driver.
-    mut viewport: vk2.Viewport = zeroed()
-    viewport.width = f32(r.width)
-    viewport.height = f32(r.height)
-    viewport.maxDepth = 1.0
-    mut scissor: vk2.Rect2D = zeroed()
-    scissor.extent.width = r.width
-    scissor.extent.height = r.height
-    mut viewport_state: vk2.PipelineViewportStateCreateInfo = zeroed()
-    viewport_state.sType = 22
-    viewport_state.viewportCount = 1
-    viewport_state.pViewports = addr(&mut viewport)
-    viewport_state.scissorCount = 1
-    viewport_state.pScissors = addr(&mut scissor)
+    mut view: vk2.FrameViewport = zeroed()
+    device.frame_viewport(&mut view)
 
     mut raster: vk2.PipelineRasterizationStateCreateInfo = zeroed()
     raster.sType = 23
@@ -213,7 +147,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     mut layout_info: vk2.PipelineLayoutCreateInfo = zeroed()
     layout_info.sType = 30
     layout_info.setLayoutCount = 1
-    layout_info.pSetLayouts = addr(&mut r.uiSetLayout)
+    layout_info.pSetLayouts = addr(&mut r.uiTexture.layout)
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&mut push_range)
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout))
@@ -225,7 +159,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     info.pStages = addr(&stages)
     info.pVertexInputState = addr(&mut vertex_input)
     info.pInputAssemblyState = addr(&mut assembly)
-    info.pViewportState = addr(&mut viewport_state)
+    info.pViewportState = addr(&view.viewport)
+    info.pDynamicState = addr(&view.dynamic)
     info.pRasterizationState = addr(&mut raster)
     info.pMultisampleState = addr(&mut multisample)
     info.pDepthStencilState = addr(&mut depth)
@@ -385,13 +320,13 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
 
 // Push vertices and draw them. Rectangles set uv.x to -1.
 pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) -> bool {
-    if r.recording == 0 || vertices.len == 0 { return false }
+    if (r.pass != state.PASS_DIRECT && r.pass != state.PASS_COMPOSITE) || vertices.len == 0 { return false }
     bytes := u64(vertices.len) * 4
     if r.uiCursor + bytes > r.uiVertex.capacity { return false }
     _ := copy_bytes(ptr(usize(r.uiVertex.mapped) + usize(r.uiCursor)), ptr(usize(addr(&vertices[0]))), usize(bytes))
     slot := r.current
     r.api.CmdBindPipeline(r.commands[slot], 0, r.uiPipeline)
-    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.uiPipelineLayout, 0, 1, addr(&r.uiSet), 0, ptr(0))
+    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.uiPipelineLayout, 0, 1, addr(&r.uiTexture.set), 0, ptr(0))
     mut push := [screen[0], screen[1], 0.0, 0.0]
     r.api.CmdPushConstants(r.commands[slot], r.uiPipelineLayout, enums.shader_stage(.Vertex), 0, 16, addr(&mut push[0]))
     mut offset: u64 = r.uiCursor
@@ -415,9 +350,7 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     r.api.FreeMemory(r.device, r.uiVertex.memory, ptr(0))
     if r.uiPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.uiPipeline, ptr(0)) }
     if r.uiPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.uiPipelineLayout, ptr(0)) }
-    if r.uiSampler != ptr(0) { r.api.DestroySampler(r.device, r.uiSampler, ptr(0)) }
-    if r.uiSetLayout != ptr(0) { r.api.DestroyDescriptorSetLayout(r.device, r.uiSetLayout, ptr(0)) }
-    if r.uiPool != ptr(0) { r.api.DestroyDescriptorPool(r.device, r.uiPool, ptr(0)) }
+    device.destroy_texture(&r, &r.uiTexture)
     if r.uiAtlasView != ptr(0) { r.api.DestroyImageView(r.device, r.uiAtlasView, ptr(0)) }
     if r.uiAtlasImage != ptr(0) { r.api.DestroyImage(r.device, r.uiAtlasImage, ptr(0)) }
     r.api.FreeMemory(r.device, r.uiAtlasMemory, ptr(0))

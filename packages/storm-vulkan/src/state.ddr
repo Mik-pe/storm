@@ -47,7 +47,7 @@ pub const MESH_PUSH_BYTES: u32 = 240
 // failed.
 pub enum SetupStep {
     Ready, Window, Instance, PhysicalDevice, QueueFamily, Device, Format, Swapchain,
-    Shadow, Pipeline, Overlay, Ui, DepthBuffer, FrameSync, VertexBuffer,
+    Shadow, Pipeline, PostProcess, Ui, DepthBuffer, FrameSync, VertexBuffer,
     Environment, CaptureTarget,
 }
 
@@ -64,7 +64,7 @@ impl SetupStep {
             .Swapchain => "swapchain",
             .Shadow => "shadow pass",
             .Pipeline => "pipeline",
-            .Overlay => "overlay (post) pipeline",
+            .PostProcess => "post-process pipeline or scene texture",
             .Ui => "UI atlas and pipeline",
             .DepthBuffer => "depth buffer",
             .FrameSync => "frame sync",
@@ -74,6 +74,16 @@ impl SetupStep {
         }
     }
 }
+
+pub const PASS_IDLE: u32 = 0
+pub const PASS_WAITING: u32 = 1
+pub const PASS_SHADOW: u32 = 2
+pub const PASS_DIRECT: u32 = 3
+pub const PASS_FILTERED: u32 = 4
+pub const PASS_COMPOSITE: u32 = 5
+
+@c_layout
+pub struct SampledTexture { sampler: ptr, layout: ptr, pool: ptr, set: ptr }
 
 // All mutable renderer state lives behind one heap allocation. Public handles
 // carry only a generation; this struct never escapes the module.
@@ -120,6 +130,7 @@ pub struct Renderer {
     depthImage: ptr,
     depthMemory: ptr,
     depthView: ptr,
+    shadowInitialized: u32,
     shadowImage: ptr,
     shadowMemory: ptr,
     shadowView: ptr,
@@ -166,29 +177,21 @@ pub struct Renderer {
     // Offscreen scene target and the post-process stage.
     sceneImage: ptr,
     sceneMemory: ptr,
-    sceneMapped: ptr,
     sceneView: ptr,
-    postPresentPass: ptr,
-    postCapturePass: ptr,
+    sceneSampleView: ptr,
+    sceneFramebuffer: ptr,
+    scenePass: ptr,
+    compositePass: ptr,
     postPipeline: ptr,
-    postCapturePipeline: ptr,
     postPipelineLayout: ptr,
-    postSetLayout: ptr,
-    postPool: ptr,
-    postSet: ptr,
-    postSampler: ptr,
+    postTexture: SampledTexture,
     postVertShader: ptr,
     postFragShader: ptr,
-    presentFramebuffers: [ptr; 8],
     captureFramebuffer: ptr,
     // Text and UI.
     uiPipeline: ptr,
-    uiCapturePipeline: ptr,
     uiPipelineLayout: ptr,
-    uiSetLayout: ptr,
-    uiPool: ptr,
-    uiSet: ptr,
-    uiSampler: ptr,
+    uiTexture: SampledTexture,
     uiAtlasImage: ptr,
     uiAtlasMemory: ptr,
     uiAtlasMapped: ptr,
@@ -201,7 +204,8 @@ pub struct Renderer {
     window: sdl.Window,
     frameIndex: i64,
     trace: u32,
-    recording: u32,
+    pass: u32,
+    resizePending: u32,
     pendingPass: vkl.RenderPassBeginInfo,
     pendingClear: [u64; 4],
     lastResult: i32,
