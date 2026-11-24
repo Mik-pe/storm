@@ -31,7 +31,7 @@
    på macOS lades till utan att röra ett enda paket ovanför backenden.
    Regeln som gjorde det verkligt: appen och pakagen talar med
    `storm-gfx`-kontraktet, aldrig med en backend. Uppmätt 2026-11-23:
-   `src/app.ddr` (757 rader) namnger ingen backend och gör 0 anrop mot en
+   `src/app.ddr` namnger ingen backend och gör 0 anrop mot en
    sådan; `storm-input` importerar ingen backend; i hela trädet finns
    backendnamn utanför de två backendpaketen bara på två rader, i
    `src/main.ddr` (11 rader). Ett gränssnitt som inte går att beskriva utan
@@ -39,7 +39,7 @@
 
 ## 1. Nuläge (mätt i koden, 2026-11-23)
 
-- **storm-gfx**: en modul, 211 rader: `Frame`, `Input` med `Key` (19 tangenter
+- **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
   som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `trait Backend` med 18
   metoder (varje fallibel en `Result` som säger varför), och
   geometrihjälparna som äger vertexformatet. Sju tester, inga med fönster.
@@ -68,9 +68,7 @@
   backend, inga capabilities), `storm-text -> dunder-skrift` via
   `../../../dunder-skrift` (syskonkatalog utan versionslås),
   `src/main.ddr -> storm-vulkan, storm-metal` (de enda).
-- **Ett gränssnitt, två implementationer:** 86 tester på macOS (var 75 på
-  Linux dagen innan), 60 kontroller i Metals self-test, en statisk
-  x86_64-linux-binär länkad från Macen.
+- **Ett gränssnitt, två implementationer.** Materialstudien och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den delade vertexströmmen. Den senaste kontrollen omfattade 97 egna tester och 63 kontroller av Metal i ett riktigt fönster.
 
 Lagren i storm-vulkan (4 973 rader + 2 900 genererad SPIR-V):
 
@@ -102,7 +100,7 @@ storm-gfx        kontraktet: typer, trait Backend, vertexformat. Känner ingen b
 storm-vulkan  storm-metal    implementationer av kontraktet (Linux, macOS)
     ▲        ▲
     └── src/main.ddr        sammansättningens rot: två rader som väljer backend
-            src/app.ddr     editorn, spelet, exekutorn — generisk över B: gfx.Backend
+            src/app.ddr     bildrutans exekutor — generisk över B: gfx.Backend
 ```
 
 Det här står. Kvar till målbilden:
@@ -238,15 +236,11 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 ## 5b. Editorn och scenen, som den står
 
-Scenen bor i ECS:et (`storm-scene`: `LocalTransform` med olikformig skala,
-`Name`, `Mesh { shape, vertices }`, `Material`); `drawables()` är det enda
-renderaren konsumerar. Render-grafen (`storm-render`) äger passordningen och
--existensen; `src/app.ddr` är exekutorn som mappar `PassKind` → anrop på
-`gfx.Backend` och öppnar huvudpasset lat. Editorn är immediate-mode ovanpå
-`storm-ui`-widgets (`Pointer`, hot/active-id), skriver i ECS via fält-id:n
-(`MaterialField`, `TransformField`) eftersom en `Option` inte kan bära `&mut`
-(E3099). En laddad glTF-modell är en `Mesh`-komponent med egen vertexström.
-Kvar här: texturer (avsnitt 3 i next-steps) och 3D-markering av vald nod.
+Materialstudien byggs i `src/gallery.ddr`. `src/editor.ddr` äger paneler, objektval och pekarinteraktion. Både fönsterkoordinater och klickytor mäts i punkter. Ett smalt fönster använder samma paneler en i taget. `src/game.ddr` hanterar insamlingen och `src/args.ddr` startkameran.
+
+ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrin ändras. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
+
+`src/app.ddr` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
 
 Texten rastreras med displayens täthet: atlasen vet sin egen
 `raster_size` och `ui.Canvas` frågar den, så det inte finns någon täthet att
@@ -286,7 +280,7 @@ bindningsgenerator, inget bibliotek att hitta. Fyra beslut är värda sina namn:
   öppnas: 42 ms första gången, 0–1 ms efteråt (systemet cachar). Den
   offline (`xcrun metal`) är en nedladdning på flera gigabyte som inte
   följer med Xcode, och `@embed_file` går inte (ett beroende hittar inte sina
-  egna filer — fynd 63).
+  egna filer — fynd 65).
 
 Ägarskap följer Objective-C:s namn: `alloc`, `init`, `new`, `copy` ger ett
 ägt objekt som släpps exakt en gång, i `close`, i omvänd skapandeordning;

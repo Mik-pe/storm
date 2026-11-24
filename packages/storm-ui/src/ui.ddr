@@ -56,11 +56,7 @@ impl Canvas {
 
     // Move the geometry out so it can cross the module boundary as a value.
     pub fn take(&mut self) -> []f32 {
-        mut out: []f32 = []
-        out.reserve(self.vertices.len)
-        for i in 0..self.vertices.len { out.push(self.vertices[i]) }
-        self.vertices.clear()
-        out
+        replace(&mut self.vertices, [])
     }
     pub fn vertex_count(&self) -> i32 { self.vertices.len / 8 }
     pub fn is_empty(&self) -> bool { self.vertices.len == 0 }
@@ -92,6 +88,36 @@ impl Canvas {
 
     pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: &Color) {
         self.quad(x, y, w, h, -1.0, -1.0, -1.0, -1.0, color)
+    }
+
+    pub fn triangle(&mut self, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32, color: &Color) {
+        self.push_vertex(ax, ay, -1.0, -1.0, color)
+        self.push_vertex(bx, by, -1.0, -1.0, color)
+        self.push_vertex(cx, cy, -1.0, -1.0, color)
+    }
+
+    pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: &Color) {
+        if w <= 0.0 || h <= 0.0 { return }
+        mut r := radius
+        if r > w * 0.5 { r = w * 0.5 }
+        if r > h * 0.5 { r = h * 0.5 }
+        if r <= 0.0 { self.rect(x, y, w, h, color); return }
+        self.rect(x + r, y, w - 2.0 * r, h, color)
+        self.rect(x, y + r, r, h - 2.0 * r, color)
+        self.rect(x + w - r, y + r, r, h - 2.0 * r, color)
+        arc: [f32; 5] = [0.0, 0.382683, 0.707107, 0.923880, 1.0]
+        for corner in 0..4 {
+            left := corner == 0 || corner == 3
+            top := corner < 2
+            cx := if left { x + r } else { x + w - r }
+            cy := if top { y + r } else { y + h - r }
+            dx := if left { -r } else { r }
+            dy := if top { -r } else { r }
+            for j in 0..4 {
+                self.triangle(cx, cy, cx + dx * arc[j], cy + dy * arc[4-j],
+                    cx + dx * arc[j+1], cy + dy * arc[3-j], color)
+            }
+        }
     }
 
     // A filled panel with a one-pixel lighter border.

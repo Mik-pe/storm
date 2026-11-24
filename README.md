@@ -8,16 +8,14 @@ bokförs i [docs/dogfood.md](docs/dogfood.md).
 Samma editor och samma spelloop körs på två grafikbackends: **Vulkan på
 Linux** (i ett SDL-fönster) och **Metal på macOS** (i ett AppKit-fönster, som
 Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
-Applicationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
+Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
 av dem; vilken backend en maskin får bestäms av två rader i `src/main.ddr`.
 
-Scenen är en solig himmel, ett golv, tre metalliska kuber som kretsar kring en
-föräldernod och två glaspaneler: metallic-roughness-PBR med en riktad sol,
-skuggor och miljöbelysning (metaller speglar en miljökub byggd ur samma
-himmel, prefiltrad per roughness, med en BRDF-LUT beräknad på CPU:n). Ovanpå
-det sitter editorn och spelloopen: åtta emissiva orber att plocka, en panel
-som listar ECS:et och skriver material och transform, och `--glb` som laddar
-en riktig modell in i scenen.
+Materialstudien visar en mässingsring, en räfflad keramikvas och en porslinskula på ett roterande podium. Ett välvt studiogolv, två glaspaneler, skuggor och miljöreflexer gör materialen lätta att jämföra. Välj ett föremål i scenträdet för att ändra yta och position, eller tryck **F** för att se scenen i fokusläge. Åtta kristaller går att samla i scenen.
+
+![Storms materialstudie i ett macOS-fönster](docs/materialstudie-macos.jpg)
+
+[Samma scen på Linux med Intel Iris Plus och Vulkan](docs/materialstudie-linux.jpg)
 
 ## Förutsättningar
 
@@ -33,12 +31,10 @@ en riktig modell in i scenen.
   systemet när fönstret öppnas, så inte ens en shaderkompilerare behövs: den
   offline (`xcrun metal`) är en nedladdning på flera gigabyte som inte följer
   med Xcode, och Storm klarar sig utan den.
-- En monospacefont. Storm letar själv: JetBrains Mono Nerd Font, DejaVu Sans
-  Mono (Debians och Arch:s sökvägar), Menlo och SF Mono, i den ordningen;
-  `--font sökväg` väljer en egen.
+- Editorn använder Arial på macOS och söker efter DejaVu Sans och Liberation Sans på Linux. `--font sökväg` väljer ett eget typsnitt.
 
 ```sh
-dunder run                      # fönstret: scen, editor, orber
+dunder run                      # fönstret med materialstudien och editorn
 dunder run -- --frames 120      # rita 120 bildrutor och avsluta
 dunder run -- --capture a.ppm   # en bildruta utan tangentbord
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
@@ -155,10 +151,10 @@ för blendingens skull.
 - **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint,
   **höger musknapp + mus** – titta
 - **Vänsterklick** i editorpanelen – välj en nod i trädet; slidrarna skriver
-  material och transform rakt in i ECS:et, `+ cube`/`delete` lägger till och tar bort
+  material och position i ECS:et. **Add cube** och **Delete** ändrar scenen.
 - **Gå in i en orb** – plocka den (entiteten förstörs, HUD:en räknar)
 - **T** – slå av/på glaspanelerna, **G** – skuggor, **E** – filmeffekterna.
-  Chipsen längst ner ("T glass", "G shadows", "E effects") visar läget.
+  Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
 - `--capture fil.ppm` – rendera en bildruta till PPM via en mappad bild.
@@ -192,8 +188,7 @@ den är skarp och lika stor som på en 1×-skärm.
 
 `packages/storm-metal/tools/selftest.ddr` provar det en capture inte visar:
 att tangentbord, mus, storleksändring och stängning fungerar, att djuptest och
-baksidessortering gör rätt, och att bilden inte är upp-och-ner. 60 kontroller,
-1,4 s, utgångsstatus 0 när alla håller:
+baksidessortering gör rätt, och att bilden inte är upp-och-ner. Programmet ger utgångsstatus 0 när alla kontroller går igenom:
 
 ```sh
 cd packages/storm-metal && dunder run tools/selftest.ddr
@@ -270,7 +265,7 @@ steg. I appen laddar `--glb fil.glb` en modell in i scenen som en `Mesh`-kompone
 ## Text
 
 ```dunder
-face := text.load_font(24.0)                 // platformens monospacefont
+face := text.load_font(24.0)                 // plattformens UI-typsnitt
 mut atlas := text.Atlas::new(1024, 1024)
 _ := atlas.add_text(&face, "Storm")
 quads := atlas.layout("Storm", atlas.raster_size(), 32.0, 32.0)

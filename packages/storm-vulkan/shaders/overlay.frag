@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "display.glsl"
 // Cinematic overlay: vignette, film grain, scanlines and a cool grade.
 // Drawn as one fullscreen triangle over the finished scene, blended in.
 layout(push_constant, std430) uniform Push {
@@ -34,5 +36,5 @@ void main() {
 
     // Cool shadow grade: the overlay is dark blue rather than neutral black.
     vec3 tint = vec3(0.02, 0.05, 0.11);
-    out_color = vec4(tint, alpha);
+    out_color = display_color(tint, alpha);
 }

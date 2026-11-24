@@ -137,6 +137,17 @@ unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
     .Ready
 }
 
+// Display shaders emit the same authored colors on byte and sRGB attachments.
+pub unsafe fn display_encoding(format: u32, storage: &mut vk.DisplayEncoding) -> ptr {
+    if format != enums.format(.B8G8R8A8_SRGB) && format != enums.format(.R8G8B8A8_SRGB) { return ptr(0) }
+    storage.srgb = 1
+    storage.entry = vk.SpecializationMapEntry { constantID: 0, offset: 0, size: 4 }
+    storage.info = vk.SpecializationInfo {
+        mapEntryCount: 1, pMapEntries: addr(&storage.entry), dataSize: 4, pData: addr(&storage.srgb)
+    }
+    addr(&storage.info)
+}
+
 unsafe fn pick_format(r: &mut state.Renderer) -> state.SetupStep {
     mut count: u32 = 0
     mut code := r.api.GetPhysicalDeviceSurfaceFormatsKHR(r.physical, r.surface, addr(&mut count), ptr(0))

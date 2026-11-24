@@ -184,7 +184,8 @@ unsafe fn begin_frame(r: &mut state.Renderer) -> BeginResult {
     if r.recording != 0 { return BeginResult { ok: false, error: "a frame is already being recorded" } }
     slot := r.current
     trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
-    waited := r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615)
+    // The CPU is about to reuse the mapped mesh, UI and light buffers shared by both slots.
+    waited := r.api.WaitForFences(r.device, u32(r.fences.len), addr(&mut r.fences[0]), 1, 18446744073709551615)
     if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed" } }
     mut image_index: u32 = 0
     acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,

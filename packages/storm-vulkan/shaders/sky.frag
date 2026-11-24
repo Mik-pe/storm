@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "display.glsl"
 layout(push_constant, std430) uniform Sky {
     mat4 inv_view_proj;
     vec4 sun_direction;
@@ -22,5 +24,5 @@ void main() {
     float glow = pow(cos_angle, 14.0);
     vec3 sun = vec3(1.0, 0.93, 0.80) * disc * 8.0 + vec3(1.0, 0.72, 0.45) * glow * 0.30;
 
-    out_color = vec4(base + sky.sun_direction.w * sun, 1.0);
+    out_color = display_color(base + sky.sun_direction.w * sun, 1.0);
 }

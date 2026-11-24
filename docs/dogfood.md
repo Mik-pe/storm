@@ -716,20 +716,4 @@ Metal-backenden mättes så här:
 - **Byggtid** `tools/build-time.ddr`: 424 ms på M5:n. Budgeten i AGENTS.md
   är definierad på Mikparchy och har inte mätts där efter detta arbete.
 
-**Om att räkna tester.** `dunder test` i `packages/storm-text` rapporterar
-8 passed fast paketets `tests/suite.ddr` har 6 `@test`, och `storm-ui` 10 fast
-den har 8: de två extra är samma två `@test fn` i Skrifts egen källmodul
-(`binary.ddr`, `sfnt.ddr`), som körs med i varje paket som når dem via
-`path`-beroendet. Storms egna är därför **81** = 8 rot + 73 paket (tre till i roten
-2026-11-24: argumenttolkningen och orbspelet flyttades ur `main.ddr` till
-`src/args.ddr`/`src/game.ddr` just för att kunna testas utan fönster, och ett
-fjärde samma dag: `--eye` vänder kameran mot scenen, se QA nedan). En mätning
-som summerar `passed`-raden över paketen får 82 och räknar Skrifts tester som
-Storms; räkna `@test` i `tests/suite.ddr` i stället.
-
-`path`-beroendet. Storms egna är därför **86** = 4 rot + 82 paket. En mätning
-som summerar `passed`-raden över paketen får 90 och räknar Skrifts tester som
-Storms; räkna `@test` i `tests/suite.ddr` i stället, och jämför med hur många
-som *kördes*: en svit kan tappa tester utan att fallera (det gjorde
-storm-ui:s under detta arbete, då fyra widgettester försvann ur filen och
-körningen gick från tio till sex gröna).
+**Om att räkna tester.** Skrifts två tester följer med när Storms svit importerar textpaketet. Räkna Storms egna `@test` i roten och i varje pakets testsvit och jämför med vilka testnamn som faktiskt kördes.

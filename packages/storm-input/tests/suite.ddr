@@ -37,23 +37,15 @@ import ..src.input as input
     assert(core.dot(f, r).abs() < 0.0001)
 }
 
-@test fn inverse_view_projection_maps_the_center_to_forward() {
-    camera := input.Camera::new(core.vec3(0.0, 0.0, 4.0))
-    inv := input.inverse_view_projection(&camera, 1.6)
-    // Clip-space center with z = 1 is the far plane along the view direction.
-    mut v: [f32; 4] = [0.0, 0.0, 1.0, 1.0]
-    mut out: [f32; 4] = [0.0; 4]
-    for row in 0..4 {
-        mut sum: f32 = 0.0
-        for k in 0..4 { sum = sum + inv.m[k * 4 + row] * v[k] }
-        out[row] = sum
+@test fn sky_rays_round_trip_through_the_camera_projection() {
+    mut camera := input.Camera::new(core.vec3(0.0, 0.0, 0.0))
+    camera.yaw = 0.7
+    camera.pitch = -0.3
+    roundtrip := core.multiply(camera.view_projection(1.65), input.inverse_view_projection(&camera, 1.65))
+    for i in 0..16 {
+        expected: f32 = if i % 5 == 0 { 1.0 } else { 0.0 }
+        assert((roundtrip.m[i] - expected).abs() < 0.001)
     }
-    assert(out[3] != 0.0)
-    dir := core.normalize(core.vec3(out[0] / out[3] - camera.position.x,
-                                    out[1] / out[3] - camera.position.y,
-                                    out[2] / out[3] - camera.position.z))
-    f := camera.forward()
-    assert(core.dot(dir, f) > 0.99)
 }
 
 // The camera is driven by an Input value, so it can be exercised without a

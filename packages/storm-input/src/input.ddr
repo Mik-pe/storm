@@ -105,12 +105,10 @@ pub fn inverse_view_projection(camera: &Camera, aspect: f32) -> core.Mat4 {
                                           u.x, u.y, u.z, 0.0,
                                           -f.x, -f.y, -f.z, 0.0,
                                           0.0, 0.0, 0.0, 1.0] }
-    t := f32(1.0) / (camera.fov * 0.5).tan()
-    near: f32 = 0.1
-    far: f32 = 500.0
-    inv_proj := core.Mat4 { m: [aspect / t, 0.0, 0.0, 0.0,
-                                0.0, 1.0 / t, 0.0, 0.0,
-                                0.0, 0.0, 0.0, -1.0,
-                                0.0, 0.0, 1.0 / near, (far + near) / (near * far)] }
+    proj := camera.projection(aspect)
+    inv_proj := core.Mat4 { m: [1.0 / proj.m[0], 0.0, 0.0, 0.0,
+                                0.0, 1.0 / proj.m[5], 0.0, 0.0,
+                                0.0, 0.0, 0.0, 1.0 / proj.m[14],
+                                0.0, 0.0, -1.0, proj.m[10] / proj.m[14]] }
     core.multiply(world_from_view, inv_proj)
 }

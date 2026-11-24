@@ -34,15 +34,7 @@ Textatlasen samplar: UI-vertexen matar `vec4(x, y, u, v)` på location 0 och
 Felen och deras orsaker står i [dogfood.md](dogfood.md#uppföljning-editor-ui-overlay-effekter-och-textatlasen)
 (fynd 34–36).
 
-Texten är också *läsbar*: UI- och overlay-pipelinerna blandar nu med riktig
-alpha-over (`SRC_ALPHA` / `ONE_MINUS_SRC_ALPHA`, fynd 40), och atlasen rastreras
-vid `ui.RASTER_SIZE = 22` px och samplas med `VK_FILTER_LINEAR` i stället för
-att rastreras vid 30 px och nedskalas till 17–20 px med närmaste granne (fynd
-41). `main.ddr` ritar med namngivna skalor (`TITLE_SCALE` 1.2, `STATUS_SCALE`
-0.9, `HEADER_SCALE`/`BODY_SCALE` 0.8), alla nära rastreringsstorleken; höger-
-justerad text (`text_width` med samma skala) och chipset (`text_width + 26`,
-etikett på `+13`) behöver ingen justering. Se
-[dogfood.md](dogfood.md#uppföljning-textåtergivningen).
+Editorn mäter och ritar text i fönsterpunkter. Glyfatlasens upplösning följer pixeltätheten och båda grafikvägarna samplar den linjärt. Panelbredd, textmått och träffytor använder samma koordinater. Se [dogfood.md](dogfood.md#uppföljning-textåtergivningen).
 
 ## 0c. Klart: djupbufferten
 
@@ -204,24 +196,17 @@ bygge (fynd 56: det är Dunders kompilator).
 
 `storm-gfx` är kontraktet: `Frame`, `Input` med `Key`, `Sky`, `trait Backend`
 med 18 metoder som alla fallibla en `Result`, och geometrihjälparna som äger
-vertexformatet. `src/app.ddr` är editorn, spelet och exekutorn, generisk över
-`B: gfx.Backend`; `src/main.ddr` är två rader som väljer backend;
+vertexformatet. `src/app.ddr` kör rendergrafen genom `B: gfx.Backend`.
+`src/editor.ddr` äger panelerna, `src/game.ddr` spellogiken och `src/gallery.ddr` materialstudien.
+`src/main.ddr` är två rader som väljer backend;
 `storm-input` tar ett `Input`-värde och importerar ingen backend.
 `storm-metal` är den andra implementationen: AppKit-fönster och `CAMetalLayer`
 genom Objective-C:s runtingen, med upplägg och beslut i design.md §5c.
 
-Uppmätt på macOS (Apple M5), med bevisen i dogfood.md: 86 egna tester, en
-capture av hela editorn på Retina, self-testet `packages/storm-metal/
-tools/selftest.ddr` (60 kontroller som läser pixlar och input), 2 400 visade
-bildrutor med platt minne, och `dunder build --app` som en signerad bundle
-som får tangentfokus direkt när den lanseras av LaunchServices.
+Den signerade macOS-appen har provats på Apple M5, med objektval, materialändringar, fokusläge och panelväxling i ett 720 punkter brett fönster. Metals självtest läser både pixlar och indata. På Mikparchy har samma scen renderats med Vulkan på Intel Iris Plus.
 
 Kvar efter 0f, i den ordning värde:
 
-- **Vulkan-backenden på en bildruta.** Efter kontraktet är den typkontrollerad
-  för x86_64-linux och arm64-linux men inte körd: en capture på Mikparchy
-  mot baslinjen ovan är det bevis som saknas. Vulkan på macOS (MoltenVK) har
-  inte prövats och är inte ett mål.
 - **Muslook med en hand.** `storm-metal` vänder AppKit:s `deltaY` (positiv
   uppåt) till Storms y-nedåt. Riktningen är resonerad, inte mätt: AppKit
   räknar ett drags delta ur verkliga musrörelser, så self-testet kan

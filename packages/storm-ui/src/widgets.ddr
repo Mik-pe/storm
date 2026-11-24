@@ -14,7 +14,7 @@ import .ui as ui
 
 pub const BUTTON_HEIGHT: f32 = 30.0
 pub const SLIDER_HEIGHT: f32 = 22.0
-pub const ROW_HEIGHT: f32 = 34.0
+pub const ROW_HEIGHT: f32 = 28.0
 
 // What the widgets need to know about the pointer this frame.
 pub struct Pointer {
@@ -43,14 +43,14 @@ pub struct Theme {
 
 pub fn theme() -> Theme {
     Theme {
-        fill: ui.rgba(0.10, 0.13, 0.18, 0.92),
-        fill_hot: ui.rgba(0.14, 0.22, 0.30, 0.95),
-        fill_active: ui.rgba(0.10, 0.35, 0.30, 0.95),
-        border: ui.rgba(0.36, 0.86, 0.96, 0.32),
-        ink: ui.rgb(0.82, 0.87, 0.93),
-        ink_dim: ui.rgb(0.52, 0.60, 0.72),
-        track: ui.rgba(1.0, 1.0, 1.0, 0.14),
-        knob: ui.rgb(0.36, 0.86, 0.96),
+        fill: ui.rgb(0.17, 0.18, 0.19),
+        fill_hot: ui.rgb(0.22, 0.23, 0.24),
+        fill_active: ui.rgb(0.28, 0.235, 0.17),
+        border: ui.rgb(0.24, 0.25, 0.26),
+        ink: ui.rgb(0.94, 0.94, 0.93),
+        ink_dim: ui.rgb(0.70, 0.71, 0.72),
+        track: ui.rgb(0.24, 0.25, 0.26),
+        knob: ui.rgb(0.94, 0.73, 0.40),
     }
 }
 
@@ -91,9 +91,9 @@ impl State {
         if hover && p.pressed { self.active = id; clicked = true }
         held := self.active == id
         fill := if held { theme.fill_active } else if hover { theme.fill_hot } else { theme.fill }
-        canvas.panel(x, y, w, h, &fill, &theme.border)
-        tw := ui.Canvas::text_width(atlas, label, 0.8)
-        canvas.text(atlas, label, x + (w - tw) * 0.5, y + (h - 17.6) * 0.5, 0.8, &theme.ink)
+        canvas.rounded_rect(x, y, w, h, 5.0, &fill)
+        tw := ui.Canvas::text_width(atlas, label, 0.61)
+        canvas.text(atlas, label, x + (w - tw) * 0.5, y + (h - 14.0) * 0.5 - 1.0, 0.61, &theme.ink)
         clicked
     }
 
@@ -101,8 +101,8 @@ impl State {
     // frame. The label sits left of the track; the value right of it.
     pub fn slider(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &Pointer,
         x: f32, y: f32, w: f32, label: string, value: &mut f32, min: f32, max: f32, theme: &Theme) -> bool {
-        label_width: f32 = 92.0
-        value_width: f32 = 52.0
+        label_width: f32 = if w <= 210.0 { 72.0 } else { 92.0 }
+        value_width: f32 = if w <= 210.0 { 36.0 } else { 52.0 }
         track_x := x + label_width
         track_w := w - label_width - value_width
         track_y := y + 7.0
@@ -110,18 +110,19 @@ impl State {
         hover := self.active == 0 && hit(p, x, y, w, SLIDER_HEIGHT)
         if hover { self.hot = id }
         if hover && p.pressed { self.active = id }
-        if self.active == id && p.down {
+        if self.active == id && (p.down || p.pressed) {
             t := clamp01((p.x - track_x) / track_w)
             value = min + (max - min) * t
             changed = true
         }
-        canvas.text(atlas, label, x, y + 1.0, 0.8, &theme.ink_dim)
-        canvas.rect(track_x, track_y + 3.0, track_w, 6.0, &theme.track)
+        canvas.text(atlas, label, x, y + 1.0, 0.61, &theme.ink_dim)
+        canvas.rounded_rect(track_x, track_y + 2.0, track_w, 3.0, 1.5, &theme.track)
         span := max - min
         t := if span == 0.0 { f32(0.0) } else { clamp01((value - min) / span) }
-        knob_x := track_x + t * (track_w - 12.0)
-        canvas.rect(knob_x, track_y, 12.0, 12.0, &theme.knob)
-        canvas.text(atlas, decimal2(value), x + w - value_width, y + 1.0, 0.8, &theme.ink)
+        knob_x := track_x + t * track_w
+        canvas.rounded_rect(track_x, track_y + 2.0, knob_x - track_x, 3.0, 1.5, &theme.knob)
+        canvas.rounded_rect(knob_x - 4.0, track_y - 0.5, 8.0, 8.0, 4.0, &theme.ink)
+        canvas.text(atlas, decimal2(value), x + w - ui.Canvas::text_width(atlas, decimal2(value), 0.58), y + 1.0, 0.58, &theme.ink)
         changed
     }
 
@@ -134,9 +135,9 @@ impl State {
         if hover { self.hot = id }
         if hover && p.pressed { self.active = id; clicked = true }
         if selected || hover {
-            canvas.rect(x, y, w, ROW_HEIGHT, &if selected { theme.fill_active } else { theme.fill_hot })
+            canvas.rounded_rect(x, y, w, ROW_HEIGHT, 5.0, &if selected { theme.fill_active } else { theme.fill_hot })
         }
-        canvas.text(atlas, label, x + 10.0 + f32(indent) * 18.0, y + 7.0, 0.8, &if selected { theme.ink } else { theme.ink_dim })
+        canvas.text(atlas, label, x + 28.0 + f32(indent) * 14.0, y + 5.0, 0.64, &if selected { theme.ink } else { theme.ink_dim })
         clicked
     }
 }
