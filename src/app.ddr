@@ -14,6 +14,10 @@ import .editor
 import .args
 import .gallery
 import .game
+import .play_view
+import .play_ui
+import .scene_file
+import play
 import core
 import ecs
 import gfx
@@ -28,13 +32,12 @@ import ui.widgets as widgets
 
 // Every character the editor draws has to be packed into the atlas.
 const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ – åäö ÅÄÖ ²³"
-const TITLE: string = "Storm — Material study"
+const TITLE: string = "Storm"
 
 // Report why the backend refused, close it, and stop with a failure.
-fn stop<B: gfx.Backend>(move window: B, message: string) -> i32 {
-    _ := sys.eprint("storm: " + message)
+fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
     window.close()
-    1
+    .Err(message.clone())
 }
 
 // Loads a .glb into the scene as a node with its own vertex stream, scaled to
@@ -85,11 +88,12 @@ fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegra
 }
 
 fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
-    cube: &[]f32, plane: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
+    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
     for index in 0..items.len {
         item := &items[index]
         drawn := match item.shape {
             .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, eye, sky, shadows, pass),
+            .Sphere => record_mesh(&mut window, sphere, item, view, eye, sky, shadows, pass),
             .Cube => record_mesh(&mut window, cube, item, view, eye, sky, shadows, pass),
             .Plane => record_mesh(&mut window, plane, item, view, eye, sky, shadows, pass),
         }
@@ -98,42 +102,111 @@ fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items
     .Ok
 }
 
-// The editor and the game, on whichever backend the composition root picks.
-pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i32 {
-    argv := args.from_process()
-    limit := args.frame_limit(&argv)
-    mut window := match open(TITLE, 1280, 800) {
-        .Ok(backend) => backend,
-        .Err(message) => { _ := sys.eprint("storm: " + message); return 1 },
-    }
-    window.set_trace(args.flag(&argv, "--trace"))
-    device := window.device_name()
-    print("device=" + device)
+struct FrameGeometry {
+    revision: i64,
+    meshes: []scenegraph.Mesh,
+    solids: []scenegraph.Drawable,
+    glass: []scenegraph.Drawable,
+}
 
-    // --capture <path> renders one frame offscreen and keeps its pixels.
-    shot := args.value(&argv, "--capture")
-    mut capturing := false
-    if shot.len > 0 {
+fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
+    if frame.revision != world.geometry_revision() {
+        frame.meshes = world.mesh_snapshot()
+        frame.revision = world.geometry_revision()
+    }
+    frame.solids.clear()
+    frame.glass.clear()
+    for item in world.drawables(eye) {
+        if game.casts_shadow(&item) { frame.solids.push(item) } else { frame.glass.push(item) }
+    }
+    game.sort_back_to_front(&mut frame.glass)
+}
+
+fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
+    eye := core.add(center, core.scale(sun, radius * 1.6))
+    view := core.look_at(eye, center, core.vec3(0.0, 1.0, 0.0))
+    projection := core.orthographic(-radius, radius, -radius, radius, 1.0, radius * 4.0)
+    core.multiply(projection, view)
+}
+
+fn frame_plan(shadows: bool, glass: bool, effects: bool) -> render.Compiled {
+    mut schedule := render.Graph::new()
+    if shadows { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
+    _ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
+    if shadows {
+        _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
+    } else {
+        _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth"])
+    }
+    if glass { _ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]) }
+    if effects { _ := schedule.add_pass(.Overlay, "overlay", ["color"], ["color"]) }
+    _ := schedule.add_pass(.Ui, "ui", ["color"], ["color"])
+    schedule.compile()
+}
+
+enum Launch { Studio, Game, Preview }
+
+pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, argv: &[]string) -> Result<(), string> {
+    path := args.value(argv, "--scene")
+    if args.flag(argv, "--scene") && (path.len == 0 || (path.len >= 2 && path[0..2] == "--")) { return .Err("--scene requires a scene file") }
+    if args.flag(argv, "--capture") && args.value(argv, "--capture").len == 0 { return .Err("--capture requires an output file") }
+    watch := args.flag(argv, "--watch")
+    if watch && path.len == 0 { return .Err("--watch requires --scene FILE") }
+    text := if path.len > 0 { play.read_source(path)? } else { "" }
+    source := if path.len > 0 { play.decode(text)? } else { play.demo() }
+    mode := if path.len > 0 || args.flag(argv, "--play") { Launch.Game } else { Launch.Studio }
+    watcher := scene_file.new(if watch { path } else { "" }, if watch { text } else { "" })
+    run_session(open, argv, play.start(&source), mode, args.value(argv, "--capture"), move watcher)
+}
+
+pub fn preview<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, session: &play.Session, path: string) -> Result<(), string> {
+    argv: []string = []
+    run_session(open, &argv, session.clone(), .Preview, path, scene_file.new("", ""))
+}
+
+fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, argv: &[]string,
+    move initial: play.Session, launch: Launch, shot: string, move file: scene_file.Watch) -> Result<(), string> {
+    mut watcher := move file
+    mut session := move initial
+    mut playing := launch != .Studio
+    exporting := launch == .Preview
+    limit := args.frame_limit(argv)
+    mut window := open(TITLE, if exporting { 720 } else { 1280 }, if exporting { 450 } else { 800 })?
+    window.set_trace(args.flag(argv, "--trace"))
+    device := window.device_name()
+    if !exporting { print("device=" + device) }
+    capturing := shot.len > 0
+    if capturing {
         captured := window.capture_next()
         if captured.is_err() { return stop(move window, captured.unwrap_err()) }
-        capturing = true
     }
 
     // --- geometry ---
     mut cube_vertices: []f32 = []
     gfx.cube(&mut cube_vertices, 0.6)
+    mut sphere_vertices := play_view.sphere_geometry(&session.scene)
     mut plane_vertices: []f32 = []
     gfx.plane(&mut plane_vertices, 40.0)
 
     mut graph := scenegraph.Graph::new()
-    study := gallery.build(&mut graph)
-    game.spawn_orbs(&mut graph)
-    glb := args.value(&argv, "--glb")
+    missing := ecs.Entity { index: -1, generation: 0 }
+    mut study := gallery.Study { hub: missing, ring: missing, left: missing, right: missing }
+    if !exporting && (!playing || !capturing) {
+        study = gallery.build(&mut graph)
+        game.spawn_orbs(&mut graph)
+    }
+    mut game_view := play_view.build(&session)
+    custom_eye := args.flag(argv, "--eye")
+    backdrop: [f32; 4] = [0.24, 0.34, 0.38, 1.0]
+    mut hud := widgets.State::new()
+    mut action := play_ui.Action.Idle
+    mut paused := false
+    glb := args.value(argv, "--glb")
     if glb.len > 0 { _ := load_model(&mut graph, glb, core.vec3(0.0, 0.0, 4.2)) }
     graph.propagate()
 
     // --- camera ---
-    start := args.aim(&argv)
+    start := args.aim(argv)
     mut camera := input.Camera::new(start.position)
     camera.yaw = start.yaw
     camera.pitch = start.pitch
@@ -149,9 +222,7 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     // at the middle of the scene through a box wide enough for the whole demo.
     light_target := core.vec3(0.0, 0.9, 0.0)
     light_eye := core.add(light_target, core.scale(sun, 16.0))
-    light_view := core.look_at(light_eye, light_target, core.vec3(0.0, 1.0, 0.0))
-    light_projection := core.orthographic(-10.0, 10.0, -10.0, 10.0, 1.0, 40.0)
-    light_vp := core.multiply(light_projection, light_view)
+    light_vp := shadow_view(sun, light_target, 10.0)
     mut light_dir_c: [f32; 4] = [sun.x, sun.y, sun.z, core.dot(light_eye, sun)]
     sky := gfx.sky_params(sun_push, sun_color_push, zenith_push, horizon_push, light_vp.m, light_dir_c)
     // The environment maps are built once from the same sky the dome draws,
@@ -159,7 +230,7 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     environment := window.build_environment(&sky)
     if environment.is_err() { return stop(move window, environment.unwrap_err()) }
 
-    mut studio := editor.new(study.ring, !args.flag(&argv, "--no-glass"), !args.flag(&argv, "--no-shadows"), args.flag(&argv, "--effects"))
+    mut studio := editor.new(study.ring, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), args.flag(argv, "--effects"))
     mut glass_visible := true
     mut score: i32 = 0
     mut total: i32 = game.orbs_left(&graph)
@@ -169,7 +240,7 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     // they are sharp there and the same size everywhere: the canvas asks the
     // atlas how large they are.
     density := window.poll().scale
-    font := text.find_font(args.value(&argv, "--font"))
+    font := text.find_font(args.value(argv, "--font"))
     if font.len == 0 {
         return stop(move window, "no UI font found; pass --font <path>")
     }
@@ -178,7 +249,7 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         return stop(move window, "font missing: " + face.error)
     }
     mut atlas := text.Atlas::new(1024, 1024)
-    if !atlas.add_text(&face, GLYPHS) {
+    if !atlas.add_text(&face, GLYPHS) || !atlas.add_text(&face, session.scene.name) {
         return stop(move window, "no glyphs packed")
     }
     pixels := atlas.copy_pixels()
@@ -188,8 +259,12 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
     mut canvas := ui.Canvas::new()
     mut fps: f32 = 0.0
 
-    mut mesh_revision: i64 = -1
-    mut meshes: []scenegraph.Mesh = []
+    mut plan := render.Compiled { ok: true, error: "", steps: [] }
+    mut planned_shadows := false
+    mut planned_glass := false
+    mut planned_effects := false
+    mut geometry := FrameGeometry { revision: -1, meshes: [], solids: [], glass: [] }
+    mut mesh_world_is_game := false
     mut frames: i64 = 0
     mut previous := 0.0
     mut running := true
@@ -203,70 +278,111 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
             fps = if fps == 0.0 { instant } else { fps * 0.9 + instant * 0.1 }
         }
 
-        if dt > 0.1 { dt = 0.1 }
-
-        // Mouse look only while the right button is held.
-        over_view := editor.in_viewport(&studio, frame.input.mouse.x, frame.input.mouse.y, f32(frame.width), f32(frame.height))
-        camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.MOUSE_RIGHT))
-        if frame.input.hit(gfx.Key.R) {
-            empty: []string = []
-            baseline := args.aim(&empty)
-            camera = input.Camera::new(baseline.position)
-            camera.yaw = baseline.yaw
-            camera.pitch = baseline.pitch
-            camera.fov = 0.85
-            game.reset_orbs(&mut graph)
-            score = 0
-            total = game.orbs_left(&graph)
-        }
-        if frame.input.hit(gfx.Key.F) { studio.focus = !studio.focus }
-        if frame.input.hit(gfx.Key.T) { studio.glass = !studio.glass }
-        if frame.input.hit(gfx.Key.G) { studio.shadows = !studio.shadows }
-        if frame.input.hit(gfx.Key.E) { studio.effects = !studio.effects }
-        if glass_visible != studio.glass {
-            for pane in [study.left, study.right] {
-                if studio.glass { _ := graph.set_shape(pane, .Cube) } else { _ := graph.remove_shape(pane) }
+        if frame.width <= 0 || frame.height <= 0 { continue }
+        if watcher.path.len > 0 && !capturing {
+            match scene_file.poll(&mut watcher, frame.time) {
+                .Ok(change) => {
+                    match change {
+                        .Some(level) => {
+                            if level.name != session.scene.name {
+                                // Repack on a new title to bound the atlas across many edits.
+                                mut fresh_atlas := text.Atlas::new(atlas_size, atlas_size)
+                                if !fresh_atlas.add_text(&face, GLYPHS) || !fresh_atlas.add_text(&face, level.name) {
+                                    return stop(move window, "could not pack the updated scene title")
+                                }
+                                updated := window.ui_atlas(fresh_atlas.copy_pixels(), atlas_size, atlas_size)
+                                if updated.is_err() { return stop(move window, updated.unwrap_err()) }
+                                atlas = move fresh_atlas
+                            }
+                            session = play.start(&level)
+                            game_view = play_view.build(&session)
+                            sphere_vertices = play_view.sphere_geometry(&level)
+                            geometry.revision = -1
+                        },
+                        .None => {},
+                    }
+                },
+                .Err(message) => {
+                    _ := sys.eprint("storm: scene reload: " + message)
+                },
             }
-            glass_visible = studio.glass
         }
-
-        // Animate the orbit: the hub rotates, children follow through the tree.
-        graph.set_rotation(study.hub, graph.local(study.hub).rotation_y + f32(dt) * 0.10)
-        graph.propagate()
-
-        // --- the game: walk into an orb to collect it ---
-        score = score + game.collect_orbs(&mut graph, camera.position)
-
+        if studio.play_requested {
+            studio.play_requested = false
+            session = play.start(&session.scene)
+            playing = true
+            paused = false
+        }
+        if action == .Studio { playing = false }
         aspect := f32(frame.width) / f32(frame.height)
-        view_projection := camera.view_projection(aspect)
-        inv_view_projection := input.inverse_view_projection(&camera, aspect)
+        mut view_camera := camera
+        mut frame_sky := sky.clone()
+        if playing {
+            if action == .Restart || frame.input.hit(.R) {
+                session = play.start(&session.scene)
+            }
+            if action == .TogglePause || frame.input.hit(.Q) { paused = !paused }
+            controls := play_view.controls(&frame.input)
+            if !capturing {
+                if paused && action == .Step { play.step(&mut session, controls) }
+                else if !paused { _ := play.advance(&mut session, dt, controls) }
+            }
+            play_view.sync(&mut game_view, &session, paused || capturing)
+            area := play_view.framing(&game_view, &session, paused || capturing)
+            if !custom_eye { view_camera = play_view.camera(&area, aspect) }
+            radius := 4.0 + core.length(area.extent)
+            frame_sky.light_vp = shadow_view(sun, area.center, radius).m
+            frame_sky.light_dir_c[3] = core.dot(area.center, sun) + radius * 1.6
+        } else {
+            if dt > 0.1 { dt = 0.1 }
+            // Mouse look only while the right button is held.
+            over_view := editor.in_viewport(&studio, frame.input.mouse.x, frame.input.mouse.y, f32(frame.width), f32(frame.height))
+            camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.MOUSE_RIGHT))
+            if frame.input.hit(gfx.Key.R) {
+                baseline := args.aim(argv)
+                camera = input.Camera::new(baseline.position)
+                camera.yaw = baseline.yaw
+                camera.pitch = baseline.pitch
+                camera.fov = 0.85
+                game.reset_orbs(&mut graph)
+                score = 0
+                total = game.orbs_left(&graph)
+            }
+            if frame.input.hit(gfx.Key.F) { studio.focus = !studio.focus }
+            if frame.input.hit(gfx.Key.T) { studio.glass = !studio.glass }
+            if frame.input.hit(gfx.Key.G) { studio.shadows = !studio.shadows }
+            if frame.input.hit(gfx.Key.E) { studio.effects = !studio.effects }
+            if glass_visible != studio.glass {
+                for pane in [study.left, study.right] {
+                    if studio.glass { _ := graph.set_shape(pane, .Cube) } else { _ := graph.remove_shape(pane) }
+                }
+                glass_visible = studio.glass
+            }
+
+            // Animate the orbit: the hub rotates, children follow through the tree.
+            graph.set_rotation(study.hub, graph.local(study.hub).rotation_y + f32(dt) * 0.10)
+            graph.propagate()
+
+            // --- the game: walk into an orb to collect it ---
+            score = score + game.collect_orbs(&mut graph, camera.position)
+            view_camera = camera
+        }
+        action = .Idle
+        view_projection := view_camera.view_projection(aspect)
+        inv_view_projection := input.inverse_view_projection(&view_camera, aspect)
 
         // --- scene contents for this frame: everything the scene says is drawable ---
-        if mesh_revision != graph.geometry_revision() {
-            meshes = graph.mesh_snapshot()
-            mesh_revision = graph.geometry_revision()
-        }
-        mut solids: []scenegraph.Drawable = []
-        mut glass: []scenegraph.Drawable = []
-        for item in graph.drawables(camera.position) {
-            if game.casts_shadow(&item) { solids.push(item) } else { glass.push(item) }
-        }
-        game.sort_back_to_front(&mut glass)
-
-        mut schedule := render.Graph::new()
-        if studio.shadows && solids.len > 0 { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
-        _ := schedule.add_pass(.Sky, "sky", ["color", "depth"], [])
-        if studio.shadows && solids.len > 0 {
-            _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth", "shadow_map"])
-        } else {
-            _ := schedule.add_pass(.Opaque, "opaque", ["color", "depth"], ["color", "depth"])
-        }
-        if glass.len > 0 { _ := schedule.add_pass(.Transparent, "transparent", ["color"], ["color", "depth"]) }
-        _ := schedule.add_pass(.Overlay, "overlay", ["color"], ["color"])
-        _ := schedule.add_pass(.Ui, "ui", ["color"], ["color"])
-        plan := schedule.compile()
-        if !plan.ok {
-            return stop(move window, plan.error)
+        if mesh_world_is_game != playing { geometry.revision = -1; mesh_world_is_game = playing }
+        if playing { gather(&mut geometry, &game_view.graph, view_camera.position) }
+        else { gather(&mut geometry, &graph, view_camera.position) }
+        shadows := studio.shadows && geometry.solids.len > 0
+        transparent := geometry.glass.len > 0
+        if plan.steps.len == 0 || shadows != planned_shadows || transparent != planned_glass || studio.effects != planned_effects {
+            plan = frame_plan(shadows, transparent, studio.effects)
+            if !plan.ok { return stop(move window, plan.error) }
+            planned_shadows = shadows
+            planned_glass = transparent
+            planned_effects = studio.effects
         }
 
         begun := window.begin()
@@ -282,12 +398,12 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
             kind := plan.steps[step].kind
             if kind == render.PassKind.Shadow {
                 // Lives in its own render pass, so the main pass must not be open.
-                match window.shadow_begin(&sky) {
+                match window.shadow_begin(&frame_sky) {
                     .Ok => {},
                     .Err(message) => { return stop(move window, message) },
                 }
-                drawn := record_list(&mut window, &meshes, &solids, &cube_vertices, &plane_vertices,
-                    view_projection, camera.position, &sky, studio.shadows, kind)
+                drawn := record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices,
+                    view_projection, view_camera.position, &frame_sky, studio.shadows, kind)
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
                 match window.shadow_end() {
                     .Ok => {},
@@ -302,19 +418,21 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
                 }
             }
             if kind == render.PassKind.Sky {
-                match window.sky(&inv_view_projection.m, &sun_push, &zenith_push, &horizon_push) {
+                // Play uses a neutral backdrop under the same studio lighting.
+                visible_horizon := if playing { backdrop.clone() } else { horizon_push.clone() }
+                match window.sky(&inv_view_projection.m, &sun_push, &zenith_push, &visible_horizon) {
                     .Ok => {},
                     .Err(message) => { return stop(move window, message) },
                 }
             } else if kind == render.PassKind.Opaque || kind == render.PassKind.Transparent {
                 drawn := if kind == .Opaque {
-                    record_list(&mut window, &meshes, &solids, &cube_vertices, &plane_vertices, view_projection, camera.position, &sky, studio.shadows, kind)
+                    record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, studio.shadows, kind)
                 } else {
-                    record_list(&mut window, &meshes, &glass, &cube_vertices, &plane_vertices, view_projection, camera.position, &sky, false, kind)
+                    record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, false, kind)
                 }
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
             } else if kind == render.PassKind.Overlay {
-                match window.overlay(f32(frame.time), if studio.effects { 1.0 } else { 0.0 }) {
+                match window.overlay(f32(frame.time), 1.0) {
                     .Ok => {},
                     .Err(message) => { return stop(move window, message) },
                 }
@@ -322,8 +440,14 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
                 canvas.clear()
                 mouse := frame.input.mouse
                 pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.MOUSE_LEFT), frame.input.button_down(gfx.MOUSE_LEFT))
-                editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &pointer, mouse.scroll,
-                    f32(frame.width), f32(frame.height), fps, plan.steps.len, device, score, total)
+                if playing {
+                    action = play_ui.draw(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
+                        session.scene.name, session.tick, paused, session.player >= 0, game_view.has_goal, session.won)
+                    if scene_file.failed(&watcher) { play_ui.reload_error(&mut canvas, &atlas, f32(frame.width)) }
+                } else {
+                    editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &pointer, mouse.scroll,
+                        f32(frame.width), f32(frame.height), fps, plan.steps.len, device, score, total)
+                }
                 quads := canvas.take()
                 match window.ui_draw(quads, [f32(frame.width), f32(frame.height)]) {
                     .Ok => {},
@@ -338,7 +462,7 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         frames = ended.unwrap()
         if capturing {
             match window.save_capture(shot) {
-                .Ok => { _ := sys.eprint("storm: wrote " + shot) },
+                .Ok => { if !exporting { _ := sys.eprint("storm: wrote " + shot) } },
                 .Err(message) => { return stop(move window, message) },
             }
             running = false
@@ -347,6 +471,6 @@ pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>) -> i
         if limit > 0 && frames >= limit { running = false }
     }
     window.close()
-    print("storm frames=" + frames.str())
-    0
+    if !exporting { print("storm frames=" + frames.str()) }
+    .Ok
 }

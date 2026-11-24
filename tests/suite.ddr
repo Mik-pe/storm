@@ -230,6 +230,7 @@ import scene as scenegraph
 }
 
 import ..src.editor as editor
+import .play_ui as _
 import text
 import ui
 import ui.widgets as widgets
@@ -258,3 +259,6 @@ import ui.widgets as widgets
         editor.draw(&mut s, &mut canvas, &atlas, &mut graph, &up, 0.0, 720.0, 520.0, 0.0, 6, "GPU", 0, 8)
     }
 }
+
+import .play_view as _
+import .scene_file as _

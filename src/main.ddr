@@ -1,11 +1,35 @@
-// Storm's composition root: the only file in the application that names a
-// backend. It picks one for the platform and hands the application a way to
-// open it; from there everything goes through the gfx.Backend contract.
+// The composition root selects a graphics backend for both the window and agent previews.
+capability stdio
+
 import .app
+import .args
+import mcp
+import play
 import metal
 import vulkan
+import sys
+
+fn preview(session: &play.Session, path: string) -> Result<(), string> {
+    if target_is("macos") { return app.preview<metal.Renderer>(metal.open_preview, session, path) }
+    return app.preview<vulkan.Window>(vulkan.open_preview, session, path)
+}
 
 fn main() -> i32 {
-    if target_is("macos") { return app.run<metal.Renderer>(metal.open) }
-    return app.run<vulkan.Window>(vulkan.open)
+    argv := args.from_process()
+    if args.flag(&argv, "--help") || args.flag(&argv, "-h") {
+        print("storm [--play | --scene FILE [--watch] | --mcp] [--frames N] [--capture FILE.ppm]")
+        print("Open the material studio, play the demo or a saved scene, or serve game tools on stdio.")
+        return 0
+    }
+    if args.flag(&argv, "--mcp") { return mcp.serve(preview) }
+    capture := args.flag(&argv, "--capture")
+    result := if target_is("macos") {
+        if capture { app.run<metal.Renderer>(metal.open_preview, &argv) } else { app.run<metal.Renderer>(metal.open, &argv) }
+    } else {
+        if capture { app.run<vulkan.Window>(vulkan.open_preview, &argv) } else { app.run<vulkan.Window>(vulkan.open, &argv) }
+    }
+    match result {
+        .Ok => 0,
+        .Err(message) => { _ := sys.eprint("storm: " + message); 1 },
+    }
 }

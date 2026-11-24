@@ -18,6 +18,7 @@ pub struct State {
     controls: widgets.State,
     selected: ecs.Entity,
     focus: bool,
+    play_requested: bool,
     compact_panel: Panel,
     expand_orbs: bool,
     tree_revision: i64,
@@ -32,7 +33,7 @@ pub struct State {
 
 pub fn new(selected: ecs.Entity, glass: bool, shadows: bool, effects: bool) -> State {
     State {
-        controls: widgets.State::new(), selected: selected, focus: false, compact_panel: .Closed, expand_orbs: false,
+        controls: widgets.State::new(), selected: selected, focus: false, play_requested: false, compact_panel: .Closed, expand_orbs: false,
         tree_revision: -1, rows: [], orbs: 0,
         first_node: 0, inspector_scroll: 0.0, glass: glass, shadows: shadows, effects: effects
     }
@@ -214,18 +215,23 @@ pub fn draw(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut sc
     c.rounded_rect(14.0, 12.0, 24.0, 24.0, 6.0, &t.knob)
     c.triangle(28.0, 15.0, 19.0, 26.0, 27.0, 25.0, &chrome())
     c.triangle(24.0, 33.0, 33.0, 22.0, 25.0, 23.0, &chrome())
-    label(&mut c, a, "Storm", 47.0, 10.0, 21.0, &t.ink)
+    tight := width < 460.0
+    if !tight || state.focus { label(&mut c, a, "Storm", 47.0, 10.0, 21.0, &t.ink) }
     if !compact {
         c.rect(LEFT - 1.0, 11.0, 1.0, 26.0, &t.border)
         label(&mut c, a, "Viewport", LEFT + 18.0, 13.0, 15.0, &t.ink_dim)
         label(&mut c, a, "/   Material study", LEFT + 88.0, 13.0, 15.0, &t.ink)
     } else if !state.focus {
-        if state.controls.button(&mut c, a, 4, p, 115.0, 10.0, 57.0, 27.0, "Scene", &t) {
+        tabs_x := if tight { f32(46.0) } else { f32(115.0) }
+        if state.controls.button(&mut c, a, 4, p, tabs_x, 10.0, 57.0, 27.0, "Scene", &t) {
             state.compact_panel = if state.compact_panel == .Scene { Panel.Closed } else { Panel.Scene }
         }
-        if state.controls.button(&mut c, a, 5, p, 178.0, 10.0, 76.0, 27.0, "Inspector", &t) {
+        if state.controls.button(&mut c, a, 5, p, tabs_x + 63.0, 10.0, 76.0, 27.0, "Inspector", &t) {
             state.compact_panel = if state.compact_panel == .Inspector { Panel.Closed } else { Panel.Inspector }
         }
+    }
+    if !tight && state.controls.button(&mut c, a, 7, p, width - 172.0, 10.0, 67.0, 27.0, "Play", &t) {
+        state.play_requested = true
     }
     if state.controls.button(&mut c, a, 6, p, width - 97.0, 10.0, 83.0, 27.0, if state.focus { "Edit   F" } else { "Focus   F" }, &t) {
         state.focus = !state.focus
@@ -236,7 +242,11 @@ pub fn draw(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut sc
     status := score.str() + "/" + total.str() + " collected     " + passes.str() + " passes     " + (if fps > 0.0 { i32(fps + 0.5).str() + " fps" } else { "– fps" })
     status_x := width - 16.0 - ui.Canvas::text_width(a, status, 12.0 / ui.RASTER_SIZE)
     device_end := 16.0 + ui.Canvas::text_width(a, device, 13.0 / ui.RASTER_SIZE)
-    if device_end + 16.0 < status_x { label(&mut c, a, device, 16.0, bottom + 6.0, 13.0, &t.ink) }
+    if tight {
+        if state.controls.button(&mut c, a, 7, p, 8.0, bottom + 3.0, 59.0, 26.0, "Play", &t) {
+            state.play_requested = true
+        }
+    } else if device_end + 16.0 < status_x { label(&mut c, a, device, 16.0, bottom + 6.0, 13.0, &t.ink) }
     if width > 810.0 {
         help := "WASD  move     RMB  look     R  reset"
         x := if device_end > LEFT { device_end + 18.0 } else { LEFT + 18.0 }

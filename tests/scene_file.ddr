@@ -1,0 +1,49 @@
+capability filesystem
+
+import ..src.scene_file as scene_file
+import play
+import sys
+
+@test fn watcher_detects_atomic_replacement_and_throttles_file_reads() {
+    path := "/tmp/storm-watch-replace-" + sys.pid().str() + ".json"
+    first := play.empty("First")
+    assert(play.save(&first, path).is_ok())
+    original := play.read_source(path).unwrap()
+    mut watch := scene_file.new(path, original)
+    assert(scene_file.poll(&mut watch, 10.0).unwrap().is_none())
+    second := play.empty("Other")
+    assert(play.save(&second, path).is_ok())
+    assert(scene_file.poll(&mut watch, 10.49).unwrap().is_none())
+    assert(scene_file.poll(&mut watch, 10.50).unwrap().unwrap().name == "Other")
+    assert(play.save(&second, path).is_ok())
+    assert(scene_file.poll(&mut watch, 11.0).unwrap().is_none())
+    assert(sys.remove_file(path).ok)
+}
+
+@test fn watcher_preserves_play_state_across_partial_files_and_recovers_after_removal() {
+    path := "/tmp/storm-watch-recover-" + sys.pid().str() + ".json"
+    original := play.encode(&play.demo())
+    mut watch := scene_file.new(path, original)
+    mut playing := play.start(&play.decode(original).unwrap())
+    play.step(&mut playing, play.Input { x: 1.0, z: 0.0, jump: false })
+    assert(sys.write_text(path, "{").ok)
+    assert(scene_file.poll(&mut watch, 0.0).is_err())
+    assert(scene_file.poll(&mut watch, 0.5).unwrap().is_none())
+    assert(sys.write_text(path, original).ok)
+    assert(scene_file.poll(&mut watch, 1.0).unwrap().is_none())
+    assert(playing.tick == 1)
+    assert(sys.remove_file(path).ok)
+    assert(scene_file.poll(&mut watch, 1.5).is_err())
+    assert(scene_file.poll(&mut watch, 2.0).unwrap().is_none())
+    next := play.empty("Saved after delete")
+    assert(play.save(&next, path).is_ok())
+    replacement := scene_file.poll(&mut watch, 2.5).unwrap().unwrap()
+    playing = play.start(&replacement)
+    assert(playing.tick == 0 && playing.scene.name == next.name)
+    assert(sys.write_text(path, "").ok)
+    assert(scene_file.poll(&mut watch, 3.0).is_err())
+    repaired := play.empty("Repaired")
+    assert(play.save(&repaired, path).is_ok())
+    assert(scene_file.poll(&mut watch, 3.5).unwrap().unwrap().name == repaired.name)
+    assert(sys.remove_file(path).ok)
+}

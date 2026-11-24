@@ -64,29 +64,6 @@ fn disc(radius: f32, height: f32) -> []f32 {
     revolved([radius - 0.04, radius, radius, radius - 0.04, 0.0], [0.0, 0.04, height - 0.04, height, height], 80, 0.0)
 }
 
-fn ball_point(u: f32, v: f32) -> gfx.Vertex {
-    a := u * TAU
-    b := (v - 0.5) * TAU * 0.5
-    x := b.cos() * a.cos()
-    y := b.sin()
-    z := b.cos() * a.sin()
-    gfx.vertex(x, y, z, x, y, z, u, 1.0 - v)
-}
-
-fn ball() -> []f32 {
-    mut out: []f32 = []
-    for j in 0..20 {
-        for i in 0..40 {
-            u := f32(i) / 40.0
-            v := f32(j) / 20.0
-            un := f32(i + 1) / 40.0
-            vn := f32(j + 1) / 20.0
-            gfx.push_quad(&mut out, ball_point(u, v), ball_point(u, vn), ball_point(un, vn), ball_point(un, v))
-        }
-    }
-    out
-}
-
 fn piece(graph: &mut scene.Graph, parent: ecs.Entity, name: string, at: core.Vec3,
     move vertices: []f32, material: scene.Material) -> ecs.Entity {
     node := graph.create_child(parent, at)
@@ -149,7 +126,7 @@ pub fn build(graph: &mut scene.Graph) -> Study {
         revolved([0.47, 0.56, 0.56, 0.53, 0.39, 0.38, 0.30, 0.29, 0.0],
             [0.0, 0.10, 1.31, 1.55, 1.72, 1.85, 1.85, 1.68, 1.68], 144, 0.045),
         scene.material(0.019, 0.135, 0.125, 1.0, 0.25, 0.32))
-    pearl := piece(&mut graph, hub, "Porcelain sphere", core.vec3(1.23, 1.06, 1.29), ball(), scene.material(0.81, 0.74, 0.62, 1.0, 0.14, 0.27))
+    pearl := piece(&mut graph, hub, "Porcelain sphere", core.vec3(1.23, 1.06, 1.29), gfx.sphere(40, 20), scene.material(0.81, 0.74, 0.62, 1.0, 0.14, 0.27))
     _ := graph.set_scale(pearl, core.vec3(0.58, 0.58, 0.58))
     left := screen(&mut graph, "Glass / left", -2.58, -2.75, -0.22)
     right := screen(&mut graph, "Glass / right", 2.41, -2.85, 0.38)

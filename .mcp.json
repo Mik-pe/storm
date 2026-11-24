@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "storm": {
+      "command": "./build/storm",
+      "args": ["--mcp"]
+    }
+  }
+}

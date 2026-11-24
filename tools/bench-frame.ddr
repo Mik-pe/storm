@@ -1,0 +1,55 @@
+// Run the compiled workload repeatedly to compare scene and editor CPU costs.
+capability filesystem, stdio, unsafe
+
+import core
+import scene
+import sys
+import text
+import ui
+import ui.widgets as widgets
+import ..src.editor as editor
+import ..src.gallery as gallery
+import ..src.game as game
+
+fn transforms() {
+    mut world := scene.Graph::new()
+    mut root := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    for i in 1..1024 {
+        if i % 16 == 0 { root = world.create_root(core.vec3(f32(i), 1.0, 0.0)) }
+        else { _ := world.create_child(root, core.vec3(1.0, f32(i % 8), 3.0)) }
+    }
+    world.propagate()
+    start := sys.now_ms()
+    for tick in 0..300 {
+        world.set_rotation(root, f32(tick) * 0.002)
+        world.propagate()
+    }
+    print("300 updates of 1024 nodes: " + (sys.now_ms() - start).str() + " ms, basis x=" + world.world(root).matrix.m[0].str())
+}
+
+fn redraws() {
+    mut world := scene.Graph::new()
+    study := gallery.build(&mut world)
+    game.spawn_orbs(&mut world)
+    mut studio := editor.new(study.ring, true, true, false)
+    face := text.load_font(ui.RASTER_SIZE * 2.0)
+    assert(face.ok)
+    mut atlas := text.Atlas::new(1024, 1024)
+    assert(atlas.add_text(&face, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ – åäö ÅÄÖ ²³"))
+    mut canvas := ui.Canvas::new()
+    pointer := widgets.Pointer::at(0.0, 0.0, false, false)
+    mut floats: i64 = 0
+    start := sys.now_ms()
+    for tick in 0..4000 {
+        canvas.clear()
+        editor.draw(&mut studio, &mut canvas, &atlas, &mut world, &pointer, 0.0,
+            1280.0, 800.0, f32(100 + tick % 10), 5, "Apple M5", 0, 8)
+        floats += i64(canvas.take().len)
+    }
+    print("4000 editor redraws: " + (sys.now_ms() - start).str() + " ms, floats=" + floats.str())
+}
+
+fn main() {
+    if sys.arg_count() > 1 && sys.arg(1) == "--editor" { redraws() }
+    else { transforms() }
+}

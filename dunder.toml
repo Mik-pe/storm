@@ -4,6 +4,8 @@ root = "src/main.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
+mcp = { path = "packages/storm-mcp", capabilities = ["stdio", "filesystem", "unsafe"] }
+play = { path = "packages/storm-play", capabilities = ["filesystem"] }
 core = { path = "packages/storm-core" }
 gfx = { path = "packages/storm-gfx" }
 ecs = { path = "packages/storm-ecs" }

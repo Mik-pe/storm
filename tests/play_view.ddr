@@ -1,0 +1,33 @@
+import core
+import gfx
+import play
+import ..src.play_view as view
+
+@test fn play_shapes_match_body_extents_and_poses_use_the_requested_tick() {
+    scene_data := play.demo()
+    mut session := play.start(&scene_data)
+    mut world := view.build(&session)
+    for i in 0..scene_data.entities.len {
+        def := &scene_data.entities[i]
+        scale := world.graph.local(world.nodes[i]).scale
+        span: f32 = if def.shape == .Box { 1.2 } else { 2.0 }
+        assert((scale.x * span - def.size.x).abs() < 0.0001)
+    }
+    play.step(&mut session, play.Input { x: 1.0, z: 0.0, jump: false })
+    view.sync(&mut world, &session, true)
+    runner := world.graph.local(world.nodes[world.player_node]).position
+    assert(runner.x == play.position(&session, world.player_node).x)
+    assert(runner.x > scene_data.entities[world.player_node].position.x)
+    area := view.framing(&world, &session, true)
+    cam := view.camera(&area, 1.6)
+    assert(core.dot(cam.forward(), core.sub(area.center, cam.position)) > 1.0)
+}
+
+@test fn a_full_level_of_spheres_fits_the_mesh_stream_in_two_passes() {
+    mut level := play.empty("Sphere field")
+    model := play.demo()
+    for _ in 0..play.MAX_ENTITIES { level.entities.push(model.entities[1].clone()) }
+    vertices := view.sphere_geometry(&level)
+    assert(vertices.len > 0 && vertices.len % (3 * gfx.VERTEX_FLOATS) == 0)
+    assert(vertices.len * 4 * 2 * level.entities.len <= 4194304)
+}
