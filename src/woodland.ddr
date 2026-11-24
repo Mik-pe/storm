@@ -20,15 +20,29 @@ struct TailBox { lo: core.Vec3, hi: core.Vec3 }
 struct TailGuard { hinge: ecs.Entity, basis: core.Mat4, inverse: core.Mat4 }
 struct TailLink { joint: Socket, bounds: [TailBox; 4] }
 struct Limb { plane: ecs.Entity, upper: ecs.Entity, shin: ecs.Entity, foot: ecs.Entity, bind: fox_animation.Leg, sole_points: []core.Vec3 }
+struct BouquetStem { node: ecs.Entity, flower_index: i32 }
+struct FlowerNode { root: ecs.Entity, entity_index: i32, base_pos: core.Vec3, base_scale: f32 }
 struct Fox {
-    root: ecs.Entity, body: Socket, chest: Socket, head: Socket, nose: core.Vec3, bloom_offset: core.Vec3, bouquet: ecs.Entity,
+    root: ecs.Entity, body: Socket, chest: Socket, head: Socket, nose: core.Vec3, bloom_offset: core.Vec3,
+    bouquet: ecs.Entity, stems: []BouquetStem, blush: Option<ecs.Entity>,
     tail_guard: TailGuard, tail: [TailLink; 3], limbs: []Limb, eyes: []Socket, lids: []ecs.Entity, ears: []ecs.Entity, clips: fox_animation.Clips, gestures: fox_expression.Gestures,
 }
 struct Flyer { root: ecs.Entity, left: ecs.Entity, right: ecs.Entity, home: core.Vec3, bee: bool }
-pub struct Cast { ground: woodland_ground.Ground, foxes: []Fox, insects: []Flyer, motes: []ecs.Entity, petals: []ecs.Entity }
+pub struct Cast { ground: woodland_ground.Ground, foxes: []Fox, insects: []Flyer, flowers: []FlowerNode, motes: []ecs.Entity, petals: []ecs.Entity }
 
-pub fn empty() -> Cast { Cast { ground: woodland_ground.empty(), foxes: [], insects: [], motes: [], petals: [] } }
+pub fn empty() -> Cast { Cast { ground: woodland_ground.empty(), foxes: [], insects: [], flowers: [], motes: [], petals: [] } }
 fn origin() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
+fn smooth_step(start: f32, end: f32, n: f32) -> f32 {
+    if n <= start { return 0.0 }
+    if n >= end { return 1.0 }
+    t := (n - start) / (end - start)
+    t * t * (3.0 - 2.0 * t)
+}
+fn clamp_f(v: f32, lo: f32, hi: f32) -> f32 {
+    if v < lo { return lo }
+    if v > hi { return hi }
+    v
+}
 
 fn petal_colors(color: core.Vec3) -> []model.Paint {
     [model.Paint { material: "Rose petal", color: color, mix: 0.82 },
@@ -57,7 +71,7 @@ fn tail_link(g: &scene.Graph, joint: &model.Joint, art: &gltf.Asset, axis: core.
         if !tail_part(part, joint.prefix) { continue }
         for j in 0..(part.vertices.len / gfx.VERTEX_FLOATS) {
             k := j * gfx.VERTEX_FLOATS
-            along := axis.x * part.vertices[k] + axis.y * part.vertices[k+1] + axis.z * part.vertices[k+2]
+            along := axis.x * part.vertices[k] + axis.y * part.vertices[k + 1] + axis.z * part.vertices[k + 2]
             if along < left { left = along }
             if along > right { right = along }
         }
@@ -100,8 +114,10 @@ fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Ri
     unaligned := g.create_child(hinge, origin())
     g.set_rotation(unaligned, -yaw)
     offset := g.create_child(unaligned, core.scale(base, -1.0))
-    guard := TailGuard { hinge: hinge, basis: scene.matrix_for(&g.local(aligned)),
-        inverse: core.multiply(scene.matrix_for(&g.local(unaligned)), scene.matrix_for(&g.local(offset))) }
+    guard := TailGuard {
+        hinge: hinge, basis: scene.matrix_for(&g.local(aligned)),
+        inverse: core.multiply(scene.matrix_for(&g.local(unaligned)), scene.matrix_for(&g.local(offset)))
+    }
     tail := bind(&mut g, offset, rig, "Tail", "Body", &mut joints)?
     mid := bind(&mut g, tail.mount, rig, "TailMid", "Tail", &mut joints)?
     tip := bind(&mut g, mid.mount, rig, "TailTip", "TailMid", &mut joints)?
@@ -130,19 +146,28 @@ fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Ri
         toe := match shoe.toe { .Some(p) => p, .None => { return .Err("missing toe on " + shoe.name) } }
         legs := fox_animation.leg(g.local(upper.hinge).position, g.local(shin.hinge).position, shoe.pivot, sole, toe, i)
         g.set_position(upper.hinge, origin())
-        limbs.push(Limb { plane: plane, upper: upper.hinge, shin: shin.hinge, foot: foot.hinge, bind: legs,
-            sole_points: paw_contact.underside(art, foot.prefix, shoe.pivot) })
+        limbs.push(Limb {
+            plane: plane, upper: upper.hinge, shin: shin.hinge, foot: foot.hinge, bind: legs,
+            sole_points: paw_contact.underside(art, foot.prefix, shoe.pivot)
+        })
     }
     mut first: []ecs.Entity = []
     model.attach(&mut g, root, art, &joints, &mut first, &[])
+    mut blush: Option<ecs.Entity> = .None
+    for node in first {
+        if g.name(node) == "Head_Blush" { blush = .Some(node); break }
+    }
     bouquet := g.create_child(head.mount, core.vec3(0.0, 0.973, 0.77))
+    _ := g.set_name(bouquet, "Bouquet")
     g.set_visible(bouquet, false)
     clips := fox_animation.clips()?
-    .Ok(Fox { root: root, body: Socket { hinge: body.hinge, pivot: g.local(body.hinge).position },
+    .Ok(Fox {
+        root: root, body: Socket { hinge: body.hinge, pivot: g.local(body.hinge).position },
         chest: Socket { hinge: chest.hinge, pivot: g.local(chest.hinge).position }, head: Socket { hinge: head.hinge, pivot: g.local(head.hinge).position },
-        nose: fox_expression.nose_tip(art)?, bloom_offset: bloom_offset, bouquet: bouquet,
+        nose: fox_expression.nose_tip(art)?, bloom_offset: bloom_offset, bouquet: bouquet, stems: [], blush: blush,
         tail_guard: guard,
-        tail: [tail_link(g, &tail, art, axis), tail_link(g, &mid, art, axis), tail_link(g, &tip, art, axis)], limbs: move limbs, eyes: move eyes, lids: move lids, ears: move ears, clips: move clips, gestures: fox_expression.gestures()? })
+        tail: [tail_link(g, &tail, art, axis), tail_link(g, &mid, art, axis), tail_link(g, &tip, art, axis)], limbs: move limbs, eyes: move eyes, lids: move lids, ears: move ears, clips: move clips, gestures: fox_expression.gestures()?
+    })
 }
 
 fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
@@ -203,24 +228,31 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
             cast.foxes.push(fox(&mut g, nodes[i], &fox_art.art, &fox_art.rig, bloom_offset)?)
         } else if def.role == .Flower {
             scale := def.size.x / 0.64
-            flower := g.create_child(nodes[i], core.scale(flower_mount, scale))
+            base_pos := core.scale(flower_mount, scale)
+            flower := g.create_child(nodes[i], base_pos)
             g.set_scale(flower, core.vec3(scale, scale, scale))
             paint := petal_colors(def.color)
             model.attach(&mut g, flower, &daisy, &[], &mut flower_meshes, &paint)
+            cast.flowers.push(FlowerNode { root: flower, entity_index: i, base_pos: base_pos, base_scale: scale })
         }
     }
     // The reward uses the same flower meshes and petal colors as the clearing.
-    for actor in cast.foxes {
+    for f_idx in 0..cast.foxes.len {
+        bouquet_node := cast.foxes[f_idx].bouquet
         mut n := 0
-        for item in session.scene.entities {
+        for i in 0..session.scene.entities.len {
+            item := &session.scene.entities[i]
             if item.role != .Flower { continue }
-            stem := g.create_child(actor.bouquet, core.vec3(0.0, 0.0, 0.0))
+            stem := g.create_child(bouquet_node, core.vec3(0.0, 0.0, 0.0))
+            _ := g.set_name(stem, "BouquetStem_" + n.str())
             spread := f32(n) - 2.0
             size := 0.53 + 0.05 * f32(n % 2)
             g.set_scale(stem, core.vec3(size, size, size))
             g.set_angles(stem, 0.23 * spread, 0.19 * spread, -1.87 + spread * 0.23)
             paint := petal_colors(item.color)
             model.attach(&mut g, stem, &daisy, &[], &mut flower_meshes, &paint)
+            g.set_visible(stem, false)
+            cast.foxes[f_idx].stems.push(BouquetStem { node: stem, flower_index: i })
             n += 1
             if n == 5 { break }
         }
@@ -260,8 +292,10 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
 }
 
 fn joint_matrix(socket: &Socket, pose: &anim.Pose) -> core.Mat4 {
-    local := scene.LocalTransform { position: core.add(socket.pivot, pose.position), scale: pose.scale,
-        rotation_x: pose.rotation.x, rotation_y: pose.rotation.y, rotation_z: pose.rotation.z, visible: true }
+    local := scene.LocalTransform {
+        position: core.add(socket.pivot, pose.position), scale: pose.scale,
+        rotation_x: pose.rotation.x, rotation_y: pose.rotation.y, rotation_z: pose.rotation.z, visible: true
+    }
     core.multiply(scene.matrix_for(&local), core.translation(-socket.pivot.x, -socket.pivot.y, -socket.pivot.z))
 }
 
@@ -329,11 +363,19 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
     radius := s.scene.entities[player].size.y * 0.5
     scale := radius / 0.4
     center := if exact { play.position(s, player) } else { play.render_position(s, player) }
-    focus := fox_expression.apply(&mut p, &actor.gestures, s, &motion, center, scale, exact, actor.bloom_offset)
+    acting := fox_expression.apply(&mut p, &actor.gestures, s, &motion, center, scale, exact, actor.bloom_offset)
+    focus := acting.focus
     g.set_scale(actor.root, core.vec3(scale, scale, scale))
     g.set_position(actor.root, core.vec3(0.0, -radius, 0.0))
     g.set_rotation(actor.root, motion.heading)
-    g.set_visible(actor.bouquet, s.won && s.flowers > 0)
+    match actor.blush {
+        .Some(node) => { _ := g.set_material_value(node, .Emissive, 0.42 * acting.blush) },
+        .None => {},
+    }
+    g.set_visible(actor.bouquet, s.flowers > 0)
+    for stem in actor.stems {
+        g.set_visible(stem.node, s.collected[stem.flower_index])
+    }
     body := joint_matrix(&actor.body, &p.body)
     chest := core.multiply(body, joint_matrix(&actor.chest, &p.chest))
     mut hips: [core.Vec3; 4] = [origin(); 4]
@@ -353,11 +395,32 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
     mut support := if motion.grounded { center } else { play.last_support_anchor(s, 0.0).position }
     support.y -= radius
     probe := woodland_ground.probe(ground, course, s, support, !motion.grounded && contact_weight > 0.0, exact)
+    if motion.grounded {
+        tail_samples := [core.vec2(0.0, -0.60), core.vec2(0.0, -1.05), core.vec2(0.0, -1.45), core.vec2(-0.55, -0.60)]
+        for pt in tail_samples {
+            wx := center.x + scale * (heading_z * pt.x + heading_x * pt.y)
+            wz := center.z + scale * (heading_z * pt.y - heading_x * pt.x)
+            surface := woodland_ground.sample(ground, course, &probe, wx, wz) / scale
+            if surface + 0.045 > tail_floor { tail_floor = surface + 0.045 }
+        }
+        if acting.sit > 0.0 {
+            hx := center.x + scale * (heading_x * -0.45)
+            hz := center.z + scale * (heading_z * -0.45)
+            haunch := woodland_ground.sample(ground, course, &probe, hx, hz) / scale
+            if haunch > 0.025 { p.body.position.y += (haunch - 0.025) * acting.sit }
+        }
+    }
     for i in 0..4 {
         leg := &actor.limbs[i].bind
         socket := core.add(leg.hip, p.shoulders[i])
         hips[i] = if leg.hind { core.transform_point(&body, socket) } else { core.transform_point(&chest, socket) }
         mut foot := fox_animation.foot(leg, &p, &motion, s, exact, center, scale)
+        if acting.sit > 0.0 && leg.hind {
+            side: f32 = if leg.index % 2 == 0 { 1.0 } else { -1.0 }
+            foot.sole.x += side * 0.025 * acting.sit
+            foot.sole.z += 0.16 * acting.sit
+            foot.pitch *= 1.0 - acting.sit
+        }
         if contact_weight > 0.0 {
             contact := paw_contact.fit(ground, course, &probe, &actor.limbs[i].sole_points, leg, &foot, hips[i], center, scale, heading_x, heading_z)
             foot.sole.y += contact.lift * contact_weight
@@ -416,11 +479,72 @@ pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player:
     sub := play.render_tick_offset(session, exact)
     time := f32(session.tick % 216000) / 60.0 + sub / 60.0
     for i in 0..cast.foxes.len { animate_fox(&mut g, &cast.foxes[i], &cast.ground, course, session, player, exact) }
+    has_player := player >= 0
+    player_pos := if has_player {
+        if exact { play.position(session, player) } else { play.render_position(session, player) }
+    } else { origin() }
+    cozy := play.render_cozy(session, exact)
+    for fl in cast.flowers {
+        if session.collected[fl.entity_index] { continue }
+        phase := f32(fl.entity_index) * 1.73
+        mut pitch := 0.024 * (time * 1.45 + phase).sin()
+        mut roll := 0.020 * (time * 1.15 + phase * 1.3).cos()
+        mut bob: f32 = 0.0
+        mut pulse: f32 = 0.0
+        if has_player {
+            fp := session.scene.entities[fl.entity_index].position
+            dx := player_pos.x - fp.x
+            dz := player_pos.z - fp.z
+            dist := (dx * dx + dz * dz).sqrt()
+            if dist < 2.2 {
+                near := 1.0 - smooth_step(0.65, 2.2, dist)
+                denom := if dist > 0.25 { dist } else { f32(0.25) }
+                pitch += near * 0.018 * (dz / denom)
+                roll -= near * 0.018 * (dx / denom)
+                wave := 0.5 + 0.5 * (time * 4.2 + phase).sin()
+                bob = near * 0.008 * wave
+                pulse = near * 0.025 * wave
+            }
+        }
+        pitch = clamp_f(pitch, -0.045, 0.045)
+        roll = clamp_f(roll, -0.045, 0.045)
+        g.set_position(fl.root, core.add(fl.base_pos, core.vec3(0.0, bob * fl.base_scale, 0.0)))
+        s_val := fl.base_scale * (1.0 + pulse)
+        g.set_scale(fl.root, core.vec3(s_val, s_val, s_val))
+        g.set_angles(fl.root, pitch, 0.0, roll)
+    }
+    sit_f := smooth_step(0.2, 0.75, cozy.sit_weight)
+    pet_f := if cozy.pet_age >= 0.0 && cozy.pet_age < 2.0 {
+        smooth_step(0.0, 0.25, cozy.pet_age) * (1.0 - smooth_step(1.4, 2.0, cozy.pet_age))
+    } else { f32(0.0) }
+    emote_f := if cozy.emote_age >= 0.0 && cozy.emote_age < 1.5 {
+        smooth_step(0.0, 0.20, cozy.emote_age) * (1.0 - smooth_step(1.05, 1.5, cozy.emote_age))
+    } else { f32(0.0) }
+    mut friend := sit_f
+    if pet_f > friend { friend = pet_f }
+    if emote_f > friend { friend = emote_f }
     for i in 0..cast.insects.len {
         flyer := &cast.insects[i]
         t := time * (if flyer.bee { f32(1.21) } else { f32(0.84) }) + f32(i) * 1.93
-        g.set_position(flyer.root, core.add(flyer.home, core.vec3(0.43 * t.sin(), 0.16 * (2.0 * t).cos(), 0.30 * t.cos())))
-        g.set_angles(flyer.root, 0.12 * (t * 1.6).cos(), 0.67 * t.cos(), 0.10 * t.sin())
+        home_pos := core.add(flyer.home, core.vec3(0.43 * t.sin(), 0.16 * (2.0 * t).cos(), 0.30 * t.cos()))
+        mut pos := home_pos
+        mut yaw := 0.67 * t.cos()
+        if has_player && friend > 0.0 {
+            dist := core.length(core.sub(flyer.home, player_pos))
+            prox := 1.0 - smooth_step(2.6, 4.6, dist)
+            blend := friend * prox
+            if blend > 0.0 {
+                orbit_ang := time * (if flyer.bee { f32(1.45) } else { f32(1.05) }) + f32(i) * 1.5708
+                orbit_r: f32 = if flyer.bee { 0.68 } else { 0.78 }
+                orbit_y := (if flyer.bee { f32(0.40) } else { f32(0.58) }) + 0.10 * (time * 2.1 + f32(i)).sin()
+                orbit_pos := core.add(player_pos, core.vec3(orbit_r * orbit_ang.cos(), orbit_y, orbit_r * orbit_ang.sin()))
+                pos = core.add(core.scale(home_pos, 1.0 - blend), core.scale(orbit_pos, blend))
+                orbit_yaw := orbit_ang + 1.5708
+                yaw = yaw + (orbit_yaw - yaw) * blend
+            }
+        }
+        g.set_position(flyer.root, pos)
+        g.set_angles(flyer.root, 0.12 * (t * 1.6).cos(), yaw, 0.10 * t.sin())
         wave: f32 = if flyer.bee { 0.13 + 0.44 * (time * 44.0 + f32(i)).sin() } else { 0.28 + 0.52 * (time * 11.0 + f32(i)).sin() }
         if flyer.bee {
             g.set_angles(flyer.left, 0.0, 0.0, wave)
@@ -441,13 +565,21 @@ pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player:
         g.set_position(node, core.vec3(x, 3.85 * (1.0 - u), z))
         g.set_angles(node, 0.5 * phase.sin(), 0.8 * phase.cos(), f + 0.55 * time)
     }
-    age := f32(session.tick - session.picked_tick) + sub
-    active := session.last_flower >= 0 && age >= 0.0 && age < 54.0
+    flower_age := f32(session.tick - session.picked_tick) + sub
+    flower_active := session.last_flower >= 0 && flower_age >= 0.0 && flower_age < 54.0
+    pet_active := has_player && cozy.pet_age >= 0.0 && cozy.pet_age < 1.35
+    emote_active := has_player && cozy.emote_age >= 0.0 && cozy.emote_age < 1.15
+    // Prefer the most recently triggered celebration so rapid actions transition cleanly.
+    mut mode := 0
+    mut best_age: f32 = 1.0e9
+    if flower_active { mode = 1; best_age = flower_age / 60.0 }
+    if pet_active && cozy.pet_age < best_age { mode = 2; best_age = cozy.pet_age }
+    if emote_active && cozy.emote_age < best_age { mode = 3; best_age = cozy.emote_age }
     for i in 0..cast.motes.len {
         mote := cast.motes[i]
-        g.set_visible(mote, active)
-        if active {
-            u := age / 54.0
+        g.set_visible(mote, mode != 0)
+        if mode == 1 {
+            u := flower_age / 54.0
             angle := f32(i) * 1.0471976 + 0.26
             pos := session.scene.entities[session.last_flower].position
             drift := (0.12 + u * 0.92) * angle.cos()
@@ -455,6 +587,16 @@ pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player:
             radius := (0.075 + 0.066 * (3.14159 * u).sin()) * (1.0 - u * u)
             g.set_scale(mote, core.vec3(radius, radius, radius))
             g.set_angles(mote, -0.24, 0.0, angle.cos() * 0.4 + u * 0.65)
+        } else if mode != 0 {
+            dur: f32 = if mode == 2 { 1.35 } else { 1.15 }
+            u := best_age / dur
+            angle := f32(i) * 1.0471976 + 0.35 + best_age * 1.4
+            head_base := core.add(player_pos, core.vec3(0.0, 0.50, 0.0))
+            spread := 0.22 + u * 0.52
+            g.set_position(mote, core.add(head_base, core.vec3(spread * angle.cos(), u * (0.92 + 0.22 * angle.sin()), spread * angle.sin())))
+            radius := (0.065 + 0.055 * (3.14159 * u).sin()) * (1.0 - u * u)
+            g.set_scale(mote, core.vec3(radius, radius, radius))
+            g.set_angles(mote, -0.22, 0.0, angle.cos() * 0.35 + u * 0.60)
         }
     }
 }

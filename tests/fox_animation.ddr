@@ -9,9 +9,11 @@ import ..src.play_view as view
 import ..src.woodland_ground as ground
 
 fn still() -> play.PlayerMotion {
-    play.PlayerMotion { seconds: 0.0, heading: 0.0, walk_phase: 0.0, run_weight: 0.0, grounded: true,
+    play.PlayerMotion {
+        seconds: 0.0, heading: 0.0, walk_phase: 0.0, run_weight: 0.0, grounded: true,
         vertical_velocity: 0.0, takeoff_age: -1.0, landing_age: -1.0, boost_age: -1.0, landing_strength: 0.0,
-        bank: 0.0, drive: 0.0 }
+        bank: 0.0, drive: 0.0
+    }
 }
 
 fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
@@ -236,7 +238,7 @@ fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
         mut lowest: f32 = 2.0
         for j in 0..(vertices.len / gfx.VERTEX_FLOATS) {
             b := j * gfx.VERTEX_FLOATS
-            pt := core.transform_point(matrix, core.vec3(vertices[b], vertices[b+1], vertices[b+2]))
+            pt := core.transform_point(matrix, core.vec3(vertices[b], vertices[b + 1], vertices[b + 2]))
             surface := support_y + ground.height(&world.cast.ground, &world.course, &s, pt.x, pt.z, support_y, true)
             if pt.y - surface < lowest { lowest = pt.y - surface }
         }
@@ -273,7 +275,7 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
                 mut lowest := core.vec3(0.0, 10.0, 0.0)
                 for j in 0..(skin.vertices.len / gfx.VERTEX_FLOATS) {
                     b := j * gfx.VERTEX_FLOATS
-                    q := core.transform_point(matrix, core.vec3(skin.vertices[b], skin.vertices[b+1], skin.vertices[b+2]))
+                    q := core.transform_point(matrix, core.vec3(skin.vertices[b], skin.vertices[b + 1], skin.vertices[b + 2]))
                     if q.y < lowest.y { lowest = q }
                 }
                 surface := support + ground.height(&world.cast.ground, &world.course, &s, lowest.x, lowest.z, support, true)
@@ -347,4 +349,158 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
         }
     }
     assert(samples >= 4 && lifted)
+}
+
+@test fn cozy_stroll_warms_up_mid_speed_without_touching_stand_or_full_trot() {
+    clips := fox.clips().unwrap()
+    mut m := still()
+    m.seconds = 0.72
+    m.walk_phase = 1.15
+    m.run_weight = 0.0
+    stand := fox.pose(&clips, &m)
+    m.run_weight = 0.06
+    early := fox.pose(&clips, &m)
+    m.run_weight = 0.12
+    low := fox.pose(&clips, &m)
+    m.run_weight = 0.46
+    stroll := fox.pose(&clips, &m)
+    m.run_weight = 0.80
+    high := fox.pose(&clips, &m)
+    m.run_weight = 0.90
+    late := fox.pose(&clips, &m)
+    m.run_weight = 1.0
+    trot := fox.pose(&clips, &m)
+    // Pose stays strictly linear (zero stroll layer) on [0.0, 0.12] and [0.80, 1.0].
+    assert((early.tail[2].y - 0.5 * (stand.tail[2].y + low.tail[2].y)).abs() < 0.0001)
+    assert((late.tail[2].y - 0.5 * (high.tail[2].y + trot.tail[2].y)).abs() < 0.0001)
+    assert((early.head.z - 0.5 * (stand.head.z + low.head.z)).abs() < 0.0001)
+    assert((late.head.z - 0.5 * (high.head.z + trot.head.z)).abs() < 0.0001)
+    // At peak stroll (0.46), tail wag/pitch, head tilt, and ear bounce layer cleanly above linear blend.
+    assert((stroll.tail[2].x - 0.5 * (low.tail[2].x + high.tail[2].x)).abs() > 0.08)
+    assert((stroll.tail[2].y - 0.5 * (low.tail[2].y + high.tail[2].y)).abs() > 0.08)
+    assert((stroll.head.z - 0.5 * (low.head.z + high.head.z)).abs() > 0.04)
+    m.walk_phase = 2.65
+    m.run_weight = 0.12
+    low_b := fox.pose(&clips, &m)
+    m.run_weight = 0.46
+    stroll_b := fox.pose(&clips, &m)
+    m.run_weight = 0.80
+    high_b := fox.pose(&clips, &m)
+    assert((stroll_b.ears[0].x - 0.5 * (low_b.ears[0].x + high_b.ears[0].x)).abs() > 0.03)
+}
+
+@test fn cozy_sit_lowers_pelvis_folds_hind_knees_and_clears_meadow_and_cloud_surfaces() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    for _ in 0..3 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    view.sync(&mut world, &s, true)
+    body := named(&world.graph, "Body_Foxglove").unwrap()
+    pelvis := core.vec3(0.0, 0.55, -0.36)
+    stand_body_y := core.transform_point(&world.graph.world(body).matrix, pelvis).y
+    rigged := art_asset.load_rigged("fox").unwrap()
+    mut soles: []core.Vec3 = []
+    mut boots: []ecs.Entity = []
+    mut boot_verts: [][]f32 = []
+    for part in ["FootFL", "FootFR", "FootBL", "FootBR"] {
+        soles.push(rigged.rig.get(part).unwrap().sole.unwrap())
+        b := named(&world.graph, part + "_Boots").unwrap()
+        boots.push(b)
+        boot_verts.push(world.graph.vertices(b))
+    }
+    mut stand_soles: [core.Vec3; 4] = [core.vec3(0.0, 0.0, 0.0); 4]
+    for i in 0..4 {
+        stand_soles[i] = core.transform_point(&world.graph.world(boots[i]).matrix, soles[i])
+    }
+    mut tail_meshes: []TailMesh = []
+    for e in world.graph.names().entities() {
+        name := world.graph.name(e)
+        if name.len >= 4 && name[0..4] == "Tail" {
+            tail_meshes.push(TailMesh { node: e, vertices: world.graph.vertices(e) })
+        }
+    }
+    body_verts := world.graph.vertices(body)
+    // Sit on the meadow and verify pelvis drop, hind tuck, front stability, and zero clipping.
+    play.toggle_sit(&mut s)
+    for _ in 0..35 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    assert(s.cozy_sitting && play.render_cozy(&s, true).sit_weight > 0.98)
+    view.sync(&mut world, &s, true)
+    sit_body_y := core.transform_point(&world.graph.world(body).matrix, pelvis).y
+    assert(sit_body_y < stand_body_y - 0.10)
+    heading := play.render_motion(&s, true).heading
+    fwd_x := heading.sin()
+    fwd_z := heading.cos()
+    for i in 0..4 {
+        now := core.transform_point(&world.graph.world(boots[i]).matrix, soles[i])
+        delta := core.sub(now, stand_soles[i])
+        along := delta.x * fwd_x + delta.z * fwd_z
+        if i < 2 { assert(core.length(core.vec3(delta.x, 0.0, delta.z)) < 0.03) }
+        else { assert(along > 0.10) }
+    }
+    for pass in 0..2 {
+        if pass == 1 {
+            // Continue into cozy snooze and check surface clearance again.
+            for _ in 0..380 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+            view.sync(&mut world, &s, true)
+        }
+        support := play.position(&s, world.player_node).y - 0.4
+        for i in 0..4 {
+            matrix := &world.graph.world(boots[i]).matrix
+            verts := &boot_verts[i]
+            for j in 0..(verts.len / gfx.VERTEX_FLOATS) {
+                b := j * gfx.VERTEX_FLOATS
+                pt := core.transform_point(matrix, core.vec3(verts[b], verts[b + 1], verts[b + 2]))
+                surface := support + ground.height(&world.cast.ground, &world.course, &s, pt.x, pt.z, support, true)
+                assert(pt.y >= surface - 0.006)
+            }
+        }
+        for i in 0..tail_meshes.len {
+            skin := &tail_meshes[i]
+            matrix := &world.graph.world(skin.node).matrix
+            for j in 0..(skin.vertices.len / gfx.VERTEX_FLOATS) {
+                b := j * gfx.VERTEX_FLOATS
+                pt := core.transform_point(matrix, core.vec3(skin.vertices[b], skin.vertices[b + 1], skin.vertices[b + 2]))
+                surface := support + ground.height(&world.cast.ground, &world.course, &s, pt.x, pt.z, support, true)
+                assert(pt.y > surface + 0.015)
+            }
+        }
+        body_mat := &world.graph.world(body).matrix
+        for j in 0..(body_verts.len / gfx.VERTEX_FLOATS) {
+            b := j * gfx.VERTEX_FLOATS
+            pt := core.transform_point(body_mat, core.vec3(body_verts[b], body_verts[b + 1], body_verts[b + 2]))
+            surface := support + ground.height(&world.cast.ground, &world.course, &s, pt.x, pt.z, support, true)
+            assert(pt.y > surface + 0.010)
+        }
+    }
+    // Sit on a high cloud platform and verify all 4 boots and tail clear the cloud surface.
+    mut cloud_s := play.start(&level)
+    cloud_s.bodies[cloud_s.player].position = core.vec3(-1.85, 0.88 + 0.4, 0.48)
+    cloud_s.bodies[cloud_s.player].velocity = core.vec3(0.0, 0.0, 0.0)
+    for _ in 0..5 { play.step(&mut cloud_s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    assert(cloud_s.bodies[cloud_s.player].grounded)
+    play.toggle_sit(&mut cloud_s)
+    for _ in 0..35 { play.step(&mut cloud_s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    assert(cloud_s.cozy_sitting && cloud_s.bodies[cloud_s.player].grounded)
+    view.sync(&mut world, &cloud_s, true)
+    cloud_support := play.position(&cloud_s, world.player_node).y - 0.4
+    for i in 0..4 {
+        matrix := &world.graph.world(boots[i]).matrix
+        verts := &boot_verts[i]
+        for j in 0..(verts.len / gfx.VERTEX_FLOATS) {
+            b := j * gfx.VERTEX_FLOATS
+            pt := core.transform_point(matrix, core.vec3(verts[b], verts[b + 1], verts[b + 2]))
+            surface := cloud_support + ground.height(&world.cast.ground, &world.course, &cloud_s, pt.x, pt.z, cloud_support, true)
+            assert(pt.y >= surface - 0.006)
+        }
+    }
+    for i in 0..tail_meshes.len {
+        skin := &tail_meshes[i]
+        matrix := &world.graph.world(skin.node).matrix
+        for j in 0..(skin.vertices.len / gfx.VERTEX_FLOATS) {
+            b := j * gfx.VERTEX_FLOATS
+            pt := core.transform_point(matrix, core.vec3(skin.vertices[b], skin.vertices[b + 1], skin.vertices[b + 2]))
+            surface := cloud_support + ground.height(&world.cast.ground, &world.course, &cloud_s, pt.x, pt.z, cloud_support, true)
+            assert(pt.y > surface + 0.015)
+        }
+    }
 }

@@ -29,11 +29,17 @@ fn step(s: &mut play.Session, x: f32, ticks: i32) {
     assert(play.render_rest(&s, true).age == 0.0)
 }
 
-fn expression_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> fox.Pose {
+struct PoseActing { pose: fox.Pose, acting: expression.Acting }
+
+fn acting_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> PoseActing {
     m := play.render_motion(s, true)
     mut p := fox.pose(c, &m)
-    _ := expression.apply(&mut p, g, s, &m, play.position(s, s.body_entities[s.player]), 1.0, true, core.vec3(0.0, 0.17, 0.0))
-    p
+    a := expression.apply(&mut p, g, s, &m, play.position(s, s.body_entities[s.player]), 1.0, true, core.vec3(0.0, 0.17, 0.0))
+    PoseActing { pose: p, acting: a }
+}
+
+fn expression_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> fox.Pose {
+    acting_at(s, c, g).pose
 }
 
 @test fn a_flower_guides_the_muzzle_and_a_pickup_softens_the_eyes_even_in_motion() {
@@ -72,8 +78,8 @@ fn expression_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> fo
         if name == "Head_Cocoa" { head = .Some(e) }
         if name == "Body_Daisyheart" && flower.is_none() { flower = .Some(e) }
     }
-    directions := [core.vec2(0.0,-1.0), core.vec2(-1.0,0.0), core.vec2(0.0,1.0), core.vec2(0.64,0.77)]
-    counts := [16,39,12,3]
+    directions := [core.vec2(0.0, -1.0), core.vec2(-1.0, 0.0), core.vec2(0.0, 1.0), core.vec2(0.64, 0.77)]
+    counts := [16, 39, 12, 3]
     for i in 0..4 {
         for _ in 0..counts[i] { play.step(&mut s, play.Input { x: directions[i].x, z: directions[i].y, jump: false }) }
     }
@@ -90,4 +96,162 @@ fn expression_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> fo
         if gap > highest { highest = gap }
     }
     assert(s.flowers == 0 && lowest > 0.025 && highest < 0.23 && highest - lowest > 0.025)
+}
+
+fn find_node(v: &play_view.View, name: string) -> Option<ecs.Entity> {
+    for e in v.graph.nodes() { if v.graph.name(e) == name { return .Some(e) } }
+    .None
+}
+
+@test fn manual_and_auto_sit_snooze_close_eyelids_and_keep_standing_idle_clean() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut v := play_view.build(&s).unwrap()
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+    step(&mut s, 0.0, 134)
+    early := acting_at(&s, &c, &g)
+    assert(early.acting.sit == 0.0 && early.acting.snooze == 0.0)
+    play.toggle_sit(&mut s)
+    step(&mut s, 0.0, 32)
+    sitting := acting_at(&s, &c, &g)
+    assert(sitting.acting.sit > 0.95 && sitting.acting.snooze == 0.0)
+    step(&mut s, 0.0, 360)
+    snoozing := acting_at(&s, &c, &g)
+    assert(snoozing.acting.snooze == 1.0 && snoozing.pose.eye_open == 0.0)
+    assert((snoozing.acting.blush - 0.45).abs() < 0.01)
+    play_view.sync(&mut v, &s, true)
+    lid_l := find_node(&v, "LidL_Smile").unwrap()
+    lid_r := find_node(&v, "LidR_Smile").unwrap()
+    eye_l := find_node(&v, "EyeL_Dew").unwrap()
+    assert(v.graph.world(lid_l).visible && v.graph.world(lid_r).visible && !v.graph.world(eye_l).visible)
+    // Auto-sit begins only after 9.0s idle and auto-snooze after 14.0s idle.
+    mut auto_s := play.start(&level)
+    step(&mut auto_s, 0.0, 620)
+    auto_sat := acting_at(&auto_s, &c, &g)
+    assert(auto_sat.acting.sit > 0.95 && auto_sat.acting.snooze == 0.0)
+    step(&mut auto_s, 0.0, 340)
+    auto_slept := acting_at(&auto_s, &c, &g)
+    assert(auto_slept.acting.snooze == 1.0 && auto_slept.pose.eye_open == 0.0)
+}
+
+@test fn petting_produces_rosy_blush_smiling_eyes_and_heart_motes() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut v := play_view.build(&s).unwrap()
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+    step(&mut s, 0.0, 5)
+    play_view.sync(&mut v, &s, true)
+    blush_node := find_node(&v, "Head_Blush").unwrap()
+    assert(v.graph.material_value(blush_node, .Emissive) == 0.0)
+    play.pet(&mut s)
+    step(&mut s, 0.0, 26)
+    res := acting_at(&s, &c, &g)
+    assert(res.acting.blush > 0.8 && res.pose.eye_open < 0.02)
+    play_view.sync(&mut v, &s, true)
+    assert(v.graph.material_value(blush_node, .Emissive) > 0.34)
+    lid_l := find_node(&v, "LidL_Smile").unwrap()
+    assert(v.graph.world(lid_l).visible)
+    player_y := play.position(&s, v.player_node).y
+    for i in [0, 2, 4] {
+        mote := v.cast.motes[i]
+        assert(v.graph.world(mote).visible && v.graph.world(mote).matrix.m[13] > player_y + 0.35)
+    }
+}
+
+@test fn emote_and_progressive_bouquet_track_collected_flowers() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut v := play_view.build(&s).unwrap()
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+    play_view.sync(&mut v, &s, true)
+    bouquet := find_node(&v, "Bouquet").unwrap()
+    stem0 := find_node(&v, "BouquetStem_0").unwrap()
+    stem1 := find_node(&v, "BouquetStem_1").unwrap()
+    stem2 := find_node(&v, "BouquetStem_2").unwrap()
+    assert(!v.graph.world(bouquet).visible && !v.graph.world(stem0).visible && !v.graph.world(stem1).visible)
+    play.emote(&mut s)
+    step(&mut s, 0.0, 20)
+    bow := acting_at(&s, &c, &g)
+    assert(bow.acting.blush >= 0.78 && bow.pose.chest.rotation.x > 0.25)
+    play_view.sync(&mut v, &s, true)
+    assert(v.graph.world(v.cast.motes[0]).visible)
+    step(&mut s, 0.0, 24)
+    spring := acting_at(&s, &c, &g)
+    assert(spring.pose.eye_open < 0.35 && spring.acting.happy > 0.6)
+    // Collecting flowers reveals the bouquet and adds one stem per collected flower.
+    for _ in 0..35 { play.step(&mut s, play.Input { x: -1.0, z: 0.0, jump: false }) }
+    assert(s.flowers == 1)
+    play_view.sync(&mut v, &s, true)
+    assert(v.graph.world(bouquet).visible && v.graph.world(stem0).visible && !v.graph.world(stem1).visible && !v.graph.world(stem2).visible)
+    s.collected[3] = true
+    s.flowers = 2
+    play_view.sync(&mut v, &s, true)
+    assert(v.graph.world(bouquet).visible && v.graph.world(stem0).visible && v.graph.world(stem1).visible && !v.graph.world(stem2).visible)
+    s.won = true
+    play.emote(&mut s)
+    step(&mut s, 0.0, 20)
+    proud := acting_at(&s, &c, &g)
+    assert(proud.pose.chest.rotation.x < 0.0)
+}
+
+@test fn butterfly_curiosity_turns_vallmos_gaze_toward_nearby_super_butterfly() {
+    mut level := play.demo()
+    level.bounds = .None
+    // Move Vallmo to a clear patch away from flowers so scent does not compete.
+    level.entities[1].position = core.vec3(0.0, 0.4, 8.0)
+    mut butterfly_idx := -1
+    for i in 0..level.entities.len {
+        if level.entities[i].role == .SuperButterfly { butterfly_idx = i; break }
+    }
+    assert(butterfly_idx >= 0)
+    // Heading starts at 0.35 rad: local left is (cos 0.35, 0, -sin 0.35) = (0.939, 0, -0.343).
+    mut far_level := level.clone()
+    far_level.entities[butterfly_idx].position = core.vec3(0.0, 1.5, 20.0)
+    mut s_far := play.start(&far_level)
+    step(&mut s_far, 0.0, 30)
+    mut left_level := level.clone()
+    left_level.entities[butterfly_idx].position = core.vec3(2.2, 1.8, 8.2)
+    mut s_left := play.start(&left_level)
+    step(&mut s_left, 0.0, 30)
+    mut right_level := level.clone()
+    right_level.entities[butterfly_idx].position = core.vec3(-1.4, 1.8, 9.6)
+    mut s_right := play.start(&right_level)
+    step(&mut s_right, 0.0, 30)
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+    base := expression_at(&s_far, &c, &g)
+    left_pose := expression_at(&s_left, &c, &g)
+    right_pose := expression_at(&s_right, &c, &g)
+    assert(left_pose.head.y > base.head.y + 0.15 && right_pose.head.y < base.head.y - 0.15)
+    assert(left_pose.head.x < base.head.x - 0.05 && left_pose.ears[0].x > base.ears[0].x + 0.05)
+    // Once collected, the butterfly no longer draws curious gaze.
+    s_left.collected[butterfly_idx] = true
+    after := expression_at(&s_left, &c, &g)
+    assert((after.head.y - base.head.y).abs() < 0.001)
+}
+
+@test fn living_flowers_sway_gently_and_companion_insects_visit_when_cozy() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut v := play_view.build(&s).unwrap()
+    step(&mut s, 0.0, 20)
+    play_view.sync(&mut v, &s, true)
+    assert(v.cast.flowers.len == 5 && v.cast.insects.len == 4)
+    for fl in v.cast.flowers {
+        local := v.graph.local(fl.root)
+        assert(local.rotation_x.abs() <= 0.045 && local.rotation_z.abs() <= 0.045)
+    }
+    player_pos := play.position(&s, v.player_node)
+    home_dist := core.length(core.sub(v.graph.local(v.cast.insects[0].root).position, player_pos))
+    bee_home := core.length(core.sub(v.graph.local(v.cast.insects[2].root).position, player_pos))
+    play.pet(&mut s)
+    step(&mut s, 0.0, 20)
+    play_view.sync(&mut v, &s, true)
+    pet_dist := core.length(core.sub(v.graph.local(v.cast.insects[0].root).position, player_pos))
+    bee_pet := core.length(core.sub(v.graph.local(v.cast.insects[2].root).position, player_pos))
+    assert(pet_dist < home_dist - 0.25 && pet_dist < 1.25)
+    assert(bee_pet < bee_home - 0.25 && bee_pet < 1.05)
 }
