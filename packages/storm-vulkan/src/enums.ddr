@@ -426,6 +426,9 @@ pub fn access(v: Access) -> u32 { u32(i32(v)) }
 // the implicit subpass before/after the render pass
 pub const SUBPASS_EXTERNAL: u32 = 4294967295
 
+// a barrier that does not transfer ownership between queue families
+pub const QUEUE_FAMILY_IGNORED: u32 = 4294967295
+
 pub const IMAGE_LAYOUT_PRESENT_SRC_KHR: u32 = 1000001002
 
 // --- Storm's own values and writers ---

@@ -116,6 +116,7 @@ struct NamedConstant { dunder: string, constant: string, comment: string }
 fn named_constants() -> []NamedConstant {
     [
         NamedConstant { dunder: "SUBPASS_EXTERNAL", constant: "VK_SUBPASS_EXTERNAL", comment: "the implicit subpass before/after the render pass" },
+        NamedConstant { dunder: "QUEUE_FAMILY_IGNORED", constant: "VK_QUEUE_FAMILY_IGNORED", comment: "a barrier that does not transfer ownership between queue families" },
         NamedConstant { dunder: "IMAGE_LAYOUT_PRESENT_SRC_KHR", constant: "VK_IMAGE_LAYOUT_PRESENT_SRC_KHR", comment: "" },
     ]
 }

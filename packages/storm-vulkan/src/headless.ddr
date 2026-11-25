@@ -86,8 +86,8 @@ pub unsafe fn copy_to_host(r: &state.Renderer) {
     transfer.dstAccessMask = enums.access(.TransferRead)
     transfer.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
     transfer.newLayout = enums.image_layout(.TransferSrcOptimal)
-    transfer.srcQueueFamilyIndex = 4294967295
-    transfer.dstQueueFamilyIndex = 4294967295
+    transfer.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    transfer.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     transfer.image = r.captureImage
     transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
     transfer.subresourceRange.levelCount = 1

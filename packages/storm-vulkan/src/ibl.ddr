@@ -178,8 +178,8 @@ unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_c
     b.dstAccessMask = dst_access
     b.oldLayout = old_layout
     b.newLayout = new_layout
-    b.srcQueueFamilyIndex = 4294967295
-    b.dstQueueFamilyIndex = 4294967295
+    b.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    b.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     b.image = image
     b.subresourceRange.aspectMask = enums.image_aspect(.Color)
     b.subresourceRange.baseMipLevel = base_mip

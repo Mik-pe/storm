@@ -123,8 +123,8 @@ pub unsafe fn composite(r: &mut state.Renderer, settings: &gfx.PostProcess) -> R
     barrier.dstAccessMask = enums.access(.ShaderRead)
     barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
     barrier.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
-    barrier.srcQueueFamilyIndex = 4294967295
-    barrier.dstQueueFamilyIndex = 4294967295
+    barrier.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    barrier.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     barrier.image = r.sceneImage
     barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
     barrier.subresourceRange.levelCount = 1

@@ -203,8 +203,8 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     to_transfer.dstAccessMask = enums.access(.TransferWrite)
     to_transfer.oldLayout = enums.image_layout(.Undefined)
     to_transfer.newLayout = enums.image_layout(.TransferDstOptimal)
-    to_transfer.srcQueueFamilyIndex = 4294967295
-    to_transfer.dstQueueFamilyIndex = 4294967295
+    to_transfer.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    to_transfer.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     to_transfer.image = r.uiAtlasImage
     to_transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_transfer.subresourceRange.levelCount = 1
@@ -226,13 +226,13 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     to_sample.dstAccessMask = enums.access(.ShaderRead)
     to_sample.oldLayout = enums.image_layout(.TransferDstOptimal)
     to_sample.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
-    to_sample.srcQueueFamilyIndex = 4294967295
-    to_sample.dstQueueFamilyIndex = 4294967295
+    to_sample.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    to_sample.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     to_sample.image = r.uiAtlasImage
     to_sample.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_sample.subresourceRange.levelCount = 1
     to_sample.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, 4096, 128, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_sample))
+    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.Transfer), enums.pipeline_stage(.FragmentShader), 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_sample))
 
     code = r.api.EndCommandBuffer(cmd)
     if code != 0 { return device.fail(&mut r, code, .Ui) }

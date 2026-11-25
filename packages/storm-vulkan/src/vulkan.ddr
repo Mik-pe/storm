@@ -365,8 +365,8 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
         barrier.dstAccessMask = enums.access(.None)
         barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
         barrier.newLayout = enums.IMAGE_LAYOUT_PRESENT_SRC_KHR
-        barrier.srcQueueFamilyIndex = 4294967295
-        barrier.dstQueueFamilyIndex = 4294967295
+        barrier.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+        barrier.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
         barrier.image = r.images[r.imageIndex]
         barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
         barrier.subresourceRange.levelCount = 1
