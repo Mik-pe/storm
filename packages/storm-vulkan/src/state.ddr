@@ -5,6 +5,7 @@ import .depth as depth
 import .ibl as ibl
 import .layout as vkl
 import .sdl as sdl
+import .shadow as shadow
 import .texture as texture
 import .ui as ui
 
@@ -132,23 +133,12 @@ pub struct Renderer {
     framebuffers: [ptr; 8],
     // Depth attachment, recreated together with the swapchain.
     depth: depth.Depth,
-    shadowInitialized: u32,
-    shadowImage: ptr,
-    shadowMemory: ptr,
-    shadowView: ptr,
-    shadowSampler: ptr,
-    shadowPass: ptr,
-    shadowFramebuffer: ptr,
-    shadowPipeline: ptr,
-    shadowPipelineLayout: ptr,
+    // The sun's shadow map (shadow.ddr). The set and its layout are bound by
+    // the main pass, the mesh pipelines and the environment maps, so they
+    // stay here; the rest of the cluster is `shadow.Shadow`.
+    shadow: shadow.Shadow,
     shadowSetLayout: ptr,
-    shadowPool: ptr,
     shadowSet: ptr,
-    lightBuffer: ptr,
-    lightMemory: ptr,
-    lightMapped: ptr,
-    shadowVertShader: ptr,
-    shadowFragShader: ptr,
     // Image-based lighting: built once at startup from the sky.
     environment: ibl.Environment,
 

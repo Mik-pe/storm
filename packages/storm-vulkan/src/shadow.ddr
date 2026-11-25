@@ -11,6 +11,31 @@ import .pipeline as pipelines
 import .shader as shader
 import .state as state
 
+// What this module owns: the shadow map image, its memory, view and sampler,
+// the shadow pass with its framebuffer, pipeline and layout, pool and shaders,
+// and the light's mapped buffer. Zeroed with the renderer; `setup` fills it,
+// `destroy` empties it. The two names other modules bind — the set and its
+// layout — stay on `Renderer`; everything else is read here only. The same
+// record and name as storm-metal's `shadow.Shadow`.
+@c_layout
+pub struct Shadow {
+    shadowInitialized: u32,
+    shadowImage: ptr,
+    shadowMemory: ptr,
+    shadowView: ptr,
+    shadowSampler: ptr,
+    shadowPass: ptr,
+    shadowFramebuffer: ptr,
+    shadowPipeline: ptr,
+    shadowPipelineLayout: ptr,
+    shadowPool: ptr,
+    lightBuffer: ptr,
+    lightMemory: ptr,
+    lightMapped: ptr,
+    shadowVertShader: ptr,
+    shadowFragShader: ptr,
+}
+
 // The shadow pass stores light-space distance in R32_SFLOAT with MAX blending.
 
 // libc memcpy, declared here because each module keeps its own bindings.
@@ -247,37 +272,37 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = pipelines.build(&r, &plan, addr(&mut pipeline))
         if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    r.shadowImage = image
-    r.shadowMemory = memory
-    r.shadowView = view
-    r.shadowSampler = sampler
-    r.shadowPass = pass
-    r.shadowFramebuffer = framebuffer
-    r.shadowPipeline = pipeline
-    r.shadowPipelineLayout = pipeline_layout
+    r.shadow.shadowImage = image
+    r.shadow.shadowMemory = memory
+    r.shadow.shadowView = view
+    r.shadow.shadowSampler = sampler
+    r.shadow.shadowPass = pass
+    r.shadow.shadowFramebuffer = framebuffer
+    r.shadow.shadowPipeline = pipeline
+    r.shadow.shadowPipelineLayout = pipeline_layout
     r.shadowSetLayout = set_layout
-    r.shadowPool = pool
+    r.shadow.shadowPool = pool
     r.shadowSet = set
-    r.lightBuffer = light_buffer
-    r.lightMemory = light_memory
-    r.lightMapped = light_mapped
-    r.shadowVertShader = vshader
-    r.shadowFragShader = fshader
+    r.shadow.lightBuffer = light_buffer
+    r.shadow.lightMemory = light_memory
+    r.shadow.lightMapped = light_mapped
+    r.shadow.shadowVertShader = vshader
+    r.shadow.shadowFragShader = fshader
     .Ready
 }
 
 // Writes the light matrix into the mapped uniform buffer.
 unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
-    if r.lightMapped == ptr(0) { return false }
-    _ := copy_bytes(r.lightMapped, addr(&light_vp[0]), 64)
-    _ := copy_bytes(ptr(usize(r.lightMapped) + 64), addr(&light_dir_c[0]), 16)
+    if r.shadow.lightMapped == ptr(0) { return false }
+    _ := copy_bytes(r.shadow.lightMapped, addr(&light_vp[0]), 64)
+    _ := copy_bytes(ptr(usize(r.shadow.lightMapped) + 64), addr(&light_dir_c[0]), 16)
     true
 }
 
 // --- recording ---
 
 pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
-    if r.pass != state.PASS_WAITING || r.shadowPass == ptr(0) { return false }
+    if r.pass != state.PASS_WAITING || r.shadow.shadowPass == ptr(0) { return false }
     if !set_light(&r, light_vp, light_dir_c) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
@@ -289,20 +314,20 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     store_u32(ptr(usize(addr(&mut clear[0])) + 8), depth.float_bits(-CLEAR_FAR))
     store_u32(ptr(usize(addr(&mut clear[0])) + 12), depth.float_bits(1.0))
     mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
-    pass.renderPass = r.shadowPass
-    pass.framebuffer = r.shadowFramebuffer
+    pass.renderPass = r.shadow.shadowPass
+    pass.framebuffer = r.shadow.shadowFramebuffer
     pass.renderArea.extent.width = SHADOW_SIZE
     pass.renderArea.extent.height = SHADOW_SIZE
     pass.clearValueCount = 1
     pass.pClearValues = addr(&mut clear[0])
     r.pass = state.PASS_SHADOW
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
-    r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadowPipeline)
+    r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadow.shadowPipeline)
     // light_vp(64) + model(64, filled per draw) + light_dir_c(16) = 144 bytes.
     mut push: [f32; 36] = [0.0; 36]
     for i in 0..16 { push[i] = light_vp[i] }
     for i in 0..4 { push[32 + i] = light_dir_c[i] }
-    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 0, 144, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[r.current], r.shadow.shadowPipelineLayout, enums.shader_stage(.Vertex), 0, 144, addr(&push[0]))
     true
 }
 
@@ -318,7 +343,7 @@ pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) 
     r.vertexCursor = offset + bytes
     mut push: [f32; 36] = [0.0; 36]
     for i in 0..16 { push[i] = model[i] }
-    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 64, 64, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[r.current], r.shadow.shadowPipelineLayout, enums.shader_stage(.Vertex), 64, 64, addr(&push[0]))
     r.api.CmdBindVertexBuffers(r.commands[r.current], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdDraw(r.commands[r.current], u32(vertices.len / gfx.VERTEX_FLOATS), 1, 0, 0)
     true
@@ -328,7 +353,7 @@ pub unsafe fn end(r: &mut state.Renderer) -> bool {
     if r.pass != state.PASS_SHADOW { return false }
     r.api.CmdEndRenderPass(r.commands[r.current])
     r.pass = state.PASS_WAITING
-    r.shadowInitialized = 1
+    r.shadow.shadowInitialized = 1
     true
 }
 
@@ -341,26 +366,26 @@ pub unsafe fn bind(r: &state.Renderer) -> bool {
 
 // The mesh descriptor also exists when the optional shadow pass is skipped.
 pub unsafe fn ensure_readable(r: &mut state.Renderer) -> bool {
-    if r.shadowInitialized != 0 { return true }
+    if r.shadow.shadowInitialized != 0 { return true }
     id := core.identity()
     light: [f32; 4] = [0.0, 1.0, 0.0, 1.0]
     begin(&mut r, &id.m, &light) && end(&mut r)
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
-    r.api.DestroyPipeline(r.device, r.shadowPipeline, ptr(0))
-    r.api.DestroyShaderModule(r.device, r.shadowVertShader, ptr(0))
-    r.api.DestroyShaderModule(r.device, r.shadowFragShader, ptr(0))
-    r.api.DestroyPipelineLayout(r.device, r.shadowPipelineLayout, ptr(0))
-    r.api.DestroyDescriptorPool(r.device, r.shadowPool, ptr(0))
+    r.api.DestroyPipeline(r.device, r.shadow.shadowPipeline, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.shadow.shadowVertShader, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.shadow.shadowFragShader, ptr(0))
+    r.api.DestroyPipelineLayout(r.device, r.shadow.shadowPipelineLayout, ptr(0))
+    r.api.DestroyDescriptorPool(r.device, r.shadow.shadowPool, ptr(0))
     r.api.DestroyDescriptorSetLayout(r.device, r.shadowSetLayout, ptr(0))
-    r.api.DestroyFramebuffer(r.device, r.shadowFramebuffer, ptr(0))
-    r.api.DestroyRenderPass(r.device, r.shadowPass, ptr(0))
-    r.api.DestroySampler(r.device, r.shadowSampler, ptr(0))
-    r.api.DestroyImageView(r.device, r.shadowView, ptr(0))
-    r.api.DestroyImage(r.device, r.shadowImage, ptr(0))
-    r.api.FreeMemory(r.device, r.shadowMemory, ptr(0))
-    if r.lightMapped != ptr(0) { r.api.UnmapMemory(r.device, r.lightMemory) }
-    r.api.DestroyBuffer(r.device, r.lightBuffer, ptr(0))
-    r.api.FreeMemory(r.device, r.lightMemory, ptr(0))
+    r.api.DestroyFramebuffer(r.device, r.shadow.shadowFramebuffer, ptr(0))
+    r.api.DestroyRenderPass(r.device, r.shadow.shadowPass, ptr(0))
+    r.api.DestroySampler(r.device, r.shadow.shadowSampler, ptr(0))
+    r.api.DestroyImageView(r.device, r.shadow.shadowView, ptr(0))
+    r.api.DestroyImage(r.device, r.shadow.shadowImage, ptr(0))
+    r.api.FreeMemory(r.device, r.shadow.shadowMemory, ptr(0))
+    if r.shadow.lightMapped != ptr(0) { r.api.UnmapMemory(r.device, r.shadow.lightMemory) }
+    r.api.DestroyBuffer(r.device, r.shadow.lightBuffer, ptr(0))
+    r.api.FreeMemory(r.device, r.shadow.lightMemory, ptr(0))
 }
