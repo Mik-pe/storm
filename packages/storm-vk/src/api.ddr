@@ -85,6 +85,7 @@ pub struct Api {
     DestroyDescriptorSetLayout: extern fn(ptr, ptr, ptr),
     CreateDescriptorPool: extern fn(ptr, ptr, ptr, ptr) -> i32,
     DestroyDescriptorPool: extern fn(ptr, ptr, ptr),
+    ResetDescriptorPool: extern fn(ptr, ptr, u32) -> i32,
     AllocateDescriptorSets: extern fn(ptr, ptr, ptr) -> i32,
     UpdateDescriptorSets: extern fn(ptr, u32, ptr, u32, ptr),
     CmdBindDescriptorSets: extern fn(ptr, u32, ptr, u32, u32, ptr, u32, ptr),
@@ -329,6 +330,9 @@ pub unsafe fn load(api: &mut Api, library: ptr, windowed: bool) -> bool {
     symbol = dl.symbol(library, cstr("vkDestroyDescriptorPool"))
     if symbol == ptr(0) { return false }
     api.DestroyDescriptorPool = ffi_fn(symbol)
+    symbol = dl.symbol(library, cstr("vkResetDescriptorPool"))
+    if symbol == ptr(0) { return false }
+    api.ResetDescriptorPool = ffi_fn(symbol)
     symbol = dl.symbol(library, cstr("vkAllocateDescriptorSets"))
     if symbol == ptr(0) { return false }
     api.AllocateDescriptorSets = ffi_fn(symbol)
