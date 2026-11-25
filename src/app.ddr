@@ -32,9 +32,65 @@ import text
 import ui
 import ui.widgets as widgets
 
-// Every character the editor draws has to be packed into the atlas.
-const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ – åäö ÅÄÖ ²³"
+// Every character the editor and cozy HUD draw has to be packed into the atlas.
+const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·• åäö ÅÄÖ éÉ ²³"
 const TITLE: string = "Storm"
+
+pub fn apply_blossom_mood(sky: &mut gfx.Sky, mood: cozy_control.SkyMood, won: bool) -> core.Vec3 {
+    match mood {
+        .CherryDay => {
+            s := core.normalize(core.vec3(-0.72, 0.88, 0.58))
+            if won {
+                sky.horizon = [1.0, 0.72, 0.68, 0.12]
+                sky.zenith = [0.70, 0.62, 0.85, 1.0]
+                sky.sun_color = [1.0, 0.88, 0.70, 1.0]
+                sky.sun = [s.x, s.y, s.z, 2.45]
+                sky.diffuse_fill = 0.45
+            } else {
+                sky.horizon = [0.99, 0.78, 0.82, 0.16]
+                sky.zenith = [0.63, 0.65, 0.86, 1.0]
+                sky.sun_color = [1.0, 0.91, 0.76, 1.0]
+                sky.sun = [s.x, s.y, s.z, 2.15]
+                sky.diffuse_fill = 0.40
+            }
+            s
+        },
+        .GoldenHour => {
+            s := core.normalize(core.vec3(-0.88, 0.48, 0.46))
+            sky.horizon = [1.0, 0.69, 0.54, 0.14]
+            sky.zenith = [0.58, 0.52, 0.78, 1.0]
+            sky.sun_color = [1.0, 0.78, 0.50, 1.0]
+            sky.sun = [s.x, s.y, s.z, if won { f32(2.75) } else { f32(2.50) }]
+            sky.diffuse_fill = 0.46
+            s
+        },
+        .Twilight => {
+            s := core.normalize(core.vec3(-0.62, 0.58, 0.72))
+            sky.horizon = [0.80, 0.52, 0.74, 0.18]
+            sky.zenith = [0.24, 0.22, 0.46, 1.0]
+            sky.sun_color = [0.96, 0.76, 0.90, 1.0]
+            sky.sun = [s.x, s.y, s.z, if won { f32(1.65) } else { f32(1.45) }]
+            sky.diffuse_fill = 0.52
+            s
+        },
+    }
+}
+
+fn hud_mood(mood: cozy_control.SkyMood) -> play_ui.MoodChoice {
+    match mood {
+        .CherryDay => .CherryDay,
+        .GoldenHour => .GoldenHour,
+        .Twilight => .Twilight,
+    }
+}
+
+fn hud_cam_mode(mode: cozy_control.CameraMode) -> play_ui.CamChoice {
+    match mode {
+        .Close => .Close,
+        .Normal => .Normal,
+        .Explore => .Explore,
+    }
+}
 
 // Report why the backend refused, close it, and stop with a failure.
 fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
@@ -217,8 +273,6 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         .Ok(view) => view, .Err(err) => { return stop(move window, err) },
     }
     custom_eye := args.flag(argv, "--eye")
-    forest_horizon: [f32; 4] = [0.99, 0.78, 0.82, 0.16]
-    forest_zenith: [f32; 4] = [0.63, 0.65, 0.86, 1.0]
     backdrop: [f32; 4] = [0.24, 0.34, 0.38, 1.0]
     mut hud := widgets.State::new()
     mut cozy_hud := widgets.State::new()
@@ -227,6 +281,19 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut paused := false
     mut cozy := cozy_control.new()
     cozy_control.reset(&mut cozy, &session)
+    mood_arg := args.value(argv, "--mood")
+    if mood_arg == "golden" { cozy.mood = .GoldenHour }
+    else if mood_arg == "twilight" { cozy.mood = .Twilight }
+    cam_arg := args.value(argv, "--cam")
+    if cam_arg == "close" {
+        cozy.camera_mode = .Close
+        cozy.cam_preset_t = 0.0
+    } else if cam_arg == "explore" {
+        cozy.camera_mode = .Explore
+        cozy.cam_preset_t = 2.0
+    }
+    if args.flag(argv, "--compass") { cozy.compass_on = true }
+    if args.flag(argv, "--options") { cozy.options_open = true }
     glb := args.value(argv, "--glb")
     if glb.len > 0 {
         match load_model(&mut graph, glb, core.vec3(0.0, 0.0, 4.2)) {
@@ -286,6 +353,11 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     if !atlas.add_text(&face, GLYPHS) || !atlas.add_text(&face, session.scene.name) {
         return stop(move window, "no glyphs packed")
     }
+    for item in session.scene.entities {
+        if !atlas.add_text(&face, item.name) {
+            return stop(move window, "no glyphs packed")
+        }
+    }
     pixels := atlas.copy_pixels()
     atlas_size := atlas.size()
     uploaded := window.ui_atlas(pixels, atlas_size, atlas_size)
@@ -323,6 +395,11 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                                 mut fresh_atlas := text.Atlas::new(atlas_size, atlas_size)
                                 if !fresh_atlas.add_text(&face, GLYPHS) || !fresh_atlas.add_text(&face, level.name) {
                                     return stop(move window, "could not pack the updated scene title")
+                                }
+                                for item in level.entities {
+                                    if !fresh_atlas.add_text(&face, item.name) {
+                                        return stop(move window, "could not pack the updated scene names")
+                                    }
                                 }
                                 updated := window.ui_atlas(fresh_atlas.copy_pixels(), atlas_size, atlas_size)
                                 if updated.is_err() { return stop(move window, updated.unwrap_err()) }
@@ -365,32 +442,29 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             if action == .TogglePause || frame.input.hit(.Q) { paused = !paused }
             frame_sky.horizon = backdrop.clone()
             blossom := session.scene.theme == .Blossom
+            mut active_sun := sun
             if blossom {
-                if session.won {
-                    // Gently warm the meadow into a rosy-golden sunset when the bouquet is complete.
-                    frame_sky.horizon = [1.0, 0.72, 0.68, 0.12]
-                    frame_sky.zenith = [0.70, 0.62, 0.85, 1.0]
-                    frame_sky.sun_color = [1.0, 0.88, 0.70, 1.0]
-                    frame_sky.sun[3] = 2.45
-                    frame_sky.diffuse_fill = 0.45
-                } else {
-                    frame_sky.horizon = forest_horizon.clone()
-                    frame_sky.zenith = forest_zenith.clone()
-                    frame_sky.sun[3] = 2.15
-                    frame_sky.diffuse_fill = 0.40
-                }
                 match cozy_action {
                     .Sit => play.toggle_sit(&mut session),
                     .Emote => play.emote(&mut session),
                     .ResetCam => cozy_control.reset_camera(&mut cozy),
+                    .ToggleOptions => cozy_control.toggle_options(&mut cozy),
+                    .MoodCherry => cozy_control.set_mood(&mut cozy, .CherryDay),
+                    .MoodGolden => cozy_control.set_mood(&mut cozy, .GoldenHour),
+                    .MoodTwilight => cozy_control.set_mood(&mut cozy, .Twilight),
+                    .CamClose => cozy_control.set_camera_mode(&mut cozy, .Close),
+                    .CamNormal => cozy_control.set_camera_mode(&mut cozy, .Normal),
+                    .CamExplore => cozy_control.set_camera_mode(&mut cozy, .Explore),
+                    .ToggleCompass => cozy_control.toggle_compass(&mut cozy),
+                    .ToggleStroll => cozy_control.toggle_stroll(&mut cozy),
                     .None => {},
                 }
                 if !capturing {
                     pre_area := play_view.framing(&game_view, &session, paused || capturing)
-                    pre_cam := if !custom_eye { play_view.camera_cozy(&pre_area, aspect, cozy.yaw, cozy.zoom) } else { camera }
+                    pre_cam := if !custom_eye { play_view.camera_blend(&pre_area, aspect, cozy.cam_preset_t, cozy.yaw, cozy.zoom) } else { camera }
                     cam_adj := cozy_control.cam_adjusted(&cozy)
                     ui_captured := play_ui.woodland_pointer_captured(f32(frame.width), f32(frame.height),
-                        paused, session.won, cam_adj, frame.input.mouse.x, frame.input.mouse.y)
+                        paused, session.won, cam_adj, cozy.options_open, frame.input.mouse.x, frame.input.mouse.y)
                     fox_pos := if session.player >= 0 { play.position(&session, session.body_entities[session.player]) } else { core.vec3(0.0, 0.0, 0.0) }
                     radius := if session.player >= 0 { session.scene.entities[session.body_entities[session.player]].size.y * 0.5 } else { f32(0.4) }
                     support_y := canopy.surface_below(&game_view.course, &session, fox_pos.x, fox_pos.y - radius + 0.08, fox_pos.z)
@@ -405,6 +479,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                         cozy_control.sync_toasts(&mut cozy, &session)
                     }
                 }
+                active_sun = apply_blossom_mood(&mut frame_sky, cozy.mood, session.won)
                 guide := cozy_control.guide(&cozy)
                 play_view.sync_guide(&mut game_view, &session, paused || capturing, &guide)
             } else {
@@ -418,14 +493,14 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             area := play_view.framing(&game_view, &session, paused || capturing)
             if !custom_eye {
                 view_camera = if blossom {
-                    play_view.camera_cozy(&area, aspect, cozy.yaw, cozy.zoom)
+                    play_view.camera_blend(&area, aspect, cozy.cam_preset_t, cozy.yaw, cozy.zoom)
                 } else {
                     play_view.camera(&area, aspect)
                 }
             }
-            radius := 4.0 + core.length(area.extent)
-            frame_sky.light_vp = shadow_view(sun, area.center, radius).m
-            frame_sky.light_dir_c[3] = core.dot(area.center, sun) + radius * 1.6
+            radius := play_view.shadow_radius(&area, cozy.cam_preset_t, cozy.zoom)
+            frame_sky.light_vp = shadow_view(active_sun, area.center, radius).m
+            frame_sky.light_dir_c = [active_sun.x, active_sun.y, active_sun.z, core.dot(area.center, active_sun) + radius * 1.6]
         } else {
             if dt > 0.1 { dt = 0.1 }
             // Mouse look only while the right button is held.
@@ -545,6 +620,11 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                         motion := play.render_motion(&session, paused || capturing)
                         rest := play.render_rest(&session, paused || capturing)
                         snoozing := play_view.is_snoozing(&cozy_state, &motion, &rest)
+                        hint := if cozy.compass_on {
+                            cozy_control.compass_hint(&session, cozy.yaw)
+                        } else {
+                            cozy_control.CompassHint { active: false, is_butterfly: false, above: false, below: false, text: "", angle: 0.0 }
+                        }
                         cozy_action = play_ui.woodland_cozy(&mut cozy_hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
                             &play_ui.CozyHudInfo {
                                 sitting: cozy_state.sitting,
@@ -553,6 +633,18 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                                 toast: cozy.toast_text.clone(),
                                 toast_alpha: cozy_control.toast_alpha(&cozy),
                                 cam_adjusted: cozy_control.cam_adjusted(&cozy),
+                                options_open: cozy.options_open,
+                                mood: hud_mood(cozy.mood),
+                                cam_mode: hud_cam_mode(cozy.camera_mode),
+                                compass_on: cozy.compass_on && hint.active,
+                                stroll_mode: cozy.stroll_mode,
+                                compass_text: hint.text,
+                                compass_angle: hint.angle,
+                                compass_butterfly: hint.is_butterfly,
+                                compass_above: hint.above,
+                                compass_below: hint.below,
+                                total_flowers: session.total_flowers,
+                                has_bonus: session.total_butterflies > 0,
                             })
                     } else {
                         action = play_ui.draw(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),

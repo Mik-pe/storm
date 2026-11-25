@@ -6,6 +6,29 @@ import ui.widgets as widgets
 import ..src.editor as editor
 import ..src.play_ui as hud
 
+fn default_cozy_info() -> hud.CozyHudInfo {
+    hud.CozyHudInfo {
+        sitting: false,
+        snoozing: false,
+        hovering_fox: false,
+        toast: "",
+        toast_alpha: 0.0,
+        cam_adjusted: false,
+        options_open: false,
+        mood: .CherryDay,
+        cam_mode: .Normal,
+        compass_on: false,
+        stroll_mode: false,
+        compass_text: "",
+        compass_angle: 0.0,
+        compass_butterfly: false,
+        compass_above: false,
+        compass_below: false,
+        total_flowers: 10,
+        has_bonus: true,
+    }
+}
+
 @test fn play_transport_wraps_and_only_steps_a_paused_game() {
     atlas := text.Atlas::new(16, 16)
     mut canvas := ui.Canvas::new()
@@ -64,7 +87,7 @@ import ..src.play_ui as hud
                 mut s := widgets.State::new()
                 c.clear()
                 chosen := hud.woodland(&mut s, &mut c, &atlas, &p, f32(width), 500.0,
-                    "Blomsterskogen", if won { 8 } else { 2 }, 8, if bonus { 3 } else { 1 }, 3, paused, won)
+                    "Blomsterskogen", if won { 10 } else { 2 }, 10, if bonus { 5 } else { 1 }, 5, paused, won)
                 left := if won { hud.Action.Restart } else if paused { hud.Action.Step } else { hud.Action.Idle }
                 expected := [hud.Action.Studio, .TogglePause, left, if paused || won { hud.Action.Restart } else { hud.Action.Idle }, .Idle]
                 assert(chosen == expected[i])
@@ -101,12 +124,12 @@ import ..src.play_ui as hud
 fn cozy_atlas() -> text.Atlas {
     face := text.load_font(ui.RASTER_SIZE)
     mut atlas := text.Atlas::new(1024, 1024)
-    glyphs := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ – åäö ÅÄÖ ²³"
+    glyphs := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·• åäö ÅÄÖ éÉ ²³"
     assert(atlas.add_text(&face, glyphs))
     atlas
 }
 
-@test fn woodland_pastel_pips_and_hint_fit_cleanly_across_widths() {
+@test fn woodland_dynamic_pips_and_hint_fit_cleanly_for_any_flower_count() {
     atlas := cozy_atlas()
     mut c := ui.Canvas::new()
     mut s := widgets.State::new()
@@ -114,49 +137,46 @@ fn cozy_atlas() -> text.Atlas {
 
     widths: [f32; 4] = [380.0, 430.0, 600.0, 1280.0]
     heights: [f32; 2] = [320.0, 800.0]
-    for width in widths {
-        for height in heights {
-            c.clear()
-            _ := hud.woodland(&mut s, &mut c, &atlas, &p, width, height,
-                "Blomsterskogen", 3, 5, 1, 3, false, false)
-            verts := c.vertices()
-            assert(verts.len > 0)
-            mut max_score_x: f32 = 0.0
-            mut max_score_y: f32 = 0.0
-            mut max_hint_x: f32 = 0.0
-            for i in 0..verts.len / 8 {
-                at := i * 8
-                vx := verts[at]
-                vy := verts[at + 1]
-                assert(vx >= 0.0 && vx <= width && vy >= 0.0 && vy <= height)
-                if vy < 120.0 && vx < width - 170.0 {
-                    if vx > max_score_x { max_score_x = vx }
-                    if vy > max_score_y { max_score_y = vy }
+    totals: [i32; 4] = [5, 10, 12, 20]
+    for total in totals {
+        for width in widths {
+            for height in heights {
+                c.clear()
+                _ := hud.woodland(&mut s, &mut c, &atlas, &p, width, height,
+                    "Blomsterskogen", total / 2, total, 2, 5, false, false)
+                verts := c.vertices()
+                assert(verts.len > 0)
+                mut max_score_x: f32 = 0.0
+                mut max_hint_x: f32 = 0.0
+                for i in 0..verts.len / 8 {
+                    at := i * 8
+                    vx := verts[at]
+                    vy := verts[at + 1]
+                    assert(vx >= 0.0 && vx <= width && vy >= 0.0 && vy <= height)
+                    if vy < 135.0 && vx < width - 170.0 && vx > max_score_x { max_score_x = vx }
+                    if vy > height - 60.0 && vx < width - 380.0 && vx > max_hint_x { max_hint_x = vx }
                 }
-                if vy > height - 60.0 && vx < width - 270.0 {
-                    if vx > max_hint_x { max_hint_x = vx }
+                if width >= 430.0 {
+                    assert(max_score_x < width - 168.0)
+                    // Bottom-left hint bar never encroaches on the 377px bottom-right cozy + Alternativ bar.
+                    assert(max_hint_x <= width - 18.0 - 388.0)
                 }
-            }
-            if width >= 430.0 {
-                // Score card stays well inside score_bounds width/height and clear of top-right controls.
-                assert(max_score_x < width - 168.0)
-                assert(max_score_y <= 112.0)
-                // Bottom-left hint bar never encroaches on the 270px bottom-right cozy bar + margin.
-                assert(max_hint_x <= width - 18.0 - 278.0)
             }
         }
     }
 
-    // Gold pip (0.98, 0.72, 0.18) appears at full brightness once flower 1 is collected.
-    mut c0 := ui.Canvas::new()
-    _ := hud.woodland(&mut s, &mut c0, &atlas, &p, 1280.0, 800.0, "Blomsterskogen", 0, 5, 0, 3, false, false)
-    mut c2 := ui.Canvas::new()
-    _ := hud.woodland(&mut s, &mut c2, &atlas, &p, 1280.0, 800.0, "Blomsterskogen", 2, 5, 0, 3, false, false)
-    assert(c2.vertex_count() > c0.vertex_count())
+    // Collecting flowers opens additional petal pips for both 5-flower and 10-flower scenes.
+    for total in [5, 10] {
+        mut c0 := ui.Canvas::new()
+        _ := hud.woodland(&mut s, &mut c0, &atlas, &p, 1280.0, 800.0, "Blomsterskogen", 0, total, 0, 5, false, false)
+        mut c4 := ui.Canvas::new()
+        _ := hud.woodland(&mut s, &mut c4, &atlas, &p, 1280.0, 800.0, "Blomsterskogen", 4, total, 0, 5, false, false)
+        assert(c4.vertex_count() > c0.vertex_count())
+    }
 
-    // Every point on the rendered score card (even with longest Swedish title) is captured by woodland_pointer_captured.
+    // Every point on the rendered 10-flower score card is captured by woodland_pointer_captured.
     mut c_full := ui.Canvas::new()
-    _ := hud.woodland(&mut s, &mut c_full, &atlas, &p, 1280.0, 800.0, "Blomsterskogen", 5, 5, 3, 3, false, true)
+    _ := hud.woodland(&mut s, &mut c_full, &atlas, &p, 1280.0, 800.0, "Blomsterskogen", 10, 10, 5, 5, false, true)
     full_verts := c_full.vertices()
     mut card_right: f32 = 0.0
     mut card_bottom: f32 = 0.0
@@ -164,79 +184,74 @@ fn cozy_atlas() -> text.Atlas {
         at := i * 8
         vx := full_verts[at]
         vy := full_verts[at + 1]
-        if vy < 120.0 && vx < 400.0 {
+        if vy < 130.0 && vx < 400.0 {
             if vx > card_right { card_right = vx }
             if vy > card_bottom { card_bottom = vy }
         }
     }
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, true, false, card_right - 2.0, card_bottom - 4.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, true, false, false, card_right - 2.0, card_bottom - 4.0))
 }
 
-@test fn woodland_cozy_buttons_emit_actions_and_respect_compact_threshold() {
+@test fn woodland_cozy_buttons_and_alternativ_toggle_work_without_overlap() {
     atlas := cozy_atlas()
     mut c := ui.Canvas::new()
     mut controls := widgets.State::new()
 
-    // With cam_adjusted == false, bar at 1280x800 has width 177: [1085..1262], y = [746..782].
-    // Sit button: x = 1090..1180; Mys button: x = 1185..1257.
-    base_info := hud.CozyHudInfo {
-        sitting: false, snoozing: false, hovering_fox: false,
-        toast: "", toast_alpha: 0.0, cam_adjusted: false
-    }
-    sit_p := widgets.Pointer::at(1130.0, 764.0, true, true)
+    // With cam_adjusted == false, bar at 1280x800 has width 286: [976..1262], y = [746..782].
+    // Sit: [981..1071], Mys: [1076..1148], Alternativ: [1153..1257].
+    base_info := default_cozy_info()
+    sit_p := widgets.Pointer::at(1025.0, 764.0, true, true)
     c.clear()
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &sit_p, 1280.0, 800.0, &base_info) == .Sit)
-    // Held pointer must not fire again; release resets active state.
-    sit_held := widgets.Pointer::at(1130.0, 764.0, false, true)
+    sit_held := widgets.Pointer::at(1025.0, 764.0, false, true)
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &sit_held, 1280.0, 800.0, &base_info) == .None)
-    release := widgets.Pointer::at(1130.0, 764.0, false, false)
+    release := widgets.Pointer::at(1025.0, 764.0, false, false)
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &release, 1280.0, 800.0, &base_info) == .None)
 
     // Mys button works while sitting and snoozing.
-    sit_info := hud.CozyHudInfo {
-        sitting: true, snoozing: true, hovering_fox: false,
-        toast: "", toast_alpha: 0.0, cam_adjusted: false
-    }
-    mys_p := widgets.Pointer::at(1220.0, 764.0, true, true)
+    mut sit_info := default_cozy_info()
+    sit_info.sitting = true
+    sit_info.snoozing = true
+    mys_p := widgets.Pointer::at(1110.0, 764.0, true, true)
     c.clear()
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &mys_p, 1280.0, 800.0, &sit_info) == .Emote)
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &release, 1280.0, 800.0, &sit_info) == .None)
 
-    // When cam_adjusted == false, clicking left of the Mys button (where Sit shifts when Kamera appears) is outside the bar.
-    cam_pos := widgets.Pointer::at(1210.0, 764.0, true, true)
-    cam_off := widgets.Pointer::at(1040.0, 764.0, true, true)
-    assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &cam_off, 1280.0, 800.0, &base_info) == .None)
+    // Alternativ toggle button emits ToggleOptions.
+    opt_p := widgets.Pointer::at(1205.0, 764.0, true, true)
+    assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &opt_p, 1280.0, 800.0, &base_info) == .ToggleOptions)
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &release, 1280.0, 800.0, &base_info) == .None)
 
-    // With cam_adjusted == true, bar has width 270: [992..1262]; Sit=[997..1087], Mys=[1092..1164], Kamera=[1169..1257].
-    cam_info := hud.CozyHudInfo {
-        sitting: true, snoozing: true, hovering_fox: false,
-        toast: "", toast_alpha: 0.0, cam_adjusted: true
-    }
+    // With cam_adjusted == true, bar has width 377: [885..1262].
+    // Sit: [890..980], Mys: [985..1057], Kamera: [1062..1148], Alternativ: [1153..1257].
+    mut cam_info := default_cozy_info()
+    cam_info.sitting = true
+    cam_info.snoozing = true
+    cam_info.cam_adjusted = true
+    cam_pos := widgets.Pointer::at(1105.0, 764.0, true, true)
     c.clear()
     assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &cam_pos, 1280.0, 800.0, &cam_info) == .ResetCam)
-    // Verify button text glyphs do not overlap the left-side icon accents in Sit ("Res dig"), Mys, or Kamera.
+
+    // Verify button text glyphs sit cleanly to the right of every left-side icon.
     bar_verts := c.vertices()
     mut sit_text_min_x: f32 = 9999.0
     mut mys_text_min_x: f32 = 9999.0
     mut cam_text_min_x: f32 = 9999.0
+    mut opt_text_min_x: f32 = 9999.0
     for i in 0..bar_verts.len / 8 {
         at := i * 8
         if bar_verts[at + 2] >= 0.0 {
             gx := bar_verts[at]
-            if gx >= 997.0 && gx < 1087.0 && gx < sit_text_min_x { sit_text_min_x = gx }
-            if gx >= 1092.0 && gx < 1164.0 && gx < mys_text_min_x { mys_text_min_x = gx }
-            if gx >= 1169.0 && gx < 1257.0 && gx < cam_text_min_x { cam_text_min_x = gx }
+            if gx >= 890.0 && gx < 980.0 && gx < sit_text_min_x { sit_text_min_x = gx }
+            if gx >= 985.0 && gx < 1057.0 && gx < mys_text_min_x { mys_text_min_x = gx }
+            if gx >= 1062.0 && gx < 1148.0 && gx < cam_text_min_x { cam_text_min_x = gx }
+            if gx >= 1153.0 && gx < 1257.0 && gx < opt_text_min_x { opt_text_min_x = gx }
         }
     }
-    // Icons sit inside [btn_x + 7 .. btn_x + 17].
-    assert(sit_text_min_x > 997.0 + 17.5)
-    assert(mys_text_min_x > 1092.0 + 17.5)
-    assert(cam_text_min_x > 1169.0 + 16.5)
-    assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &release, 1280.0, 800.0, &cam_info) == .None)
-    sit2_p := widgets.Pointer::at(1040.0, 764.0, true, true)
-    assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &sit2_p, 1280.0, 800.0, &cam_info) == .Sit)
-    assert(hud.woodland_cozy(&mut controls, &mut c, &atlas, &release, 1280.0, 800.0, &cam_info) == .None)
+    assert(sit_text_min_x > 890.0 + 17.5)
+    assert(mys_text_min_x > 985.0 + 17.5)
+    assert(cam_text_min_x > 1062.0 + 16.5)
+    assert(opt_text_min_x > 1153.0 + 17.5)
 
     // Compact width (< 430) or short height (< 260) hides the cozy bar cleanly.
     c.clear()
@@ -248,31 +263,96 @@ fn cozy_atlas() -> text.Atlas {
     assert(c.vertex_count() == 0)
 }
 
-@test fn woodland_cozy_toast_and_hover_pill_fit_within_bounds() {
+@test fn alternativ_floating_card_emits_every_option_and_captures_pointer() {
+    atlas := cozy_atlas()
+    mut c := ui.Canvas::new()
+    mut controls := widgets.State::new()
+
+    // On 1280x800, Alternativ card is [936..1262], y = [518..736], inner x = 948, inner w = 302.
+    mut open_info := default_cozy_info()
+    open_info.options_open = true
+    open_info.compass_on = true
+    open_info.compass_text = "Närmast: Skogsviol · Nordväst (8 m)"
+    open_info.compass_angle = -0.78
+
+    release := widgets.Pointer::at(0.0, 0.0, false, false)
+    clicks := [
+        [1240.0, 536.0], // close x
+        [990.0, 588.0], // Körsbärsdag
+        [1095.0, 588.0], // Gyllene timmen
+        [1205.0, 588.0], // Skymningsmys
+        [995.0, 642.0], // Nära
+        [1098.0, 642.0], // Normal
+        [1200.0, 642.0], // Utforska
+        [1210.0, 684.0], // Vägvisare toggle
+        [1210.0, 716.0], // Strosa-läge toggle
+    ]
+    expected := [
+        hud.CozyAction.ToggleOptions,
+        .MoodCherry,
+        .MoodGolden,
+        .MoodTwilight,
+        .CamClose,
+        .CamNormal,
+        .CamExplore,
+        .ToggleCompass,
+        .ToggleStroll,
+    ]
+    for i in 0..clicks.len {
+        px := f32(clicks[i][0])
+        py := f32(clicks[i][1])
+        assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, true, px, py))
+        assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, px, py))
+        p := widgets.Pointer::at(px, py, true, true)
+        c.clear()
+        act := hud.woodland_cozy(&mut controls, &mut c, &atlas, &p, 1280.0, 800.0, &open_info)
+        assert(act == expected[i])
+        // Verify all rendered geometry stays cleanly within the viewport.
+        verts := c.vertices()
+        for v in 0..verts.len / 8 {
+            vx := verts[v * 8]
+            vy := verts[v * 8 + 1]
+            assert(vx >= 0.0 && vx <= 1280.0 && vy >= 0.0 && vy <= 800.0)
+        }
+        _ := hud.woodland_cozy(&mut controls, &mut c, &atlas, &release, 1280.0, 800.0, &open_info)
+    }
+
+    // Verify all Swedish labels inside the Alternativ mood & camera rows fit comfortably within their buttons.
+    assert(ui.Canvas::text_width(&atlas, "Körsbärsdag", 0.54) + 6.0 <= 94.0)
+    assert(ui.Canvas::text_width(&atlas, "Gyllene timmen", 0.54) + 6.0 <= 106.0)
+    assert(ui.Canvas::text_width(&atlas, "Skymningsmys", 0.54) + 6.0 <= 94.0)
+    assert(ui.Canvas::text_width(&atlas, "Utforska", 0.58) + 8.0 <= 98.0)
+}
+
+@test fn woodland_cozy_toast_compass_and_hover_pill_fit_within_bounds() {
     atlas := cozy_atlas()
     mut c := ui.Canvas::new()
     mut controls := widgets.State::new()
     p := widgets.Pointer::at(-1.0, -1.0, false, false)
 
-    // Faded toast (alpha <= 0.02) draws nothing.
-    faded := hud.CozyHudInfo {
-        sitting: false, snoozing: false, hovering_fox: false,
-        toast: "Vallmo myser", toast_alpha: 0.01, cam_adjusted: false
-    }
+    // Faded toast (alpha <= 0.02) draws nothing beyond cozy bar.
+    mut faded := default_cozy_info()
+    faded.toast = "Vallmo myser"
+    faded.toast_alpha = 0.01
     c.clear()
     _ := hud.woodland_cozy(&mut controls, &mut c, &atlas, &p, 1280.0, 800.0, &faded)
     muted := c.vertex_count()
 
-    // Active toast + hover pill on 1280x800: centered near top (y = pad + 4 = 22).
-    active := hud.CozyHudInfo {
-        sitting: false, snoozing: false, hovering_fox: true,
-        toast: "Vallmo hittade en blomma!", toast_alpha: 0.92, cam_adjusted: false
-    }
+    // Active toast + compass pill (above butterfly) + hover pill on 1280x800.
+    mut active := default_cozy_info()
+    active.hovering_fox = true
+    active.toast = "Vallmo hittade Skogsviol!"
+    active.toast_alpha = 0.92
+    active.compass_on = true
+    active.compass_text = "Superfjäril Guldvinge ovanför dig"
+    active.compass_butterfly = true
+    active.compass_above = true
     c.clear()
     _ := hud.woodland_cozy(&mut controls, &mut c, &atlas, &p, 1280.0, 800.0, &active)
     assert(c.vertex_count() > muted)
     verts := c.vertices()
     mut saw_top_toast := false
+    mut saw_compass := false
     mut saw_hover_pill := false
     for i in 0..verts.len / 8 {
         at := i * 8
@@ -280,11 +360,12 @@ fn cozy_atlas() -> text.Atlas {
         vy := verts[at + 1]
         assert(vx >= 0.0 && vx <= 1280.0 && vy >= 0.0 && vy <= 800.0)
         if vy >= 20.0 && vy <= 56.0 && vx > 400.0 && vx < 880.0 { saw_top_toast = true }
+        if vy >= 115.0 && vy <= 160.0 && vx < 320.0 { saw_compass = true }
         if vy >= 700.0 && vy <= 745.0 && vx < 350.0 { saw_hover_pill = true }
     }
-    assert(saw_top_toast && saw_hover_pill)
+    assert(saw_top_toast && saw_compass && saw_hover_pill)
 
-    // Narrow desktop (480x360) drops toast to y = pad + 92 = 110 so it clears score and transport cards.
+    // Narrow desktop (480x360) drops toast cleanly below both score card and compass pill.
     c.clear()
     _ := hud.woodland_cozy(&mut controls, &mut c, &atlas, &p, 480.0, 360.0, &active)
     nverts := c.vertices()
@@ -294,7 +375,7 @@ fn cozy_atlas() -> text.Atlas {
         vx := nverts[at]
         vy := nverts[at + 1]
         assert(vx >= 0.0 && vx <= 480.0 && vy >= 0.0 && vy <= 360.0)
-        if vy >= 108.0 && vy <= 145.0 && vx > 100.0 && vx < 380.0 { saw_lower_toast = true }
+        if vy >= 150.0 && vy <= 210.0 && vx > 80.0 && vx < 400.0 { saw_lower_toast = true }
     }
     assert(saw_lower_toast)
 
@@ -310,27 +391,31 @@ fn cozy_atlas() -> text.Atlas {
     }
 }
 
-@test fn woodland_pointer_captured_matches_score_transport_and_cozy_bar() {
+@test fn woodland_pointer_captured_matches_score_transport_cozy_bar_and_options() {
     // 1280x800 desktop layout
-    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 640.0, 400.0))
+    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 640.0, 400.0))
     // Score card top-left
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 30.0, 40.0))
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 200.0, 85.0))
-    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 30.0, 120.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 30.0, 40.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 200.0, 100.0))
+    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 30.0, 120.0))
 
     // Top-right transport card: height 41 when running, 77 when paused or won
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 1180.0, 35.0))
-    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 1180.0, 75.0))
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, true, false, false, 1180.0, 75.0))
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, true, false, 1180.0, 75.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 1180.0, 35.0))
+    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 1180.0, 75.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, true, false, false, false, 1180.0, 75.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, true, false, false, 1180.0, 75.0))
 
-    // Bottom-right cozy pill bar: x in [1085, 1262] when !cam_adjusted, [992, 1262] when cam_adjusted
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 1150.0, 764.0))
-    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, 1030.0, 764.0))
-    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, true, 1030.0, 764.0))
+    // Bottom-right cozy pill bar: [976..1262] when !cam_adjusted, [885..1262] when cam_adjusted
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 1020.0, 764.0))
+    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 920.0, 764.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, true, false, 920.0, 764.0))
 
-    // Compact 320x500: transport is at bottom-right, cozy bar is hidden
-    assert(!hud.woodland_pointer_captured(320.0, 500.0, false, false, true, 260.0, 30.0))
-    assert(hud.woodland_pointer_captured(320.0, 500.0, false, false, true, 240.0, 470.0))
-    assert(hud.woodland_pointer_captured(320.0, 500.0, false, false, true, 30.0, 40.0))
+    // Alternativ floating card only captures when options_open is true
+    assert(!hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, false, 1100.0, 620.0))
+    assert(hud.woodland_pointer_captured(1280.0, 800.0, false, false, false, true, 1100.0, 620.0))
+
+    // Compact 320x500: transport is at bottom-right, cozy bar and options card are hidden
+    assert(!hud.woodland_pointer_captured(320.0, 500.0, false, false, true, true, 260.0, 30.0))
+    assert(hud.woodland_pointer_captured(320.0, 500.0, false, false, true, true, 240.0, 470.0))
+    assert(hud.woodland_pointer_captured(320.0, 500.0, false, false, true, true, 30.0, 40.0))
 }

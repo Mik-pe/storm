@@ -21,6 +21,14 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     ((cx / cw + 1.0) * 0.5 * width, (cy / cw + 1.0) * 0.5 * height)
 }
 
+fn expanded_woodland_scene() -> play.Scene {
+    mut s := play.demo()
+    s.bounds = .Some(play.Bounds { min_x: -13.5, min_z: -11.5, max_x: 13.5, max_z: 11.5 })
+    s.entities[0].size = core.vec3(56.0, 1.0, 52.0)
+    s.entities[1].position = core.vec3(0.0, 0.4, 2.0)
+    s
+}
+
 @test fn pick_ray_round_trips_through_view_projection_for_orbited_and_zoomed_cameras() {
     level := play.demo()
     s := play.start(&level)
@@ -55,9 +63,11 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     aspect := w / h
     cam := view.camera_cozy(&area, aspect, 0.0, 1.0)
     mut c := cozy.new()
+    cozy.reset(&mut c, &s)
 
     // First click on ground to arm a walk target.
-    ground_pt := core.vec3(2.2, 0.0, 1.0)
+    player_pos := s.bodies[s.player].position
+    ground_pt := core.vec3(player_pos.x + 2.2, 0.0, player_pos.z)
     (gx, gy) := project_to_screen(&cam, aspect, w, h, ground_pt)
     mut walk_click := empty_input(gx, gy)
     walk_click.mouse.buttons = gfx.MOUSE_LEFT
@@ -66,7 +76,7 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     assert(c.has_target && !c.hovering_fox)
 
     // Hovering over Vallmo with ui_captured=true does not hover or pet.
-    fox_pt := core.add(s.bodies[s.player].position, core.vec3(0.0, 0.18, 0.0))
+    fox_pt := core.add(player_pos, core.vec3(0.0, 0.18, 0.0))
     (fx, fy) := project_to_screen(&cam, aspect, w, h, fox_pt)
     mut blocked := empty_input(fx, fy)
     blocked.mouse.buttons = gfx.MOUSE_LEFT
@@ -89,17 +99,20 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     h: f32 = 800.0
     aspect := w / h
     mut c := cozy.new()
+    cozy.reset(&mut c, &s)
 
     // Clicking far beyond bounds clamps the guide target to scene.bounds.
+    b := level.bounds.unwrap()
     area0 := view.framing(&world, &s, true)
     cam0 := view.camera_cozy(&area0, aspect, 0.0, 1.0)
-    (ox, oy) := project_to_screen(&cam0, aspect, w, h, core.vec3(9.0, 0.0, 7.0))
+    far_pt := core.vec3(b.max_x + 5.0, 0.0, b.min_z - 5.0)
+    (ox, oy) := project_to_screen(&cam0, aspect, w, h, far_pt)
     mut far_click := empty_input(ox, oy)
     far_click.mouse.buttons = gfx.MOUSE_LEFT
     far_click.mouse.pressed = gfx.MOUSE_LEFT
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &far_click, 0.0, false)
     g := cozy.guide(&c)
-    assert(g.active && g.target.x <= 5.0 && g.target.z <= 3.3 && g.target.x >= -5.0 && g.target.z >= -3.5)
+    assert(g.active && g.target.x <= b.max_x && g.target.z <= b.max_z && g.target.x >= b.min_x && g.target.z >= b.min_z)
 
     // Keyboard movement immediately cancels click target.
     mut key_w := empty_input(ox, oy)
@@ -108,16 +121,17 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     assert(!cozy.guide(&c).active && kcmd.x == 0.0 && kcmd.z == -1.0)
 
     // Hold-to-follow updates target while dragged, then tapers within 1.1m and arrives at 0.18m.
-    (tx1, ty1) := project_to_screen(&cam0, aspect, w, h, core.vec3(1.5, 0.0, 1.0))
+    p0 := s.bodies[s.player].position
+    (tx1, ty1) := project_to_screen(&cam0, aspect, w, h, core.vec3(p0.x + 1.5, 0.0, p0.z))
     mut hold1 := empty_input(tx1, ty1)
     hold1.mouse.buttons = gfx.MOUSE_LEFT
     hold1.mouse.pressed = gfx.MOUSE_LEFT
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &hold1, 0.0, false)
-    (tx2, ty2) := project_to_screen(&cam0, aspect, w, h, core.vec3(2.4, 0.0, 1.0))
+    (tx2, ty2) := project_to_screen(&cam0, aspect, w, h, core.vec3(p0.x + 2.4, 0.0, p0.z))
     mut hold2 := empty_input(tx2, ty2)
     hold2.mouse.buttons = gfx.MOUSE_LEFT
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &hold2, 0.0, false)
-    assert((c.target.x - 2.4).abs() < 0.08)
+    assert((c.target.x - (p0.x + 2.4)).abs() < 0.08)
 
     mut saw_full := false
     mut saw_taper := false
@@ -147,6 +161,7 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     area0 := view.framing(&world, &s, true)
     cam0 := view.camera_cozy(&area0, aspect, 0.0, 1.0)
     mut c := cozy.new()
+    cozy.reset(&mut c, &s)
 
     // Shift + click directly on Smörblomma (entity 2).
     flower := s.scene.entities[2].position
@@ -193,7 +208,7 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     assert((rot_cmd.x - 1.0).abs() < 0.001 && rot_cmd.z.abs() < 0.001)
 }
 
-@test fn elevated_support_plane_and_unshifted_flower_click_work_correctly() {
+@test fn elevated_support_plane_direct_cloud_pick_and_unshifted_flower_click_work() {
     level := play.demo()
     mut s := play.start(&level)
     world := view.build(&s).unwrap()
@@ -203,15 +218,32 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     area0 := view.framing(&world, &s, true)
     cam0 := view.camera_cozy(&area0, aspect, 0.0, 1.0)
     mut c := cozy.new()
+    cozy.reset(&mut c, &s)
 
-    // Clicking on an elevated cloud plane (y = 1.7) sets guide target.y == 1.7.
-    cloud_pt := core.vec3(-1.5, 1.7, 0.2)
-    (cx, cy) := project_to_screen(&cam0, aspect, w, h, cloud_pt)
+    // Clicking directly on an elevated cloud from the ground snaps the target to that cloud's top.
+    mut cloud_idx := -1
+    for i in 0..level.entities.len {
+        if level.entities[i].role == .Cloud { cloud_idx = i; break }
+    }
+    assert(cloud_idx >= 0)
+    cloud := &level.entities[cloud_idx]
+    cloud_top := cloud.position.y + cloud.size.y * 0.5
+    (dcx, dcy) := project_to_screen(&cam0, aspect, w, h, core.vec3(cloud.position.x, cloud_top, cloud.position.z))
+    mut direct_cloud := empty_input(dcx, dcy)
+    direct_cloud.mouse.buttons = gfx.MOUSE_LEFT
+    direct_cloud.mouse.pressed = gfx.MOUSE_LEFT
+    _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &direct_cloud, 0.0, false)
+    assert(c.has_target && (c.target.y - cloud_top).abs() < 0.001 && (c.target.x - cloud.position.x).abs() < 0.05)
+
+    // Clicking open air while standing on an elevated plane (y = 1.7) falls back to support plane y = 1.7.
+    p0 := s.bodies[s.player].position
+    plane_pt := core.vec3(p0.x + 1.2, 1.7, p0.z - 0.5)
+    (cx, cy) := project_to_screen(&cam0, aspect, w, h, plane_pt)
     mut cloud_click := empty_input(cx, cy)
     cloud_click.mouse.buttons = gfx.MOUSE_LEFT
     cloud_click.mouse.pressed = gfx.MOUSE_LEFT
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &cloud_click, 1.7, false)
-    assert(c.has_target && (c.target.y - 1.7).abs() < 0.0001 && (c.target.x - -1.5).abs() < 0.05)
+    assert(c.has_target && (c.target.y - 1.7).abs() < 0.0001 && (c.target.x - plane_pt.x).abs() < 0.05)
 
     // Clicking a flower WITHOUT Shift walks through it and collects it.
     flower := s.scene.entities[2].position
@@ -237,6 +269,7 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     area := view.framing(&world, &s, true)
     cam := view.camera(&area, 1.6)
     mut c := cozy.new()
+    cozy.reset(&mut c, &s)
 
     // Jump into the air so player is ungrounded.
     play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: true })
@@ -273,6 +306,7 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     area := view.framing(&world, &s, true)
     cam := view.camera(&area, 1.6)
     mut c := cozy.new()
+    cozy.reset(&mut c, &s)
     assert(!cozy.cam_adjusted(&c))
 
     // C toggles sit and emits toast; F triggers emote and emits toast.
@@ -319,4 +353,127 @@ fn project_to_screen(cam: &input.Camera, aspect: f32, width: f32, height: f32, p
     fresh := play.start(&level)
     cozy.reset(&mut c, &fresh)
     assert(c.toast_text.len == 0 && cozy.toast_alpha(&c) == 0.0 && !c.has_target && c.last_flowers == 0)
+}
+
+@test fn options_hotkeys_camera_presets_stroll_toggle_and_compass_work_cleanly() {
+    level := play.demo()
+    mut s := play.start(&level)
+    world := view.build(&s).unwrap()
+    area := view.framing(&world, &s, true)
+    cam := view.camera(&area, 1.6)
+    mut c := cozy.new()
+    cozy.reset(&mut c, &s)
+
+    // T cycles lighting mood across CherryDay -> GoldenHour -> Twilight -> CherryDay.
+    assert(c.mood == .CherryDay)
+    mut t_hit := empty_input(0.0, 0.0)
+    t_hit.pressed = key_bit(.T)
+    _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.016, &t_hit, 0.0, false)
+    assert(c.mood == .GoldenHour && c.toast_text.len > 0)
+    _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.016, &t_hit, 0.0, false)
+    assert(c.mood == .Twilight)
+    _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.016, &t_hit, 0.0, false)
+    assert(c.mood == .CherryDay)
+
+    // G toggles Vägvisare compass helper.
+    assert(!c.compass_on)
+    mut g_hit := empty_input(0.0, 0.0)
+    g_hit.pressed = key_bit(.G)
+    _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.016, &g_hit, 0.0, false)
+    assert(c.compass_on)
+
+    // Camera presets damp cam_preset_t smoothly and mark camera adjusted until reset.
+    cozy.set_camera_mode(&mut c, .Explore)
+    assert(cozy.cam_adjusted(&c))
+    _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.1, &empty_input(0.0, 0.0), 0.0, false)
+    assert(c.cam_preset_t > 1.0 && c.cam_preset_t < 2.0)
+    cozy.reset_camera(&mut c)
+    assert(!cozy.cam_adjusted(&c) && c.camera_mode == .Normal)
+
+    // Strosa-läge gently limits WASD speed to STROLL_SPEED (0.46) without holding Shift.
+    cozy.toggle_stroll(&mut c)
+    assert(c.stroll_mode)
+    mut w_held := empty_input(0.0, 0.0)
+    w_held.held = key_bit(.W)
+    stroll_cmd := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.016, &w_held, 0.0, false)
+    assert((stroll_cmd.z - -0.46).abs() < 0.001)
+    // Restarting preserves user options preferences while clearing run state.
+    cozy.reset(&mut c, &s)
+    assert(c.stroll_mode && c.compass_on && !c.options_open)
+
+    // Compass points to nearest flower, rotates by -yaw, then switches to elevated butterflies when flowers are done.
+    h0 := cozy.compass_hint(&s, 0.0)
+    h_rot := cozy.compass_hint(&s, 0.75)
+    assert(h0.active && !h0.is_butterfly && h0.text.len > 0)
+    assert(((h0.angle - 0.75) - h_rot.angle).abs() < 0.001)
+
+    for i in 0..s.scene.entities.len {
+        if s.scene.entities[i].role == .Flower { s.collected[i] = true }
+    }
+    s.flowers = s.total_flowers
+    hb := cozy.compass_hint(&s, 0.0)
+    assert(hb.active && hb.is_butterfly && hb.above)
+
+    for i in 0..s.scene.entities.len {
+        if s.scene.entities[i].role == .SuperButterfly { s.collected[i] = true }
+    }
+    s.butterflies = s.total_butterflies
+    hd := cozy.compass_hint(&s, 0.0)
+    assert(hd.active && !hd.is_butterfly && !hd.above && hd.text.len > 0)
+}
+
+@test fn expanded_woodland_zone_discovery_varied_emotes_pets_and_snoozing_toasts() {
+    level := expanded_woodland_scene()
+    mut s := play.start(&level)
+    mut c := cozy.new()
+    cozy.reset(&mut c, &s)
+    // Starting in Körsbärsgläntan silently marks it visited without a launch toast.
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text.len == 0)
+
+    // Entering Picknickgläntan, Svampdungen, Kronbalkongen, and Stjärngläntan emits discovery toasts once each.
+    s.bodies[s.player].position = core.vec3(-8.4, 0.4, 5.2)
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text == "Upptäckte Picknickgläntan!")
+    c.toast_text = ""
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text.len == 0)
+
+    s.bodies[s.player].position = core.vec3(-9.2, 0.4, -2.8)
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text == "Upptäckte Svampdungen!")
+
+    s.bodies[s.player].position = core.vec3(0.0, 5.2, -5.8)
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text == "Välkommen till Kronbalkongen!")
+
+    s.bodies[s.player].position = core.vec3(-0.6, 6.95, -9.4)
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text == "Hittade hemliga Stjärngläntan!")
+
+    // Three emotes cycle three distinct Swedish toasts; three pets cycle three distinct toasts.
+    s.bodies[s.player].position = core.vec3(0.0, 0.4, 2.0)
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    play.emote(&mut s); cozy.sync_toasts(&mut c, &s); e0 := c.toast_text.clone()
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    play.emote(&mut s); cozy.sync_toasts(&mut c, &s); e1 := c.toast_text.clone()
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    play.emote(&mut s); cozy.sync_toasts(&mut c, &s); e2 := c.toast_text.clone()
+    assert(e0 != e1 && e1 != e2 && e2 != e0)
+
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    play.pet(&mut s); cozy.sync_toasts(&mut c, &s); p0 := c.toast_text.clone()
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    play.pet(&mut s); cozy.sync_toasts(&mut c, &s); p1 := c.toast_text.clone()
+    play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false })
+    play.pet(&mut s); cozy.sync_toasts(&mut c, &s); p2 := c.toast_text.clone()
+    assert(p0 != p1 && p1 != p2 && p2 != p0)
+
+    // Sitting for >= 4.5s drifts Vallmo into snoozing and emits a sleepy Swedish toast.
+    play.toggle_sit(&mut s)
+    cozy.sync_toasts(&mut c, &s)
+    assert(s.cozy_sitting)
+    for _ in 0..275 { play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: false }) }
+    cozy.sync_toasts(&mut c, &s)
+    assert(c.toast_text == "Vallmo slumrar sött i skogen...")
 }

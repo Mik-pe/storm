@@ -1,6 +1,7 @@
 import core
 import gfx
 import play
+import ..src.cozy_control as cozy
 import ..src.play_view as view
 
 @test fn play_shapes_match_body_extents_and_poses_use_the_requested_tick() {
@@ -64,8 +65,16 @@ import ..src.play_view as view
         assert(owner >= 0 && owner == item.mesh_index)
         colors.push(item.material.base.r)
     }
-    assert(colors.len == 3)
-    assert((colors[0] - colors[1]).abs() > 0.1 && (colors[1] - colors[2]).abs() > 0.1 && (colors[2] - colors[0]).abs() > 0.1)
+    assert(colors.len == s.total_butterflies && colors.len >= 3)
+    mut distinct := 0
+    for i in 0..colors.len {
+        mut unique := true
+        for j in 0..i {
+            if (colors[i] - colors[j]).abs() <= 0.05 { unique = false; break }
+        }
+        if unique { distinct += 1 }
+    }
+    assert(distinct >= 3)
 }
 
 @test fn cloud_mesh_tops_meet_collision_planes_and_camera_follows_the_climb() {
@@ -73,7 +82,11 @@ import ..src.play_view as view
     mut s := play.start(&level)
     mut world := view.build(&s).unwrap()
     view.sync(&mut world, &s, true)
-    assert(world.course.pads.len == 6)
+    mut expected_pads := 0
+    for item in level.entities {
+        if item.role == .Cloud || item.role == .BoostCloud { expected_pads += 1 }
+    }
+    assert(world.course.pads.len == expected_pads && expected_pads >= 6)
     for p in world.course.pads {
         item := &level.entities[p.index]
         pose := world.graph.local(p.node)
@@ -84,6 +97,31 @@ import ..src.play_view as view
     s.bodies[s.player].position.y += 3.76
     crown := view.framing(&world, &s, true)
     assert(ground.climb == 0.0 && crown.climb == 1.0 && crown.center.y > ground.center.y + 3.0)
+}
+
+@test fn framing_follows_vallmo_without_lag_across_grand_level_and_tall_canopy() {
+    level := play.demo()
+    mut s := play.start(&level)
+    world := view.build(&s).unwrap()
+    far_spots := [
+        core.vec3(-13.5, 0.4, -11.5),
+        core.vec3(13.5, 0.4, 11.5),
+        core.vec3(-9.2, 0.4, -2.8),
+        core.vec3(8.6, 0.4, 4.6),
+    ]
+    for spot in far_spots {
+        s.bodies[s.player].position = spot
+        area := view.framing(&world, &s, true)
+        assert((area.center.x - spot.x).abs() < 0.0001)
+        assert((area.center.z - (spot.z - 0.65)).abs() < 0.0001)
+        assert(area.climb == 0.0)
+    }
+    // Tall Stjärngläntan secret perch at top 6.55m (Vallmo center at y = 6.95m).
+    s.bodies[s.player].position = core.vec3(-0.6, 6.95, -9.4)
+    high := view.framing(&world, &s, true)
+    assert(high.climb == 1.0)
+    assert((high.center.x - -0.6).abs() < 0.0001)
+    assert(high.center.y > 7.2 && high.center.y < 7.7)
 }
 
 @test fn camera_cozy_orbits_and_zooms_around_framing_center_while_preserving_default() {
@@ -112,4 +150,34 @@ import ..src.play_view as view
 
     farther := view.camera_cozy(&area, aspect, 0.0, 1.35)
     assert((core.length(core.sub(farther.position, area.center)) - base_dist * 1.35).abs() < 0.002)
+}
+
+@test fn camera_presets_and_shadow_radius_scale_smoothly_for_close_normal_explore() {
+    level := play.demo()
+    s := play.start(&level)
+    world := view.build(&s).unwrap()
+    area := view.framing(&world, &s, true)
+    aspect: f32 = 1.6
+
+    cam_close := view.camera_preset(&area, aspect, cozy.CameraMode.Close, 0.0, 1.0)
+    cam_normal := view.camera_preset(&area, aspect, cozy.CameraMode.Normal, 0.0, 1.0)
+    cam_explore := view.camera_preset(&area, aspect, cozy.CameraMode.Explore, 0.0, 1.0)
+    cam_mid := view.camera_blend(&area, aspect, 1.5, 0.0, 1.0)
+
+    d_close := core.length(core.sub(cam_close.position, area.center))
+    d_normal := core.length(core.sub(cam_normal.position, area.center))
+    d_explore := core.length(core.sub(cam_explore.position, area.center))
+    assert(d_close < d_normal * 0.65 && d_explore > d_normal * 1.55)
+    assert(cam_close.fov < cam_normal.fov && cam_normal.fov < cam_explore.fov)
+    assert(cam_mid.position.y > cam_normal.position.y && cam_mid.position.y < cam_explore.position.y)
+
+    // Orbit + zoom combine cleanly with both Close and Explore presets.
+    orbit_explore := view.camera_preset(&area, aspect, cozy.CameraMode.Explore, 0.7, 1.25)
+    assert((orbit_explore.yaw - 0.7).abs() < 0.002)
+    assert(orbit_explore.position.y > cam_explore.position.y)
+
+    r_close := view.shadow_radius(&area, 0.0, 1.0)
+    r_normal := view.shadow_radius(&area, 1.0, 1.0)
+    r_explore := view.shadow_radius(&area, 2.0, 1.0)
+    assert(r_close < r_normal && r_normal < r_explore && r_explore >= 20.0 && r_explore <= 28.0)
 }

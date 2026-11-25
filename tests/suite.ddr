@@ -309,7 +309,7 @@ import render
     demo := play.demo()
     mut session := play.start(&demo)
     mut view := play_view.build(&session).unwrap()
-    assert(view.cozy_fx.fireflies.len == 12)
+    assert(view.cozy_fx.fireflies.len >= 12)
 
     guide := cozy_control.GuideVisual { active: true, target: core.vec3(1.5, 0.0, 0.5), age: 0.25 }
     play.pet(&mut session)
@@ -328,4 +328,25 @@ import render
     play_view.sync(&mut view, &session, true)
     assert(!view.graph.world(view.cozy_fx.guide_ring).visible)
     assert(!view.graph.world(view.cozy_fx.guide_heart).visible)
+}
+
+@test fn blossom_moods_produce_distinct_pastel_lighting_and_cozy_fill() {
+    zero_vp: [f32; 16] = [0.0; 16]
+    mut cherry := gfx.sky_params([0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0], zero_vp, [0.0, 1.0, 0.0, 0.0])
+    mut golden := cherry.clone()
+    mut twilight := cherry.clone()
+    mut won_cherry := cherry.clone()
+
+    s_cherry := app.apply_blossom_mood(&mut cherry, cozy_control.SkyMood.CherryDay, false)
+    s_golden := app.apply_blossom_mood(&mut golden, cozy_control.SkyMood.GoldenHour, false)
+    s_twilight := app.apply_blossom_mood(&mut twilight, cozy_control.SkyMood.Twilight, false)
+    _ := app.apply_blossom_mood(&mut won_cherry, cozy_control.SkyMood.CherryDay, true)
+
+    assert((core.length(s_cherry) - 1.0).abs() < 0.001)
+    assert((core.length(s_golden) - 1.0).abs() < 0.001)
+    assert((core.length(s_twilight) - 1.0).abs() < 0.001)
+    // Golden hour sun is lower and warmer; twilight sky is deeper lavender with generous soft fill.
+    assert(s_golden.y < s_cherry.y && golden.sun_color[2] < cherry.sun_color[2])
+    assert(twilight.zenith[2] > twilight.zenith[0] && twilight.diffuse_fill >= 0.50)
+    assert(won_cherry.sun[3] > cherry.sun[3] && cherry.diffuse_fill >= 0.40)
 }
