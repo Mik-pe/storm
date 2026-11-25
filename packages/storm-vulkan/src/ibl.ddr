@@ -9,6 +9,41 @@ import .pipeline as pipelines
 import .shader as shader
 import .state as state
 
+// What this module owns: the environment cube with its mip and face views,
+// the irradiance cube, the BRDF lookup texture, their samplers, and the
+// one-time build's render pass, pipelines, layout, pool and sets. Zeroed with
+// the renderer; `setup` fills it, `destroy` empties it, and nobody outside
+// this module reads it. The same record and name as storm-metal's
+// `ibl.Environment`.
+@c_layout
+pub struct Environment {
+    envImage: ptr,
+    envMemory: ptr,
+    envView: ptr,
+    envSampler: ptr,
+    envMipViews: [ptr; 6],
+    envFaceViews: [ptr; 36],
+    envFramebuffers: [ptr; 36],
+    irradianceImage: ptr,
+    irradianceMemory: ptr,
+    irradianceView: ptr,
+    irradianceSampler: ptr,
+    irradianceFaceViews: [ptr; 6],
+    irradianceFramebuffers: [ptr; 6],
+    brdfImage: ptr,
+    brdfMemory: ptr,
+    brdfView: ptr,
+    brdfSampler: ptr,
+    iblPass: ptr,
+    iblPipelineLayout: ptr,
+    iblSetLayout: ptr,
+    iblPool: ptr,
+    iblSets: [ptr; 6],
+    envPipeline: ptr,
+    prefilterPipelines: [ptr; 6],
+    irradiancePipeline: ptr,
+}
+
 // Image-based lighting, built once at startup and never touched again:
 //
 //   * a prefiltered specular cubemap, 64x64 faces, 6 mip levels: mip 0 is the
@@ -250,7 +285,7 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
     // pointer into mapped memory does not reach the GPU here).
     _ := copy_bytes(mapped, addr(&words[0]), bytes)
 
-    barrier(&r, cmd, r.brdfImage, 0, 1, 1, enums.image_layout(.Undefined), enums.image_layout(.TransferDstOptimal), enums.access(.None), enums.access(.TransferWrite), enums.pipeline_stage(.TopOfPipe), enums.pipeline_stage(.Transfer))
+    barrier(&r, cmd, r.environment.brdfImage, 0, 1, 1, enums.image_layout(.Undefined), enums.image_layout(.TransferDstOptimal), enums.access(.None), enums.access(.TransferWrite), enums.pipeline_stage(.TopOfPipe), enums.pipeline_stage(.Transfer))
     mut copy: vk.BufferImageCopy = zeroed()
     copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
     copy.imageSubresource.mipLevel = 0
@@ -259,8 +294,8 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
     copy.imageExtent.width = LUT_SIZE
     copy.imageExtent.height = LUT_SIZE
     copy.imageExtent.depth = 1
-    r.api.CmdCopyBufferToImage(cmd, staging.buffer, r.brdfImage, enums.image_layout(.TransferDstOptimal), 1, addr(&copy))
-    barrier(&r, cmd, r.brdfImage, 0, 1, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.ShaderReadOnlyOptimal), enums.access(.TransferWrite), enums.access(.ShaderRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.FragmentShader))
+    r.api.CmdCopyBufferToImage(cmd, staging.buffer, r.environment.brdfImage, enums.image_layout(.TransferDstOptimal), 1, addr(&copy))
+    barrier(&r, cmd, r.environment.brdfImage, 0, 1, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.ShaderReadOnlyOptimal), enums.access(.TransferWrite), enums.access(.ShaderRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.FragmentShader))
     staging
 }
 
@@ -273,7 +308,7 @@ unsafe fn release_staging(r: &mut state.Renderer, staging: Staging) {
 }
 
 pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> state.SetupStep {
-    if r.iblPass != ptr(0) {
+    if r.environment.iblPass != ptr(0) {
         _ := sys.eprint("ibl: the environment maps are already built\n")
         return .Environment
     }
@@ -462,33 +497,33 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
     // Everything below records into one command buffer and needs the handles
     // through the renderer (the barrier and staging helpers read r.*), so the
     // locals land in the renderer now.
-    r.envImage = env.image
-    r.envMemory = env.memory
-    r.envView = env_view
-    r.envSampler = env_sampler
-    r.irradianceImage = irradiance.image
-    r.irradianceMemory = irradiance.memory
-    r.irradianceView = irradiance_view
-    r.irradianceSampler = irradiance_sampler
-    r.brdfImage = lut_image
-    r.brdfMemory = lut_memory
-    r.brdfView = brdf_view
-    r.brdfSampler = brdf_sampler
-    r.iblPass = pass
-    r.iblPipelineLayout = pipeline_layout
-    r.iblSetLayout = set_layout
-    r.iblPool = pool
-    r.envPipeline = env_pipeline
-    r.irradiancePipeline = irradiance_pipeline
+    r.environment.envImage = env.image
+    r.environment.envMemory = env.memory
+    r.environment.envView = env_view
+    r.environment.envSampler = env_sampler
+    r.environment.irradianceImage = irradiance.image
+    r.environment.irradianceMemory = irradiance.memory
+    r.environment.irradianceView = irradiance_view
+    r.environment.irradianceSampler = irradiance_sampler
+    r.environment.brdfImage = lut_image
+    r.environment.brdfMemory = lut_memory
+    r.environment.brdfView = brdf_view
+    r.environment.brdfSampler = brdf_sampler
+    r.environment.iblPass = pass
+    r.environment.iblPipelineLayout = pipeline_layout
+    r.environment.iblSetLayout = set_layout
+    r.environment.iblPool = pool
+    r.environment.envPipeline = env_pipeline
+    r.environment.irradiancePipeline = irradiance_pipeline
     // Arrays are moved by assignment, so copy them element by element and
     // keep using the locals below.
-    for i in 0..6 { r.envMipViews[i] = env_mip_views[i] }
-    for i in 0..36 { r.envFaceViews[i] = env_face_views[i] }
-    for i in 0..36 { r.envFramebuffers[i] = env_framebuffers[i] }
-    for i in 0..6 { r.irradianceFaceViews[i] = irradiance_face_views[i] }
-    for i in 0..6 { r.irradianceFramebuffers[i] = irradiance_framebuffers[i] }
-    for i in 0..6 { r.iblSets[i] = sets[i] }
-    for i in 0..6 { r.prefilterPipelines[i] = prefilter_pipelines[i] }
+    for i in 0..6 { r.environment.envMipViews[i] = env_mip_views[i] }
+    for i in 0..36 { r.environment.envFaceViews[i] = env_face_views[i] }
+    for i in 0..36 { r.environment.envFramebuffers[i] = env_framebuffers[i] }
+    for i in 0..6 { r.environment.irradianceFaceViews[i] = irradiance_face_views[i] }
+    for i in 0..6 { r.environment.irradianceFramebuffers[i] = irradiance_framebuffers[i] }
+    for i in 0..6 { r.environment.iblSets[i] = sets[i] }
+    for i in 0..6 { r.environment.prefilterPipelines[i] = prefilter_pipelines[i] }
 
     // --- one command buffer for the whole build ---
     mut alloc: vk.CommandBufferAllocateInfo = vk.CommandBufferAllocateInfo::new()
@@ -581,35 +616,35 @@ unsafe fn convolve_push(push: &mut [f32; 24], face: i32, roughness: f32) {
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.device == ptr(0) { return }
-    r.api.DestroyPipeline(r.device, r.envPipeline, ptr(0))
-    r.api.DestroyPipeline(r.device, r.irradiancePipeline, ptr(0))
-    for mip in 1..i32(ENV_MIPS) { r.api.DestroyPipeline(r.device, r.prefilterPipelines[mip], ptr(0)) }
-    r.api.DestroyPipelineLayout(r.device, r.iblPipelineLayout, ptr(0))
-    r.api.DestroyDescriptorPool(r.device, r.iblPool, ptr(0))
-    r.api.DestroyDescriptorSetLayout(r.device, r.iblSetLayout, ptr(0))
-    r.api.DestroyRenderPass(r.device, r.iblPass, ptr(0))
+    r.api.DestroyPipeline(r.device, r.environment.envPipeline, ptr(0))
+    r.api.DestroyPipeline(r.device, r.environment.irradiancePipeline, ptr(0))
+    for mip in 1..i32(ENV_MIPS) { r.api.DestroyPipeline(r.device, r.environment.prefilterPipelines[mip], ptr(0)) }
+    r.api.DestroyPipelineLayout(r.device, r.environment.iblPipelineLayout, ptr(0))
+    r.api.DestroyDescriptorPool(r.device, r.environment.iblPool, ptr(0))
+    r.api.DestroyDescriptorSetLayout(r.device, r.environment.iblSetLayout, ptr(0))
+    r.api.DestroyRenderPass(r.device, r.environment.iblPass, ptr(0))
     for mip in 0..i32(ENV_MIPS) {
         for face in 0..6 {
             index := mip * 6 + face
-            r.api.DestroyFramebuffer(r.device, r.envFramebuffers[index], ptr(0))
-            r.api.DestroyImageView(r.device, r.envFaceViews[index], ptr(0))
+            r.api.DestroyFramebuffer(r.device, r.environment.envFramebuffers[index], ptr(0))
+            r.api.DestroyImageView(r.device, r.environment.envFaceViews[index], ptr(0))
         }
-        r.api.DestroyImageView(r.device, r.envMipViews[mip], ptr(0))
+        r.api.DestroyImageView(r.device, r.environment.envMipViews[mip], ptr(0))
     }
     for face in 0..6 {
-        r.api.DestroyFramebuffer(r.device, r.irradianceFramebuffers[face], ptr(0))
-        r.api.DestroyImageView(r.device, r.irradianceFaceViews[face], ptr(0))
+        r.api.DestroyFramebuffer(r.device, r.environment.irradianceFramebuffers[face], ptr(0))
+        r.api.DestroyImageView(r.device, r.environment.irradianceFaceViews[face], ptr(0))
     }
-    r.api.DestroyImageView(r.device, r.envView, ptr(0))
-    r.api.DestroyImageView(r.device, r.irradianceView, ptr(0))
-    r.api.DestroyImageView(r.device, r.brdfView, ptr(0))
-    r.api.DestroySampler(r.device, r.envSampler, ptr(0))
-    r.api.DestroySampler(r.device, r.irradianceSampler, ptr(0))
-    r.api.DestroySampler(r.device, r.brdfSampler, ptr(0))
-    r.api.DestroyImage(r.device, r.envImage, ptr(0))
-    r.api.DestroyImage(r.device, r.irradianceImage, ptr(0))
-    r.api.DestroyImage(r.device, r.brdfImage, ptr(0))
-    r.api.FreeMemory(r.device, r.envMemory, ptr(0))
-    r.api.FreeMemory(r.device, r.irradianceMemory, ptr(0))
-    r.api.FreeMemory(r.device, r.brdfMemory, ptr(0))
+    r.api.DestroyImageView(r.device, r.environment.envView, ptr(0))
+    r.api.DestroyImageView(r.device, r.environment.irradianceView, ptr(0))
+    r.api.DestroyImageView(r.device, r.environment.brdfView, ptr(0))
+    r.api.DestroySampler(r.device, r.environment.envSampler, ptr(0))
+    r.api.DestroySampler(r.device, r.environment.irradianceSampler, ptr(0))
+    r.api.DestroySampler(r.device, r.environment.brdfSampler, ptr(0))
+    r.api.DestroyImage(r.device, r.environment.envImage, ptr(0))
+    r.api.DestroyImage(r.device, r.environment.irradianceImage, ptr(0))
+    r.api.DestroyImage(r.device, r.environment.brdfImage, ptr(0))
+    r.api.FreeMemory(r.device, r.environment.envMemory, ptr(0))
+    r.api.FreeMemory(r.device, r.environment.irradianceMemory, ptr(0))
+    r.api.FreeMemory(r.device, r.environment.brdfMemory, ptr(0))
 }
