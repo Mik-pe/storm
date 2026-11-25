@@ -46,31 +46,87 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     for _ in 0..ticks { play.step(&mut s, play.Input { x: x, z: z, jump: false }) }
 }
 
-@test fn blossom_demo_collects_all_five_flowers_once_with_replayable_inputs() {
+@test fn blossom_demo_collects_all_ten_flowers_once_with_replayable_inputs() {
     original := play.demo()
     source := play.encode(&original)
     mut s := play.start(&play.decode(source).unwrap())
     assert(s.scene.theme == .Blossom && s.scene.name == "Blomsterskogen")
-    assert(s.flowers == 0 && s.total_flowers == 5 && s.last_flower == -1 && s.picked_tick == -1)
-    assert(s.scene.entities[1].name == "Vallmo" && s.heading == 0.35)
-    directions := [[-1.0, 0.0], [1.0, -0.25], [-1.0, -0.385], [1.0, -0.22], [1.0, 0.14]]
-    times := [27, 54, 68, 40, 45]
-    for i in 0..times.len {
-        walk(&mut s, f32(directions[i][0]), f32(directions[i][1]), times[i])
-        assert(s.flowers == i + 1 && s.last_flower == i + 2 && s.collected[i + 2])
-        assert(s.picked_tick > 0 && s.picked_tick <= s.tick && s.won == (s.flowers == s.total_flowers))
-        picked := s.picked_tick
-        walk(&mut s, 0.0, 0.0, 3)
-        assert(s.picked_tick == picked && s.flowers == i + 1)
-    }
-    assert(s.won && !s.walking && s.tick == 249 && s.butterflies == 0)
+    assert(s.scene.entities.len == 59 && s.scene.entities.len <= play.MAX_ENTITIES)
+    assert(s.flowers == 0 && s.total_flowers == 10 && s.total_butterflies == 5)
+    assert(s.last_flower == -1 && s.picked_tick == -1)
+    assert(s.scene.entities[0].name == "Ängen" && s.scene.entities[1].name == "Vallmo" && s.heading == 0.35)
+
+    // 1. Smörblomma [2] (-2.15, 2.35) in Körsbärsgläntan West
+    walk(&mut s, -1.0, 0.16, 29)
+    assert(s.flowers == 1 && s.last_flower == 2 && s.collected[2] && !s.won)
+    picked1 := s.picked_tick
+    walk(&mut s, 0.0, 0.0, 3)
+    assert(s.picked_tick == picked1 && s.flowers == 1)
+
+    // 2. Prästkrage [4] (-7.40, 5.40) in Picknickgläntan (SW)
+    walk(&mut s, -1.0, 0.58, 81)
+    assert(s.flowers == 2 && s.last_flower == 4 && s.collected[4] && !s.won)
+
+    // 3. Klöverblomma [9] (-0.40, 7.90) in Södra Klöverängen (S)
+    walk(&mut s, 1.0, 0.36, 99)
+    assert(s.flowers == 3 && s.last_flower == 9 && s.collected[9] && !s.won)
+
+    // 4. Gullviva [8] (8.40, 5.10) on Solkullen (SE)
+    walk(&mut s, 1.0, -0.32, 123)
+    assert(s.flowers == 4 && s.last_flower == 8 && s.collected[8] && !s.won)
+
+    // 5. Linnea [7] (9.20, -1.60) in Bärgläntan (NE)
+    walk(&mut s, 0.12, -1.0, 90)
+    assert(s.flowers == 5 && s.last_flower == 7 && s.collected[7] && !s.won)
+
+    // 6. Blåklocka [3] (2.60, 0.70) in Körsbärsgläntan East
+    walk(&mut s, -1.0, 0.35, 93)
+    assert(s.flowers == 6 && s.last_flower == 3 && s.collected[3] && !s.won)
+
+    // 7. Smultronblomma [11] (5.50, 1.99, 2.80) perched on Honungsmolnet (East low cloud)
+    fly(&mut s, 0.71, 0.71, true, 15, false)
+    fly(&mut s, 0.0, 0.0, false, 48, false)
+    assert(s.last_cloud == 43 && s.bodies[s.player].grounded)
+    fly(&mut s, 1.0, 0.62, true, 33, false)
+    fly(&mut s, 0.0, 0.0, false, 34, false)
+    assert(s.last_cloud == 44 && s.bodies[s.player].grounded)
+    assert(s.flowers == 7 && s.last_flower == 11 && s.collected[11] && !s.won)
+
+    // Drop back toward central crossroads and trot straight north across Bäckbron to Lyktängen.
+    walk(&mut s, -1.0, -0.45, 78)
+    assert(s.bodies[s.player].grounded)
+    // 8. Förgätmigej [6] (0.40, -9.10) across Bäckbron in Lyktängen (N)
+    walk(&mut s, 0.05, -1.0, 128)
+    assert(s.flowers == 8 && s.last_flower == 6 && s.collected[6] && !s.won)
+
+    // 9. Skogsviol [5] (-9.10, -2.50) in Svampdungen (W)
+    walk(&mut s, -1.0, 0.69, 154)
+    assert(s.flowers == 9 && s.last_flower == 5 && s.collected[5] && !s.won)
+
+    // Return to central west cloud launch and climb gentle western staircase to Svampmolnet.
+    walk(&mut s, 1.0, 0.48, 108)
+    // 10. Skogsstjärna [10] (-6.70, 2.91, -1.60) perched on Svampmolnet (West staircase)
+    fly(&mut s, -1.0, 0.0, true, 24, false)
+    fly(&mut s, 0.0, 0.0, false, 40, false)
+    assert(s.last_cloud == 38 && s.bodies[s.player].grounded)
+    fly(&mut s, -1.0, -0.62, true, 31, false)
+    fly(&mut s, 0.0, 0.0, false, 34, false)
+    assert(s.last_cloud == 39 && s.bodies[s.player].grounded)
+    fly(&mut s, -0.94, -1.0, true, 31, false)
+    fly(&mut s, 0.0, 0.0, false, 34, false)
+    assert(s.last_cloud == 40 && s.bodies[s.player].grounded)
+    assert(s.flowers == 10 && s.last_flower == 10 && s.collected[10] && s.won)
+    final_pick := s.picked_tick
+    walk(&mut s, 0.0, 0.0, 3)
+    assert(s.picked_tick == final_pick && s.flowers == 10 && !s.walking && s.butterflies == 0)
+
     assert(play.encode(&s.scene) == source)
     reset := play.start(&s.scene)
     assert(reset.tick == 0 && !reset.won && reset.flowers == 0 && reset.picked_tick == -1)
     for picked in reset.collected { assert(!picked) }
     state := json.Doc::parse_text(play.state_json(&s))
-    assert(state.ok && state.get_i64(state.root, "flowers").unwrap() == 5 && state.get_bool(state.root, "won").unwrap())
-    assert(state.get_i64(state.root, "last_flower").unwrap() == 6)
+    assert(state.ok && state.get_i64(state.root, "flowers").unwrap() == 10 && state.get_bool(state.root, "won").unwrap())
+    assert(state.get_i64(state.root, "last_flower").unwrap() == 10)
     assert(state.get_i64(state.root, "picked_tick").unwrap() == s.picked_tick)
     entities := state.field(state.root, "entities")
     assert(state.count(entities) == original.entities.len)
@@ -84,26 +140,30 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     mut s := play.start(&original)
     walk(&mut s, 1.0, 0.0, 12)
     assert(s.walking && s.heading > 1.56 && s.heading < 1.58 && s.walk_phase > 0.0)
-    walk(&mut s, 1.0, 1.0, 240)
+    walk(&mut s, 1.0, 1.0, 360)
     at_edge := play.position(&s, 1)
-    assert(at_edge.x == 5.0 && at_edge.z == 3.3 && !s.walking)
+    assert(at_edge.x == 13.5 && at_edge.z == 11.5 && !s.walking)
     phase := s.walk_phase
     walk(&mut s, 1.0, 1.0, 8)
     assert(s.walk_phase == phase && s.bodies[s.player].velocity.x == 0.0)
-    walk(&mut s, -1.0, -1.0, 300)
+    walk(&mut s, -1.0, -1.0, 620)
     bottom := play.position(&s, 1)
-    assert(bottom.x == -5.0 && bottom.z == -3.5)
+    assert(bottom.x == -13.5 && bottom.z == -11.5)
 }
 
-@test fn the_forest_trunk_stops_the_runner_until_she_turns_back() {
+@test fn the_forest_trunk_and_bridge_railings_block_while_bridge_deck_is_walkable() {
     mut original := play.demo()
-    assert(original.entities[7].role == .Collider && original.entities[7].name == "Stam 1")
+    assert(original.entities[12].role == .Collider && original.entities[12].name == "Stam 1")
+    assert(original.entities[30].role == .Collider && original.entities[30].name == "Broräcke Väst")
+    assert(original.entities[31].role == .Collider && original.entities[31].name == "Broräcke Öst")
     assert(play.upsert(&mut original, "{\"name\":\"Stam 1\",\"role\":\"collider\",\"shape\":\"box\",\"mass\":1}").is_err())
     mut s := play.start(&play.decode(play.encode(&original)).unwrap())
-    walk(&mut s, 0.0, -1.0, 35)
-    walk(&mut s, -1.0, 0.0, 100)
+    // Clear Vägvisaren (-2.10, -1.90), then approach Stam 1 (-3.80, -1.50) squarely from the east.
+    walk(&mut s, -1.0, 0.0, 38)
+    walk(&mut s, 0.0, -1.0, 47)
+    walk(&mut s, -1.0, 0.0, 40)
     p := play.position(&s, 1)
-    trunk := &s.scene.entities[7]
+    trunk := &s.scene.entities[12]
     east_face := trunk.position.x + trunk.size.x * 0.5
     assert((p.x - east_face - 0.4).abs() < 0.005)
     assert((p.z - trunk.position.z).abs() < 0.06 && s.contacts >= 2)
@@ -111,6 +171,20 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     assert((play.position(&s, 1).x - p.x).abs() < 0.001)
     walk(&mut s, 1.0, 0.0, 10)
     assert(play.position(&s, 1).x > p.x + 0.5)
+
+    // Crossing straight north over Bäckbron (z = -4.8) passes smoothly between the railings.
+    mut bridge := play.start(&original)
+    walk(&mut bridge, 0.0, -1.0, 148)
+    across := play.position(&bridge, 1)
+    assert(across.x.abs() < 0.001 && across.z < -8.5 && bridge.collected[6])
+    // Pushing east at bridge mid-span stops cleanly at Broräcke Öst.
+    mut rail := play.start(&original)
+    walk(&mut rail, 0.0, -1.0, 91)
+    walk(&mut rail, 1.0, 0.0, 40)
+    rp := play.position(&rail, 1)
+    east_rail := &rail.scene.entities[31]
+    west_face := east_rail.position.x - east_rail.size.x * 0.5
+    assert((rp.x - (west_face - 0.4)).abs() < 0.005)
 }
 
 @test fn plain_goal_scenes_keep_their_win_condition_and_support_optional_flowers() {
@@ -251,19 +325,42 @@ fn fly(s: &mut play.Session, x: f32, z: f32, jump: bool, ticks: i32, realtime: b
     }
 }
 
-fn climb_to_pink(s: &mut play.Session, realtime: bool) {
+fn climb_west_to_crown(s: &mut play.Session, realtime: bool) {
     fly(&mut s, 0.0, 0.0, false, 2, realtime)
-    directions := [[-1.0, 0.04], [-1.0, -0.63], [-0.60, -1.0], [1.0, -0.40], [1.0, 0.0]]
-    runs := [17, 21, 20, 23, 21]
-    waits := [51, 54, 55, 57, 47]
+    directions := [[-1.0, -0.22], [-1.0, -0.62], [-0.94, -1.0], [0.89, -1.0], [1.0, -0.54], [1.0, -0.41]]
+    runs := [43, 31, 31, 32, 36, 39]
+    waits := [24, 34, 34, 34, 30, 28]
+    pads := [38, 39, 40, 41, 42, 51]
     for i in 0..runs.len {
         fly(&mut s, f32(directions[i][0]), f32(directions[i][1]), true, runs[i], realtime)
         fly(&mut s, 0.0, 0.0, false, waits[i], realtime)
-        assert(s.last_cloud == 11 + i)
-        if i < 4 { assert(s.bodies[s.player].grounded) }
-        if i == 2 { assert(s.butterflies == 1 && s.collected[17]) }
-        if i == 3 { assert(s.butterflies == 2 && s.collected[18]) }
+        assert(s.last_cloud == pads[i] && s.bodies[s.player].grounded)
+        if i == 2 { assert(s.flowers == 1 && s.collected[10]) }
+        if i == 3 { assert(s.butterflies == 1 && s.collected[54]) }
+        if i == 4 { assert(s.butterflies == 2 && s.collected[55]) }
+        if i == 5 { assert(s.butterflies == 3 && s.collected[57]) }
     }
+}
+
+fn hop_to_stjarnstudsen(s: &mut play.Session, realtime: bool) {
+    fly(&mut s, 0.80, -1.0, true, 34, realtime)
+    fly(&mut s, 0.0, 0.0, false, 38, realtime)
+    assert(s.last_cloud == 52 && s.cloud_tick == s.tick)
+}
+
+fn climb_east_to_hallonstudsen(s: &mut play.Session, realtime: bool) {
+    fly(&mut s, 0.0, 0.0, false, 2, realtime)
+    // Ground -> Solmolnet [43] -> Honungsmolnet [44] (Smultronblomma [11]) -> Hallonstudsen [45].
+    fly(&mut s, 1.0, -0.15, true, 46, realtime)
+    fly(&mut s, 0.0, 0.0, false, 20, realtime)
+    assert(s.last_cloud == 43 && s.bodies[s.player].grounded)
+    fly(&mut s, 1.0, 0.62, true, 33, realtime)
+    fly(&mut s, 0.0, 0.0, false, 34, realtime)
+    assert(s.last_cloud == 44 && s.bodies[s.player].grounded)
+    assert(s.flowers == 1 && s.collected[11])
+    fly(&mut s, 0.08, -1.0, true, 32, realtime)
+    fly(&mut s, 0.0, 0.0, false, 40, realtime)
+    assert(s.last_cloud == 45 && s.cloud_tick == s.tick)
 }
 
 fn meadow() -> play.Scene {
@@ -376,14 +473,19 @@ fn meadow() -> play.Scene {
     }
 }
 
-@test fn real_inputs_climb_the_clouds_bounce_to_the_crown_and_replay_across_frame_rates() {
+@test fn western_gentle_staircase_collects_all_five_butterflies_across_frame_rates() {
     scene := play.demo()
     mut expected := ""
     for realtime in [false, true] {
         mut s := play.start(&play.decode(play.encode(&scene)).unwrap())
-        assert(s.total_butterflies == 3 && s.last_cloud == -1 && s.cloud_tick == -1)
-        climb_to_pink(&mut s, realtime)
-        assert(s.tick == 368 && s.cloud_tick == s.tick && s.cloud_origin.y == 1.7 && s.last_cloud == 15)
+        assert(s.total_butterflies == 5 && s.last_cloud == -1 && s.cloud_tick == -1)
+        climb_west_to_crown(&mut s, realtime)
+        assert(s.last_cloud == 51 && s.butterflies == 3 && !s.won)
+
+        // Hop onto Stjärnstudsen [52] (BoostCloud) and launch to secret Stjärngläntan [53].
+        hop_to_stjarnstudsen(&mut s, realtime)
+        boost_tick := s.tick
+        assert(s.cloud_tick == boost_tick && (s.cloud_origin.y - 4.45).abs() < 0.001 && s.last_cloud == 52)
         assert(!s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
         spring := play.render_motion(&s, true)
         assert(spring.boost_age == 0.0 && spring.takeoff_age == 0.0 && spring.landing_age == 0.0)
@@ -391,30 +493,221 @@ fn meadow() -> play.Scene {
         spring_anchor := play.last_support_anchor(&s, 0.33)
         assert(spring_anchor.distance == 0.0 && spring_anchor.position.x == play.position(&s, 1).x)
         assert((spring_anchor.position.y - s.cloud_origin.y - 0.4).abs() < 0.001)
-        fly(&mut s, 1.0, 0.11, false, 24, realtime)
-        assert(s.cloud_tick == 368 && play.position(&s, 1).y > 4.5)
-        fly(&mut s, 0.0, 0.0, false, 90, realtime)
-        assert(s.tick == 482 && s.last_cloud == 16 && s.bodies[s.player].grounded)
+
+        fly(&mut s, -1.0, -0.73, false, 36, realtime)
+        assert(s.cloud_tick == boost_tick && play.position(&s, 1).y > 7.5)
+        fly(&mut s, 0.0, 0.0, false, 58, realtime)
+        assert(s.last_cloud == 53 && s.bodies[s.player].grounded)
         perch := play.render_motion(&s, true)
-        assert(perch.grounded && perch.boost_age == f32((482.0 - 368.0) / 60.0) && perch.landing_age < perch.boost_age)
-        assert(s.butterflies == 3 && s.last_butterfly == 19 && s.collected[19] && !s.won)
+        assert(perch.grounded && (perch.boost_age - f32(s.tick - boost_tick) / 60.0).abs() < 0.0001)
+        assert(perch.landing_age < perch.boost_age)
+        assert(s.butterflies == 4 && s.last_butterfly == 58 && s.collected[58] && !s.won)
+
+        // Cross over to the eastern canopy from the summit: Stjärngläntan [53] -> Kronbalkongen [51] -> Smultronstudsen [48] -> Bärterassen [46] -> Östra utsikten [47] (Solvinge [56]).
+        fly(&mut s, 0.17, 1.0, true, 49, realtime)
+        fly(&mut s, 0.0, 0.0, false, 44, realtime)
+        assert(s.last_cloud == 51 && s.bodies[s.player].grounded)
+        fly(&mut s, 1.0, 0.52, true, 49, realtime)
+        fly(&mut s, 0.0, 0.0, false, 37, realtime)
+        assert(s.last_cloud == 48 && s.cloud_tick == s.tick && !s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
+        fly(&mut s, 1.0, 0.68, false, 40, realtime)
+        fly(&mut s, 0.0, 0.0, false, 64, realtime)
+        assert(s.last_cloud == 46 && s.bodies[s.player].grounded)
+        fly(&mut s, 1.0, -0.48, true, 34, realtime)
+        fly(&mut s, 0.0, 0.0, false, 34, realtime)
+        assert(s.last_cloud == 47 && s.bodies[s.player].grounded)
+        assert(s.butterflies == 5 && s.last_butterfly == 56 && s.collected[56] && !s.won)
         if realtime { assert(play.state_json(&s) == expected) } else { expected = play.state_json(&s) }
+
         reset := play.start(&s.scene)
-        assert(reset.butterflies == 0 && reset.butterfly_tick == -1 && reset.last_butterfly == -1 && !reset.collected[19])
+        assert(reset.butterflies == 0 && reset.butterfly_tick == -1 && reset.last_butterfly == -1 && !reset.collected[58])
         assert(reset.last_cloud == -1 && reset.cloud_tick == -1 && reset.tick == 0)
         assert(play.render_motion(&reset, false).boost_age < 0.0)
     }
 }
 
-@test fn an_ordinary_jump_from_the_pink_pad_cannot_reach_the_crown() {
-    mut scene := play.demo()
-    scene.entities[15].role = .Cloud
-    mut s := play.start(&scene)
-    climb_to_pink(&mut s, false)
-    assert(s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 0.0)
-    fly(&mut s, 1.0, 0.11, true, 24, false)
-    fly(&mut s, 0.0, 0.0, false, 90, false)
-    assert(s.butterflies == 2 && !s.collected[19] && s.last_cloud != 16)
+@test fn eastern_bouncy_expressway_collects_all_five_butterflies_across_frame_rates() {
+    scene := play.demo()
+    mut expected := ""
+    for realtime in [false, true] {
+        mut s := play.start(&play.decode(play.encode(&scene)).unwrap())
+        climb_east_to_hallonstudsen(&mut s, realtime)
+        assert(!s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
+
+        // Boost Hallonstudsen [45] -> Bärterassen [46].
+        fly(&mut s, 0.04, -1.0, false, 37, realtime)
+        fly(&mut s, 0.0, 0.0, false, 54, realtime)
+        assert(s.last_cloud == 46 && s.bodies[s.player].grounded)
+
+        // Hop Bärterassen [46] -> Östra utsikten [47] (Solvinge [56]) -> back to Bärterassen [46].
+        fly(&mut s, 1.0, -0.48, true, 34, realtime)
+        fly(&mut s, 0.0, 0.0, false, 34, realtime)
+        assert(s.last_cloud == 47 && s.bodies[s.player].grounded)
+        assert(s.butterflies == 1 && s.collected[56])
+        fly(&mut s, -1.0, 0.48, true, 34, realtime)
+        fly(&mut s, 0.0, 0.0, false, 48, realtime)
+        assert(s.last_cloud == 46 && s.bodies[s.player].grounded)
+
+        // Glide Bärterassen [46] -> Smultronstudsen [48] (BoostCloud) -> Kronbalkongen [51] (Kronvinge [57]).
+        fly(&mut s, -1.0, -0.68, true, 40, realtime)
+        fly(&mut s, 0.0, 0.0, false, 33, realtime)
+        assert(s.last_cloud == 48 && s.cloud_tick == s.tick && !s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
+        fly(&mut s, -1.0, -0.52, false, 49, realtime)
+        fly(&mut s, 0.0, 0.0, false, 42, realtime)
+        assert(s.last_cloud == 51 && s.bodies[s.player].grounded)
+        assert(s.butterflies == 2 && s.collected[57])
+
+        // Crown -> Stjärnstudsen [52] (BoostCloud) -> Stjärngläntan [53] (Stjärnvinge [58]).
+        hop_to_stjarnstudsen(&mut s, realtime)
+        fly(&mut s, -1.0, -0.73, false, 36, realtime)
+        fly(&mut s, 0.0, 0.0, false, 58, realtime)
+        assert(s.last_cloud == 53 && s.bodies[s.player].grounded)
+        assert(s.butterflies == 3 && s.collected[58])
+
+        // Glide down Stjärngläntan [53] -> Kronbalkongen [51] -> Sidenmolnet [42] (Sidenvinge [55]) -> Västra vilan [41] (Guldvinge [54]).
+        fly(&mut s, 0.17, 1.0, true, 49, realtime)
+        fly(&mut s, 0.0, 0.0, false, 44, realtime)
+        assert(s.last_cloud == 51 && s.bodies[s.player].grounded)
+        fly(&mut s, -1.0, 0.41, true, 39, realtime)
+        fly(&mut s, 0.0, 0.0, false, 44, realtime)
+        assert(s.last_cloud == 42 && s.bodies[s.player].grounded)
+        assert(s.butterflies == 4 && s.collected[55])
+        fly(&mut s, -1.0, 0.54, true, 36, realtime)
+        fly(&mut s, 0.0, 0.0, false, 46, realtime)
+        assert(s.last_cloud == 41 && s.bodies[s.player].grounded)
+        assert(s.butterflies == 5 && s.collected[54] && !s.won)
+        if realtime { assert(play.state_json(&s) == expected) } else { expected = play.state_json(&s) }
+    }
+}
+
+@test fn central_brook_shortcut_connects_molnbron_to_both_west_and_east_skyways() {
+    scene := play.demo()
+    for go_east in [false, true] {
+        mut s := play.start(&scene)
+        // Walk NE from spawn (0, 2.0) to (1.0, -0.9), jump onto Bäckmolnet [49] (BoostCloud).
+        walk(&mut s, 0.34, -1.0, 41)
+        fly(&mut s, 0.72, -1.0, true, 20, false)
+        fly(&mut s, 0.0, 0.0, false, 31, false)
+        assert(s.last_cloud == 49 && s.cloud_tick == s.tick && !s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
+        // Boost onto Molnbron [50] floating directly above Bäckbron.
+        fly(&mut s, -0.84, -1.0, false, 38, false)
+        fly(&mut s, 0.0, 0.0, false, 56, false)
+        assert(s.last_cloud == 50 && s.bodies[s.player].grounded)
+        if !go_east {
+            // West cross-branch: Molnbron [50] -> Sidenmolnet [42] (ordinary jump!).
+            fly(&mut s, -1.0, -0.15, true, 36, false)
+            fly(&mut s, 0.0, 0.0, false, 30, false)
+            assert(s.last_cloud == 42 && s.bodies[s.player].grounded && s.collected[55])
+        } else {
+            // East cross-branch: Molnbron [50] -> Smultronstudsen [48] (BoostCloud) -> Kronbalkongen [51].
+            fly(&mut s, 1.0, 0.06, true, 44, false)
+            fly(&mut s, 0.0, 0.0, false, 28, false)
+            assert(s.last_cloud == 48 && s.cloud_tick == s.tick && !s.bodies[s.player].grounded && s.bodies[s.player].velocity.y == 8.2)
+            fly(&mut s, -1.0, -0.52, false, 49, false)
+            fly(&mut s, 0.0, 0.0, false, 42, false)
+            assert(s.last_cloud == 51 && s.bodies[s.player].grounded && s.collected[57])
+        }
+    }
+}
+
+@test fn an_ordinary_jump_from_the_pink_pads_cannot_reach_their_high_targets() {
+    // 1. Hallonstudsen [45] -> Bärterassen [46] requires a BoostCloud.
+    mut east := play.demo()
+    east.entities[45].role = .Cloud
+    mut se := play.start(&east)
+    climb_east_to_hallonstudsen(&mut se, false)
+    assert(se.bodies[se.player].grounded && se.bodies[se.player].velocity.y == 0.0)
+    fly(&mut se, 0.04, -1.0, true, 37, false)
+    fly(&mut se, 0.0, 0.0, false, 60, false)
+    assert(se.last_cloud != 46)
+
+    // 2. Smultronstudsen [48] -> Kronbalkongen [51] requires a BoostCloud.
+    mut crown := play.demo()
+    crown.entities[48].role = .Cloud
+    crown.entities[1].position = core.vec3(3.30, 2.75 + 0.4, -4.10)
+    mut sc := play.start(&crown)
+    assert(sc.bodies[sc.player].grounded)
+    fly(&mut sc, -1.0, -0.52, true, 49, false)
+    fly(&mut sc, 0.0, 0.0, false, 45, false)
+    assert(!sc.collected[57] && sc.last_cloud != 51)
+
+    // 3. Bäckmolnet [49] -> Molnbron [50] requires a BoostCloud.
+    mut brook := play.demo()
+    brook.entities[49].role = .Cloud
+    brook.entities[1].position = core.vec3(1.85, 1.15 + 0.4, -2.10)
+    mut sb := play.start(&brook)
+    assert(sb.bodies[sb.player].grounded)
+    fly(&mut sb, -0.84, -1.0, true, 38, false)
+    fly(&mut sb, 0.0, 0.0, false, 56, false)
+    assert(sb.last_cloud != 50)
+
+    // 4. Stjärnstudsen [52] -> Stjärngläntan [53] requires a BoostCloud.
+    mut star := play.demo()
+    star.entities[52].role = .Cloud
+    mut ss := play.start(&star)
+    climb_west_to_crown(&mut ss, false)
+    hop_to_stjarnstudsen(&mut ss, false)
+    assert(ss.bodies[ss.player].grounded && ss.bodies[ss.player].velocity.y == 0.0)
+    fly(&mut ss, -1.0, -0.73, true, 36, false)
+    fly(&mut ss, 0.0, 0.0, false, 65, false)
+    assert(ss.butterflies == 3 && !ss.collected[58] && ss.last_cloud != 53)
+}
+
+@test fn blossom_demo_layout_invariants_hold_for_bounds_sensors_and_clouds() {
+    scene := play.demo()
+    b := scene.bounds.unwrap()
+    assert(b.min_x == -13.5 && b.min_z == -11.5 && b.max_x == 13.5 && b.max_z == 11.5)
+    assert(scene.entities.len == 59 && scene.entities.len <= play.MAX_ENTITIES)
+    assert(scene.entities[0].name == "Ängen" && scene.entities[0].role == .Prop)
+    assert(scene.entities[1].name == "Vallmo" && scene.entities[1].role == .Player)
+    mut flowers := 0
+    mut clouds := 0
+    mut boosts := 0
+    mut butterflies := 0
+    mut colliders := 0
+    for i in 0..scene.entities.len {
+        e := &scene.entities[i]
+        for j in i + 1..scene.entities.len {
+            assert(e.name != scene.entities[j].name)
+        }
+        if e.role == .Flower {
+            flowers += 1
+            assert(i >= 2 && i < 12)
+            assert(e.position.x > b.min_x + 0.5 && e.position.x < b.max_x - 0.5)
+            assert(e.position.z > b.min_z + 0.5 && e.position.z < b.max_z - 0.5)
+        } else if e.role == .Cloud {
+            clouds += 1
+            assert((e.size.y - 0.28).abs() < 0.0001)
+            assert(e.position.x - e.size.x * 0.5 >= b.min_x && e.position.x + e.size.x * 0.5 <= b.max_x)
+            assert(e.position.z - e.size.z * 0.5 >= b.min_z && e.position.z + e.size.z * 0.5 <= b.max_z)
+        } else if e.role == .BoostCloud {
+            boosts += 1
+            assert((e.size.y - 0.28).abs() < 0.0001)
+        } else if e.role == .SuperButterfly {
+            butterflies += 1
+            assert(e.position.x > b.min_x + 0.5 && e.position.x < b.max_x - 0.5)
+            assert(e.position.z > b.min_z + 0.5 && e.position.z < b.max_z - 0.5)
+        } else if e.role == .Collider {
+            colliders += 1
+        }
+    }
+    assert(flowers == 10 && clouds == 12 && boosts == 4 && butterflies == 5 && colliders == 26)
+    // Verify no flower or player spawn overlaps any collider box.
+    for i in 0..scene.entities.len {
+        e := &scene.entities[i]
+        if e.role != .Flower && e.role != .Player { continue }
+        r := e.size.x * 0.5
+        for c in scene.entities {
+            if c.role != .Collider { continue }
+            dx := (e.position.x - c.position.x).abs() - c.size.x * 0.5
+            dy := (e.position.y - c.position.y).abs() - c.size.y * 0.5
+            dz := (e.position.z - c.position.z).abs() - c.size.z * 0.5
+            px := if dx > 0.0 { dx } else { f32(0.0) }
+            py := if dy > 0.0 { dy } else { f32(0.0) }
+            pz := if dz > 0.0 { dz } else { f32(0.0) }
+            assert(px * px + py * py + pz * pz > r * r)
+        }
+    }
 }
 
 @test fn butterflies_remain_collectible_after_bouquet_win_and_can_be_a_standalone_goal() {
@@ -454,7 +747,7 @@ fn meadow() -> play.Scene {
 
 @test fn spawning_on_a_cloud_has_an_immediate_support_and_only_a_spring_launches_the_fox() {
     mut level := play.demo()
-    for index in [11, 15] {
+    for index in [38, 45, 48, 49, 52] {
         pad := level.entities[index].clone()
         level.entities[1].position = core.vec3(pad.position.x + 0.4, pad.position.y + pad.size.y * 0.5 + 0.4, pad.position.z)
         mut s := play.start(&level)

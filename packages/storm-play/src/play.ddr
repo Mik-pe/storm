@@ -72,41 +72,119 @@ fn entity(name: string, shape: Shape, role: Role, p: core.Vec3, size: core.Vec3,
     }
 }
 
+fn cloud(name: string, role: Role, top: core.Vec3, width: f32, depth: f32, color: core.Vec3) -> Entity {
+    entity(name, .Box, role, core.sub(top, core.vec3(0.0, 0.14, 0.0)), core.vec3(width, 0.28, depth), 0.0, color)
+}
+
 pub fn demo() -> Scene {
     mut scene := empty("Blomsterskogen")
     scene.theme = .Blossom
-    scene.bounds = .Some(Bounds { min_x: -5.0, min_z: -3.5, max_x: 5.0, max_z: 3.3 })
-    scene.entities.push(entity("Ängen", .Box, .Prop, core.vec3(0.0, -0.5, 0.0), core.vec3(30.0, 1.0, 26.0),
+    scene.bounds = .Some(Bounds { min_x: -13.5, min_z: -11.5, max_x: 13.5, max_z: 11.5 })
+    scene.entities.push(entity("Ängen", .Box, .Prop, core.vec3(0.0, -0.5, 0.0), core.vec3(56.0, 1.0, 52.0),
         0.0, core.vec3(0.39, 0.65, 0.30)))
-    scene.entities.push(entity("Vallmo", .Sphere, .Player, core.vec3(0.0, 0.4, 1.0), core.vec3(0.8, 0.8, 0.8),
+    scene.entities.push(entity("Vallmo", .Sphere, .Player, core.vec3(0.0, 0.4, 2.0), core.vec3(0.8, 0.8, 0.8),
         1.0, core.vec3(0.95, 0.31, 0.075)))
-    names := ["Smörblomma", "Blåklocka", "Prästkrage", "Skogsviol", "Gullviva"]
-    positions := [core.vec3(-2.15, 0.45, 1.55), core.vec3(2.0, 0.45, 0.1),
-        core.vec3(-2.8, 0.45, -1.75), core.vec3(-1.05, 0.45, -2.45), core.vec3(3.4, 0.45, -2.0)]
-    colors := [core.vec3(0.98, 0.69, 0.15), core.vec3(0.36, 0.41, 0.91), core.vec3(0.98, 0.93, 0.82),
-        core.vec3(0.69, 0.37, 0.83), core.vec3(0.99, 0.57, 0.20)]
+
+    // Ten named Swedish wildflowers: eight across every ground zone plus two on scenic low clouds.
+    names := [
+        "Smörblomma", "Blåklocka", "Prästkrage", "Skogsviol", "Förgätmigej",
+        "Linnea", "Gullviva", "Klöverblomma", "Skogsstjärna", "Smultronblomma",
+    ]
+    positions := [
+        core.vec3(-2.15, 0.45, 2.35), core.vec3(2.60, 0.45, 0.70),
+        core.vec3(-7.40, 0.45, 5.40), core.vec3(-9.10, 0.45, -2.50),
+        core.vec3(0.40, 0.45, -9.10), core.vec3(9.20, 0.45, -1.60),
+        core.vec3(8.40, 0.45, 5.10), core.vec3(-0.40, 0.45, 7.90),
+        core.vec3(-6.70, 2.91, -1.60), core.vec3(5.50, 1.99, 2.80),
+    ]
+    colors := [
+        core.vec3(0.98, 0.72, 0.16), core.vec3(0.36, 0.46, 0.94),
+        core.vec3(0.99, 0.95, 0.84), core.vec3(0.68, 0.36, 0.86),
+        core.vec3(0.40, 0.76, 0.98), core.vec3(0.98, 0.56, 0.74),
+        core.vec3(0.99, 0.58, 0.20), core.vec3(0.96, 0.46, 0.62),
+        core.vec3(1.00, 0.96, 0.78), core.vec3(1.00, 0.72, 0.82),
+    ]
     for i in 0..names.len {
         scene.entities.push(entity(names[i], .Sphere, .Flower, positions[i], core.vec3(0.64, 0.64, 0.64), 0.0, colors[i]))
     }
-    trunks := [core.vec3(-4.14, 1.3, -1.61), core.vec3(4.35, 1.3, -2.05),
-        core.vec3(-5.46, 1.3, 1.86), core.vec3(5.74, 1.3, 1.18)]
+
+    // Eighteen blossom tree trunks framing the clearing, groves, brook, and border meadows.
+    trunks := [
+        core.vec3(-3.80, 1.30, -1.50), core.vec3(3.90, 1.30, -1.10),
+        core.vec3(-4.40, 1.30, 4.60), core.vec3(4.20, 1.30, 5.20),
+        core.vec3(-10.80, 1.40, 3.60), core.vec3(-11.40, 1.30, 8.20),
+        core.vec3(-5.60, 1.30, 9.20), core.vec3(-11.80, 1.40, -1.20),
+        core.vec3(-10.60, 1.30, -6.20), core.vec3(-7.40, 1.30, -8.40),
+        core.vec3(-4.40, 1.40, -10.20), core.vec3(4.80, 1.40, -10.00),
+        core.vec3(8.60, 1.30, -8.40), core.vec3(11.60, 1.30, -5.60),
+        core.vec3(11.80, 1.40, -0.40), core.vec3(11.60, 1.30, 4.20),
+        core.vec3(9.40, 1.30, 8.80), core.vec3(4.40, 1.30, 9.40),
+    ]
     for i in 0..trunks.len {
-        scene.entities.push(entity("Stam " + (i + 1).str(), .Box, .Collider, trunks[i], core.vec3(0.56, 2.6, 0.56),
+        grand := i == 4 || i == 7 || i == 10 || i == 11 || i == 14
+        size := if grand { core.vec3(0.76, 2.80, 0.76) } else { core.vec3(0.64, 2.60, 0.64) }
+        scene.entities.push(entity("Stam " + (i + 1).str(), .Box, .Collider, trunks[i], size,
             0.0, core.vec3(0.0, 0.0, 0.0)))
     }
-    tops := [core.vec3(-1.85, 0.88, 0.48), core.vec3(-2.60, 1.66, 0.20),
-        core.vec3(-3.36, 2.12, -1.06), core.vec3(-1.80, 1.72, -1.68),
-        core.vec3(-0.20, 1.70, -1.68), core.vec3(1.55, 3.76, -1.50)]
-    clouds := ["Daggmolnet", "Körsbärsmolnet", "Västra vilan", "Sidenmolnet", "Studsmolnet", "Kronbalkongen"]
-    for i in 0..tops.len {
-        pad := if i == 4 { Role.BoostCloud } else { Role.Cloud }
-        tint := if i == 4 { core.vec3(0.98, 0.32, 0.60) } else { core.vec3(0.86, 0.91, 1.0) }
-        scene.entities.push(entity(clouds[i], .Box, pad, core.sub(tops[i], core.vec3(0.0, 0.14, 0.0)),
-            core.vec3(if i == 5 { 1.8 } else { 1.48 }, 0.28, 1.32), 0.0, tint))
+
+    // Landmark colliders: bridge railings (deck stays open), picnic basket, toadstools, stump, signpost, boulder.
+    landmark_names := [
+        "Broräcke Väst", "Broräcke Öst", "Picknickkorg", "Storsvampen",
+        "Svampklunga", "Mosstubben", "Vägvisaren", "Ängsstenen",
+    ]
+    landmark_pos := [
+        core.vec3(-1.65, 0.55, -4.80), core.vec3(1.65, 0.55, -4.80),
+        core.vec3(-9.60, 0.42, 5.90), core.vec3(-10.50, 0.90, -3.40),
+        core.vec3(-8.40, 0.55, -4.60), core.vec3(10.10, 0.70, 5.60),
+        core.vec3(-2.10, 0.95, -1.90), core.vec3(-2.40, 0.50, 8.60),
+    ]
+    landmark_sizes := [
+        core.vec3(0.34, 1.10, 2.60), core.vec3(0.34, 1.10, 2.60),
+        core.vec3(0.72, 0.84, 0.64), core.vec3(0.86, 1.80, 0.86),
+        core.vec3(0.74, 1.10, 0.74), core.vec3(1.20, 1.40, 1.10),
+        core.vec3(0.36, 1.90, 0.36), core.vec3(1.10, 1.00, 0.95),
+    ]
+    for i in 0..landmark_names.len {
+        scene.entities.push(entity(landmark_names[i], .Box, .Collider, landmark_pos[i], landmark_sizes[i],
+            0.0, core.vec3(0.0, 0.0, 0.0)))
     }
-    wings := ["Guldvinge", "Sidenvinge", "Kronvinge"]
-    perches := [core.vec3(-3.38, 2.84, -0.91), core.vec3(-1.79, 3.28, -1.73), core.vec3(2.08, 4.47, -1.56)]
-    wing_colors := [core.vec3(1.0, 0.68, 0.18), core.vec3(0.54, 0.37, 0.94), core.vec3(0.16, 0.8, 0.73)]
+
+    // Western gentle stepping-cloud staircase climbing cleanly to Kronbalkongen without boosts.
+    scene.entities.push(cloud("Daggmolnet", .Cloud, core.vec3(-3.20, 0.88, 1.30), 1.80, 1.50, core.vec3(0.88, 0.93, 1.00)))
+    scene.entities.push(cloud("Körsbärsmolnet", .Cloud, core.vec3(-5.10, 1.68, 0.10), 1.80, 1.50, core.vec3(0.99, 0.88, 0.94)))
+    scene.entities.push(cloud("Svampmolnet", .Cloud, core.vec3(-6.70, 2.46, -1.60), 1.90, 1.60, core.vec3(0.96, 0.90, 1.00)))
+    scene.entities.push(cloud("Västra vilan", .Cloud, core.vec3(-5.10, 3.24, -3.40), 1.90, 1.60, core.vec3(0.90, 0.93, 1.00)))
+    scene.entities.push(cloud("Sidenmolnet", .Cloud, core.vec3(-2.70, 4.02, -4.70), 1.85, 1.55, core.vec3(0.93, 0.89, 1.00)))
+
+    // Eastern playful bouncy strawberry-cloud expressway plus sunny low flower perch.
+    scene.entities.push(cloud("Solmolnet", .Cloud, core.vec3(3.40, 0.88, 1.50), 1.80, 1.50, core.vec3(1.00, 0.94, 0.86)))
+    scene.entities.push(cloud("Honungsmolnet", .Cloud, core.vec3(5.50, 1.54, 2.80), 1.85, 1.55, core.vec3(1.00, 0.92, 0.82)))
+    scene.entities.push(cloud("Hallonstudsen", .BoostCloud, core.vec3(5.70, 1.15, 0.40), 1.80, 1.60, core.vec3(0.98, 0.34, 0.62)))
+    scene.entities.push(cloud("Bärterassen", .Cloud, core.vec3(5.80, 3.25, -2.40), 2.10, 1.80, core.vec3(0.98, 0.90, 0.96)))
+    scene.entities.push(cloud("Östra utsikten", .Cloud, core.vec3(8.10, 3.85, -3.50), 1.90, 1.65, core.vec3(1.00, 0.93, 0.88)))
+    scene.entities.push(cloud("Smultronstudsen", .BoostCloud, core.vec3(3.30, 2.75, -4.10), 1.75, 1.55, core.vec3(0.98, 0.32, 0.58)))
+
+    // Mid-canopy brook shortcut and cross-clouds linking west and east skyways.
+    scene.entities.push(cloud("Bäckmolnet", .BoostCloud, core.vec3(1.85, 1.15, -2.10), 1.75, 1.55, core.vec3(0.99, 0.38, 0.66)))
+    scene.entities.push(cloud("Molnbron", .Cloud, core.vec3(0.00, 3.10, -4.30), 2.10, 1.70, core.vec3(0.88, 0.95, 1.00)))
+
+    // Converging crown balcony and secret starlight high perch above Lyktängen.
+    scene.entities.push(cloud("Kronbalkongen", .Cloud, core.vec3(0.00, 4.80, -5.80), 2.60, 2.20, core.vec3(0.95, 0.93, 1.00)))
+    scene.entities.push(cloud("Stjärnstudsen", .BoostCloud, core.vec3(1.60, 4.45, -7.80), 1.75, 1.55, core.vec3(0.96, 0.36, 0.72)))
+    scene.entities.push(cloud("Stjärngläntan", .Cloud, core.vec3(-0.60, 6.55, -9.40), 2.40, 2.00, core.vec3(0.92, 0.94, 1.00)))
+
+    // Five luminous super-butterflies perched across west, east, crown, and starlight branches.
+    wings := ["Guldvinge", "Sidenvinge", "Solvinge", "Kronvinge", "Stjärnvinge"]
+    perches := [
+        core.vec3(-5.10, 4.00, -3.40), core.vec3(-2.70, 4.80, -4.70),
+        core.vec3(8.10, 4.62, -3.50), core.vec3(0.00, 5.58, -5.80),
+        core.vec3(-0.60, 7.34, -9.40),
+    ]
+    wing_colors := [
+        core.vec3(1.00, 0.72, 0.20), core.vec3(0.58, 0.40, 0.96),
+        core.vec3(0.86, 0.46, 0.62), core.vec3(0.18, 0.84, 0.76),
+        core.vec3(0.42, 0.76, 1.00),
+    ]
     for i in 0..wings.len {
         scene.entities.push(entity(wings[i], .Sphere, .SuperButterfly, perches[i], core.vec3(0.60, 0.60, 0.60), 0.0, wing_colors[i]))
     }
