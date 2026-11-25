@@ -551,6 +551,60 @@ $ dunder test
 ```
 Det är fynd 64:s klass (en funktion utan anropare varnar aldrig) men med ett större hål: en `@test fn` som inte nås är inte död kod utan en **tappad kontroll** — sviten sjunker med ett och blir *grönare*, aldrig rödare. Hur lätt det glöms är mätt i git-historiken: **5 av 16** commits till Storms rot-svit (`6885819`, `ea708c0`, `6ffbc60`, `396c875`, `1ac2860`) ändrade *enbart* registreringsrader — `+1` till `+3` rader `import .x as _`, inga andra, i en separat commit efter att modulen landat. Mellan de två commit:arna kördes modulens tester aldrig. Minimal repro: ett manifest med `test_root = "tests/suite.ddr"`, en `tests/suite.ddr` med en `@test`, och en `tests/other.ddr` med en `@test` som sviten inte importerar (`dunder check --tests` ser den inte heller — typkontrollen omfattar samma rotfil och importer). Mätt: i worktraven ovan (`620d2f3`, utan vakt-testet) rapporterade rot-sviten `62 passed` *med* `zz_unimported.ddr` på plats — samma tal som utan den (60 egna `@test` + Skrifts 2); provens test fanns inte i räkningen. Workaround här: ett test i varje svit med flera testmoduler (`every_test_module_beside_the_suite_is_imported_by_it`) listar `tests/` med `fs.list_dir`, läser varje `.ddr` som innehåller `@test`, och kräver en rad `import .<namn>` i sviten — bevisat i en skrapkopia i båda riktningarna: orörd → grönt; en avregistrerad modul eller en ny oimporterad testfil → rött med filnamnet (`tests/suite.ddr never imports a test module: `import .orb as _` (tests/orb.ddr has tests)`); en fil *utan* `@test` (ett delat hjälpmedel) → grönt. Tre sviter bär samma 30 rader (tre oberoende testbinärer, ingen gemensam testmodul att importera). Rekommendation: (a) låt `test_root` få vara en **katalog** (`tests/`) så varje `*.ddr` i den är en testmodul — då finns det inget att glömma och `import .x as _`-tricket försvinner; eller (b) om filen ska vara enheten, låt `dunder test` **varna** (W1004: `tests/x.ddr has @test but is not reachable from the test root`) — verktyget vet redan vilka filer det samlade från och kan lista katalogen. (a) är den rätta grunden: det finns inget scenario där en fil med tester i `tests/` ska vara oimporterad.
 
+**87. En obalanserad klammer i användarens fil rapporteras i en stdlib-modul som laddas efter den — aldrig i filen som är trasig.** Symptom (0.12.0): Storms `packages/storm-vulkan/tests/suite.ddr` hade ett test med två `unsafe {` och en stängande `}` för lite (ett skript som klistrade in ett block tog med dess kommentar och `unsafe {` och lade ett eget `unsafe {` utanför). `dunder test` skrev:
+
+```
+<stdlib/bytes/utf8.ddr>:12:1: error[E3004]: @derive is only valid on top-level struct or enum declarations
+12 | @derive(Eq)
+```
+
+och ingenting om `suite.ddr`. Minimal repro (paket med `src/lib.ddr` = `pub fn one() -> i32 { 1 }`):
+
+```
+capability stdio, unsafe
+
+import sys
+import ..src.lib as lib
+
+@test fn unbalanced() {
+    unsafe {
+    // a comment
+    unsafe {
+        mut x: i32 = lib.one()
+        assert(x == 1)
+    }
+}
+
+@test fn other() {
+    _ := sys.eprint("other")
+    assert(true)
+}
+```
+
+```
+$ dunder check tests/suite.ddr
+<stdlib/sys.ddr>:380:45: error[E2003]: unknown type '__dunder_module_69'
+380 |     pub fn into_result(&self) -> Result<(), IoError> {
+```
+
+Tar du bort `sys.eprint`-raden (så att stdlib inte laddas efter brytpunkten) blir det i stället det rätta:
+
+```
+tests/suite.ddr:1:1: error[E1001]: unterminated body
+1 | capability stdio, unsafe
+```
+
+Orsak: parsern stänger de öppnande blocken i tur och ordning på nästa `}` den möter, så felet syns först när det som kommer efter den punkt som borde varit slutet på filen tolkas som kod på fel nivå — och det som kommer näst är nästa modul i importordningen, som råkar vara stdlib. Eftersom modulnumret (`__dunder_module_69`) också förskjuts med antalet moduler före brytpunkten, säger varken fil, rad eller typ var det började. En obalanserad klammer är den vanligaste konsekvensen av ett skript som klistrar in block (fynd 85:s lärdom, att två migrationsskript aldrig får matcha samma rad, är samma klass), och här kostade den en misstänkt kompilator och en bisektion av tre tester innan den hittades. Workaround: när en diagnostik pekar i `<stdlib/…>` och samma kolla är grön på orört träd, räkna klambrarna i den egna filen först (`python3 -c "s=open(f).read(); print(s.count('{')-s.count('}'))"`). Rekommendation: när parsern når filens slut med öppna block, rapportera **det** — E1001 på sista raden, med raden för den senaste öppnande klammern i noten — innan nästa modul laddas. Idag görs det bara när inget importeras efteråt, alltså precis när det inte behövs; med det skulle E3004/E2003/E5003 i stdlib alltid vara en äkta stdlib-upptäckt och aldrig ett eko från användarens fil.
+
+**88. En `extern fn` kan inte jämföras med `ptr(0)`, så "load() lämnade varje fält null" går inte att testa.** Symptom (0.12.0): storm-vk:s `Api` är en `@c_layout`-post av `extern fn(…) -> i32`-fält som `load()` fyller från `dl.symbol`; ett test ville bevisa att `load()` med ett bibliotek som saknar Vulkan-symboler vägrar *utan att ha skrivit något* (`assert(table.CreateInstance == ptr(0))`):
+
+```
+tests/suite.ddr:130:37: error[E5003]: type 'extern fn(ptr, ptr, ptr) -> i32' does not implement Eq
+```
+
+`ffi_fn(ptr)` går åt ett håll (ptr → extern fn) och inget åt det andra, och `Eq` saknas. Minimal repro: `@c_layout struct Api { CreateInstance: extern fn(ptr) -> i32 }`, `mut table: Api = zeroed()`, `assert(table.CreateInstance == ptr(0))`. Workaround här: asserta returvärdet (`assert(!api.load(&mut table, libc, false))`) och bevisa det starkare på det riktiga biblioteket i stället för "inget fält skrivet" — `assert(api.load(&mut table, loader, false))` mot `/usr/lib/libvulkan.so.1`, alltså att varje namn registret gav tabellen finns i loadern. Rekommendation: antingen `Eq` (jämförelse med `ptr(0)`) på `extern fn`-fält, eller en `fn_addr(extern fn) -> ptr`-builtin, spegelvändningen av `ffi_fn`. Det är frågan varje FFI-test vill ställa: är den här funktionspekaren noll?
+
+
 ## Grafikobservationer på macOS (Metal)
 
 Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen

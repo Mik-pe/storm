@@ -77,7 +77,8 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
 | [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, &sampler)`/`mesh(…, texture, surface)`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
-| [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
+| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71 C-poster) och `enums.ddr` (35 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
+| [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx`, `vk` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer, PBR-material med `baseColorTexture` (bilder som bytes + samplern som `gfx.Sampler`). | `core`, `gfx` |
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och propagering till `WorldTransform`. Modulen `animation` samplar och blandar nyckelposer för position, rotation och skala. | `core`, `ecs`, `gfx` |
@@ -327,6 +328,7 @@ dunder run --example scene      # ECS/glTF/text utan fönster
 dunder test                     # rotpaketets tester; och i varje packages/*
 dunder run tools/shaders.ddr -- --check   # GLSL → SPIR-V: utgång 1 om shader.ddr skiljer sig från källorna
 dunder run tools/shaders.ddr               # … eller skriv om den efter en shaderändring
+dunder run tools/vk.ddr -- /tmp/vk.xml --check   # registret → storm-vk: utgång 1 om en av de tre filerna skiljer sig
 dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
 ```
 
@@ -334,7 +336,10 @@ Vulkans SPIR-V ligger i `packages/storm-vulkan/src/shader.ddr`, en avledd
 fil: `tools/shaders.ddr` kompilerar `packages/storm-vulkan/shaders/*` med
 `glslangValidator`. `--check` har samma kontrakt som `tools/vk.ddr --check`
 — efter en ändring i GLSL-koden kör du det, och det fallerar tills modulen
-är omgenererad. Metal bäddar in `packages/storm-metal/shaders/storm.metal` direkt vid bygget.
+är omgenererad. `tools/vk.ddr` skriver `packages/storm-vk/` (Vulkan-posterna,
+prototyperna och enums ur Khronos `vk.xml`, som hämtas med
+`curl -o /tmp/vk.xml https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/main/xml/vk.xml`);
+inget i storm-vulkan skrivs av det. Metal bäddar in `packages/storm-metal/shaders/storm.metal` direkt vid bygget.
 
 ## Regler
 

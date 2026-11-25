@@ -39,16 +39,19 @@
   (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet. Nio tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
-  Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
+  Vertexlayouten ägs av `records.vertex_input()` + `records.apply_vertex_input`
   och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. **0 råa
   `sType`-tal** (var 135 i nio moduler): `layout.ddr` genereras ur `vk.xml`
   och varje post har en `new()`-fabrik som skriver strukturtypen, så talet
   finns på en rad per post i en fil ingen skriver för hand (§6).
-- **Enums är ett eget lager:** `enums.ddr` (genererad, §6) har 35 `pub enum` och 46
-  `pub fn`: 43 konverterare/namngivna värden och tre `unsafe` skrivare av
-  C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`). Inga
-  namngivna `u32`-konstanter lever kvar i `layout.ddr`; allt är enums, och
-  registret äger talen (`tools/vk.ddr --check`).
+- **Enums är ett eget lager, och lagret är ett eget paket:** `storm-vk/enums.ddr`
+  (genererad, §6) har 35 `pub enum`, 34 konverterare, `result_name` och tre
+  konstanter — inget `unsafe`, ingen import, inget Storm. Storms skrivare av
+  C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`) och de
+  värden de skriver (`Blend`, `alpha_over`, `shadow_max`) står i
+  `storm-vulkan/records.ddr`. Inga namngivna `u32`-konstanter lever kvar i
+  `layout.ddr`; allt är enums, och registret äger talen
+  (`tools/vk.ddr --check`).
 - `state.ddr` `Renderer`: **72 fält** (121 före Renderer-uppdelningen; ~60 när
   steget skrevs). Fem kluster ligger i en post hos sin ägare
   (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
@@ -106,14 +109,23 @@
   207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Lagren i storm-vulkan (4 140 rader + 6 431 genererade: `api.ddr`, `layout.ddr`, `enums.ddr`, `shader.ddr`), räknade 2026-11-25:
+Registret är ett eget paket, **`storm-vk`** (2 054 rader, allt genererat ur
+`vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (343:
+81 prototyper + `load()`), `layout.ddr` (1 280: 71 registriposter med
+`new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 35
+konverterare, VkResult-namn och registrets konstanter). Det som är Storms
+val står i storm-vulkan `records.ddr` (158): vertexformaterna, `Blend` och
+`apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
+vad ett swapchain-tal betyder Storm.
+
+Lagren i storm-vulkan (4 306 rader + 4 223 genererade i `shader.ddr`), räknade 2026-11-25:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr` (båda genererade), `sdl.ddr` | 1 912 |
-| Enums vid gränsen | `enums.ddr` (genererad) | 518 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 2 985 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 855 |
+| FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 222 |
+| Storms värden ovanpå registret | `records.ddr` | 158 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 070 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 856 |
 
 `ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
 var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,
@@ -173,8 +185,8 @@ core`, `storm-play -> physics, core`, `storm-mcp -> play, image`,
 Det här står. Kvar till målbilden:
 
 ```
-storm-vk        (kvar)  Vulkan-bindings som eget paket: funktioner, structar, ENUMS.
-    ▲                   Idag bor de i storm-vulkan (api.ddr, layout.ddr, enums.ddr).
+storm-vk                Vulkan-registret som eget paket: prototyper, poster,
+    ▲                   ENUMS — allt genererat ur vk.xml, inget Storm i sig.
 storm-vulkan           Renderer uppdelad i ägda strukturer (steg 3), ui/post ur
                         backenden (steg 5).
 ```
@@ -251,7 +263,8 @@ Två gränser till har samma regel, om än inte enums:
 
 ## 4. Vad som händer med dagens kod
 
-- `api.ddr`, `layout.ddr` → `storm-vk` (kvar).
+- `api.ddr`, `layout.ddr`, `enums.ddr` → `storm-vk` (**genomfört** 2026-11-25;
+  Storms egen del av dem blev `storm-vulkan/records.ddr`).
 - `device.ddr`, `pipeline.ddr` → `Result` och ägda strukturer (kvar i
   storm-vulkan; **genomfört i storm-metal**, som byggdes så från början:
   `Renderer` med 38 fält, och en skapare och en förstörare per ägd resurs).
@@ -272,9 +285,12 @@ Två gränser till har samma regel, om än inte enums:
 Varje steg lämnar träd och tester grönt. Capture-filer före/efter måste
 vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
-1. **Skapa `storm-vk` med enums + bindings.** *Status: enums-modulen finns
-   och genereras ur `vk.xml` (`packages/storm-vulkan/src/enums.ddr`, 35 enums,
-   urvalet i `tools/vk.ddr`); paketdelningen är kvar.*
+1. **Skapa `storm-vk` med enums + bindings.** *Status: klart 2026-11-25.
+   `packages/storm-vk` har `api.ddr`, `layout.ddr` och `enums.ddr`, alla tre
+   helgenererade ur `vk.xml` av `tools/vk.ddr` (`--check` jämför hela filen;
+   det finns ingen markör och inget Storm i dem). Urvalet — vilka kommandon,
+   poster och enums — är data i verktyget (`COMMANDS`, `STRUCTS`, `PAIRS`,
+   `selected_enums()`). Storms val blev `storm-vulkan/records.ddr`.*
 2. **Ersätt de 135 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
    *Status: klart 2026-11-23. 135 → **0** råa enum-heltal i structfält: de
@@ -478,8 +494,12 @@ post och capture: fyra moduler, en commit, AE = 0.
   1 000 + N). Före det stod 135 strukturtal för hand vid anropsplatserna —
   migreringen verifierade varje tal mot registret innan det togs bort, och
   alla stämde. En union blir sitt största medlemsslag (`VkClearValue` →
-  `color: ClearColorValue`, 16 byte), och Storms egna poster står under en
-  markör som generatorn kopierar oförändrat. `enums.ddr` görs på samma sätt:
+  `color: ClearColorValue`, 16 byte). De fyra posterna som är två registriposter
+  i rad (`Dependencies`, `Attachments`, `References`, `ShaderStages`) genereras
+  från verktygets `PAIRS`-tabell — en post av poster för kontiguitet (fynd 54)
+  är ett mönster registret kan ge, inte något att skriva för hand. Ingen av de
+  tre filerna har en markör: genererat = genererat, Storms eget står i
+  `storm-vulkan/records.ddr`. `enums.ddr` görs på samma sätt:
   registret äger talen, Storm äger urvalet (en tabell i verktyget: Dunder-namn,
   registrets block, varje variant med registrets konstant och Storms kommentar),
   kombinerade flaggor är summan av namngivna bitar, och ett namn registret inte

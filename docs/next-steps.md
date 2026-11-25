@@ -16,27 +16,27 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
 **3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. Nästa är **3d**: de linjära texturerna (metallicRoughness, normal, occlusion, emissive) i egna samplers.
-`storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
-(genererade bindings). Två delar är landade: `tools/vk.ddr` skriver
-`api.ddr` ur `vk.xml` (81 prototyper + `load()`) och `layout.ddr` (71
-`@c_layout`-poster + en `impl X { pub unsafe fn new() -> X }`-fabrik per post
-som nollställer och skriver `sType` ur registret; 135 `x.sType = N` vid
-anropsplatserna blev `X::new()`, inget strukturtal står kvar utanför
-generatorn), och `--check` är som `fmt --check` (utgång 1 om filen skiljer sig
-från registriet; `--check api`/`--check layout` för en fil). Anropet är
+**storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
+paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
+ur `vk.xml` — `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71
+`@c_layout`-poster med en `impl X { pub unsafe fn new() -> X }`-fabrik per post
+som nollställer och skriver `sType`; de fyra par-posterna `Dependencies`,
+`Attachments`, `References`, `ShaderStages` kommer från verktygets `PAIRS`-tabell)
+och `enums.ddr` (35 enums, urvalet som data i verktyget, talen ur registret).
+Ingen fil har en markör och ingen importerar `gfx` eller `core`;
+`--check` jämför hela filen (utgång 1 om den skiljer sig från registret;
+`--check api`/`--check layout`/`--check enums` för en fil). Anropet är
 `dunder run tools/vk.ddr -- /tmp/vk.xml --check` — `--` krävs, annars äter
-`dunder run` flaggan själv (`unknown option: --check`). Storms egna poster
-(`Dependencies`, `ShaderStages`, `FrameViewport`, `vertex_input()`, de två
-tiling-konstanterna) står under `// --- Storm's own records ---` och kopieras
-oförändrade. `enums.ddr` är genererad på samma sätt (`--check enums`): 33
-enums, urvalet som data i verktyget, talen ur registret, Storms egna värden
-(`binding_word`, `is_success`, `alpha_over` …) under
-`// --- Storm's own values and writers ---`. Kvar: `state.ddr`:s `MemoryProperties`
+`dunder run` flaggan själv (`unknown option: --check`). Storms val ovanpå
+registret — vertexformaterna, `Blend` och `apply_*`, `DisplayEncoding`/
+`FrameViewport`, `binding_word`/`stages_word`, `is_success`/`is_out_of_date`,
+vilka display-format capture läser — bor i `storm-vulkan/records.ddr` (158
+rader, handskrivna). Registrets tester (Khronos-tabellerna, C-ABI-storlekar,
+paren, `load()` mot riktiga libvulkan) följde med till `storm-vk/tests`.
+Kvar i storm-vk: `state.ddr`:s `MemoryProperties`
 (skrivs idag ur ett rått `raw[]`-fältord i `device.ddr`) som en genererad
-`VkPhysicalDeviceMemoryProperties`; de nio egna par-posterna (`Dependencies`
-o.s.v.) är
-möjliga som raka `[T; 2]`-fält i 0.12.0 men byts inte förrän registret
-genererar dem; och paketet som eget namn. Sedan **Renderer-uppdelningen**,
+`VkPhysicalDeviceMemoryProperties`, och `DisplayEncoding`/`FrameViewport`
+(Storms poster med egna fält, därför handskrivna i `records.ddr`). Sedan **Renderer-uppdelningen**,
 kluster för kluster (design.md §3b): `depth.Depth`, `ui.Atlas`,
 `ibl.Environment` och `shadow.Shadow` är gjorda (2026-11-25, `Renderer`
 121 → 72 fält), nästa är `post.Stage` (10 fält; `scenePass`,
@@ -327,8 +327,7 @@ parsern läser riktiga filer (fynd 59); ECS:t har frågor (`join2`/`join3` med
 dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
 `AGENTS.md` (bygget under 20 s, mätt med `tools/build-time.ddr`; bara main,
 inga PR:s eller CI). Kvar: texturer (avsnitt 3), resten av glTF (nodes/
-materials/scenes nedan), `storm-vk` som eget paket (design.md steg 1) och
-byggtiden (fynd 56: den är kompilatorns, och budgeten står i avsnittet ovan).
+materials/scenes nedan) och byggtiden (fynd 56: den är kompilatorns, och budgeten står i avsnittet ovan).
 
 ## 0f. Klart: gränssnittet och Metal
 
