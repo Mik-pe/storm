@@ -136,3 +136,15 @@ import ..src.gfx as gfx
     maximum: u64 = 18446744073709551615
     assert(gfx.frame_vertex_capacity(maximum - 1, maximum) == maximum)
 }
+
+// The default sampler is the glTF spec's: magFilter LINEAR (9729),
+// minFilter LINEAR_MIPMAP_LINEAR (9987), wrapS/wrapT REPEAT (10497). What a
+// glTF file leaves unspecified means this, and both backends built exactly
+// this before a sampler was a value.
+@test fn default_sampler_is_the_gltf_default() {
+    s := gfx.sampler()
+    assert(s.mag == .Linear)
+    assert(s.min == .Linear)
+    assert(s.mips == .Linear)
+    assert(s.wrap == .Repeat)
+}

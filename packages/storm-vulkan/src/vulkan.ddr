@@ -579,11 +579,11 @@ impl gfx.Backend for Window {
         }
     }
 
-    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32) -> Result<gfx.Texture, string> {
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            match texture.upload(ref_at(address), pixels, width, height) {
+            match texture.upload(ref_at(address), pixels, width, height, sampler) {
                 .Ok(id) => .Ok(gfx.Texture { id: id }),
                 .Err(message) => .Err(message),
             }

@@ -87,7 +87,8 @@ pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> 
 // pixels from here on.
 fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Texture, string> {
     decoded := image.read_rgba(path)?
-    window.upload_texture(decoded.pixels, decoded.width, decoded.height)
+    sampler := gfx.sampler()
+    window.upload_texture(decoded.pixels, decoded.width, decoded.height, &sampler)
 }
 
 fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,

@@ -126,6 +126,29 @@ pub fn no_texture() -> Texture { Texture { id: 0 } }
 // upload_texture returns.
 pub const TEXTURE_BYTES_PER_PIXEL: i32 = 4
 
+// How a texture is sampled. A value the application copies, in the shape the
+// glTF sampler object has: `mag` and `min` choose between the four texels
+// around a point (Linear) and the nearest one (Nearest); `mips` says whether
+// the texture has a mip chain at all (None: one level, the image as
+// uploaded), and when it has, whether a level is picked (Nearest) or the two
+// nearest blend (Linear); `wrap` is what lies beyond the edges (Repeat
+// tiles, MirroredRepeat tiles mirrored, ClampToEdge stretches the border
+// texel). A texture is uploaded with its sampler, so the backend owns one
+// sampler per texture and nothing is rebound per draw.
+pub enum Filter { Nearest = 0, Linear = 1 }
+pub enum MipFilter { None = 0, Nearest = 1, Linear = 2 }
+pub enum Wrap { Repeat = 0, MirroredRepeat = 1, ClampToEdge = 2 }
+
+pub struct Sampler { mag: Filter, min: Filter, mips: MipFilter, wrap: Wrap }
+
+// The glTF default: linear magnification, trilinear minification (both the
+// texels and the mips blend), repeating on both axes. What a sampler the
+// glTF file leaves unspecified means, and what the backends had before a
+// sampler was a value.
+pub fn sampler() -> Sampler {
+    Sampler { mag: .Linear, min: .Linear, mips: .Linear, wrap: .Repeat }
+}
+
 // The backend contract. A frame is recorded like this:
 //
 //   poll()                          input, size, and whether to stop
@@ -156,10 +179,10 @@ pub trait Backend {
     // the same value every frame passes to sky().
     fn build_environment(&mut self, sky: &Sky) -> Result<(), string>
 
-    // Upload RGBA8 pixels as a texture and hand back its handle. The pixels
-    // are read before the call returns; the handle stays valid until
-    // free_texture, and is refused afterwards.
-    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32) -> Result<Texture, string>
+    // Upload RGBA8 pixels as a texture, sampled as `sampler` says, and hand
+    // back its handle. The pixels are read before the call returns; the
+    // handle stays valid until free_texture, and is refused afterwards.
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, sampler: &Sampler) -> Result<Texture, string>
 
     fn free_texture(&mut self, texture: Texture)
 

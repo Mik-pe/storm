@@ -83,7 +83,8 @@ unsafe fn render(rt: &objc.Runtime, gpu: ptr, queue: ptr, library: ptr, sky: &gf
     made.prefilter_pipeline = device.pipeline(rt, gpu, library, "env_vertex", "prefilter_fragment", hdr, .Invalid, &fullscreen)?
     made.diffuse_pipeline = device.pipeline(rt, gpu, library, "env_vertex", "irradiance_fragment", hdr, .Invalid, &fullscreen)?
     // Linear between texels and between mips: the mesh shader picks the mip.
-    made.sampler = device.sampler(rt, gpu, .Linear, .Linear)?
+    trilinear := device.trilinear()
+    made.sampler = device.sampler(rt, gpu, &trilinear)?
 
     // One command buffer for the whole build.
     commands := objc.send(rt, queue, cstr("commandBuffer"))

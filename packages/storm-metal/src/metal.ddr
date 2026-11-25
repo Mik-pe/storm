@@ -77,7 +77,6 @@ pub struct Renderer {
     environment: ibl.Environment,
     // Material textures: slot 0 is the white fallback (texture.ddr).
     textures: []texture.Texture,
-    material_sampler: ptr,
     atlas: ui.Atlas,
     vertices: device.Buffer,
     // The frame being recorded: its autorelease pool, its drawable, and
@@ -120,7 +119,7 @@ unsafe fn empty() -> Renderer {
         depth_write: ptr(0), depth_test: ptr(0), depth_off: ptr(0),
         shadow_sampler: ptr(0), shadow_map: ptr(0), depth_buffer: ptr(0), scene_color: ptr(0),
         environment: ibl.empty(),
-        textures: [], material_sampler: ptr(0),
+        textures: [],
         atlas: ui.empty(),
         vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
         pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), submitted: ptr(0), encoder: ptr(0),
@@ -182,9 +181,9 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
     r.depth_write = device.depth_state(&r.objc, r.device, .Less, true)?
     r.depth_test = device.depth_state(&r.objc, r.device, .Less, false)?
     r.depth_off = device.depth_state(&r.objc, r.device, .Always, false)?
-    r.shadow_sampler = device.sampler(&r.objc, r.device, .Nearest, .NotMipmapped)?
+    exact := device.exact()
+    r.shadow_sampler = device.sampler(&r.objc, r.device, &exact)?
     r.shadow_map = device.texture(&r.objc, r.device, .Type2D, depth, SHADOW_SIZE, SHADOW_SIZE, 1, .RenderTargetAndShaderRead, .Private)?
-    r.material_sampler = device.sampler_repeating(&r.objc, r.device)?
     texture.setup(&r.objc, r.device, &mut r.textures)?
     r.atlas = ui.create(&r.objc, r.device, r.library)?
     .Ok
@@ -436,7 +435,7 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     pass.fragment_texture(&r.objc, r.encoder, texture.image_of(&r.textures, texture_id), 4)
     pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
     pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
-    pass.fragment_sampler(&r.objc, r.encoder, r.material_sampler, 2)
+    pass.fragment_sampler(&r.objc, r.encoder, texture.sampler_of(&r.textures, texture_id), 2)
     pass.triangles(&r.objc, r.encoder, u64(vertices.len / gfx.VERTEX_FLOATS))
     .Ok
 }
@@ -517,8 +516,6 @@ unsafe fn destroy(r: &mut Renderer) {
     }
     device.release_buffer(&r.objc, &mut r.vertices)
     texture.destroy(&r.objc, &mut r.textures)
-    if r.material_sampler != ptr(0) { r.objc.release(r.material_sampler) }
-    r.material_sampler = ptr(0)
     ui.destroy(&r.objc, &mut r.atlas)
     ibl.destroy(&r.objc, &mut r.environment)
     for owned in [r.scene_color, r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
@@ -636,9 +633,9 @@ impl gfx.Backend for Renderer {
         unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, handle.id, surface == gfx.Surface.Blended) }
     }
 
-    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32) -> Result<gfx.Texture, string> {
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
         unsafe {
-            match texture.upload(&self.objc, self.device, &mut self.textures, pixels, width, height) {
+            match texture.upload(&self.objc, self.device, &mut self.textures, pixels, width, height, sampler) {
                 .Ok(id) => .Ok(gfx.Texture { id: id }),
                 .Err(message) => .Err(message),
             }

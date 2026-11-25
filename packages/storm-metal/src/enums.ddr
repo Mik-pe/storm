@@ -7,9 +7,9 @@
 // Metal's numbers are not Vulkan's: source alpha is 4 here and 6 there, a
 // 2D texture is 2 here and 1 there. Nothing in this file is shared with
 // storm-vulkan, on purpose.
-//
-// Flag-like enums carry the combinations Storm needs as named values.
+import gfx
 
+// Flag-like enums carry the combinations Storm needs as named values.
 pub enum PixelFormat {
     Invalid = 0, A8Unorm = 1, R8Unorm = 10, R32Float = 55, RG32Float = 105,
     RGBA16Float = 115, RGBA8Unorm = 70, RGBA8Unorm_sRGB = 71, BGRA8Unorm = 80, Depth32Float = 252,
@@ -66,18 +66,30 @@ pub fn command_status(v: CommandBufferStatus) -> u64 { u64(i32(v)) }
 
 pub fn blend_operation(v: BlendOperation) -> u64 { u64(i32(v)) }
 
+// MTLSamplerMinMagFilter, MTLSamplerMipFilter and MTLSamplerAddressMode, the
+// numbers of MTLSampler.hpp (pinned in tests/suite.ddr). Storm's selection of
+// them: a gfx.Sampler reaches the device through these and nothing else.
 pub enum SamplerFilter { Nearest = 0, Linear = 1 }
 
-pub fn sampler_filter(v: SamplerFilter) -> u64 { u64(i32(v)) }
+pub fn sampler_filter(v: gfx.Filter) -> u64 {
+    picked: SamplerFilter = match v { .Nearest => .Nearest, .Linear => .Linear }
+    u64(i32(picked))
+}
 
-pub enum SamplerMipFilter { NotMipmapped = 0, Linear = 2 }
+pub enum SamplerMipFilter { NotMipmapped = 0, Nearest = 1, Linear = 2 }
 
-pub fn sampler_mip_filter(v: SamplerMipFilter) -> u64 { u64(i32(v)) }
+pub fn sampler_mip_filter(v: gfx.MipFilter) -> u64 {
+    picked: SamplerMipFilter = match v { .None => .NotMipmapped, .Nearest => .Nearest, .Linear => .Linear }
+    u64(i32(picked))
+}
 
-pub enum SamplerAddressMode { ClampToEdge = 0, Repeat = 2 }
+// MTLSamplerAddressMode without MirrorClampToEdge (1), which Storm never asks for.
+pub enum SamplerAddressMode { ClampToEdge = 0, Repeat = 2, MirrorRepeat = 3 }
 
-pub fn sampler_address_mode(v: SamplerAddressMode) -> u64 { u64(i32(v)) }
-
+pub fn sampler_address_mode(v: gfx.Wrap) -> u64 {
+    picked: SamplerAddressMode = match v { .Repeat => .Repeat, .MirroredRepeat => .MirrorRepeat, .ClampToEdge => .ClampToEdge }
+    u64(i32(picked))
+}
 pub enum VertexStepFunction { PerVertex = 1 }
 
 pub fn vertex_step_function(v: VertexStepFunction) -> u64 { u64(i32(v)) }
