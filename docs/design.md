@@ -35,7 +35,7 @@
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
   som bitar i en `u32`), `Mouse` (med `scroll`), `Sky`, `Surface`, `Texture`,
   `Sampler` och `Vertex`, `PostProcess`.
-  `trait Backend` beskriver pass, ritning, texturer och bildexport i 21 metoder
+  `trait Backend` beskriver pass, ritning, texturer och bildexport i 22 metoder
   (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet. Nio tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
@@ -85,19 +85,22 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`dc1d7ca`,
-  Dunder 0.12.0, låst session) omfattade **233 egna `@test`** — 60 i roten
-  och 173 i de 15 paketen, räknade med `grep -c '@test'` — alla gröna, varje
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`9f879c9`,
+  Dunder 0.12.0, låst session) omfattade **240 egna `@test`** — 61 i roten
+  och 179 i de 16 paketen, räknade med `grep -c '@test'` — alla gröna, varje
   svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
-  i roten, `storm-text` och `storm-ui`, så `N passed` blir 239). 16 sviter
+  i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
+  `N passed` blir 246). 17 sviter
   kördes med `dunder test` i roten och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
   `load_model`) är testbar utan fönster: vad ett pass får, när
   mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
   per instans (`tests/app_frame.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **16 249 ms** på trädet med `depth.Depth` med Dunder 0.12.0, och
-  **16 241 ms** på `1a7f0e2` (16 197–16 523 ms över
+  mätte **18 200 och 18 244 ms** på `9f879c9` med Dunder 0.12.0 (två
+  mätningar samma kväll) — 16,4 s innan `decode_png` + zlib nås från `main`
+  (fynd 82), och **16 249 ms** på trädet med `depth.Depth`, **16 241 ms** på
+  `1a7f0e2` (16 197–16 523 ms över
   tre mätningar samma kväll). Trädet på
   `a84ade9` gav 14 900–15 100 ms med samma kompilator (`--timings`: 1 238 funktioner,
   386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av
@@ -109,11 +112,11 @@
   207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Registret är ett eget paket, **`storm-vk`** (2 054 rader, allt genererat ur
+Registret är ett eget paket, **`storm-vk`** (2 059 rader, allt genererat ur
 `vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (343:
-81 prototyper + `load()`), `layout.ddr` (1 280: 71 registriposter med
-`new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 35
-konverterare, VkResult-namn och registrets konstanter). Det som är Storms
+81 prototyper + `load()`), `layout.ddr` (1 285: 71 registriposter med
+`new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 34
+konverterare, `result_name` och registrets konstanter). Det som är Storms
 val står i storm-vulkan `records.ddr` (158): vertexformaterna, `Blend` och
 `apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
 vad ett swapchain-tal betyder Storm.
@@ -135,16 +138,16 @@ och storm-metal har samma två moduler som backend-tjänster (`ui.ddr`,
 kontraktet, som anropar `ui_atlas`/`ui_draw`/`post_process` och inte vet att
 modulerna finns.
 
-Lagren i storm-metal (2 382 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
+Lagren i storm-metal (2 411 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden):
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | Runtingen | `objc.ddr` | 280 |
-| Ramverkens värden | `enums.ddr`, `records.ddr` | 189 |
+| Ramverkens värden | `enums.ddr`, `records.ddr` | 201 |
 | Fönstret och input | `appkit.ddr` | 508 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 361 |
-| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 370 |
-| Orkestrering | `metal.ddr` | 674 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 362 |
+| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 389 |
+| Orkestrering | `metal.ddr` | 671 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 

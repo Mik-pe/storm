@@ -77,7 +77,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
 | [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, &sampler)`/`mesh(…, texture, surface)`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
-| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71 C-poster) och `enums.ddr` (35 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
+| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71 C-poster ur registret + fyra par-poster) och `enums.ddr` (35 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx`, `vk` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer, PBR-material med `baseColorTexture` (bilder som bytes + samplern som `gfx.Sampler`). | `core`, `gfx` |
@@ -191,6 +191,7 @@ för blendingens skull.
   Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
+- `--help` (eller `-h`) – skriv användningsraden och avsluta
 - `--capture fil.ppm` – rendera en bildruta till PPM, 1280 × 800 pixlar, utan att öppna ett fönster.
   Fungerar på en låst session; det är så QA görs utan tangentbord.
 - `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
@@ -235,7 +236,7 @@ cd packages/storm-metal && dunder run tools/selftest.ddr
 
 Fönstret kan öppnas på en **låst** Wayland-session (`hyprctl monitors` visar
 `solitaryBlockedBy`): `--frames N` presenterar och avslutar med status 0 —
-mätt 10/10 på `a919b02` och med fem varianter (`--studio`, `--play`, `--glb`,
+mätt 10/10 på `a919b02` och 10/10 på `9f879c9`, och med fem varianter (`--studio`, `--play`, `--glb`,
 `--effects`, `--no-post --no-aa`) à 20 frames. Det fanns en tid (fynd 16 och 20,
 och en SIGSEGV på `ac268f0`) då låset stoppade presentationen; det gäller inte
 trädet längre. Däremot syns bilden inte: skärmdump och `grim` blockeras av

@@ -45,7 +45,7 @@ Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy
 
-Senaste mätning: **16 249 ms** på trädet med `depth.Depth` (Dunder 0.12.0, Mikparchy) och 16 197–16 523 ms på `1a7f0e2` (tre `tools/build-time.ddr` samma kväll, 16 424 ms för 3b). Budgeten är 20 s.
+Senaste mätning: **18 200 och 18 244 ms** på `9f879c9` (två `tools/build-time.ddr` samma kväll, Dunder 0.12.0, Mikparchy). Det är 16,4 s → 18,2 s sedan `decode_png` + zlib nås från `main` (avsnitt 3c, fynd 82). Före det: **16 249 ms** på trädet med `depth.Depth` och 16 197–16 523 ms på `1a7f0e2`. Budgeten är 20 s.
 
 Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Trädet på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 
@@ -509,14 +509,17 @@ Kvar efter 0f, i den ordning värde:
 
 ## 4. glTF-scener
 
-Studion och Blomsterskogen läser den aktiva glTF-scenen med nodtransformer, triangelprimitiver och PBR-material. Nästa steg är bildtexturer och importerade animationsspår för modeller med skelett. Blomsterskogens rävrörelser använder scengrafens leder.
+Studion och Blomsterskogen läser den aktiva glTF-scenen med nodtransformer, triangelprimitiver, PBR-material och bildtexturer (`baseColorTexture`, 3c). Kvar: importerade animationsspår för modeller med skelett — paketet läser ingen `animations`/`skins`-data och inga `JOINTS_0`/`WEIGHTS_0`-attribut. Blomsterskogens rävrörelser är egenbyggda spår i scengrafens leder (`storm-scene` `animation.ddr`: `Clip`, `sample`, `mix`, `solve_two_bone`), inte importerade.
 
 ## 5. Instancing
 
-Demot gör en draw call per kub. Med `vkCmdDrawIndexed` och en instansbuffert
-(modellmatris + material per instans) blir hela scenen en draw call. Det är
-också första gången ECS behöver en "renderbar"-vy: en systemfunktion som
-packar om poolerna till GPU-data.
+Varje objekt är en egen draw call. Ompackningen av poolerna till GPU-data
+finns redan (`app.gather`, testad i `tests/app_frame.ddr`, och
+`app.vertex_bytes`), så det som saknas är instansbufferten: en modellmatris
++ material per instans, och ett indexerat draw med instansantal i stället för
+ett draw per objekt, så att många likadana objekt blir en draw call. Kontraktet
+hör hemma i `storm-gfx` (en systermetod till `mesh` som tar en instansslice),
+aldrig i appen; vilken backendmetod som bär det researchas när steget tas.
 
 ## 7. Fler ljus
 
