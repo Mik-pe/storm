@@ -79,28 +79,59 @@ vec3 aces(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-// 3x3 PCF against the projected distance map.
-float shadow_factor(vec3 world_pos, float ndl) {
-    vec4 lp = light.light_vp * vec4(world_pos, 1.0);
+vec4 bspline_weights(float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float one_minus_t = 1.0 - t;
+    return vec4(
+        one_minus_t * one_minus_t * one_minus_t,
+        3.0 * t3 - 6.0 * t2 + 4.0,
+        -3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0,
+        t3
+    ) * (1.0 / 6.0);
+}
+
+// Cubic B-spline 4x4 PCF against the projected distance map.
+float shadow_factor(vec3 world_pos, vec3 normal, float ndl) {
+    vec2 map_size = vec2(textureSize(shadow_map, 0));
+    vec2 texel = 1.0 / map_size;
+    float row0_len = length(vec3(light.light_vp[0].x, light.light_vp[1].x, light.light_vp[2].x));
+    float world_per_texel = 2.0 / max(row0_len * map_size.x, 0.0001);
+
+    float sin_theta = sqrt(max(1.0 - ndl * ndl, 0.0));
+    vec3 shadow_pos = world_pos + normal * (1.5 * world_per_texel * sin_theta);
+
+    vec4 lp = light.light_vp * vec4(shadow_pos, 1.0);
     vec3 ndc = lp.xyz / lp.w;
     vec2 uv = ndc.xy * 0.5 + 0.5;
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) { return 1.0; }
 
-    float mine = dot(world_pos, light.light_dir_c.xyz) - light.light_dir_c.w;
-    float bias = 0.06 + 0.14 * (1.0 - ndl);
-    vec2 texel = 1.0 / vec2(textureSize(shadow_map, 0));
+    float mine = dot(shadow_pos, light.light_dir_c.xyz) - light.light_dir_c.w;
+    float bias = 0.75 * world_per_texel;
+    float compare = mine + bias;
+
+    vec2 texel_pos = uv * map_size - 0.5;
+    vec2 base = floor(texel_pos);
+    vec2 f = texel_pos - base;
+    vec4 wx = bspline_weights(f.x);
+    vec4 wy = bspline_weights(f.y);
+
     float lit = 0.0;
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            float stored = texture(shadow_map, uv + vec2(float(x), float(y)) * texel).r;
+    for (int y = 0; y < 4; ++y) {
+        float row = 0.0;
+        float sy = (base.y + float(y - 1) + 0.5) * texel.y;
+        for (int x = 0; x < 4; ++x) {
+            float sx = (base.x + float(x - 1) + 0.5) * texel.x;
+            float stored = textureLod(shadow_map, vec2(sx, sy), 0.0).r;
             // Stored is the largest distance, so a fragment further from the sun
             // than the front surface sits in its shadow.
             bool empty = stored < -SHADOW_FAR;
-            bool shadowed = !empty && (mine + bias < stored);
-            lit += shadowed ? 0.0 : 1.0;
+            bool shadowed = !empty && (compare < stored);
+            row += wx[x] * (shadowed ? 0.0 : 1.0);
         }
+        lit += wy[y] * row;
     }
-    return lit / 9.0;
+    return lit;
 }
 
 void main() {
@@ -119,7 +150,9 @@ void main() {
     float ndl = max(dot(n, l), 0.0);
     float ndv = max(dot(n, v), 0.0001);
 
-    float shadow = shadows_on > 0.5 ? shadow_factor(world_position, ndl) : 1.0;
+    float shadow = shadows_on > 0.5
+        ? (ndl > 0.0 ? shadow_factor(world_position, n, ndl) : 0.0)
+        : 1.0;
 
     // --- direct sun ---
     vec3 f = fresnel_schlick(max(dot(h, v), 0.0), f0);
@@ -145,9 +178,11 @@ void main() {
     vec2 brdf = texture(brdf_lut, vec2(ndv, roughness)).rg;
     vec3 specular_ambient = prefiltered * (f0 * brdf.x + vec3(brdf.y));
 
-    // Contact darkening where the sun is blocked, so shadows read on the ambient
-    // term too instead of only killing the highlight.
-    float ambient_occlusion = mix(0.55, 1.0, shadow);
+    // Contact darkening where the sun is blocked, faded smoothly across the
+    // shadow terminator so back-facing curved surfaces never expose raw
+    // self-shadowing blocks.
+    float shadow_lit = shadows_on > 0.5 ? shadow * smoothstep(0.0, 0.28, ndl) : 1.0;
+    float ambient_occlusion = mix(0.55, 1.0, shadow_lit);
 
     vec3 fill = mix(sky_horizon.rgb * 0.75, sky_zenith.rgb, n.y * 0.5 + 0.5) * sky_sun_color.w;
     vec3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
