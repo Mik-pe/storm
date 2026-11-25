@@ -1,8 +1,9 @@
-// Generate packages/storm-vulkan/src/api.ddr and layout.ddr from Khronos' vk.xml.
+// Generate packages/storm-vulkan/src/api.ddr, layout.ddr and enums.ddr from
+// Khronos' vk.xml.
 //
-//   dunder run tools/vk.ddr -- <vk.xml>                 rewrite api.ddr and layout.ddr
-//   dunder run tools/vk.ddr -- <vk.xml> --check         exit 1 when either differs
-//   dunder run tools/vk.ddr -- <vk.xml> [--check] api   one file only: api or layout
+//   dunder run tools/vk.ddr -- <vk.xml>                 rewrite all three
+//   dunder run tools/vk.ddr -- <vk.xml> --check         exit 1 when any differs
+//   dunder run tools/vk.ddr -- <vk.xml> [--check] api   one file only: api, layout or enums
 //
 // The entry points Storm loads by name were written by hand: one `extern fn`
 // and one `dl.symbol` per command, each spelled from the headers. This reads
@@ -21,6 +22,14 @@
 // which for VkClearValue is the four floats Storm clears with. Storm's own
 // records, the ones that are not Vulkan's, stay hand-written below a marker
 // that the generator copies through unchanged.
+//
+// The enums are the third file and the same division (ENUMS below): the
+// registry owns every number, Storm owns the selection of enums and variants.
+// A variant is found in its block by the name the tool derives from the
+// constant (VK_BLEND_FACTOR_SRC_ALPHA → SrcAlpha), so the tool writes a
+// variant only when the registry has a line for it and refuses the name
+// otherwise; a combined flag set is the sum of named bits, never a number
+// an integer someone added.
 //
 // vk.xml is not vendored. Fetch the Khronos registry when regenerating:
 //   curl -o /tmp/vk.xml https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/main/xml/vk.xml
@@ -87,22 +96,409 @@ const STRUCTS: []string = [
     "DescriptorBufferInfo",
 ]
 
+// The Vk enums Storm converts to a C integer. The registry owns the numbers;
+// Storm owns the selection, and this table is the selection: the Dunder enum,
+// the registry block its constants come from, and every variant Storm names
+// with the registry constant it is (and Storm's reason, where there is one).
+// Nothing here is derived from a name: Storm's `Type1` is VK_SAMPLE_COUNT_1_BIT.
+// A flag set Storm names (ImageUsage.ColorAttachmentSampled) is the sum of the
+// registry bits in `flag_sets`, never a number.
+//
+// A `const` cannot hold a table of structs (E3007), so each table is a
+// function returning its literal; main builds them once.
+struct Selected { dunder: string, constant: string, comment: string }
+struct SelectedEnum { dunder: string, block: string, comment: string, variants: []Selected }
+struct FlagSet { dunder: string, bits: []string }
+struct NamedConstant { dunder: string, constant: string, comment: string }
+
+// A registry constant Storm names as a `pub const`: no enum of its own, one
+// number the registry owns.
+fn named_constants() -> []NamedConstant {
+    [
+        NamedConstant { dunder: "SUBPASS_EXTERNAL", constant: "VK_SUBPASS_EXTERNAL", comment: "the implicit subpass before/after the render pass" },
+        NamedConstant { dunder: "IMAGE_LAYOUT_PRESENT_SRC_KHR", constant: "VK_IMAGE_LAYOUT_PRESENT_SRC_KHR", comment: "" },
+    ]
+}
+
+fn selected_enums() -> []SelectedEnum {
+    [
+        // VkBlendFactor
+        SelectedEnum {
+            dunder: "BlendFactor", block: "VkBlendFactor", comment: "", variants: [
+                Selected { dunder: "Zero", constant: "VK_BLEND_FACTOR_ZERO", comment: "" },
+                Selected { dunder: "One", constant: "VK_BLEND_FACTOR_ONE", comment: "" },
+                Selected { dunder: "SrcColor", constant: "VK_BLEND_FACTOR_SRC_COLOR", comment: "" },
+                Selected { dunder: "OneMinusSrcColor", constant: "VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR", comment: "" },
+                Selected { dunder: "DstColor", constant: "VK_BLEND_FACTOR_DST_COLOR", comment: "" },
+                Selected { dunder: "OneMinusDstColor", constant: "VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR", comment: "" },
+                Selected { dunder: "SrcAlpha", constant: "VK_BLEND_FACTOR_SRC_ALPHA", comment: "" },
+                Selected { dunder: "OneMinusSrcAlpha", constant: "VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA", comment: "" },
+                Selected { dunder: "DstAlpha", constant: "VK_BLEND_FACTOR_DST_ALPHA", comment: "" },
+                Selected { dunder: "OneMinusDstAlpha", constant: "VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA", comment: "" },
+            ]
+        },
+        // VkBlendOp
+        SelectedEnum {
+            dunder: "BlendOp", block: "VkBlendOp", comment: "", variants: [
+                Selected { dunder: "Add", constant: "VK_BLEND_OP_ADD", comment: "" },
+                Selected { dunder: "Subtract", constant: "VK_BLEND_OP_SUBTRACT", comment: "" },
+                Selected { dunder: "ReverseSubtract", constant: "VK_BLEND_OP_REVERSE_SUBTRACT", comment: "" },
+                Selected { dunder: "Min", constant: "VK_BLEND_OP_MIN", comment: "" },
+                Selected { dunder: "Max", constant: "VK_BLEND_OP_MAX", comment: "keep the surface closest to the sun" },
+            ]
+        },
+        // VkFilter
+        SelectedEnum {
+            dunder: "Filter", block: "VkFilter", comment: "", variants: [
+                Selected { dunder: "Nearest", constant: "VK_FILTER_NEAREST", comment: "" },
+                Selected { dunder: "Linear", constant: "VK_FILTER_LINEAR", comment: "" },
+            ]
+        },
+        // VkSamplerMipmapMode
+        SelectedEnum {
+            dunder: "SamplerMipmapMode", block: "VkSamplerMipmapMode", comment: "", variants: [
+                Selected { dunder: "Nearest", constant: "VK_SAMPLER_MIPMAP_MODE_NEAREST", comment: "" },
+                Selected { dunder: "Linear", constant: "VK_SAMPLER_MIPMAP_MODE_LINEAR", comment: "" },
+            ]
+        },
+        // VkSamplerAddressMode
+        SelectedEnum {
+            dunder: "SamplerAddressMode", block: "VkSamplerAddressMode", comment: "", variants: [
+                Selected { dunder: "Repeat", constant: "VK_SAMPLER_ADDRESS_MODE_REPEAT", comment: "" },
+                Selected { dunder: "MirroredRepeat", constant: "VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT", comment: "" },
+                Selected { dunder: "ClampToEdge", constant: "VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE", comment: "" },
+                Selected { dunder: "ClampToBorder", constant: "VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER", comment: "" },
+            ]
+        },
+        // VkPrimitiveTopology
+        SelectedEnum {
+            dunder: "PrimitiveTopology", block: "VkPrimitiveTopology", comment: "", variants: [
+                Selected { dunder: "PointList", constant: "VK_PRIMITIVE_TOPOLOGY_POINT_LIST", comment: "" },
+                Selected { dunder: "LineList", constant: "VK_PRIMITIVE_TOPOLOGY_LINE_LIST", comment: "" },
+                Selected { dunder: "LineStrip", constant: "VK_PRIMITIVE_TOPOLOGY_LINE_STRIP", comment: "" },
+                Selected { dunder: "TriangleList", constant: "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST", comment: "" },
+                Selected { dunder: "TriangleStrip", constant: "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP", comment: "" },
+                Selected { dunder: "TriangleFan", constant: "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN", comment: "" },
+            ]
+        },
+        // VkPolygonMode
+        SelectedEnum {
+            dunder: "PolygonMode", block: "VkPolygonMode", comment: "", variants: [
+                Selected { dunder: "Fill", constant: "VK_POLYGON_MODE_FILL", comment: "" },
+                Selected { dunder: "Line", constant: "VK_POLYGON_MODE_LINE", comment: "" },
+                Selected { dunder: "Point", constant: "VK_POLYGON_MODE_POINT", comment: "" },
+            ]
+        },
+        // VkCullModeFlagBits
+        SelectedEnum {
+            dunder: "CullMode", block: "VkCullModeFlagBits", comment: "", variants: [
+                Selected { dunder: "None", constant: "VK_CULL_MODE_NONE", comment: "" },
+                Selected { dunder: "Front", constant: "VK_CULL_MODE_FRONT_BIT", comment: "" },
+                Selected { dunder: "Back", constant: "VK_CULL_MODE_BACK_BIT", comment: "" },
+                Selected { dunder: "FrontAndBack", constant: "VK_CULL_MODE_FRONT_AND_BACK", comment: "" },
+            ]
+        },
+        // VkFrontFace
+        SelectedEnum {
+            dunder: "FrontFace", block: "VkFrontFace", comment: "", variants: [
+                Selected { dunder: "CounterClockwise", constant: "VK_FRONT_FACE_COUNTER_CLOCKWISE", comment: "" },
+                Selected { dunder: "Clockwise", constant: "VK_FRONT_FACE_CLOCKWISE", comment: "" },
+            ]
+        },
+        // VkCompareOp
+        SelectedEnum {
+            dunder: "CompareOp", block: "VkCompareOp", comment: "", variants: [
+                Selected { dunder: "Never", constant: "VK_COMPARE_OP_NEVER", comment: "" },
+                Selected { dunder: "Less", constant: "VK_COMPARE_OP_LESS", comment: "" },
+                Selected { dunder: "Equal", constant: "VK_COMPARE_OP_EQUAL", comment: "" },
+                Selected { dunder: "LessOrEqual", constant: "VK_COMPARE_OP_LESS_OR_EQUAL", comment: "" },
+                Selected { dunder: "Greater", constant: "VK_COMPARE_OP_GREATER", comment: "" },
+                Selected { dunder: "NotEqual", constant: "VK_COMPARE_OP_NOT_EQUAL", comment: "" },
+                Selected { dunder: "GreaterOrEqual", constant: "VK_COMPARE_OP_GREATER_OR_EQUAL", comment: "" },
+                Selected { dunder: "Always", constant: "VK_COMPARE_OP_ALWAYS", comment: "" },
+            ]
+        },
+        // VkImageViewType
+        SelectedEnum {
+            dunder: "ImageViewType", block: "VkImageViewType", comment: "", variants: [
+                Selected { dunder: "Type1D", constant: "VK_IMAGE_VIEW_TYPE_1D", comment: "" },
+                Selected { dunder: "Type2D", constant: "VK_IMAGE_VIEW_TYPE_2D", comment: "" },
+                Selected { dunder: "Type3D", constant: "VK_IMAGE_VIEW_TYPE_3D", comment: "" },
+                Selected { dunder: "Cube", constant: "VK_IMAGE_VIEW_TYPE_CUBE", comment: "" },
+                Selected { dunder: "Type1DArray", constant: "VK_IMAGE_VIEW_TYPE_1D_ARRAY", comment: "" },
+                Selected { dunder: "Type2DArray", constant: "VK_IMAGE_VIEW_TYPE_2D_ARRAY", comment: "" },
+                Selected { dunder: "CubeArray", constant: "VK_IMAGE_VIEW_TYPE_CUBE_ARRAY", comment: "" },
+            ]
+        },
+        // VkImageAspectFlagBits
+        SelectedEnum {
+            dunder: "ImageAspect", block: "VkImageAspectFlagBits", comment: "", variants: [
+                Selected { dunder: "Color", constant: "VK_IMAGE_ASPECT_COLOR_BIT", comment: "" },
+                Selected { dunder: "Depth", constant: "VK_IMAGE_ASPECT_DEPTH_BIT", comment: "" },
+                Selected { dunder: "Stencil", constant: "VK_IMAGE_ASPECT_STENCIL_BIT", comment: "" },
+            ]
+        },
+        // VkImageLayout
+        SelectedEnum {
+            dunder: "ImageLayout", block: "VkImageLayout", comment: "", variants: [
+                Selected { dunder: "Undefined", constant: "VK_IMAGE_LAYOUT_UNDEFINED", comment: "" },
+                Selected { dunder: "General", constant: "VK_IMAGE_LAYOUT_GENERAL", comment: "" },
+                Selected { dunder: "ColorAttachmentOptimal", constant: "VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL", comment: "" },
+                Selected { dunder: "DepthStencilAttachmentOptimal", constant: "VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL", comment: "" },
+                Selected { dunder: "DepthStencilReadOnlyOptimal", constant: "VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL", comment: "" },
+                Selected { dunder: "ShaderReadOnlyOptimal", constant: "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL", comment: "" },
+                Selected { dunder: "TransferSrcOptimal", constant: "VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL", comment: "" },
+                Selected { dunder: "TransferDstOptimal", constant: "VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL", comment: "" },
+            ]
+        },
+        // VkAttachmentLoadOp
+        SelectedEnum {
+            dunder: "AttachmentLoadOp", block: "VkAttachmentLoadOp", comment: "", variants: [
+                Selected { dunder: "Load", constant: "VK_ATTACHMENT_LOAD_OP_LOAD", comment: "" },
+                Selected { dunder: "Clear", constant: "VK_ATTACHMENT_LOAD_OP_CLEAR", comment: "" },
+                Selected { dunder: "DontCare", constant: "VK_ATTACHMENT_LOAD_OP_DONT_CARE", comment: "" },
+            ]
+        },
+        // VkAttachmentStoreOp
+        SelectedEnum {
+            dunder: "AttachmentStoreOp", block: "VkAttachmentStoreOp", comment: "", variants: [
+                Selected { dunder: "Store", constant: "VK_ATTACHMENT_STORE_OP_STORE", comment: "" },
+                Selected { dunder: "DontCare", constant: "VK_ATTACHMENT_STORE_OP_DONT_CARE", comment: "" },
+            ]
+        },
+        // VkPipelineBindPoint
+        SelectedEnum {
+            dunder: "PipelineBindPoint", block: "VkPipelineBindPoint", comment: "", variants: [
+                Selected { dunder: "Graphics", constant: "VK_PIPELINE_BIND_POINT_GRAPHICS", comment: "" },
+                Selected { dunder: "Compute", constant: "VK_PIPELINE_BIND_POINT_COMPUTE", comment: "" },
+            ]
+        },
+        // VkDescriptorType
+        SelectedEnum {
+            dunder: "DescriptorType", block: "VkDescriptorType", comment: "", variants: [
+                Selected { dunder: "Sampler", constant: "VK_DESCRIPTOR_TYPE_SAMPLER", comment: "" },
+                Selected { dunder: "CombinedImageSampler", constant: "VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER", comment: "" },
+                Selected { dunder: "SampledImage", constant: "VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE", comment: "" },
+                Selected { dunder: "StorageImage", constant: "VK_DESCRIPTOR_TYPE_STORAGE_IMAGE", comment: "" },
+                Selected { dunder: "UniformTexelBuffer", constant: "VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER", comment: "" },
+                Selected { dunder: "StorageTexelBuffer", constant: "VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER", comment: "" },
+                Selected { dunder: "UniformBuffer", constant: "VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER", comment: "" },
+                Selected { dunder: "StorageBuffer", constant: "VK_DESCRIPTOR_TYPE_STORAGE_BUFFER", comment: "" },
+            ]
+        },
+        // VkPipelineStageFlagBits
+        SelectedEnum {
+            dunder: "PipelineStage", block: "VkPipelineStageFlagBits", comment: "", variants: [
+                Selected { dunder: "None", constant: "VK_PIPELINE_STAGE_NONE", comment: "" },
+                Selected { dunder: "TopOfPipe", constant: "VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT", comment: "" },
+                Selected { dunder: "VertexInput", constant: "VK_PIPELINE_STAGE_VERTEX_INPUT_BIT", comment: "" },
+                Selected { dunder: "VertexShader", constant: "VK_PIPELINE_STAGE_VERTEX_SHADER_BIT", comment: "" },
+                Selected { dunder: "FragmentShader", constant: "VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT", comment: "" },
+                Selected { dunder: "EarlyFragmentTests", constant: "VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT", comment: "" },
+                Selected { dunder: "LateFragmentTests", constant: "VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT", comment: "" },
+                Selected { dunder: "ColorAttachmentOutput", constant: "VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT", comment: "" },
+                Selected { dunder: "ColorAndDepthStages", constant: "", comment: "COLOR_ATTACHMENT_OUTPUT | EARLY_FRAGMENT_TESTS | LATE_FRAGMENT_TESTS" },
+                Selected { dunder: "Transfer", constant: "VK_PIPELINE_STAGE_TRANSFER_BIT", comment: "" },
+                Selected { dunder: "BottomOfPipe", constant: "VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT", comment: "" },
+                Selected { dunder: "Host", constant: "VK_PIPELINE_STAGE_HOST_BIT", comment: "" },
+                Selected { dunder: "AllGraphics", constant: "VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT", comment: "" },
+                Selected { dunder: "AllCommands", constant: "VK_PIPELINE_STAGE_ALL_COMMANDS_BIT", comment: "" },
+            ]
+        },
+        // VkVertexInputRate
+        SelectedEnum {
+            dunder: "VertexInputRate", block: "VkVertexInputRate", comment: "", variants: [
+                Selected { dunder: "Vertex", constant: "VK_VERTEX_INPUT_RATE_VERTEX", comment: "" },
+                Selected { dunder: "Instance", constant: "VK_VERTEX_INPUT_RATE_INSTANCE", comment: "" },
+            ]
+        },
+        // VkSharingMode
+        SelectedEnum {
+            dunder: "SharingMode", block: "VkSharingMode", comment: "", variants: [
+                Selected { dunder: "Exclusive", constant: "VK_SHARING_MODE_EXCLUSIVE", comment: "" },
+                Selected { dunder: "Concurrent", constant: "VK_SHARING_MODE_CONCURRENT", comment: "" },
+            ]
+        },
+        // VkImageTiling
+        SelectedEnum {
+            dunder: "ImageTiling", block: "VkImageTiling", comment: "", variants: [
+                Selected { dunder: "Optimal", constant: "VK_IMAGE_TILING_OPTIMAL", comment: "" },
+                Selected { dunder: "Linear", constant: "VK_IMAGE_TILING_LINEAR", comment: "" },
+            ]
+        },
+        // VkCommandPoolCreateFlagBits
+        SelectedEnum {
+            dunder: "CommandPoolFlag", block: "VkCommandPoolCreateFlagBits", comment: "", variants: [
+                Selected { dunder: "ResetCommandBuffer", constant: "VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT", comment: "" },
+            ]
+        },
+        // VkCommandBufferUsageFlagBits
+        SelectedEnum {
+            dunder: "CommandBufferUsage", block: "VkCommandBufferUsageFlagBits", comment: "", variants: [
+                Selected { dunder: "OneTimeSubmit", constant: "VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT", comment: "" },
+            ]
+        },
+        // VkShaderStageFlagBits
+        SelectedEnum {
+            dunder: "ShaderStage", block: "VkShaderStageFlagBits", comment: "", variants: [
+                Selected { dunder: "Vertex", constant: "VK_SHADER_STAGE_VERTEX_BIT", comment: "VERTEX | FRAGMENT" },
+                Selected { dunder: "Fragment", constant: "VK_SHADER_STAGE_FRAGMENT_BIT", comment: "VERTEX | FRAGMENT" },
+                Selected { dunder: "VertexFragment", constant: "", comment: "VERTEX | FRAGMENT" },
+            ]
+        },
+        // VkImageUsageFlagBits
+        SelectedEnum {
+            dunder: "ImageUsage", block: "VkImageUsageFlagBits", comment: "", variants: [
+                Selected { dunder: "TransferSrc", constant: "VK_IMAGE_USAGE_TRANSFER_SRC_BIT", comment: "" },
+                Selected { dunder: "TransferDst", constant: "VK_IMAGE_USAGE_TRANSFER_DST_BIT", comment: "" },
+                Selected { dunder: "Sampled", constant: "VK_IMAGE_USAGE_SAMPLED_BIT", comment: "" },
+                Selected { dunder: "ColorAttachment", constant: "VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT", comment: "" },
+                Selected { dunder: "DepthStencilAttachment", constant: "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT", comment: "" },
+                Selected { dunder: "ColorAttachmentTransferSrc", constant: "", comment: "Combined sets Storm builds images with (flags, so written as sums)." },
+                Selected { dunder: "ColorAttachmentSampled", constant: "", comment: "COLOR_ATTACHMENT | SAMPLED: env/irradiance cubes" },
+                Selected { dunder: "TransferDstSampled", constant: "", comment: "TRANSFER_DST | SAMPLED: uploaded BRDF LUT" },
+                Selected { dunder: "TransferSrcTransferDstSampled", constant: "", comment: "uploaded material textures (mip chain by blit)" },
+            ]
+        },
+        // VkBufferUsageFlagBits
+        SelectedEnum {
+            dunder: "BufferUsage", block: "VkBufferUsageFlagBits", comment: "", variants: [
+                Selected { dunder: "TransferSrc", constant: "VK_BUFFER_USAGE_TRANSFER_SRC_BIT", comment: "" },
+                Selected { dunder: "TransferDst", constant: "VK_BUFFER_USAGE_TRANSFER_DST_BIT", comment: "" },
+                Selected { dunder: "UniformBuffer", constant: "VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT", comment: "" },
+                Selected { dunder: "VertexBuffer", constant: "VK_BUFFER_USAGE_VERTEX_BUFFER_BIT", comment: "" },
+            ]
+        },
+        // VkImageCreateFlagBits
+        SelectedEnum {
+            dunder: "ImageCreate", block: "VkImageCreateFlagBits", comment: "", variants: [
+                Selected { dunder: "MutableFormat", constant: "VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT", comment: "" },
+                Selected { dunder: "CubeCompatible", constant: "VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT", comment: "" },
+            ]
+        },
+        // VkFenceCreateFlagBits
+        SelectedEnum {
+            dunder: "Fence", block: "VkFenceCreateFlagBits", comment: "", variants: [
+                Selected { dunder: "Signaled", constant: "VK_FENCE_CREATE_SIGNALED_BIT", comment: "" },
+            ]
+        },
+        // VkColorComponentFlagBits
+        SelectedEnum {
+            dunder: "ColorComponent", block: "VkColorComponentFlagBits", comment: "", variants: [
+                Selected { dunder: "RGBA", constant: "", comment: "R | G | B | A" },
+            ]
+        },
+        // VkSampleCountFlagBits
+        SelectedEnum {
+            dunder: "Samples", block: "VkSampleCountFlagBits", comment: "", variants: [
+                Selected { dunder: "Type1", constant: "VK_SAMPLE_COUNT_1_BIT", comment: "" },
+            ]
+        },
+        // VkFormat
+        SelectedEnum {
+            dunder: "Format", block: "VkFormat", comment: "", variants: [
+                Selected { dunder: "Undefined", constant: "VK_FORMAT_UNDEFINED", comment: "" },
+                Selected { dunder: "R8G8B8A8_UNORM", constant: "VK_FORMAT_R8G8B8A8_UNORM", comment: "" },
+                Selected { dunder: "R8G8B8A8_SRGB", constant: "VK_FORMAT_R8G8B8A8_SRGB", comment: "" },
+                Selected { dunder: "R16G16_SFLOAT", constant: "VK_FORMAT_R16G16_SFLOAT", comment: "" },
+                Selected { dunder: "R16G16B16A16_SFLOAT", constant: "VK_FORMAT_R16G16B16A16_SFLOAT", comment: "" },
+                Selected { dunder: "R32_SFLOAT", constant: "VK_FORMAT_R32_SFLOAT", comment: "" },
+                Selected { dunder: "R32G32_SFLOAT", constant: "VK_FORMAT_R32G32_SFLOAT", comment: "" },
+                Selected { dunder: "R32G32B32_SFLOAT", constant: "VK_FORMAT_R32G32B32_SFLOAT", comment: "" },
+                Selected { dunder: "R32G32B32A32_SFLOAT", constant: "VK_FORMAT_R32G32B32A32_SFLOAT", comment: "" },
+                Selected { dunder: "B8G8R8A8_UNORM", constant: "VK_FORMAT_B8G8R8A8_UNORM", comment: "" },
+                Selected { dunder: "B8G8R8A8_SRGB", constant: "VK_FORMAT_B8G8R8A8_SRGB", comment: "" },
+                Selected { dunder: "D32_SFLOAT", constant: "VK_FORMAT_D32_SFLOAT", comment: "" },
+            ]
+        },
+        // VkResult
+        SelectedEnum {
+            dunder: "VkResult", block: "VkResult", comment: "VkResult as a Dunder enum, the codes Storm can act on. Negative values are errors; SUBOPTIMAL_KHR is a success the swapchain should still be rebuilt for. Do not cast an unknown code into the enum (it panics silently, exit 108): match the integer.", variants: [
+                Selected { dunder: "Success", constant: "VK_SUCCESS", comment: "" },
+                Selected { dunder: "NotReady", constant: "VK_NOT_READY", comment: "" },
+                Selected { dunder: "Timeout", constant: "VK_TIMEOUT", comment: "" },
+                Selected { dunder: "Incomplete", constant: "VK_INCOMPLETE", comment: "" },
+                Selected { dunder: "ErrorOutOfHostMemory", constant: "VK_ERROR_OUT_OF_HOST_MEMORY", comment: "" },
+                Selected { dunder: "ErrorOutOfDeviceMemory", constant: "VK_ERROR_OUT_OF_DEVICE_MEMORY", comment: "" },
+                Selected { dunder: "ErrorInitializationFailed", constant: "VK_ERROR_INITIALIZATION_FAILED", comment: "" },
+                Selected { dunder: "ErrorDeviceLost", constant: "VK_ERROR_DEVICE_LOST", comment: "" },
+                Selected { dunder: "ErrorMemoryMapFailed", constant: "VK_ERROR_MEMORY_MAP_FAILED", comment: "" },
+                Selected { dunder: "ErrorLayerNotPresent", constant: "VK_ERROR_LAYER_NOT_PRESENT", comment: "" },
+                Selected { dunder: "ErrorExtensionNotPresent", constant: "VK_ERROR_EXTENSION_NOT_PRESENT", comment: "" },
+                Selected { dunder: "ErrorFeatureNotPresent", constant: "VK_ERROR_FEATURE_NOT_PRESENT", comment: "" },
+                Selected { dunder: "ErrorIncompatibleDriver", constant: "VK_ERROR_INCOMPATIBLE_DRIVER", comment: "" },
+                Selected { dunder: "ErrorFormatNotSupported", constant: "VK_ERROR_FORMAT_NOT_SUPPORTED", comment: "" },
+                Selected { dunder: "ErrorUnknown", constant: "VK_ERROR_UNKNOWN", comment: "" },
+                Selected { dunder: "SuboptimalKHR", constant: "VK_SUBOPTIMAL_KHR", comment: "" },
+                Selected { dunder: "ErrorOutOfDateKHR", constant: "VK_ERROR_OUT_OF_DATE_KHR", comment: "" },
+                Selected { dunder: "ErrorSurfaceLostKHR", constant: "VK_ERROR_SURFACE_LOST_KHR", comment: "" },
+                Selected { dunder: "ErrorNativeWindowInUseKHR", constant: "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR", comment: "" },
+                Selected { dunder: "ErrorValidationFailedEXT", constant: "VK_ERROR_VALIDATION_FAILED", comment: "" },
+            ]
+        },
+        // VkAccessFlagBits
+        SelectedEnum {
+            dunder: "Access", block: "VkAccessFlagBits", comment: "", variants: [
+                Selected { dunder: "None", constant: "VK_ACCESS_NONE", comment: "" },
+                Selected { dunder: "IndirectCommandRead", constant: "VK_ACCESS_INDIRECT_COMMAND_READ_BIT", comment: "" },
+                Selected { dunder: "IndexRead", constant: "VK_ACCESS_INDEX_READ_BIT", comment: "" },
+                Selected { dunder: "VertexAttributeRead", constant: "VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT", comment: "" },
+                Selected { dunder: "UniformRead", constant: "VK_ACCESS_UNIFORM_READ_BIT", comment: "" },
+                Selected { dunder: "InputAttachmentRead", constant: "VK_ACCESS_INPUT_ATTACHMENT_READ_BIT", comment: "" },
+                Selected { dunder: "ShaderRead", constant: "VK_ACCESS_SHADER_READ_BIT", comment: "" },
+                Selected { dunder: "ShaderWrite", constant: "VK_ACCESS_SHADER_WRITE_BIT", comment: "" },
+                Selected { dunder: "ColorAttachmentRead", constant: "VK_ACCESS_COLOR_ATTACHMENT_READ_BIT", comment: "" },
+                Selected { dunder: "ColorAttachmentWrite", constant: "VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT", comment: "" },
+                Selected { dunder: "DepthStencilAttachmentRead", constant: "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT", comment: "" },
+                Selected { dunder: "DepthStencilAttachmentWrite", constant: "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT", comment: "" },
+                Selected { dunder: "TransferRead", constant: "VK_ACCESS_TRANSFER_READ_BIT", comment: "" },
+                Selected { dunder: "TransferWrite", constant: "VK_ACCESS_TRANSFER_WRITE_BIT", comment: "" },
+                Selected { dunder: "HostRead", constant: "VK_ACCESS_HOST_READ_BIT", comment: "" },
+                Selected { dunder: "HostWrite", constant: "VK_ACCESS_HOST_WRITE_BIT", comment: "" },
+                Selected { dunder: "MemoryRead", constant: "VK_ACCESS_MEMORY_READ_BIT", comment: "" },
+                Selected { dunder: "MemoryWrite", constant: "VK_ACCESS_MEMORY_WRITE_BIT", comment: "" },
+                Selected { dunder: "ColorDepthWrite", constant: "", comment: "Combined masks Storm's barriers use. COLOR_ATTACHMENT_WRITE | DEPTH_STENCIL_ATTACHMENT_WRITE" },
+            ]
+        },
+    ]
+}
+
+// The bits a combined variant sums, with the registry's spelling of each.
+fn flag_sets() -> []FlagSet {
+    [
+        FlagSet { dunder: "ColorAndDepthStages", bits: ["VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT", "VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT", "VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT"] },
+        FlagSet { dunder: "VertexFragment", bits: ["VK_SHADER_STAGE_FRAGMENT_BIT", "VK_SHADER_STAGE_VERTEX_BIT"] },
+        FlagSet { dunder: "ColorAttachmentTransferSrc", bits: ["VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT", "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"] },
+        FlagSet { dunder: "ColorAttachmentSampled", bits: ["VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT", "VK_IMAGE_USAGE_SAMPLED_BIT"] },
+        FlagSet { dunder: "TransferDstSampled", bits: ["VK_IMAGE_USAGE_SAMPLED_BIT", "VK_IMAGE_USAGE_TRANSFER_DST_BIT"] },
+        FlagSet { dunder: "TransferSrcTransferDstSampled", bits: ["VK_IMAGE_USAGE_SAMPLED_BIT", "VK_IMAGE_USAGE_TRANSFER_DST_BIT", "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"] },
+        FlagSet { dunder: "RGBA", bits: ["VK_COLOR_COMPONENT_A_BIT", "VK_COLOR_COMPONENT_B_BIT", "VK_COLOR_COMPONENT_G_BIT", "VK_COLOR_COMPONENT_R_BIT"] },
+        FlagSet { dunder: "ColorDepthWrite", bits: ["VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT", "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT"] },
+    ]
+}
+
 // layout.ddr's own marker: everything from this line on is Storm's, not the
 // registry's, and is copied through unchanged.
 const OWN_RECORDS_MARKER: string = "// --- Storm's own records ---"
+const OWN_ENUMS_MARKER: string = "// --- Storm's own values and writers ---"
 
 // Where each generated file goes, by the name the last argument accepts.
 const API_TARGET: string = "packages/storm-vulkan/src/api.ddr"
 const LAYOUT_TARGET: string = "packages/storm-vulkan/src/layout.ddr"
+const ENUMS_TARGET: string = "packages/storm-vulkan/src/enums.ddr"
 
 struct Param { type_name: string, pointer: bool, name: string }
 struct Command { name: string, params: []Param, returns: string }
-struct Extension { name: string, depends: string }
+struct Extension { name: string, depends: string, number: i64 }
 // `array` is the text between a member's brackets, "" when it is not an array.
 struct Member { type_name: string, pointer: bool, name: string, array: string }
 // `structure_type` is the VkStructureType name the registry gives the record's
 // sType member, "" when the record has none.
 struct Record { name: string, members: []Member, union: bool, structure_type: string }
+// One registry enum constant: the block it extends and its number.
+struct Constant { block: string, value: i64 }
+// One line of a Dunder enum: a variant and the registry names it stands for.
+struct Variant { name: string, constants: []string }
 
 // Everything the registry says, indexed by name.
 struct Registry {
@@ -112,7 +508,9 @@ struct Registry {
     typedefs: map.Map<string, string>,
     handles: map.Map<string, bool>,
     records: map.Map<string, Record>,
-    enums: map.Map<string, i64>,
+    constants: map.Map<string, Constant>,
+    blocks: map.Map<string, []string>,
+    aliases: map.Map<string, string>,
 }
 
 // ---- bytes -------------------------------------------------------------------
@@ -302,10 +700,23 @@ fn scan_record(data: &[]u8, open: &Tag, close: i32, name: string, union: bool, r
     r.records.put(name.clone(), Record { name: name.clone(), members: members, union: union, structure_type: structure_type })
 }
 
-// Every `<enums>` block's `<enum name="…" value="N"/>`; an `alias="…"` entry
-// repeats a name and is skipped. Bitmask blocks carry `bitpos=` instead, and
-// the value is 1 << bitpos. The numbers are i64 so that
-// VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR (1000001001) fits.
+// The number of a `value="…"` attribute: decimal, `0x…` (neither parse.integer
+// nor parse.hex reads a radix prefix, so the prefix is cut), or the one C expression the registry writes, `(~0U)` (all
+// bits set, VK_SUBPASS_EXTERNAL). `ok` is false for the float enums of Vulkan
+// 1.3 (`0.25f`), which are no C enum and nothing Storm converts.
+fn enum_value(value_text: string) -> parse.Integer {
+    if value_text == "(~0U)" || value_text == "(~0ULL)" {
+        return parse.Integer { ok: true, value: 4294967295, error: 0 }
+    }
+    if text.starts_with(value_text.clone(), "0x") { return parse.hex(value_text[2..value_text.len].clone()) }
+    parse.integer(value_text)
+}
+
+// Every `<enums>` block's `<enum name="…" value="N" />`; an `alias="…"` entry
+// repeats a name and is recorded as an alias instead. Bitmask blocks carry
+// `bitpos=` instead, and the value is 1 << bitpos. The numbers are i64 so that
+// VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR (1000001001) fits. Each constant
+// remembers its block, which is how a Dunder enum's variants are found.
 fn scan_enums(data: &[]u8, r: &mut Registry) {
     mut at := 0
     while at < data.len {
@@ -314,14 +725,22 @@ fn scan_enums(data: &[]u8, r: &mut Registry) {
         block_close := close_of(data, &block)
         if block_close < 0 { break }
         at = block_close
+        block_name := attribute(data, block.attr_start, block.attr_end, "name")
+        if block_name == "" { continue }
+        r.blocks.put(block_name.clone(), [])
         for e in children(data, &block, block_close, "enum") {
-            if attribute(data, e.attr_start, e.attr_end, "alias") != "" { continue }
             name := attribute(data, e.attr_start, e.attr_end, "name")
             if name == "" { continue }
-            value := parse.integer(attribute(data, e.attr_start, e.attr_end, "value"))
+            alias := attribute(data, e.attr_start, e.attr_end, "alias")
+            if alias != "" {
+                r.aliases.put(name.clone(), alias.clone())
+                continue
+            }
+            if !applies_to_vulkan(data, &e) { continue }
+            value := enum_value(attribute(data, e.attr_start, e.attr_end, "value"))
             bitpos := parse.integer(attribute(data, e.attr_start, e.attr_end, "bitpos"))
-            if value.ok { r.enums.put(name.clone(), value.value) }
-            else if bitpos.ok { r.enums.put(name.clone(), i64(1).shl(i32(bitpos.value))) }
+            if !value.ok && !bitpos.ok { continue }
+            put_constant(&mut r, name, block_name.clone(), if value.ok { value.value } else { i64(1).shl(i32(bitpos.value)) })
         }
     }
 }
@@ -402,8 +821,56 @@ fn scan_commands(data: &[]u8, r: &mut Registry) {
 // extends="VkStructureType" offset="1"/>` has no value, it is computed —
 // 1000000000 + (number − 1) × 1000 + offset, with the extension's own
 // `extnumber` attribute in place of `number` when it has one, and negated
-// for `dir="-"` (VkResult's extension errors). An `api="…"` variant applies
-// to Vulkan by the same rule as a parameter.
+// for `dir="-"` (VkResult's extension errors). An extension enum with a
+// `value=` instead of an `offset=` (VK_PIPELINE_STAGE_NONE, from
+// VK_KHR_synchronization2) has its number written out, and an `alias=`
+// names the constant it repeats. An `api="…"` variant applies to Vulkan by
+// the same rule as a parameter.
+//
+// One `<enum>` inside an extension or a feature: an `alias` names the constant
+// it repeats; a `value` is written out (VK_PIPELINE_STAGE_NONE = 0); otherwise
+// the number is 1000000000 + (extnumber − 1) × 1000 + offset, the number being
+// the extension's — this element's, or the one the enclosing `<require
+// extension="…">` names — negated by `dir="-"`. A `<require extension="…">`
+// in a feature's promotion list is how VK_SUBOPTIMAL_KHR is declared.
+fn extension_enum(r: &mut Registry, data: &[]u8, t: &Tag, base: i64) {
+    ename := attribute(data, t.attr_start, t.attr_end, "name")
+    if ename == "" { return }
+    alias := attribute(data, t.attr_start, t.attr_end, "alias")
+    if alias != "" {
+        r.aliases.put(ename.clone(), alias.clone())
+        return
+    }
+    if !applies_to_vulkan(data, t) { return }
+    block := attribute(data, t.attr_start, t.attr_end, "extends")
+    if block == "" { return }
+    written := enum_value(attribute(data, t.attr_start, t.attr_end, "value"))
+    offset := parse.integer(attribute(data, t.attr_start, t.attr_end, "offset"))
+    if written.ok {
+        put_constant(&mut r, ename, block, written.value)
+        return
+    }
+    if !offset.ok { return }
+    mut number := base
+    extnumber := parse.integer(attribute(data, t.attr_start, t.attr_end, "extnumber"))
+    if extnumber.ok { number = extnumber.value }
+    if number <= 0 { return }
+    mut value := 1000000000 + (number - 1) * 1000 + offset.value
+    if attribute(data, t.attr_start, t.attr_end, "dir") == "-" { value = 0 - value }
+    put_constant(&mut r, ename, block, value)
+}
+
+// The extension's number, as the base of its enums' offsets; -1 when it has none.
+fn extension_number(data: &[]u8, t: &Tag) -> i64 {
+    number := parse.integer(attribute(data, t.attr_start, t.attr_end, "number"))
+    if number.ok { return number.value }
+    -1
+}
+
+// `<extension>` elements, and the `<feature>` elements that promote an
+// extension's enums: both hold `<enum extends="…" offset="…"/>` whose number
+// is the extension's. Only an extension carries a `number`; a feature's
+// `<require extension="VK_KHR_swapchain">` names the one to use.
 fn scan_extensions(data: &[]u8, r: &mut Registry) {
     root_open := find_open(data, 0, "extensions")
     if root_open.start < 0 { return }
@@ -414,8 +881,8 @@ fn scan_extensions(data: &[]u8, r: &mut Registry) {
         if ext_close < 0 { continue }
         name := attribute(data, ext.attr_start, ext.attr_end, "name")
         if name == "" { continue }
-        r.extensions.push(Extension { name: name.clone(), depends: attribute(data, ext.attr_start, ext.attr_end, "depends") })
-        number := parse.integer(attribute(data, ext.attr_start, ext.attr_end, "number"))
+        number := extension_number(data, &ext)
+        r.extensions.push(Extension { name: name.clone(), depends: attribute(data, ext.attr_start, ext.attr_end, "depends"), number: number })
         // Walk the whole extension body for <command …/> and <enum …/> at any depth.
         mut cat := ext.body_start
         while cat < ext_close {
@@ -427,21 +894,58 @@ fn scan_extensions(data: &[]u8, r: &mut Registry) {
                 cname := attribute(data, t.attr_start, t.attr_end, "name")
                 if text.starts_with(cname, "vk") { r.provider.put(cname[2..cname.len].clone(), name.clone()) }
             } else if t.name == "enum" {
-                if !applies_to_vulkan(data, &t) { continue }
-                if attribute(data, t.attr_start, t.attr_end, "alias") != "" { continue }
-                ename := attribute(data, t.attr_start, t.attr_end, "name")
-                offset := parse.integer(attribute(data, t.attr_start, t.attr_end, "offset"))
-                if ename == "" || !offset.ok { continue }
-                extnumber := parse.integer(attribute(data, t.attr_start, t.attr_end, "extnumber"))
-                mut base := if number.ok { number.value } else { -1 }
-                if extnumber.ok { base = extnumber.value }
-                if base <= 0 { continue }
-                mut value := 1000000000 + (base - 1) * 1000 + offset.value
-                if attribute(data, t.attr_start, t.attr_end, "dir") == "-" { value = 0 - value }
-                r.enums.put(ename.clone(), value)
+                extension_enum(&mut r, data, &t, number)
             }
         }
     }
+    // Features: a <require extension="…"> inside one holds that extension's enums.
+    mut at := 0
+    while at < data.len {
+        feature := find_open(data, at, "feature")
+        if feature.start < 0 { break }
+        feature_close := close_of(data, &feature)
+        if feature_close < 0 { break }
+        at = feature_close
+        mut cat := feature.body_start
+        while cat < feature_close {
+            t := next_tag(data, cat)
+            if t.start < 0 || t.body_start > feature_close { break }
+            cat = t.body_start
+            if t.closing || t.name != "require" { continue }
+            // A feature's <require> promotes an extension's enums: the number
+            // comes from the extension it names, or is written out (NONE = 0).
+            named := attribute(data, t.attr_start, t.attr_end, "extension")
+            base := if named == "" { i64(-1) } else { extension_number_named(r, named.clone()) }
+            req_close := close_of(data, &t)
+            if req_close < 0 { continue }
+            mut rat := t.body_start
+            while rat < req_close {
+                e := next_tag(data, rat)
+                if e.start < 0 || e.body_start > req_close { break }
+                rat = e.body_start
+                if e.closing || e.name != "enum" { continue }
+                extension_enum(&mut r, data, &e, base)
+            }
+        }
+    }
+}
+
+// The number of the extension `named`, from the registry's extension list; -1 when unknown.
+fn extension_number_named(r: &Registry, named: string) -> i64 {
+    for e in &r.extensions {
+        if e.name == named { return e.number }
+    }
+    -1
+}
+
+// One enum constant and the block it belongs to, in both tables: by name for a
+// lookup, and in its block's list for the order the registry declares.
+fn put_constant(r: &mut Registry, name: string, block: string, value: i64) {
+    r.constants.put(name.clone(), Constant { block: block.clone(), value: value })
+    if !r.blocks.contains(block.clone()) { r.blocks.put(block.clone(), []) }
+    mut names := r.blocks.get(block.clone()).unwrap()
+    names.push(name.clone())
+    r.blocks.put(block.clone(), names.clone())
 }
 
 fn registry(data: &[]u8) -> Registry {
@@ -452,7 +956,9 @@ fn registry(data: &[]u8) -> Registry {
         typedefs: map.Map<string, string>::new(),
         handles: map.Map<string, bool>::new(),
         records: map.Map<string, Record>::new(),
-        enums: map.Map<string, i64>::new(),
+        constants: map.Map<string, Constant>::new(),
+        blocks: map.Map<string, []string>::new(),
+        aliases: map.Map<string, string>::new(),
     }
     scan_types(data, &mut r)
     scan_enums(data, &mut r)
@@ -462,6 +968,26 @@ fn registry(data: &[]u8) -> Registry {
 }
 
 // ---- questions about the registry -------------------------------------------
+
+// The number of an enum constant, through an alias to the constant it
+// repeats (VK_ERROR_VALIDATION_FAILED_EXT → VK_ERROR_VALIDATION_FAILED);
+// none when the registry defines neither. A sentinel integer will not do:
+// -1 is VK_ERROR_OUT_OF_HOST_MEMORY.
+fn constant_value(r: &Registry, name: string) -> Option<i64> {
+    mut n := name.clone()
+    mut hops := 0
+    while hops < 8 {
+        match r.constants.get(n.clone()) {
+            .Some(c) => return .Some(c.value),
+            .None => {},
+        }
+        match r.aliases.get(n.clone()) {
+            .Some(target) => { n = target; hops += 1 },
+            .None => break,
+        }
+    }
+    .None
+}
 
 // Whether a command exists only where a surface can: its extension, or an
 // extension it depends on, is VK_KHR_surface.
@@ -601,7 +1127,7 @@ fn member_type(r: &Registry, m: &Member) -> string {
 fn array_length(r: &Registry, m: &Member) -> string {
     if m.array == "" { return "" }
     if parse.integer(m.array.clone()).ok { return m.array.clone() }
-    match r.enums.get(m.array.clone()) {
+    match constant_value(r, m.array) {
         .Some(n) => n.str(),
         .None => "",
     }
@@ -684,7 +1210,7 @@ fn write_record(r: &Registry, name: string) -> string {
     bytes.append_utf8(&mut out, "    pub unsafe fn new() -> " + name + " {\n")
     bytes.append_utf8(&mut out, "        mut value: " + name + " = zeroed()\n")
     if rec.structure_type != "" {
-        match r.enums.get(rec.structure_type.clone()) {
+        match constant_value(r, rec.structure_type) {
             .Some(number) => bytes.append_utf8(&mut out, "        value.sType = " + number.str() + "\n"),
             .None => {},
         }
@@ -709,12 +1235,160 @@ fn write_layout(r: &Registry, names: &[]string, own: string) -> string {
     bytes.decode(&out).unwrap_or_default()
 }
 
-// Everything from the marker to the end of `current`, marker line included.
+// Everything from `marker` to the end of `current`, marker line included.
 fn own_records(current: string) -> string {
-    match text.find(current, OWN_RECORDS_MARKER) {
+    own_records_after(current, OWN_RECORDS_MARKER)
+}
+
+fn own_records_after(current: string, marker: string) -> string {
+    match text.find(current, marker) {
         .Some(i) => current[i..current.len].clone(),
         .None => "",
     }
+}
+
+// ---- writing enums.ddr -------------------------------------------------------
+
+// enums.ddr: the header, each selected enum with its converter, then VkResult
+// with `result_name` written from the registry, then Storm's own values and
+// writers copied through from the marker.
+//
+// The selection table gives both names of every variant, so nothing is derived
+// here: a number is the registry's constant looked up in its block, or — for a
+// flag set — the sum of named bits each of which must be in that block.
+
+// The converter's name: the enum's in snake_case (BlendFactor → blend_factor).
+fn converter_name(dunder: string) -> string {
+    mut out: []u8 = []
+    for i in 0..dunder.len {
+        b := dunder[i]
+        if b >= 65 && b <= 90 {
+            if i > 0 { out.push(95) }
+            out.push(b + 32)
+        } else {
+            out.push(b)
+        }
+    }
+    bytes.decode(&out).unwrap_or_default()
+}
+
+// Whether `block` lists `name`, and the registry's number for it (through an
+// alias to the constant it repeats); none when the registry defines neither.
+fn block_number(r: &Registry, block: string, name: string) -> Option<i64> {
+    if !r.blocks.contains(block.clone()) { return .None }
+    for c in &r.blocks.get(block.clone()).unwrap() {
+        if c == name { return constant_value(r, name.clone()) }
+    }
+    .None
+}
+
+// The bits a flag-set variant sums; none when `variant` is not one.
+fn flag_bits(sets: &[]FlagSet, variant: string) -> []string {
+    for s in sets {
+        if s.dunder == variant { return s.bits.clone() }
+    }
+    []
+}
+
+// The number of a selected variant of `block`: its constant's number, or —
+// for a flag set Storm names — the sum of its bits' numbers, each a constant
+// of the same block. None when the registry does not number every name, with
+// the name that failed on stderr: a wrong table row is an error, never a
+// number that looks right.
+fn variant_number(r: &Registry, sets: &[]FlagSet, block: string, v: &Selected) -> Option<i64> {
+    bits := flag_bits(sets, v.dunder.clone())
+    if bits.len == 0 {
+        n := block_number(r, block, v.constant.clone())
+        if n == .None {
+            _ := sys.eprint("vk: " + v.dunder + " is not numbered as " + v.constant + " in " + block)
+        }
+        return n
+    }
+    mut sum: i64 = 0
+    for b in &bits {
+        n := block_number(r, block.clone(), b.clone())
+        if n == .None {
+            _ := sys.eprint("vk: flag set " + v.dunder + " names " + b + ", which " + block + " does not number")
+            return .None
+        }
+        sum += n.unwrap()
+    }
+    .Some(sum)
+}
+
+// One `match` line of result_name; "" when the registry does not number `c`.
+fn result_line(r: &Registry, c: string) -> string {
+    match constant_value(r, c.clone()) {
+        .Some(n) => "        " + n.str() + " => \"" + c + "\",\n",
+        .None => "",
+    }
+}
+
+// `pub fn result_name(code: i32) -> string`: every VkResult constant the
+// registry numbers, in its order, with the Khronos spelling.
+fn write_result_name(r: &Registry) -> string {
+    mut out := ""
+    out += "// The Khronos spelling of a VkResult, for error messages; every code the\n"
+    out += "// registry numbers, in its order.\n"
+    out += "pub fn result_name(code: i32) -> string {\n"
+    out += "    match code {\n"
+    if r.blocks.contains("VkResult".clone()) {
+        for c in &r.blocks.get("VkResult".clone()).unwrap() {
+            out += result_line(r, c.clone())
+        }
+    }
+    out += "        _ => \"VK_ERROR_?\",\n"
+    out += "    }\n"
+    out += "}\n\n"
+    out
+}
+
+// A comment as source lines: nothing when empty, one `//` line per sentence
+// group the table wrote (it is one string; wrapped at a blank is the author's).
+fn comment_lines(comment: string, indent: string) -> string {
+    if comment == "" { return "" }
+    indent + "// " + comment + "\n"
+}
+
+// enums.ddr above the marker: the header, the selected enums each followed by
+// its converter, then the named constants, then VkResult and result_name.
+fn write_enums(r: &Registry, enums: &[]SelectedEnum, sets: &[]FlagSet, named: &[]NamedConstant, own: string) -> string {
+    mut out: []u8 = []
+    bytes.append_utf8(&mut out, "// Generated by tools/vk.ddr from Khronos' vk.xml. Do not edit above the marker.\n")
+    bytes.append_utf8(&mut out, "//\n// Vk enums as Dunder enums, with the only converters to C integers in the\n")
+    bytes.append_utf8(&mut out, "// package. A @c_layout record keeps its u32 field; the caller writes\n")
+    bytes.append_utf8(&mut out, "// `attachment.srcColorBlendFactor = enums.blend_factor(.SrcAlpha)` and there is\n")
+    bytes.append_utf8(&mut out, "// no way to spell ONE_MINUS_DST_COLOR by mistake. Every number is the\n")
+    bytes.append_utf8(&mut out, "// registry's, looked up by the constant named in the tool's selection table.\n")
+    bytes.append_utf8(&mut out, "//\n// Flag-like enums (ShaderStage, ImageUsage, BufferUsage) carry the combined\n")
+    bytes.append_utf8(&mut out, "// variants Storm needs as named values, each the sum of named registry bits.\n\n")
+    bytes.append_utf8(&mut out, "capability unsafe\n\nimport .layout as layout\n\n")
+    for e in enums {
+        bytes.append_utf8(&mut out, comment_lines(e.comment.clone(), ""))
+        bytes.append_utf8(&mut out, "pub enum " + e.dunder + " {\n")
+        for v in &e.variants {
+            // main has validated every variant before writing: a None here is unreachable
+            number := variant_number(r, sets, e.block.clone(), v).unwrap()
+            bytes.append_utf8(&mut out, "    " + v.dunder + " = " + number.str() + ",")
+            if v.comment != "" { bytes.append_utf8(&mut out, " // " + v.comment) }
+            bytes.append_utf8(&mut out, "\n")
+        }
+        bytes.append_utf8(&mut out, "}\n\n")
+        // VkResult has no converter: its codes are negative and are matched as
+        // i32; it gets the Khronos spelling of every code instead.
+        if e.dunder == "VkResult" {
+            bytes.append_utf8(&mut out, write_result_name(r))
+        } else {
+            bytes.append_utf8(&mut out, "pub fn " + converter_name(e.dunder.clone()) + "(v: " + e.dunder + ") -> u32 { u32(i32(v)) }\n\n")
+        }
+    }
+    for c in named {
+        bytes.append_utf8(&mut out, comment_lines(c.comment.clone(), ""))
+        // validated in main before writing
+        bytes.append_utf8(&mut out, "pub const " + c.dunder + ": u32 = " + constant_value(r, c.constant.clone()).unwrap().str() + "\n\n")
+    }
+    bytes.append_utf8(&mut out, own)
+    bytes.decode(&out).unwrap_or_default()
 }
 
 // Every record nested by value in `rec`, through a union's members too, as
@@ -767,7 +1441,7 @@ fn main() -> i32 {
     if sys.arg_count() > 2 && sys.arg(2) != "--check" { only = sys.arg(2) }
     if sys.arg_count() > 3 { only = sys.arg(3) }
     if path == "" {
-        _ := sys.eprint("usage: dunder run tools/vk.ddr -- <vk.xml> [--check] [api|layout]")
+        _ := sys.eprint("usage: dunder run tools/vk.ddr -- <vk.xml> [--check] [api|layout|enums]")
         return 2
     }
     data := sys.read_u8(path)
@@ -812,7 +1486,7 @@ fn main() -> i32 {
                 }
             }
         }
-        if rec.structure_type != "" && !r.enums.contains(rec.structure_type.clone()) {
+        if rec.structure_type != "" && constant_value(&r, rec.structure_type.clone()) == .None {
             _ := sys.eprint("vk: Vk" + name + " names " + rec.structure_type + ", which the registry does not define")
             return 2
         }
@@ -833,6 +1507,64 @@ fn main() -> i32 {
             return 2
         }
         code := check_or_write(LAYOUT_TARGET, write_layout(&r, &STRUCTS, own), check)
+        if code != 0 { return code }
+    }
+    // Every enum, and every variant Storm selects, is in the registry: a name
+    // that is not is a tool error with the name, never a number.
+    enums := selected_enums()
+    sets := flag_sets()
+    for e in &enums {
+        if !r.blocks.contains(e.block.clone()) {
+            _ := sys.eprint("vk: " + e.dunder + " names block " + e.block + ", which the registry does not have")
+            return 2
+        }
+        for v in &e.variants {
+            // A variant either names a registry constant or is a flag set in
+            // `flag_sets`; an empty constant that is neither is a table row
+            // nothing numbers.
+            if v.constant == "" && flag_bits(&sets, v.dunder.clone()).len == 0 {
+                _ := sys.eprint("vk: " + e.dunder + "." + v.dunder + " names no constant and is no flag set")
+                return 2
+            }
+            if variant_number(&r, &sets, e.block.clone(), v) == .None {
+                // variant_number has named the missing constant on stderr
+                return 2
+            }
+        }
+    }
+    // A flag set must be a variant of exactly one selected enum: one that is
+    // in no selection is a table row nothing writes.
+    for s in &sets {
+        mut found := false
+        for e in &enums {
+            for v in &e.variants {
+                if v.dunder == s.dunder { found = true }
+            }
+        }
+        if !found {
+            _ := sys.eprint("vk: flag set " + s.dunder + " is in no enum's selection")
+            return 2
+        }
+    }
+    if only == "" || only == "enums" {
+        named := named_constants()
+        for c in &named {
+            if constant_value(&r, c.constant.clone()) == .None {
+                _ := sys.eprint("vk: named constant " + c.dunder + " is " + c.constant + ", which the registry does not number")
+                return 2
+            }
+        }
+        current := sys.read_text(ENUMS_TARGET)
+        if !current.ok {
+            _ := sys.eprint("vk: could not read " + ENUMS_TARGET + " for Storm's own values")
+            return 2
+        }
+        own := own_records_after(current.value, OWN_ENUMS_MARKER)
+        if own == "" {
+            _ := sys.eprint("vk: " + ENUMS_TARGET + " has no marker line '" + OWN_ENUMS_MARKER + "'")
+            return 2
+        }
+        code := check_or_write(ENUMS_TARGET, write_enums(&r, &enums, &sets, &named, own), check)
         if code != 0 { return code }
     }
     0

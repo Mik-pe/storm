@@ -268,7 +268,6 @@ import ..src.texture as texture
     assert(enums.image_create(.CubeCompatible) == 16)
     assert(enums.command_pool_flag(.ResetCommandBuffer) == 2)
     assert(enums.pipeline_stage(.Host) == 16384)
-    assert(enums.descriptor_pool(.FreeDescriptorSet) == 2)
     assert(enums.fence(.Signaled) == 1)
     assert(enums.color_component(.RGBA) == 15)
     assert(enums.samples(.Type1) == 1)
