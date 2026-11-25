@@ -1,9 +1,14 @@
+capability filesystem, stdio
+
 // Storm's root suite: exercises the packages the way an application uses them,
 // and runs each package's own suite through their manifests.
 import core
 import ecs
 import gfx
+import std.fs as fs
 import std.math as math
+import std.text as textlib
+import sys
 
 struct Spin { speed: f32 }
 
@@ -303,4 +308,36 @@ import render
             }
         }
     }
+}
+
+// `dunder test` collects tests from the modules the test root imports, and
+// `test_root` names one file: a test module that is not imported here never
+// runs, and nothing says so. This test makes that omission a failure instead
+// of a silent gap, so adding a module to `tests/` cannot forget its import.
+@test fn every_test_module_beside_the_suite_is_imported_by_it() {
+    names := match fs.list_dir("tests") {
+        .Ok(items) => items,
+        .Err(e) => { _ := sys.eprint("could not list tests/: errno " + e.code().str()); assert(false); return },
+    }
+    suite := sys.read_text("tests/suite.ddr")
+    if !suite.ok { _ := sys.eprint("could not read tests/suite.ddr: errno " + suite.error.str()); assert(false); return }
+    mut missing: []string = []
+    for name in &names {
+        if !textlib.ends_with(name, ".ddr") || name == "suite.ddr" { continue }
+        module := sys.read_text("tests/" + name)
+        if !module.ok { _ := sys.eprint("could not read tests/" + name + ": errno " + module.error.str()); assert(false); return }
+        if !textlib.contains(module.value, "@test") { continue }
+        // `import .stem` opens a line and ends at whitespace: `.png` must not
+        // pass for `.png_util`, and `..src.stem` is not a test-module import.
+        needle := "import ." + name[0..name.len - 4]
+        mut found := false
+        mut cursor := textlib.lines(suite.value.as_str())
+        while cursor.advance() {
+            line := cursor.current().clone()
+            if textlib.starts_with(line, needle) && (line.len == needle.len || line[needle.len] == u8(32) || line[needle.len] == u8(9)) { found = true }
+        }
+        if !found { missing.push("`import ." + name[0..name.len - 4] + " as _` (tests/" + name + " has tests)") }
+    }
+    for m in &missing { _ := sys.eprint("tests/suite.ddr never imports a test module: " + m) }
+    assert(missing.len == 0)
 }
