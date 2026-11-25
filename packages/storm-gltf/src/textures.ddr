@@ -27,23 +27,40 @@ pub const CLAMP_TO_EDGE: i64 = 33071
 pub const MIRRORED_REPEAT: i64 = 33648
 pub const REPEAT: i64 = 10497
 
-// glTF -> contract. A missing field is the spec's default; an unknown
-// number reads as the default too, not as an error: the file can still be
-// shown, and the validation report is where the number belongs.
-pub fn sampler(doc: &json.Doc, node: i32) -> gfx.Sampler {
-    if node < 0 { return gfx.sampler() }
-    mag := match doc.get_i64(node, "magFilter") { .Some(v) => v, .None => LINEAR }
-    min := match doc.get_i64(node, "minFilter") { .Some(v) => v, .None => LINEAR_MIPMAP_LINEAR }
-    wrap := match doc.get_i64(node, "wrapS") { .Some(v) => v, .None => REPEAT }
+// glTF -> contract. A missing field is the spec's default (LINEAR,
+// LINEAR_MIPMAP_LINEAR, REPEAT). An unknown number is an error, as in
+// Filament and the glTF SDK: a file that says 97 is not a file to show
+// with a guess.
+pub fn sampler(doc: &json.Doc, index: i32) -> Result<gfx.Sampler, string> {
+    if index < 0 { return .Ok(gfx.sampler()) }
+    node := doc.at(doc.field(doc.root, "samplers"), index)
+    mag := doc.get_i64(node, "magFilter").unwrap_or(LINEAR)
+    min := doc.get_i64(node, "minFilter").unwrap_or(LINEAR_MIPMAP_LINEAR)
+    wrap := doc.get_i64(node, "wrapS").unwrap_or(REPEAT)
+    // A glTF number is not an enum variant here but a pattern trap (dogfood
+    // 83): a named constant as a `match` pattern binds. The filters are
+    // six numbers, so the table is an if-chain.
+    if mag != NEAREST && mag != LINEAR {
+        return .Err("sampler " + index.str() + ": magFilter " + mag.str() + " is not a glTF filter")
+    }
+    known_min := min == NEAREST || min == LINEAR || min == NEAREST_MIPMAP_NEAREST ||
+    min == LINEAR_MIPMAP_NEAREST || min == NEAREST_MIPMAP_LINEAR || min == LINEAR_MIPMAP_LINEAR
+    if !known_min {
+        return .Err("sampler " + index.str() + ": minFilter " + min.str() + " is not a glTF filter")
+    }
+    if wrap != CLAMP_TO_EDGE && wrap != MIRRORED_REPEAT && wrap != REPEAT {
+        return .Err("sampler " + index.str() + ": wrapS " + wrap.str() + " is not a glTF wrap mode")
+    }
     mag_filter := if mag == NEAREST { gfx.Filter.Nearest } else { gfx.Filter.Linear }
-    min_filter := if min == NEAREST || min == NEAREST_MIPMAP_NEAREST || min == NEAREST_MIPMAP_LINEAR { gfx.Filter.Nearest } else { gfx.Filter.Linear }
-    mips := if min == NEAREST || min == LINEAR { gfx.MipFilter.None }
-    else if min == NEAREST_MIPMAP_NEAREST || min == LINEAR_MIPMAP_NEAREST { gfx.MipFilter.Nearest }
-    else { gfx.MipFilter.Linear }
+    min_nearest := min == NEAREST || min == NEAREST_MIPMAP_NEAREST || min == NEAREST_MIPMAP_LINEAR
+    min_filter := if min_nearest { gfx.Filter.Nearest } else { gfx.Filter.Linear }
+    no_mips := min == NEAREST || min == LINEAR
+    nearest_mips := min == NEAREST_MIPMAP_NEAREST || min == LINEAR_MIPMAP_NEAREST
+    mips := if no_mips { gfx.MipFilter.None } else if nearest_mips { gfx.MipFilter.Nearest } else { gfx.MipFilter.Linear }
     wrap_mode := if wrap == CLAMP_TO_EDGE { gfx.Wrap.ClampToEdge }
     else if wrap == MIRRORED_REPEAT { gfx.Wrap.MirroredRepeat }
     else { gfx.Wrap.Repeat }
-    gfx.Sampler { mag: mag_filter, min: min_filter, mips: mips, wrap: wrap_mode }
+    .Ok(gfx.Sampler { mag: mag_filter, min: min_filter, mips: mips, wrap: wrap_mode })
 }
 
 // Every image the asset declares, in the file's order: mime type and the

@@ -322,7 +322,7 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
         node := j.at(textures_list, i32(index))
         texture = i32(j.get_i64(node, "source").unwrap_or(-1))
         if texture < 0 { return .Err("baseColorTexture without source") }
-        sampler = textures.sampler(j, j.at(j.field(j.root, "samplers"), i32(j.get_i64(node, "sampler").unwrap_or(-1))))
+        sampler = match textures.sampler(j, i32(j.get_i64(node, "sampler").unwrap_or(-1))) { .Ok(s) => s, .Err(e) => return .Err(e) }
     }
     .Ok(Part { name: name, material_name: j.get_str(material, "name").unwrap_or_default(),
         color: color, metallic: metallic, roughness: roughness, vertices: interleave(&mesh),

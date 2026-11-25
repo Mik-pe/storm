@@ -1,5 +1,9 @@
 import ..src.gltf as gltf
+import std.json as json
+import std.text as text
 import gfx
+
+import ..src.textures as textures
 
 // Build a minimal .glb: one triangle, POSITION (3 x vec3 float), no indices.
 // JSON chunk is padded to a 4-byte boundary with spaces; BIN chunk with zeros.
@@ -233,4 +237,20 @@ fn append_u32(out: &mut []u8, value: u32) {
 
     assert(asset.images.len == 0)
     assert(asset.parts[0].texture == -1)
+}
+
+// A sampler with a number outside the glTF table is refused with the
+// sampler's index and the number, never shown with a guess (Filament and
+// the glTF SDK refuse it too). Index -1 is the spec's default.
+fn refusal_of(result: Result<gfx.Sampler, string>) -> string {
+    match result { .Ok(_) => "decoded", .Err(s) => s.clone() }
+}
+
+@test fn sampler_refuses_unknown_numbers() {
+    source := "{\"samplers\":[{\"magFilter\":97},{\"minFilter\":9988},{\"wrapS\":33072}]}"
+    doc := json.Doc::parse_text(source)
+    assert(textures.sampler(&doc, -1).unwrap().mag == gfx.Filter.Linear)
+    assert(text.contains(refusal_of(textures.sampler(&doc, 0)), "sampler 0: magFilter 97"))
+    assert(text.contains(refusal_of(textures.sampler(&doc, 1)), "sampler 1: minFilter 9988"))
+    assert(text.contains(refusal_of(textures.sampler(&doc, 2)), "sampler 2: wrapS 33072"))
 }
