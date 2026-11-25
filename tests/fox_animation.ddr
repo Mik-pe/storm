@@ -3,6 +3,7 @@ import ecs
 import gfx
 import play
 import scene
+import std.text as text
 import ..src.art_asset
 import ..src.fox_animation as fox
 import ..src.play_view as view
@@ -143,28 +144,34 @@ fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
         boots.push(named(&world.graph, part + "_Boots").unwrap())
     }
     mut previous: [core.Vec3; 4] = [core.vec3(0.0, 0.0, 0.0); 4]
+    mut previous_clearance: [f32; 4] = [0.0; 4]
     mut planted: [i32; 4] = [0; 4]
     mut lifted: [i32; 4] = [0; 4]
     mut diagonals: [i32; 2] = [0; 2]
     for tick in 0..50 {
         play.step(&mut s, play.Input { x: 1.0, z: 0.0, jump: false })
         view.sync(&mut world, &s, true)
+        support_y := play.position(&s, world.player_node).y - 0.4
         mut lowest: f32 = 1.0
+        mut clearances: [f32; 4] = [0.0; 4]
         for i in 0..4 {
             sample := core.transform_point(&world.graph.world(boots[i]).matrix, soles[i])
-            if sample.y < lowest { lowest = sample.y }
+            surface := support_y + ground.height(&world.cast.ground, &world.course, &s, sample.x, sample.z, support_y, true)
+            clearance := sample.y - surface
+            clearances[i] = clearance
+            if clearance < lowest { lowest = clearance }
             if tick > 10 {
-                assert(sample.y > -0.012)
-                if sample.y < 0.032 && previous[i].y < 0.032 && core.length(core.sub(sample, previous[i])) < 0.012 { planted[i] += 1 }
-                if sample.y > 0.12 { lifted[i] += 1 }
+                assert(clearance > -0.006)
+                if clearance < 0.016 && previous_clearance[i] < 0.016 && core.length(core.sub(sample, previous[i])) < 0.012 { planted[i] += 1 }
+                if clearance > 0.095 { lifted[i] += 1 }
             }
             previous[i] = sample
+            previous_clearance[i] = clearance
         }
         if tick > 10 {
-            assert(lowest < 0.039)
-            heights := [previous[0].y, previous[1].y, previous[2].y, previous[3].y]
-            if heights[1] < 0.036 && heights[2] < 0.036 && heights[0] > 0.11 && heights[3] > 0.09 { diagonals[0] += 1 }
-            if heights[0] < 0.036 && heights[3] < 0.036 && heights[1] > 0.11 && heights[2] > 0.09 { diagonals[1] += 1 }
+            assert(lowest < 0.020)
+            if clearances[1] < 0.020 && clearances[2] < 0.020 && clearances[0] > 0.085 && clearances[3] > 0.065 { diagonals[0] += 1 }
+            if clearances[0] < 0.020 && clearances[3] < 0.020 && clearances[1] > 0.085 && clearances[2] > 0.065 { diagonals[1] += 1 }
         }
     }
     for i in 0..4 { assert(planted[i] >= 8 && lifted[i] >= 6) }
@@ -256,7 +263,7 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     mut meshes: []TailMesh = []
     for e in world.graph.names().entities() {
         name := world.graph.name(e)
-        if name.len >= 4 && name[0..4] == "Tail" {
+        if text.starts_with(name, "Tail") {
             meshes.push(TailMesh { node: e, vertices: world.graph.vertices(e) })
         }
     }
@@ -462,7 +469,7 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     mut tail_meshes: []TailMesh = []
     for e in world.graph.names().entities() {
         name := world.graph.name(e)
-        if name.len >= 4 && name[0..4] == "Tail" {
+        if text.starts_with(name, "Tail") {
             tail_meshes.push(TailMesh { node: e, vertices: world.graph.vertices(e) })
         }
     }

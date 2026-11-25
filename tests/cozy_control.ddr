@@ -237,7 +237,7 @@ fn expanded_woodland_scene() -> play.Scene {
 
     // Clicking open air while standing on an elevated plane (y = 1.7) falls back to support plane y = 1.7.
     p0 := s.bodies[s.player].position
-    plane_pt := core.vec3(p0.x + 1.2, 1.7, p0.z - 0.5)
+    plane_pt := core.vec3(p0.x + 0.6, 1.7, p0.z + 1.2)
     (cx, cy) := project_to_screen(&cam0, aspect, w, h, plane_pt)
     mut cloud_click := empty_input(cx, cy)
     cloud_click.mouse.buttons = gfx.MOUSE_LEFT
