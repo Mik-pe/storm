@@ -3,11 +3,12 @@ capability unsafe, stdio
 import core
 import std.sys as sys
 import .device as device
-import .enums as enums
-import .layout as vk
+import vk.enums as enums
+import vk.layout as vk
 import .pipeline as pipelines
 import .shader as shader
 import .state as state
+import .records as records
 
 // What this module owns: the environment cube with its mip and face views,
 // the irradiance cube, the BRDF lookup texture, their samplers, and the
@@ -431,8 +432,8 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
 
     // --- descriptor sets for the convolve passes: binding 0 = source cube ---
     mut bindings: [u64; 3] = [0; 3]
-    bindings[0] = enums.binding_word(0, .CombinedImageSampler)
-    bindings[1] = enums.stages_word(1, .Fragment)
+    bindings[0] = records.binding_word(0, .CombinedImageSampler)
+    bindings[1] = records.stages_word(1, .Fragment)
     bindings[2] = 0
     mut set_layout_info: vk.DescriptorSetLayoutCreateInfo = vk.DescriptorSetLayoutCreateInfo::new()
     set_layout_info.bindingCount = 1

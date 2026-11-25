@@ -1,10 +1,11 @@
 capability unsafe
 
 import .device as device
-import .enums as enums
-import .layout as vk
+import vk.enums as enums
+import vk.layout as vk
 import .shader as shader
 import .state as state
+import .records as records
 
 unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     mut color: vk.AttachmentDescription = zeroed()
@@ -137,7 +138,7 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     mut glass := Plan {
         vertex: r.vertexShader, fragment: r.fragmentShader,
         layout: r.pipelineLayout, pass: r.renderPass,
-        cull: .Back, depth: depth_test_only(), blend: .Some(enums.alpha_over()),
+        cull: .Back, depth: depth_test_only(), blend: .Some(records.alpha_over()),
         vertices: .Mesh, viewport: .Frame, encoded: true,
     }
     mut glass_pipeline := ptr(0)
@@ -252,7 +253,7 @@ pub struct Plan {
     pass: ptr,
     cull: enums.CullMode,
     depth: Depth,
-    blend: Option<enums.Blend>,
+    blend: Option<records.Blend>,
     vertices: Vertices,
     viewport: Viewport,
     // Display shaders specialise on whether the target is sRGB.
@@ -271,15 +272,15 @@ unsafe fn front_face(cull: enums.CullMode) -> u32 {
 // written by the one writer each: the mesh stream (three attributes) and a
 // UI vertex of `stride` bytes (two). The records travel by value so they
 // live in `build`'s frame, where the pointers into them are made.
-unsafe fn mesh_vertices() -> vk.VertexInput {
-    mut vertices: vk.VertexInput = vk.vertex_input()
-    enums.apply_vertex_input(&mut vertices)
+unsafe fn mesh_vertices() -> records.VertexInput {
+    mut vertices: records.VertexInput = records.vertex_input()
+    records.apply_vertex_input(&mut vertices)
     vertices
 }
 
-unsafe fn ui_vertices(stride: u32) -> vk.UiVertices {
-    mut vertices: vk.UiVertices = vk.ui_vertices(stride)
-    enums.apply_ui_vertices(&mut vertices)
+unsafe fn ui_vertices(stride: u32) -> records.UiVertices {
+    mut vertices: records.UiVertices = records.ui_vertices(stride)
+    records.apply_ui_vertices(&mut vertices)
     vertices
 }
 
@@ -290,12 +291,12 @@ unsafe fn ui_vertices(stride: u32) -> vk.UiVertices {
 @c_layout
 pub struct Description {
     stages: vk.ShaderStages,
-    encoding: vk.DisplayEncoding,
-    mesh: vk.VertexInput,
-    ui: vk.UiVertices,
+    encoding: records.DisplayEncoding,
+    mesh: records.VertexInput,
+    ui: records.UiVertices,
     input: vk.PipelineVertexInputStateCreateInfo,
     assembly: vk.PipelineInputAssemblyStateCreateInfo,
-    frame_view: vk.FrameViewport,
+    frame_view: records.FrameViewport,
     viewport: vk.Viewport,
     scissor: vk.Rect2D,
     square_view: vk.PipelineViewportStateCreateInfo,
@@ -389,7 +390,7 @@ pub unsafe fn describe(r: &state.Renderer, plan: &Plan, description: &mut Descri
     description.blend_attachment = zeroed()
     description.blend_attachment.colorWriteMask = enums.color_component(.RGBA)
     match plan.blend {
-        .Some(blend) => { enums.apply_blend(&mut description.blend_attachment, &blend) },
+        .Some(blend) => { records.apply_blend(&mut description.blend_attachment, &blend) },
         .None => { description.blend_attachment.blendEnable = 0 },
     }
     description.blend = vk.PipelineColorBlendStateCreateInfo::new()

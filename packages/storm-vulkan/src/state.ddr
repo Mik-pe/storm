@@ -1,9 +1,9 @@
 capability unsafe
 
-import .api as vk
+import vk.api as vk
 import .depth as depth
 import .ibl as ibl
-import .layout as vkl
+import vk.layout as vkl
 import .sdl as sdl
 import .shadow as shadow
 import .texture as texture

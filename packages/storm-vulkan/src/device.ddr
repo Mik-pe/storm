@@ -1,9 +1,10 @@
 capability unsafe
 
-import .api as vkapi
-import .enums as enums
-import .layout as vk
+import vk.api as vkapi
+import vk.enums as enums
+import vk.layout as vk
 import .state as state
+import .records as records
 
 // Vulkan instance with the surface extensions SDL asks for.
 // Every Vulkan call that can fail reports its code and the setup step it
@@ -141,7 +142,7 @@ unsafe fn create_device(r: &mut state.Renderer) -> state.SetupStep {
     .Ready
 }
 
-pub unsafe fn frame_viewport(view: &mut vk.FrameViewport) {
+pub unsafe fn frame_viewport(view: &mut records.FrameViewport) {
     view.viewport = vk.PipelineViewportStateCreateInfo::new()
     view.viewport.viewportCount = 1
     view.viewport.scissorCount = 1
@@ -226,7 +227,7 @@ pub unsafe fn destroy_texture(r: &state.Renderer, texture: &state.SampledTexture
 }
 
 // Display shaders emit the same authored colors on byte and sRGB attachments.
-pub unsafe fn display_encoding(format: u32, storage: &mut vk.DisplayEncoding) -> ptr {
+pub unsafe fn display_encoding(format: u32, storage: &mut records.DisplayEncoding) -> ptr {
     if format != enums.format(.B8G8R8A8_SRGB) && format != enums.format(.R8G8B8A8_SRGB) { return ptr(0) }
     storage.srgb = 1
     storage.entry = vk.SpecializationMapEntry { constantID: 0, offset: 0, size: 4 }

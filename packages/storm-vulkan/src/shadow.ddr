@@ -4,12 +4,13 @@ import core
 import gfx
 import std.sys as sys
 import .device as device
-import .enums as enums
+import vk.enums as enums
 import .depth as depth
-import .layout as vk
+import vk.layout as vk
 import .pipeline as pipelines
 import .shader as shader
 import .state as state
+import .records as records
 
 // What this module owns: the shadow map image, its memory, view and sampler,
 // the shadow pass with its framebuffer, pipeline and layout, pool and shaders,
@@ -116,15 +117,15 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // word0/3/6/9/12 = binding | type, word1/4/7/10/13 = count | stages,
     // word2/5/8/11/14 = immutable samplers.
     mut bindings: [u64; 15] = [0; 15]
-    bindings[0] = enums.binding_word(0, .CombinedImageSampler)
-    bindings[1] = enums.stages_word(1, .Fragment)
+    bindings[0] = records.binding_word(0, .CombinedImageSampler)
+    bindings[1] = records.stages_word(1, .Fragment)
     bindings[2] = 0
-    bindings[3] = enums.binding_word(1, .UniformBuffer)
-    bindings[4] = enums.stages_word(1, .VertexFragment)
+    bindings[3] = records.binding_word(1, .UniformBuffer)
+    bindings[4] = records.stages_word(1, .VertexFragment)
     bindings[5] = 0
     for binding in 2..5 {
-        bindings[binding * 3] = enums.binding_word(u32(binding), .CombinedImageSampler)
-        bindings[binding * 3 + 1] = enums.stages_word(1, .Fragment)
+        bindings[binding * 3] = records.binding_word(u32(binding), .CombinedImageSampler)
+        bindings[binding * 3 + 1] = records.stages_word(1, .Fragment)
     }
     mut layout_info: vk.DescriptorSetLayoutCreateInfo = vk.DescriptorSetLayoutCreateInfo::new()
     layout_info.bindingCount = 5
@@ -265,7 +266,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut plan := pipelines.Plan {
         vertex: vshader, fragment: fshader,
         layout: pipeline_layout, pass: pass,
-        cull: .Back, depth: pipelines.depth_off(), blend: .Some(enums.shadow_max()),
+        cull: .Back, depth: pipelines.depth_off(), blend: .Some(records.shadow_max()),
         vertices: .Mesh, viewport: .Square(SHADOW_SIZE), encoded: false,
     }
     mut pipeline := ptr(0)

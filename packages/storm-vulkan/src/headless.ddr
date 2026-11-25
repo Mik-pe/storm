@@ -3,9 +3,10 @@ capability unsafe, filesystem
 import std.bytes as bytes
 import std.sys as sys
 import .device as device
-import .enums as enums
-import .layout as vk
+import vk.enums as enums
+import vk.layout as vk
 import .state as state
+import .records as records
 
 pub fn readback_size(width: u32, height: u32) -> u64 { u64(width) * u64(height) * 4 }
 
@@ -70,7 +71,7 @@ unsafe fn create(r: &mut state.Renderer) -> i32 {
 }
 
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
-    if r.width == 0 || r.height == 0 || !enums.format_has_bytes(r.format) { return .CaptureTarget }
+    if r.width == 0 || r.height == 0 || !records.format_has_bytes(r.format) { return .CaptureTarget }
     result := create(&mut r)
     if result != 0 {
         destroy(&mut r)
@@ -109,7 +110,7 @@ pub unsafe fn copy_to_host(r: &state.Renderer) {
 
 pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
     if r.captureOn != 2 || r.readback.mapped == ptr(0) { return false }
-    red := if enums.format_is_bgra(r.format) { usize(2) } else { usize(0) }
+    red := if records.format_is_bgra(r.format) { usize(2) } else { usize(0) }
     blue := usize(2) - red
     mut out: []u8 = []
     out.reserve(i32(r.width * r.height * 3) + 32)

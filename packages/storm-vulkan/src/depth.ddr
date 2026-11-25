@@ -1,8 +1,8 @@
 capability unsafe
 
 import .device as device
-import .enums as enums
-import .layout as vk
+import vk.enums as enums
+import vk.layout as vk
 import .state as state
 
 // Depth buffer.

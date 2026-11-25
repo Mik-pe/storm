@@ -12,8 +12,8 @@ capability unsafe
 
 import gfx
 import .device as device
-import .enums as enums
-import .layout as vkl
+import vk.enums as enums
+import vk.layout as vkl
 import .state as state
 
 pub const CAPACITY: i32 = 64

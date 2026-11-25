@@ -17,13 +17,13 @@ import gfx
 import std.bytes as b
 import std.dl as dl
 import std.sys as sys
-import .api as api
+import vk.api as api
 import .depth as depth
 import .device as device
-import .enums as enums
+import vk.enums as enums
 import .headless as headless
 import .ibl as ibl
-import .layout as vk
+import vk.layout as vk
 import .pipeline as pipeline
 import .post as post
 import .shadow as shadow
@@ -31,6 +31,7 @@ import .ui as ui
 import .sdl as sdl
 import .state as state
 import .texture as texture
+import .records as records
 
 // A live renderer, by generation: the handle is a plain value the
 // application can copy, and an expired one is refused, never followed.
@@ -225,13 +226,13 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     if r.captureOn != 1 {
         mut acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
             r.image_available[slot], ptr(0), addr(&mut image_index))
-        if enums.is_out_of_date(acquired) {
+        if records.is_out_of_date(acquired) {
             failed := recreate(&mut r)
             if failed != .Ready { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated at " + describe(&r, failed) } }
             acquired = r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
                 r.image_available[slot], ptr(0), addr(&mut image_index))
         }
-        if !enums.is_success(acquired) { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
+        if !records.is_success(acquired) { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
         trace_step(&r, "acquired image " + i32(image_index).str())
     }
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
@@ -417,7 +418,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     presented := r.api.QueuePresentKHR(r.queue, addr(&present))
     trace_step(&r, "presented " + presented.str())
     r.pass = state.PASS_IDLE
-    if enums.is_out_of_date(presented) {
+    if records.is_out_of_date(presented) {
         // The frame was not shown; build a new swapchain before the next one.
         failed := recreate(&mut r)
         if failed != .Ready { return draw_error(r.frameIndex, "swapchain is out of date and could not be recreated at " + describe(&r, failed)) }

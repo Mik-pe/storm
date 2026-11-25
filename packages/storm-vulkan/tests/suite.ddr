@@ -1,14 +1,14 @@
 capability unsafe
 
-import ..src.layout as vk
-import ..src.layout as vkl
+import vk.layout as vk
+import vk.enums as enums
 import ..src.depth as depth
 import ..src.device as device
-import ..src.enums as enums
 import gfx
 import ..src.headless as headless
 import ..src.ibl as ibl
 import ..src.pipeline as pipelines
+import ..src.records as records
 import ..src.sdl as sdl
 import ..src.shadow as shadow
 import ..src.state as state
@@ -18,6 +18,47 @@ import ..src.ui as ui
 // The raw SDL state of a window, as the engine's keys and pointer. Either
 // shift key is Shift; a key held since an earlier frame is down but not
 // newly pressed.
+// Storm's own pair of attribute descriptions is a record of records too, the
+// same way the registry's pairs are (pinned in storm-vk): the second element
+// starts right after the first.
+@test fn ui_vertex_attributes_are_contiguous() {
+    assert(size_of(records.UiVertices) == 44)
+    unsafe {
+        ui := records.ui_vertices(8)
+        assert(usize(addr(&ui.color)) - usize(addr(&ui.position)) == 16)
+    }
+}
+
+// The blend attachment is a value, not five integers: ALPHA_OVER is the one
+// every alpha-over pipeline (UI and glass) writes; the enum numbers it writes
+// are pinned in storm-vk against the Khronos tables.
+@test fn blend_writers_write_the_named_states_into_the_c_record() {
+    unsafe {
+        mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+        records.apply_blend(&mut attachment, &records.alpha_over())
+        assert(attachment.blendEnable == 1)
+        assert(attachment.srcColorBlendFactor == 6)
+        assert(attachment.dstColorBlendFactor == 7)
+        assert(attachment.srcAlphaBlendFactor == 1)
+        assert(attachment.dstAlphaBlendFactor == 7)
+        assert(attachment.colorBlendOp == 0 && attachment.alphaBlendOp == 0)
+        assert(attachment.colorWriteMask == 15)
+        records.apply_blend(&mut attachment, &records.shadow_max())
+        assert(attachment.srcColorBlendFactor == 1 && attachment.dstColorBlendFactor == 1)
+        assert(attachment.colorBlendOp == 4)
+    }
+}
+
+// What a swapchain code means to Storm is Storm's choice, not the registry's:
+// SUBOPTIMAL still counts as a frame presented, OUT_OF_DATE asks for a rebuild.
+@test fn swapchain_codes_mean_what_storm_decides() {
+    assert(records.is_success(0))
+    assert(records.is_success(1000001003))
+    assert(!records.is_success(-1000001004))
+    assert(records.is_out_of_date(-1000001004))
+    assert(!records.is_out_of_date(-1000001003))
+}
+
 @test fn sdl_key_state_becomes_engine_input() {
     unsafe {
         mut window: sdl.Window = zeroed()
@@ -47,12 +88,12 @@ import ..src.ui as ui
     // The one layout both mesh pipelines declare: one binding, three
     // attributes, and the binding's stride covers all of them.
     unsafe {
-        mut input := vk.vertex_input()
-        enums.apply_vertex_input(&mut input)
+        mut input := records.vertex_input()
+        records.apply_vertex_input(&mut input)
         assert(input.binding.stride == gfx.VERTEX_BYTES)
         assert(input.binding.inputRate == 0)
-        assert(size_of(vk.VertexAttributes) == 48)
-        assert(size_of(vk.VertexInput) == 60)
+        assert(size_of(records.VertexAttributes) == 48)
+        assert(size_of(records.VertexInput) == 60)
         a := input.attributes.position
         b := input.attributes.normal
         c := input.attributes.uv
@@ -71,19 +112,6 @@ import ..src.ui as ui
         assert(load_u32(ptr(base + 8 * 4 + 8)) == 103)
         assert(load_u32(ptr(base + 8 * 4 + 12)) == 24)
     }
-}
-
-@test fn barrier_struct_matches_the_c_abi() {
-    assert(size_of(vk.ImageMemoryBarrier) == 72)
-}
-
-// VkImageBlit: two 16-byte subresource layers, each followed by two
-// 12-byte offsets. A wrong size here would hand vkCmdBlitImage a region
-// list it reads past.
-@test fn blit_regions_match_the_c_abi() {
-    assert(size_of(vkl.ImageBlit) == 80)
-    assert(size_of(vkl.Offset3D) == 12)
-    assert(size_of(vkl.ImageSubresourceLayers) == 16)
 }
 
 // A full mip chain halves the larger side until one texel; a 1x1 fallback
@@ -144,7 +172,7 @@ import ..src.ui as ui
 
 @test fn frame_pipelines_take_the_viewport_and_scissor_from_the_current_extent() {
     unsafe {
-        mut view: vk.FrameViewport = zeroed()
+        mut view: records.FrameViewport = zeroed()
         device.frame_viewport(&mut view)
         assert(size_of(vk.PipelineDynamicStateCreateInfo) == 32)
         assert(view.viewport.sType == 22 && view.dynamic.sType == 27)
@@ -168,20 +196,6 @@ import ..src.ui as ui
     assert(depth.depth_clear(1.0).shr(32) == 0)
 }
 
-@test fn render_pass_structs_match_the_c_abi() {
-    // Two attachments side by side must read as one contiguous array.
-    assert(size_of(vk.AttachmentDescription) == 36)
-    assert(size_of(vk.AttachmentReference) == 8)
-    assert(size_of(vk.SubpassDescription) == 72)
-    // pDepthStencilAttachment sits after two u32+padding pairs and the two
-    // colour pointers: 48 bytes in. C puts it there too.
-    unsafe {
-        mut subpass: vk.SubpassDescription = zeroed()
-        assert(usize(addr(&subpass.pDepthStencilAttachment)) - usize(addr(&subpass)) == 48)
-        assert(usize(addr(&subpass.pColorAttachments)) - usize(addr(&subpass)) == 32)
-    }
-}
-
 @test fn float_bits_covers_both_signs() {
     assert(depth.float_bits(1.0) == 0x3F800000)
     assert(depth.float_bits(-1.0) == 0xBF800000)
@@ -190,133 +204,6 @@ import ..src.ui as ui
     assert(depth.float_bits(f32.from_bits(-2147483648)) == 0x80000000)
     assert(depth.float_bits(f32.from_bits(-4194303)) == 0xffc00001)
     assert(depth.depth_clear(1.0) == 0x3F800000)
-}
-
-@test fn c_record_pairs_and_arrays_are_contiguous() {
-    // The pairs handed to Vulkan (vk.Dependencies, Attachments, ShaderStages,
-    // References, UiVertices) are records of records; this pins that the
-    // second element starts right after the first and that a named stage /
-    // external subpass value lands where C puts it. A plain [T; N] of the
-    // same record is contiguous too (measured: size 56, stride 28); the
-    // pairs exist so every module shares one declaration.
-    assert(size_of(vk.SubpassDependency) == 28)
-    assert(size_of(vk.PipelineShaderStageCreateInfo) == 48)
-    assert(size_of(vk.VertexInputAttributeDescription) == 16)
-    assert(size_of(vk.Dependencies) == 56)
-    assert(size_of(vk.Attachments) == 72)
-    assert(size_of(vk.ShaderStages) == 96)
-    assert(size_of(vk.References) == 16)
-    assert(size_of(vk.UiVertices) == 44)
-    assert(size_of([vk.SubpassDependency; 2]) == 56)
-    unsafe {
-        mut before: vk.SubpassDependency = zeroed()
-        before.srcSubpass = enums.SUBPASS_EXTERNAL
-        before.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
-        mut after: vk.SubpassDependency = zeroed()
-        after.dstSubpass = enums.SUBPASS_EXTERNAL
-        after.dstStageMask = enums.pipeline_stage(.FragmentShader)
-        after.dstAccessMask = enums.access(.ShaderRead)
-        deps := vk.Dependencies { before: before, after: after }
-        base := usize(addr(&deps))
-        assert(usize(addr(&deps.after)) - base == 28)
-        // after = { srcSubpass@28, dstSubpass@32, srcStageMask@36, dstStageMask@40,
-        //            srcAccessMask@44, dstAccessMask@48, flags@52 } exactly as C.
-        assert(load_u32(ptr(base)) == 4294967295)
-        assert(load_u32(ptr(base + 8)) == 1024)
-        assert(load_u32(ptr(base + 28)) == 0)
-        assert(load_u32(ptr(base + 32)) == 4294967295)
-        assert(load_u32(ptr(base + 40)) == 128)
-        assert(load_u32(ptr(base + 48)) == 32)
-        array := [before, after]
-        assert(usize(addr(&array[1])) - usize(addr(&array[0])) == 28)
-        assert(load_u32(ptr(usize(addr(&array[0])) + 40)) == 128)
-    }
-}
-
-@test fn vk_enum_values_match_the_khronos_tables() {
-    // The tables as Khronos prints them. A recited table once came out in the
-    // wrong order and shipped two pipelines blending with the inverse factors;
-    // this pins every value Storm converts to a C integer.
-    assert(enums.blend_factor(.SrcAlpha) == 6)
-    assert(enums.blend_factor(.OneMinusSrcAlpha) == 7)
-    assert(enums.blend_factor(.OneMinusDstColor) == 5)
-    assert(enums.blend_factor(.One) == 1)
-    assert(enums.blend_op(.Add) == 0 && enums.blend_op(.Max) == 4)
-    assert(enums.filter(.Nearest) == 0 && enums.filter(.Linear) == 1)
-    assert(enums.sampler_mipmap_mode(.Nearest) == 0 && enums.sampler_mipmap_mode(.Linear) == 1)
-    assert(enums.sampler_address_mode(.ClampToEdge) == 2)
-    assert(enums.primitive_topology(.TriangleList) == 3)
-    assert(enums.polygon_mode(.Fill) == 0)
-    assert(enums.cull_mode(.None) == 0 && enums.cull_mode(.Back) == 2)
-    assert(enums.front_face(.CounterClockwise) == 0 && enums.front_face(.Clockwise) == 1)
-    assert(enums.compare_op(.Less) == 1 && enums.compare_op(.LessOrEqual) == 3)
-    assert(enums.image_view_type(.Type2D) == 1 && enums.image_view_type(.Cube) == 3)
-    assert(enums.image_aspect(.Color) == 1 && enums.image_aspect(.Depth) == 2)
-    assert(enums.image_layout(.Undefined) == 0)
-    assert(enums.image_layout(.ColorAttachmentOptimal) == 2)
-    assert(enums.image_layout(.DepthStencilAttachmentOptimal) == 3)
-    assert(enums.image_layout(.ShaderReadOnlyOptimal) == 5)
-    assert(enums.attachment_load_op(.Load) == 0 && enums.attachment_load_op(.Clear) == 1)
-    assert(enums.attachment_store_op(.Store) == 0 && enums.attachment_store_op(.DontCare) == 1)
-    assert(enums.pipeline_bind_point(.Graphics) == 0)
-    assert(enums.descriptor_type(.CombinedImageSampler) == 1 && enums.descriptor_type(.UniformBuffer) == 6)
-    assert(enums.sharing_mode(.Exclusive) == 0)
-    assert(enums.image_tiling(.Optimal) == 0 && enums.image_tiling(.Linear) == 1)
-    assert(enums.command_buffer_usage(.OneTimeSubmit) == 1)
-    assert(enums.shader_stage(.Vertex) == 1 && enums.shader_stage(.Fragment) == 16)
-    assert(enums.shader_stage(.VertexFragment) == 17)
-    assert(enums.image_usage(.TransferSrc) == 1 && enums.image_usage(.Sampled) == 4)
-    assert(enums.image_usage(.ColorAttachment) == 16 && enums.image_usage(.DepthStencilAttachment) == 32)
-    assert(enums.buffer_usage(.TransferSrc) == 1 && enums.buffer_usage(.UniformBuffer) == 16)
-    assert(enums.buffer_usage(.VertexBuffer) == 128)
-    assert(enums.image_create(.CubeCompatible) == 16)
-    assert(enums.command_pool_flag(.ResetCommandBuffer) == 2)
-    assert(enums.pipeline_stage(.Host) == 16384)
-    assert(enums.fence(.Signaled) == 1)
-    assert(enums.color_component(.RGBA) == 15)
-    assert(enums.samples(.Type1) == 1)
-    // The blend attachment is a value, not five integers: ALPHA_OVER is the
-    // one every alpha-over pipeline (UI and glass) writes.
-    unsafe {
-        mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-        enums.apply_blend(&mut attachment, &enums.alpha_over())
-        assert(attachment.blendEnable == 1)
-        assert(attachment.srcColorBlendFactor == 6)
-        assert(attachment.dstColorBlendFactor == 7)
-        assert(attachment.srcAlphaBlendFactor == 1)
-        assert(attachment.dstAlphaBlendFactor == 7)
-        assert(attachment.colorBlendOp == 0 && attachment.alphaBlendOp == 0)
-        assert(attachment.colorWriteMask == 15)
-        enums.apply_blend(&mut attachment, &enums.shadow_max())
-        assert(attachment.srcColorBlendFactor == 1 && attachment.dstColorBlendFactor == 1)
-        assert(attachment.colorBlendOp == 4)
-    }
-}
-
-// The codes Storm acts on, against the Khronos VkResult reference page. The
-// old constant ERROR_OUT_OF_DATE_KHR was -1000001003, which is no VkResult at
-// all, so the out-of-date branch could never fire.
-@test fn vk_result_codes_match_the_khronos_table() {
-    assert(i32(enums.VkResult.Success) == 0)
-    assert(i32(enums.VkResult.ErrorOutOfHostMemory) == -1)
-    assert(i32(enums.VkResult.ErrorOutOfDeviceMemory) == -2)
-    assert(i32(enums.VkResult.ErrorDeviceLost) == -4)
-    assert(i32(enums.VkResult.ErrorExtensionNotPresent) == -7)
-    assert(i32(enums.VkResult.ErrorFeatureNotPresent) == -8)
-    assert(i32(enums.VkResult.ErrorIncompatibleDriver) == -9)
-    assert(i32(enums.VkResult.SuboptimalKHR) == 1000001003)
-    assert(i32(enums.VkResult.ErrorOutOfDateKHR) == -1000001004)
-    assert(i32(enums.VkResult.ErrorSurfaceLostKHR) == -1000000000)
-    assert(i32(enums.VkResult.ErrorNativeWindowInUseKHR) == -1000000001)
-    assert(enums.result_name(-1000001004) == "VK_ERROR_OUT_OF_DATE_KHR")
-    assert(enums.result_name(1000001003) == "VK_SUBOPTIMAL_KHR")
-    assert(enums.result_name(0) == "VK_SUCCESS")
-    assert(enums.result_name(12345) == "VK_ERROR_?")
-    assert(enums.is_success(0))
-    assert(enums.is_success(1000001003))
-    assert(!enums.is_success(-1000001004))
-    assert(enums.is_out_of_date(-1000001004))
-    assert(!enums.is_out_of_date(-1000001003))
 }
 
 // Every step the enum has, in enum order. `Ready` is left out: it is the
@@ -444,7 +331,7 @@ fn setup_steps() -> [state.SetupStep; 17] {
         // Glass is the same pipeline with alpha-over and no depth write.
         glass := pipelines.Plan {
             vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
-            cull: .Back, depth: pipelines.depth_test_only(), blend: .Some(enums.alpha_over()),
+            cull: .Back, depth: pipelines.depth_test_only(), blend: .Some(records.alpha_over()),
             vertices: .Mesh, viewport: .Frame, encoded: false,
         }
         pipelines.describe(&r, &glass, &mut d)
@@ -456,7 +343,7 @@ fn setup_steps() -> [state.SetupStep; 17] {
         // and MAX blending keeps the surface closest to the light.
         shadow := pipelines.Plan {
             vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
-            cull: .Back, depth: pipelines.depth_off(), blend: .Some(enums.shadow_max()),
+            cull: .Back, depth: pipelines.depth_off(), blend: .Some(records.shadow_max()),
             vertices: .Mesh, viewport: .Square(1024), encoded: false,
         }
         pipelines.describe(&r, &shadow, &mut d)
@@ -469,7 +356,7 @@ fn setup_steps() -> [state.SetupStep; 17] {
         // The UI declares its own two attributes and nothing is culled.
         ui := pipelines.Plan {
             vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
-            cull: .None, depth: pipelines.depth_off(), blend: .Some(enums.alpha_over()),
+            cull: .None, depth: pipelines.depth_off(), blend: .Some(records.alpha_over()),
             vertices: .Ui(32), viewport: .Frame, encoded: false,
         }
         pipelines.describe(&r, &ui, &mut d)
@@ -484,14 +371,14 @@ fn setup_steps() -> [state.SetupStep; 17] {
     // The factory leaves the formats zero; the writer fills them, and the
     // words are the registry's: vec4 for position/uv and vec4 for colour.
     unsafe {
-        mut ui := vk.ui_vertices(32)
-        enums.apply_ui_vertices(&mut ui)
+        mut ui := records.ui_vertices(32)
+        records.apply_ui_vertices(&mut ui)
         assert(ui.binding.stride == 32 && ui.binding.inputRate == 0)
         assert(ui.position.location == 0 && ui.position.offset == 0 && ui.position.format == 109)
         assert(ui.color.location == 1 && ui.color.offset == 16 && ui.color.format == 109)
         // And the mesh's writer still writes vec3, vec3, vec2 (106, 106, 103).
-        mut mesh := vk.vertex_input()
-        enums.apply_vertex_input(&mut mesh)
+        mut mesh := records.vertex_input()
+        records.apply_vertex_input(&mut mesh)
         assert(mesh.attributes.position.format == 106 && mesh.attributes.normal.format == 106 && mesh.attributes.uv.format == 103)
     }
 }

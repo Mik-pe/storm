@@ -14,6 +14,7 @@ scene = { path = "packages/storm-scene" }
 render = { path = "packages/storm-render" }
 input = { path = "packages/storm-input" }
 vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
+vk = { path = "packages/storm-vk", capabilities = ["unsafe"] }
 gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }
 metal = { path = "packages/storm-metal", capabilities = ["unsafe", "stdio", "filesystem"] }
 ui = { path = "packages/storm-ui", capabilities = ["filesystem"] }

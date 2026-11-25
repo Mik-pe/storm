@@ -2,11 +2,12 @@ capability unsafe, stdio
 
 import std.sys as sys
 import .device as device
-import .enums as enums
-import .layout as vk2
+import vk.enums as enums
+import vk.layout as vk2
 import .pipeline as pipelines
 import .shader as shader
 import .state as state
+import .records as records
 
 // Immediate-mode UI drawing.
 //
@@ -121,7 +122,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     plan := pipelines.Plan {
         vertex: r.atlas.vertShader, fragment: r.atlas.fragShader,
         layout: r.atlas.pipelineLayout, pass: r.renderPass,
-        cull: .None, depth: pipelines.depth_off(), blend: .Some(enums.alpha_over()),
+        cull: .None, depth: pipelines.depth_off(), blend: .Some(records.alpha_over()),
         vertices: .Ui(FLOATS_PER_VERTEX * 4), viewport: .Frame, encoded: true,
     }
     mut pipeline := ptr(0)
