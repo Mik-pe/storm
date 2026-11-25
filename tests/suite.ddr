@@ -97,6 +97,15 @@ import scene as scenegraph
     assert(args.value(&trailing, "--capture") == "")
     mut words: []string = ["--frames", "many"]
     assert(args.frame_limit(&words) == 0)
+
+    // A flag whose value is missing does not eat the next flag: the word
+    // after `--capture` below is another flag, so --capture is "not given"
+    // and the app says so instead of writing a file named "--frames".
+    mut hungry: []string = ["--capture", "--frames", "1", "--glb", "--studio"]
+    assert(args.value(&hungry, "--capture") == "")
+    assert(args.value(&hungry, "--glb") == "")
+    assert(args.frame_limit(&hungry) == 1)
+    assert(args.flag(&hungry, "--studio"))
 }
 
 @test fn an_eye_anywhere_turns_towards_what_it_should_show() {

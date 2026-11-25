@@ -236,7 +236,7 @@ enum Launch { Studio, Game, Preview }
 
 pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, argv: &[]string) -> Result<(), string> {
     path := args.value(argv, "--scene")
-    if args.flag(argv, "--scene") && (path.len == 0 || (path.len >= 2 && path[0..2] == "--")) { return .Err("--scene requires a scene file") }
+    if args.flag(argv, "--scene") && path.len == 0 { return .Err("--scene requires a scene file") }
     if args.flag(argv, "--capture") && args.value(argv, "--capture").len == 0 { return .Err("--capture requires an output file") }
     watch := args.flag(argv, "--watch")
     if watch && path.len == 0 { return .Err("--watch requires --scene FILE") }

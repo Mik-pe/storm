@@ -45,10 +45,15 @@ fn find(args: &[]string, name: string) -> i32 {
 // A flag that stands alone: present or absent.
 pub fn flag(args: &[]string, name: string) -> bool { find(args, &name) >= 0 }
 
-// The value after a flag, or "" when the flag is absent or the last word.
+// The value after a flag, or "" when the flag is absent, the last word, or
+// followed by another flag: a word that starts with "--" is never a value.
+// A flag that needs one then reads as "not given" and names itself, instead
+// of taking the next flag as its file (`--capture --frames 1` wrote a file
+// called "--frames").
 pub fn value(args: &[]string, name: string) -> string {
     i := find(args, &name)
     if i < 0 || i + 1 >= args.len { return "" }
+    if args[i + 1].len >= 2 && args[i + 1][0..2] == "--" { return "" }
     args[i + 1].clone()
 }
 
