@@ -17,6 +17,24 @@ import .state as state
 // The coverage bytes are widened to f32 before upload, so the atlas is a
 // single-channel float image (finding 30: linear-tiled R8 did not sample here).
 
+// What this module owns: the atlas image and its sampled set, the quad
+// pipeline, and the shared vertex buffer with its frame cursor. Zeroed with
+// the renderer; `setup` fills it, `destroy` empties it, and nobody outside
+// this module reads it. The same record and name as storm-metal's `ui.Atlas`.
+@c_layout
+pub struct Atlas {
+    pipeline: ptr,
+    pipelineLayout: ptr,
+    texture: state.SampledTexture,
+    atlasImage: ptr,
+    atlasMemory: ptr,
+    atlasView: ptr,
+    vertex: state.Buffer,
+    cursor: u64,
+    vertShader: ptr,
+    fragShader: ptr,
+}
+
 const FLOATS_PER_VERTEX: u32 = 8
 const ATLAS_SIZE: u32 = 1024
 
@@ -66,12 +84,12 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateImageView(r.device, addr(&view_info), ptr(0), addr(&mut view))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    r.uiAtlasImage = image
-    r.uiAtlasMemory = memory
-    r.uiAtlasView = view
-    code = device.sampled_texture(&r.api, r.device, &mut r.uiTexture)
+    r.atlas.atlasImage = image
+    r.atlas.atlasMemory = memory
+    r.atlas.atlasView = view
+    code = device.sampled_texture(&r.api, r.device, &mut r.atlas.texture)
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    device.sample_view(&r, &r.uiTexture, view)
+    device.sample_view(&r, &r.atlas.texture, view)
     .Ready
 }
 
@@ -84,8 +102,8 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     mut frag_module := ptr(0)
     code = device.shader_module(&r, addr(&frag[0]), usize(frag.len * 4), addr(&mut frag_module))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    r.uiVertShader = vert_module
-    r.uiFragShader = frag_module
+    r.atlas.vertShader = vert_module
+    r.atlas.fragShader = frag_module
 
     // UI quads blend alpha-over over the frame, in frame coordinates, and
     // never touch depth. One vertex is 8 floats: xy = position, zw = uv, rgba.
@@ -94,22 +112,22 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     push_range.size = 16
     mut layout_info: vk2.PipelineLayoutCreateInfo = vk2.PipelineLayoutCreateInfo::new()
     layout_info.setLayoutCount = 1
-    layout_info.pSetLayouts = addr(&mut r.uiTexture.layout)
+    layout_info.pSetLayouts = addr(&mut r.atlas.texture.layout)
     layout_info.pushConstantRangeCount = 1
     layout_info.pPushConstantRanges = addr(&mut push_range)
-    code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout))
+    code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.atlas.pipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
     plan := pipelines.Plan {
-        vertex: r.uiVertShader, fragment: r.uiFragShader,
-        layout: r.uiPipelineLayout, pass: r.renderPass,
+        vertex: r.atlas.vertShader, fragment: r.atlas.fragShader,
+        layout: r.atlas.pipelineLayout, pass: r.renderPass,
         cull: .None, depth: pipelines.depth_off(), blend: .Some(enums.alpha_over()),
         vertices: .Ui(FLOATS_PER_VERTEX * 4), viewport: .Frame, encoded: true,
     }
     mut pipeline := ptr(0)
     code = pipelines.build(&r, &plan, addr(&mut pipeline))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    r.uiPipeline = pipeline
+    r.atlas.pipeline = pipeline
     .Ready
 }
 
@@ -132,10 +150,10 @@ unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
     mut mapped := ptr(0)
     code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-    r.uiVertex.handle = handle
-    r.uiVertex.memory = memory
-    r.uiVertex.mapped = mapped
-    r.uiVertex.capacity = bytes
+    r.atlas.vertex.handle = handle
+    r.atlas.vertex.memory = memory
+    r.atlas.vertex.mapped = mapped
+    r.atlas.vertex.capacity = bytes
     .Ready
 }
 
@@ -205,7 +223,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     to_transfer.newLayout = enums.image_layout(.TransferDstOptimal)
     to_transfer.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     to_transfer.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    to_transfer.image = r.uiAtlasImage
+    to_transfer.image = r.atlas.atlasImage
     to_transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_transfer.subresourceRange.levelCount = 1
     to_transfer.subresourceRange.layerCount = 1
@@ -219,7 +237,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     copy.imageExtent.width = u32(width)
     copy.imageExtent.height = u32(height)
     copy.imageExtent.depth = 1
-    r.api.CmdCopyBufferToImage(cmd, staging, r.uiAtlasImage, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
+    r.api.CmdCopyBufferToImage(cmd, staging, r.atlas.atlasImage, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
 
     mut to_sample: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
     to_sample.srcAccessMask = enums.access(.TransferWrite)
@@ -228,7 +246,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     to_sample.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
     to_sample.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
     to_sample.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    to_sample.image = r.uiAtlasImage
+    to_sample.image = r.atlas.atlasImage
     to_sample.subresourceRange.aspectMask = enums.image_aspect(.Color)
     to_sample.subresourceRange.levelCount = 1
     to_sample.subresourceRange.layerCount = 1
@@ -253,38 +271,38 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
 pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) -> bool {
     if (r.pass != state.PASS_DIRECT && r.pass != state.PASS_COMPOSITE) || vertices.len == 0 { return false }
     bytes := u64(vertices.len) * 4
-    if r.uiCursor + bytes > r.uiVertex.capacity { return false }
-    _ := copy_bytes(ptr(usize(r.uiVertex.mapped) + usize(r.uiCursor)), ptr(usize(addr(&vertices[0]))), usize(bytes))
+    if r.atlas.cursor + bytes > r.atlas.vertex.capacity { return false }
+    _ := copy_bytes(ptr(usize(r.atlas.vertex.mapped) + usize(r.atlas.cursor)), ptr(usize(addr(&vertices[0]))), usize(bytes))
     slot := r.current
-    r.api.CmdBindPipeline(r.commands[slot], 0, r.uiPipeline)
-    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.uiPipelineLayout, 0, 1, addr(&r.uiTexture.set), 0, ptr(0))
+    r.api.CmdBindPipeline(r.commands[slot], 0, r.atlas.pipeline)
+    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.atlas.pipelineLayout, 0, 1, addr(&r.atlas.texture.set), 0, ptr(0))
     mut push := [screen[0], screen[1], 0.0, 0.0]
-    r.api.CmdPushConstants(r.commands[slot], r.uiPipelineLayout, enums.shader_stage(.Vertex), 0, 16, addr(&mut push[0]))
-    mut offset: u64 = r.uiCursor
-    r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.uiVertex.handle), addr(&mut offset))
+    r.api.CmdPushConstants(r.commands[slot], r.atlas.pipelineLayout, enums.shader_stage(.Vertex), 0, 16, addr(&mut push[0]))
+    mut offset: u64 = r.atlas.cursor
+    r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.atlas.vertex.handle), addr(&mut offset))
     count := i32(vertices.len) / i32(FLOATS_PER_VERTEX)
     r.api.CmdDraw(r.commands[slot], u32(count), 1, 0, 0)
-    r.uiCursor = r.uiCursor + bytes
+    r.atlas.cursor = r.atlas.cursor + bytes
     true
 }
 
 // The frame's UI stream starts empty; draw() appends to it. Called by
 // begin_frame, the one place that knows a frame has begun.
 pub unsafe fn reset(r: &mut state.Renderer) {
-    r.uiCursor = 0
+    r.atlas.cursor = 0
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.device == ptr(0) { return }
-    r.api.DestroyShaderModule(r.device, r.uiVertShader, ptr(0))
-    r.api.DestroyShaderModule(r.device, r.uiFragShader, ptr(0))
-    if r.uiVertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.uiVertex.memory) }
-    r.api.DestroyBuffer(r.device, r.uiVertex.handle, ptr(0))
-    r.api.FreeMemory(r.device, r.uiVertex.memory, ptr(0))
-    if r.uiPipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.uiPipeline, ptr(0)) }
-    if r.uiPipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.uiPipelineLayout, ptr(0)) }
-    device.destroy_texture(&r, &r.uiTexture)
-    if r.uiAtlasView != ptr(0) { r.api.DestroyImageView(r.device, r.uiAtlasView, ptr(0)) }
-    if r.uiAtlasImage != ptr(0) { r.api.DestroyImage(r.device, r.uiAtlasImage, ptr(0)) }
-    r.api.FreeMemory(r.device, r.uiAtlasMemory, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.atlas.vertShader, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.atlas.fragShader, ptr(0))
+    if r.atlas.vertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.atlas.vertex.memory) }
+    r.api.DestroyBuffer(r.device, r.atlas.vertex.handle, ptr(0))
+    r.api.FreeMemory(r.device, r.atlas.vertex.memory, ptr(0))
+    if r.atlas.pipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.atlas.pipeline, ptr(0)) }
+    if r.atlas.pipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.atlas.pipelineLayout, ptr(0)) }
+    device.destroy_texture(&r, &r.atlas.texture)
+    if r.atlas.atlasView != ptr(0) { r.api.DestroyImageView(r.device, r.atlas.atlasView, ptr(0)) }
+    if r.atlas.atlasImage != ptr(0) { r.api.DestroyImage(r.device, r.atlas.atlasImage, ptr(0)) }
+    r.api.FreeMemory(r.device, r.atlas.atlasMemory, ptr(0))
 }

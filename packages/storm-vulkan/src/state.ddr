@@ -5,6 +5,7 @@ import .depth as depth
 import .layout as vkl
 import .sdl as sdl
 import .texture as texture
+import .ui as ui
 
 @c_layout
 pub struct Buffer {
@@ -189,16 +190,7 @@ pub struct Renderer {
     postFragShader: ptr,
     captureFramebuffer: ptr,
     // Text and UI.
-    uiPipeline: ptr,
-    uiPipelineLayout: ptr,
-    uiTexture: SampledTexture,
-    uiAtlasImage: ptr,
-    uiAtlasMemory: ptr,
-    uiAtlasView: ptr,
-    uiVertex: Buffer,
-    uiCursor: u64,
-    uiVertShader: ptr,
-    uiFragShader: ptr,
+    atlas: ui.Atlas,
     vertex: Buffer,
     meshSetLayouts: [ptr; 2],
     // Material textures (texture.ddr): set 1 of the mesh pipeline.
