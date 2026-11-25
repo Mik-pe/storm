@@ -1,4 +1,5 @@
 import ..src.gltf as gltf
+import gfx
 
 // Build a minimal .glb: one triangle, POSITION (3 x vec3 float), no indices.
 // JSON chunk is padded to a 4-byte boundary with spaces; BIN chunk with zeros.
@@ -193,4 +194,43 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(gltf.asset(&doc).is_err())
     doc.bin[38] = 2
     assert(gltf.asset(&doc).unwrap().parts[0].vertices.len == 24)
+}
+
+// FoxFixed.glb has one image, a 1024x1024 PNG in a bufferView, and one
+// sampler: magFilter 9729 (LINEAR), wrapS/T 10497 (REPEAT), no minFilter,
+// which the spec reads as LINEAR_MIPMAP_LINEAR. Its material's
+// baseColorTexture is texture 0, whose source is image 0. The numbers were
+// read from the file's JSON chunk with Python, not with the loader.
+@test fn reads_the_images_and_sampler_of_a_textured_model() {
+    doc := gltf.load("tests/fixtures/FoxFixed.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.images.len == 1)
+    image := &asset.images[0]
+    assert(image.mime == "image/png")
+    // The bufferView: byteOffset 0, byteLength 26764, read with Python.s struct.
+    assert(image.data.len == 26764)
+    // PNG signature.
+    assert(image.data[0] == 137 && image.data[1] == 80 && image.data[2] == 78 && image.data[3] == 71)
+    // IHDR: 1024 x 1024, 8-bit RGB.
+    assert(image.data[16] == 0 && image.data[17] == 0 && image.data[18] == 4 && image.data[19] == 0)
+    assert(image.data[20] == 0 && image.data[21] == 0 && image.data[22] == 4 && image.data[23] == 0)
+    assert(image.data[24] == 8 && image.data[25] == 2)
+    part := &asset.parts[0]
+    assert(part.texture == 0)
+    assert(part.sampler.mag == gfx.Filter.Linear)
+    assert(part.sampler.min == gfx.Filter.Linear)
+    assert(part.sampler.mips == gfx.MipFilter.Linear)
+    assert(part.sampler.wrap == gfx.Wrap.Repeat)
+}
+
+// Khronos's Box.glb has no textures: the surface is a colour only.
+@test fn an_untextured_model_has_no_texture() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.images.len == 0)
+    assert(asset.parts[0].texture == -1)
 }

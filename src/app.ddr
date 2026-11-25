@@ -46,13 +46,20 @@ fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
 // MODEL_SIZE units on its longest side and resting on y = 0, so any model
 // lands in view whatever units it was authored in.
 pub const MODEL_SIZE: f32 = 2.4
-pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
+// Place a GLB in the graph, scaled to MODEL_SIZE and centred on `at`.
+// `textures[i]` is the uploaded base colour image of part i, or
+// `gfx.no_texture()` for a part that is only a colour.
+pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, textures: &[]gfx.Texture) -> Result<(), string> {
     doc := gltf.load(path)
     model := gltf.asset(&doc)?
+    place_model(&mut graph, &model, path, at, textures)
+}
+
+fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Texture) -> Result<(), string> {
     mut lo := core.vec3(0.0,0.0,0.0)
     mut hi := lo
     mut first := true
-    for part in model.parts {
+    for part in &model.parts {
         for v in 0..part.vertices.len / gfx.VERTEX_FLOATS {
             i := v * gfx.VERTEX_FLOATS
             p := core.vec3(part.vertices[i], part.vertices[i+1], part.vertices[i+2])
@@ -73,14 +80,54 @@ pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> 
     base := graph.create_root(core.vec3(at.x - (lo.x + hi.x)*0.5*scale, at.y-lo.y*scale, at.z-(lo.z+hi.z)*0.5*scale))
     _ := graph.set_name(base, path.clone())
     graph.set_scale(base, core.vec3(scale,scale,scale))
-    for part in model.parts {
+    for i in 0..model.parts.len {
+        part := &model.parts[i]
         node := graph.create_child(base, core.vec3(0.0,0.0,0.0))
         _ := graph.set_name(node, part.name.clone())
         c := part.color.clone()
-        _ := graph.set_material(node, scenegraph.material(c[0],c[1],c[2],c[3],part.metallic,part.roughness))
+        mut material := scenegraph.material(c[0],c[1],c[2],c[3],part.metallic,part.roughness)
+        if i < textures.len { material = scenegraph.textured(move material, textures[i]) }
+        _ := graph.set_material(node, move material)
         _ := graph.set_mesh(node, part.vertices.clone())
     }
     .Ok
+}
+
+// The same, with the asset's images decoded and uploaded through `window`.
+// A texture is an image and a sampler, so every distinct pair a part uses is
+// one upload; a part without a baseColorTexture gets no_texture(). A JPEG
+// is refused by name: one unsupported format is a message, not a guess.
+fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Texture, string> {
+    mut textures: []gfx.Texture = []
+    for part in &asset.parts {
+        if part.texture < 0 { textures.push(gfx.no_texture()); continue }
+        if part.texture >= asset.images.len { return .Err("part " + part.name + " names image " + part.texture.str() + " which does not exist") }
+        mut shared := false
+        for j in 0..asset.parts.len {
+            if j == textures.len { break }
+            other := &asset.parts[j]
+            if other.texture == part.texture && other.sampler.mag == part.sampler.mag && other.sampler.min == part.sampler.min &&
+                other.sampler.mips == part.sampler.mips && other.sampler.wrap == part.sampler.wrap {
+                textures.push(textures[j])
+                shared = true
+                break
+            }
+        }
+        if shared { continue }
+        part_image := &asset.images[part.texture]
+        if part_image.mime != "image/png" { return .Err("image " + part.texture.str() + " is " + part_image.mime + ", Storm reads PNG") }
+        decoded := image.decode_png(&part_image.data)?
+        textures.push(window.upload_texture(decoded.pixels, decoded.width, decoded.height, &part.sampler)?)
+    }
+    .Ok(textures)
+}
+
+// load_model for the running app: reads, decodes, uploads, places.
+pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
+    doc := gltf.load(path)
+    asset := gltf.asset(&doc)?
+    textures := upload_model_textures(&mut window, &asset)?
+    place_model(&mut graph, &asset, path, at, &textures)
 }
 
 // A P6 capture as the ground texture, uploaded once; the backend owns the
@@ -92,7 +139,7 @@ fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Textu
 }
 
 fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
-    camera_position: core.Vec3, sky: &gfx.Sky, floor: ecs.Entity, ground: gfx.Texture, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
+    camera_position: core.Vec3, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
     if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
     mvp := core.multiply(view_projection, item.model)
     mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
@@ -101,21 +148,18 @@ fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegra
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
     mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
     surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    // The floor node carries --texture; everything else keeps its material colour.
-    on_floor := item.entity.index == floor.index && item.entity.generation == floor.generation
-    texture := if on_floor { ground } else { gfx.no_texture() }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, texture, surface)
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, item.material.texture, surface)
 }
 
 fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
-    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, floor: ecs.Entity, ground: gfx.Texture, shadows: bool, pass: render.PassKind) -> Result<(), string> {
+    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
     for index in 0..items.len {
         item := &items[index]
         drawn := match item.shape {
-            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, eye, sky, floor, ground, shadows, pass),
-            .Sphere => record_mesh(&mut window, sphere, item, view, eye, sky, floor, ground, shadows, pass),
-            .Cube => record_mesh(&mut window, cube, item, view, eye, sky, floor, ground, shadows, pass),
-            .Plane => record_mesh(&mut window, plane, item, view, eye, sky, floor, ground, shadows, pass),
+            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, eye, sky, shadows, pass),
+            .Sphere => record_mesh(&mut window, sphere, item, view, eye, sky, shadows, pass),
+            .Cube => record_mesh(&mut window, cube, item, view, eye, sky, shadows, pass),
+            .Plane => record_mesh(&mut window, plane, item, view, eye, sky, shadows, pass),
         }
         drawn?
     }
@@ -252,20 +296,22 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut paused := false
     glb := args.value(argv, "--glb")
     if glb.len > 0 {
-        match load_model(&mut graph, glb, core.vec3(0.0,0.0,4.2)) {
+        match load_model_into(&mut window, &mut graph, glb, core.vec3(0.0,0.0,4.2)) {
             .Ok => {}, .Err(err) => { return stop(move window, glb + ": " + err) },
         }
     }
     graph.propagate()
 
-    // --- --texture FILE.ppm: a Storm capture as the ground's texture ---
-    mut ground := gfx.no_texture()
+    // --- --texture FILE.ppm: a Storm capture as the studio floor's texture ---
     texture_path := args.value(argv, "--texture")
     if texture_path.len > 0 {
-        ground = match load_ground(&mut window, texture_path) {
+        if playing { return stop(move window, "--texture needs the studio: " + texture_path) }
+        ground := match load_ground(&mut window, texture_path) {
             .Ok(handle) => handle,
             .Err(message) => { return stop(move window, texture_path + ": " + message) },
         }
+        floor_material := graph.material_at(study.floor).clone()
+        _ := graph.set_material(study.floor, scenegraph.textured(move floor_material, ground))
     }
 
     // --- camera ---
@@ -488,7 +534,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                     .Err(message) => { return stop(move window, message) },
                 }
                 drawn := record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices,
-                    view_projection, view_camera.position, &frame_sky, study.floor, ground, studio.shadows, kind)
+                    view_projection, view_camera.position, &frame_sky, studio.shadows, kind)
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
                 match window.shadow_end() {
                     .Ok => {},
@@ -509,9 +555,9 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                 }
             } else if kind == render.PassKind.Opaque || kind == render.PassKind.Transparent {
                 drawn := if kind == .Opaque {
-                    record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, study.floor, ground, studio.shadows, kind)
+                    record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, studio.shadows, kind)
                 } else {
-                    record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, study.floor, ground, false, kind)
+                    record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, false, kind)
                 }
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
             } else if kind == render.PassKind.PostProcess {

@@ -9,7 +9,9 @@ import std.bytes as bytes
 import std.json as json
 import std.wire as wire
 import sys
+import gfx
 import .nodes
+import .textures as textures
 
 pub struct Mesh {
     ok: bool,
@@ -269,11 +271,17 @@ pub fn load_mesh(doc: &Document) -> Mesh {
     primitive_mesh(doc, &j, first)
 }
 
+// One primitive, placed: its interleaved vertices and its surface. `texture`
+// is an index into `Asset.images` or -1 for a surface that is only a colour.
 pub struct Part {
     name: string, material_name: string, color: [f32; 4], metallic: f32, roughness: f32, vertices: []f32,
+    texture: i32, sampler: gfx.Sampler,
 }
 
-pub struct Asset { parts: []Part }
+pub struct Asset { parts: []Part, images: []textures.Image }
+
+// An asset with nothing in it: what a caller holds before a model loads.
+pub fn empty_asset() -> Asset { Asset { parts: [], images: [] } }
 
 fn factor(j: &json.Doc, node: i32, fallback: f32) -> Result<f32,string> {
     if node < 0 { return .Ok(fallback) }
@@ -301,8 +309,24 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
     }
     metallic := factor(j, j.field(pbr, "metallicFactor"), 1.0)?
     roughness := factor(j, j.field(pbr, "roughnessFactor"), 1.0)?
+    // baseColorTexture.index -> textures[i].source -> images[source]; the
+    // sampler is looked up the same way, and a texture without one is the
+    // spec's default.
+    mut texture := -1
+    mut sampler := gfx.sampler()
+    base_texture := j.field(pbr, "baseColorTexture")
+    if base_texture >= 0 {
+        index := j.get_i64(base_texture, "index").unwrap_or(-1)
+        textures_list := j.field(j.root, "textures")
+        if index < 0 || index >= i64(j.count(textures_list)) { return .Err("invalid baseColorTexture index") }
+        node := j.at(textures_list, i32(index))
+        texture = i32(j.get_i64(node, "source").unwrap_or(-1))
+        if texture < 0 { return .Err("baseColorTexture without source") }
+        sampler = textures.sampler(j, j.at(j.field(j.root, "samplers"), i32(j.get_i64(node, "sampler").unwrap_or(-1))))
+    }
     .Ok(Part { name: name, material_name: j.get_str(material, "name").unwrap_or_default(),
-        color: color, metallic: metallic, roughness: roughness, vertices: interleave(&mesh) })
+        color: color, metallic: metallic, roughness: roughness, vertices: interleave(&mesh),
+        texture: texture, sampler: sampler })
 }
 
 pub fn asset(doc: &Document) -> Result<Asset,string> {
@@ -335,7 +359,8 @@ pub fn asset_from_json(doc: &Document, j: &json.Doc) -> Result<Asset,string> {
             }
         }
     }
-    .Ok(Asset { parts: parts })
+    images := textures.images(doc, j)?
+    .Ok(Asset { parts: parts, images: images })
 }
 
 // Expand the mesh through its index buffer into Storm's unindexed

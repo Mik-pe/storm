@@ -5,6 +5,8 @@ import core
 import ecs
 import gfx
 import scene as scenegraph
+import gltf
+import image
 
 fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity {
     e := graph.create_root(at)
@@ -108,7 +110,7 @@ fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity 
 @test fn loaded_model_is_scaled_to_the_frame_and_rests_on_the_ground() {
     mut world := scenegraph.Graph::new()
     // Khronos' Box.glb: a unit cube centred at the origin, 0.5 out on each side.
-    loaded := app.load_model(&mut world, "packages/storm-gltf/tests/fixtures/Box.glb", core.vec3(1.0, 0.0, 2.0))
+    loaded := app.load_model(&mut world, "packages/storm-gltf/tests/fixtures/Box.glb", core.vec3(1.0, 0.0, 2.0), &[])
     assert(loaded.is_ok())
     world.propagate()
     mut frame := app.FrameGeometry::new()
@@ -130,4 +132,40 @@ fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity 
     }
     assert((lowest + 0.5).abs() < 0.001)
     assert((lowest * scale + draw.model.m[13]).abs() < 0.001)
+}
+
+// The whole way a textured model takes: glTF reads the image bytes and the
+// sampler from a real file, storm-image decodes the PNG, and the pixels
+// are the ones Pillow reads from the same image. The Fox's texture is
+// 1024x1024 RGB; the three probes were read with Pillow, not with the
+// decoder under test: (0,0) is the dark backing, (512,512) the fur,
+// (541,694) a white patch.
+@test fn a_models_image_decodes_to_the_pixels_pillow_reads() {
+    doc := gltf.load("packages/storm-gltf/tests/fixtures/FoxFixed.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+    assert(asset.images.len == 1)
+    decoded := image.decode_png(&asset.images[0].data).unwrap()
+    assert(decoded.width == 1024 && decoded.height == 1024)
+    assert(decoded.pixels.len == 1024 * 1024 * 4)
+    assert(probe(&decoded, 0, 0, 0) == 67 && probe(&decoded, 0, 0, 1) == 63 && probe(&decoded, 0, 0, 2) == 30 && probe(&decoded, 0, 0, 3) == 255)
+    assert(probe(&decoded, 512, 512, 0) == 219 && probe(&decoded, 512, 512, 1) == 135 && probe(&decoded, 512, 512, 2) == 41)
+    assert(probe(&decoded, 541, 694, 0) == 255 && probe(&decoded, 541, 694, 1) == 250 && probe(&decoded, 541, 694, 2) == 242)
+}
+
+// One channel of one texel of a 1024-wide RGBA image.
+fn probe(img: &image.Image, x: i32, y: i32, c: i32) -> i32 { i32(img.pixels[(y * 1024 + x) * 4 + c]) }
+
+// Placed without uploads (a test has no backend), a textured part keeps
+// no_texture: the handle is the uploader's to give, and the graph does not
+// invent one.
+@test fn a_model_placed_without_uploads_has_no_texture() {
+    mut world := scenegraph.Graph::new()
+    loaded := app.load_model(&mut world, "packages/storm-gltf/tests/fixtures/FoxFixed.glb", core.vec3(0.0, 0.0, 0.0), &[])
+    assert(loaded.is_ok())
+    world.propagate()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    assert(frame.solids().len == 1)
+    assert(frame.solids()[0].material.texture.id == 0)
 }
