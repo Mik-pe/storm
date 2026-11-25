@@ -54,17 +54,17 @@ Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporo
 
 ### Redigera modellerna i Blender
 
-Räven, gläntan och smådjuren har redigerbara Blender-original. [Räven](assets/blomsterskogen/fox.blend) · [Gläntan](assets/blomsterskogen/glade.blend) · [Blomman och insekterna](assets/blomsterskogen/creatures.blend)
+Räven, gläntan och smådjuren har redigerbara Blender-original. [Räven](assets/blomsterskogen/vallmo.blend) · [Gläntan](assets/blomsterskogen/glade.blend) · [Blomman och insekterna](assets/blomsterskogen/creatures.blend)
 
 Molnbanan har en egen Blenderfil med separata scener för det vita molnet, det rosa studsmolnet och bonusfjärilen. De exporteras till `cloud.glb`, `boost_cloud.glb` och `super_butterfly.glb`. [Molnbanans Blender-original](assets/blomsterskogen/canopy.blend)
 
 Vallmo travar med diagonala tasspar. Skuldrorna tar emot vikten och svansens vita spets följer efter när hon vänder. Stanna ett steg framför en blomma så lutar hon sig fram och nosar två gånger. På den öppna stigen sträcker hon på sig efter en stunds vila. När hon plockar en blomma höjer hon hakan och kisar. [Jämför rörelsen med den förra versionen](docs/vallmos-steg.mp4) · [Se Vallmo nosa på Smörblomman](docs/vallmo-vid-blomman.mp4) · [Trav och hopp](src/fox_animation.ddr) · [Vila och blomgester](src/fox_expression.ddr)
 
-I `fox.blend` kan du posera 24 leder med kontrollerna `Pose · …`. Ledernas vilolägen och tassarnas kontaktpunkter finns i egenskapen `storm_rig` på samlingen **Fox · Export geometry**. Återställ kontrollerna till viloposen och kör samlingens sparade export **Storm · fox.glb** för att få med både geometri och rigg. [Vallmos poser i spelet](docs/vallmo.png)
+I `vallmo.blend` står Vallmo på bildruta 1 och sitter på bildruta 35. Riggen **Vallmo · rigg** har 24 leder. Modellarket finns bland de packade bilderna. Kör **Exportera till Storm.py** i Blenders textredigerare för att skriva `vallmo.glb` bredvid Blenderfilen. Exporten använder viloposen och sparar riggens ledpunkter och tassarnas kontaktpunkter.
 
 I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `WingL_` och `WingR_`. Storm animerar dem kring modellens leder.
 
-Granska exportens geometri och material direkt med `./build/storm --glb assets/blomsterskogen/fox.glb`. För att använda en ny export i basspelet, ersätt motsvarande GLB och bygg Storm igen. Modellerna följer med i binären och Mac-appen.
+Granska exportens geometri och material direkt med `./build/storm --glb assets/blomsterskogen/vallmo.glb`. För att använda en ny export i basspelet, ersätt motsvarande GLB och bygg Storm igen. Modellerna följer med i binären och Mac-appen.
 
 ## Paket
 

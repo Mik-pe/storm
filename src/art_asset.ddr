@@ -9,7 +9,7 @@ fn document(name: string) -> Result<gltf.Document, string> {
         "cloud" => @embed_bytes("assets/blomsterskogen/cloud.glb"),
         "boost_cloud" => @embed_bytes("assets/blomsterskogen/boost_cloud.glb"),
         "super_butterfly" => @embed_bytes("assets/blomsterskogen/super_butterfly.glb"),
-        "fox" => @embed_bytes("assets/blomsterskogen/fox.glb"),
+        "fox" => @embed_bytes("assets/blomsterskogen/vallmo.glb"),
         "flower" => @embed_bytes("assets/blomsterskogen/flower.glb"),
         "glade" => @embed_bytes("assets/blomsterskogen/glade.glb"),
         "bee" => @embed_bytes("assets/blomsterskogen/bee.glb"),
