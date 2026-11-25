@@ -335,9 +335,27 @@ pub fn asset(doc: &Document) -> Result<Asset,string> {
     asset_from_json(doc, &j)
 }
 
+// glTF 2.0 §4: an extension named in extensionsRequired must be supported
+// or the whole asset refused; one only in extensionsUsed may be ignored.
+// Storm reads no extension, so the first required name is the answer. An
+// unparsable list is not a list of requirements: the meshes decide.
+fn unsupported_extensions(j: &json.Doc) -> string {
+    required := j.field(j.root, "extensionsRequired")
+    if j.kind(required) != .Array { return "" }
+    for i in 0..j.count(required) {
+        match j.as_str(j.at(required, i)) {
+            .Some(name) => { return name },
+            .None => {},
+        }
+    }
+    ""
+}
+
 // Callers reading application-specific extras can share the parsed document.
 pub fn asset_from_json(doc: &Document, j: &json.Doc) -> Result<Asset,string> {
     if !doc.ok { return .Err(doc.error.clone()) }
+    required := unsupported_extensions(j)
+    if required.len > 0 { return .Err("requires extension " + required + ", which Storm does not read") }
     meshes := j.field(j.root, "meshes")
     if j.kind(meshes) != .Array || j.count(meshes) == 0 { return .Err("glTF has no meshes") }
     mut parts: []Part = []

@@ -5,10 +5,15 @@ import gfx
 
 import ..src.textures as textures
 
-// Build a minimal .glb: one triangle, POSITION (3 x vec3 float), no indices.
-// JSON chunk is padded to a 4-byte boundary with spaces; BIN chunk with zeros.
-fn build_triangle_glb() -> []u8 {
-    json_text := "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],\"buffers\":[{\"byteLength\":36}]}"
+// The JSON of a minimal .glb: one triangle, POSITION (3 x vec3 float), no
+// indices. `extra` is inserted before the closing brace of the root object.
+fn triangle_json(extra: string) -> string {
+    "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],\"buffers\":[{\"byteLength\":36}]" + extra + "}"
+}
+
+// Build a minimal .glb around a JSON chunk: JSON is padded to a 4-byte
+// boundary with spaces; the BIN chunk holds the triangle's vertices.
+fn build_glb(json_text: string) -> []u8 {
     mut json_bytes: []u8 = []
     for ch in json_text.bytes() { json_bytes.push(u8(ch)) }
     while json_bytes.len % 4 != 0 { json_bytes.push(u8(32)) }
@@ -49,7 +54,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn reads_a_binary_glb_triangle() {
-    data := build_triangle_glb()
+    data := build_glb(triangle_json(""))
     doc := gltf.load_bytes(&data)
     assert(doc.ok)
     assert(doc.has_bin)
@@ -64,7 +69,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn interleave_pads_missing_normals() {
-    data := build_triangle_glb()
+    data := build_glb(triangle_json(""))
     doc := gltf.load_bytes(&data)
     mesh := gltf.load_mesh(&doc)
     stream := gltf.interleave(&mesh)
@@ -152,7 +157,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn respects_active_nodes_names_materials_and_every_triangle_primitive() {
-    mut doc := gltf.load_bytes(&build_triangle_glb())
+    mut doc := gltf.load_bytes(&build_glb(triangle_json("")))
     doc.json_text = r#"{
         "asset":{"version":"2.0"},"buffers":[{"byteLength":36}],
         "bufferViews":[{"buffer":0,"byteLength":36}],
@@ -184,7 +189,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn incomplete_buffers_and_invalid_triangle_indices_report_an_error() {
-    data := build_triangle_glb()
+    data := build_glb(triangle_json(""))
     mut short := data.clone()
     short.truncate(short.len - 1)
     assert(!gltf.load_bytes(&short).ok)
@@ -253,4 +258,28 @@ fn refusal_of(result: Result<gfx.Sampler, string>) -> string {
     assert(text.contains(refusal_of(textures.sampler(&doc, 0)), "sampler 0: magFilter 97"))
     assert(text.contains(refusal_of(textures.sampler(&doc, 1)), "sampler 1: minFilter 9988"))
     assert(text.contains(refusal_of(textures.sampler(&doc, 2)), "sampler 2: wrapS 33072"))
+}
+
+fn asset_refusal(data: &[]u8) -> string {
+    match gltf.asset(&gltf.load_bytes(data)) { .Ok(_) => "loaded", .Err(s) => s.clone() }
+}
+
+// glTF 2.0 §4: an extension in extensionsRequired is one the client must
+// support or refuse the whole asset; one in extensionsUsed alone may be
+// ignored (the KHR_materials_pbrSpecularGlossiness table: "render as if no
+// material" / "fail to load"). Storm reads no extension, so every required
+// name is refused with the name, before any buffer is touched — a model
+// that needs what Storm lacks is a message, not a white silhouette.
+@test fn a_required_extension_is_refused_by_name_and_a_used_one_ignored() {
+    used := build_glb(triangle_json(",\"extensionsUsed\":[\"KHR_materials_pbrSpecularGlossiness\"]"))
+    assert(asset_refusal(&used) == "loaded")
+
+    required := build_glb(triangle_json(",\"extensionsUsed\":[\"KHR_materials_pbrSpecularGlossiness\"],\"extensionsRequired\":[\"KHR_materials_pbrSpecularGlossiness\"]"))
+    assert(asset_refusal(&required) == "requires extension KHR_materials_pbrSpecularGlossiness, which Storm does not read")
+
+    both := build_glb(triangle_json(",\"extensionsRequired\":[\"KHR_materials_variants\",\"KHR_texture_transform\"]"))
+    assert(text.contains(asset_refusal(&both), "KHR_materials_variants"))
+
+    empty := build_glb(triangle_json(",\"extensionsRequired\":[]"))
+    assert(asset_refusal(&empty) == "loaded")
 }
