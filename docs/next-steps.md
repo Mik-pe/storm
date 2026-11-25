@@ -15,7 +15,7 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
-**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. Nästa är **3d**: de linjära texturerna (metallicRoughness, normal, occlusion, emissive) i egna samplers.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. Nästa är **3d**: de linjära texturerna (metallicRoughness, normal, occlusion, emissive) i egna samplers — researchat med sju beslut (avsnitt 3d); första steget att landa är MR-kartan, i ordningen MR → emissive → occlusion → normal.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71
@@ -316,6 +316,155 @@ alltså det vanliga fallet, inte undantaget.
   (JPEG) mäts med `tools/build-time.ddr` före och efter, och om det hamnar
   över 19 s hör det till Dunder-repot att mäta vad som är dyrt, inte till
   Storm att hoppa över funktionen.
+
+### 3d. De linjära texturerna — researchat och beslutat (2026-11-25)
+
+En yta har i dag en textur (`Material.texture`) och två skalärer
+(`metallic`, `roughness`). glTF låter en yta bära fem texturer, och Storm
+läser en. **Vad det kostar, mätt i pixlarna på Katlas filer:** Avokadon och
+Lanternen har båda en `metallicRoughnessTexture` och en `normalTexture`
+(PNG, 2048², 8 bitar, RGB) men ingen `metallicFactor`/`roughnessFactor` i
+materialet — så Storm ritar dem med specens default **metallic 1.0,
+roughness 1.0**, medan kartorna i genomsnitt säger metallic **0** (B-kanal)
+och roughness **0.86** (G) för avokadon, 0.20/0.61 för lanternen. En
+organisk avokado ritas som matt metall (F0 = albedo i stället för 0.04).
+Det är samma sortens svalda fel som Tiger hade (3c): filen ber om något
+Storm inte läser, och bilden ser ut som något annat. Lanternens
+`emissiveTexture` (`emissiveFactor` = [1,1,1], ingen
+`KHR_materials_emissive_strength`) är nästan svart i medel (8,7,4) — ljuset
+sitter i ljusan och hänget, som därmed är släckt. DamagedHelmet har alla fem
+men vägras (JPEG). Box, FoxFixed, Fox, FoxBlender och Regular_plane har
+inga av de fyra och påverkas inte.
+
+**Fakta från specen (glTF 2.0 §3.9.2–3.9.3) som är oföränderliga:**
+
+- *"If a texture is not given, all respective texture components MUST be
+  assumed to have a value of 1.0"* — Storms vita 1×1-fallback är exakt
+  den regeln, redan. *"the factor value acts as a linear multiplier for
+  the corresponding texture values"* — shaderns form blir
+  `metallic = params.x * mr.b`, `roughness = params.y * mr.g`; faktor utan
+  textur är oförändrat (1 × faktor), textur utan faktor är texturen.
+- **Kanalordningen är G = roughness, B = metallic.** R lämnas där (se
+  nästa punkt), A ignoreras. Den äldre 2.0-utkastet (2017) sa R = metallic,
+  G = roughness — det är fällen varje tredje implementation går i, och
+  Filaments shader bär kommentaren om det
+  (`material.roughness *= mr.g; material.metallic *= mr.b`).
+- **Occlusion läses ur R — men bara från den textur `occlusionTexture`
+  pekar på.** Khronos (donmccurdy, glTF#1982): *"an implementation should
+  not attempt to treat it as occlusion information unless indicated by an
+  occlusionTexture pointer"*, även när `metallicRoughnessTexture` har data
+  i R. Den vanliga ORM-packningen (en bild, `occlusionTexture` och
+  `metallicRoughnessTexture` pekar på samma `textures[i]`) är giltig, men
+  det är *pekaren* som säger det, inte kanalen. En genväg som läser R ur
+  MR-kartan är alltså förbjuden av specen.
+- `occlusionTexture.strength` och `normalTexture.scale` är valfria med
+  default **1.0**; `1.0 + strength * (occlusion − 1.0)`, och `scale` skalar
+  X och Y **före** normalisering. Ingen av de elva filerna sätter dem.
+- Normal-kartan: `rgb * 2 − 1`, OpenGL-konvention (+Y upp). Båda
+  Katla-kartorna har medel (127,127,255) = platt +Z, som förväntat.
+
+**Tangenter är den stora frågan, och mätningen avgör den.** En normal-karta
+behöver ett tangentbasrum (T, B, N) per vertex. Storms vertexformat är
+åtta floats (position, normal, uv) — **ingen tangent**, och ingen rad i
+Storm läser `TANGENT`. Avokado, Lantern och Tiger har `TANGENT` i filen,
+DamagedHelmet har den inte (och ingen av de elva har spegglade UV:s).
+
+Specen: *"When tangents are not specified, client implementations SHOULD
+calculate tangents using default MikkTSpace algorithms"*. MikkTSpace
+kräver **oindexerad** geometri och måste indexeras om efteråt — en
+lastningsalgoritm, inte en shader. Khronos referensshader
+(`material_info.glsl`), Filament och Cesium gör i stället en
+skärmderiverad bas (`dFdx`/`dFdy` av position och uv) när `TANGENT`
+saknas; den är per-fragment och bryter vid UV-sömmar (som referensens
+egna issue #466 visar för anisotropi), men den är vad DamagedHelmet-filen
+är authorad för. Tre.js valde MikkTSpace (PR #23802) efter samma
+kvalitetsproblem.
+
+**Beslut:**
+
+1. **Fyra nya texturplatser på materialet, inte en textur till.**
+   `storm-scene.Material` får `metallic_roughness`, `normal`, `occlusion`
+   och `emissive` (`gfx.Texture`, `no_texture()` = saknas), och
+   `emissive`-skalären blir `emissive_tint: core.Color` (specens
+   `emissiveFactor`, default svart — idag är skalären 0 = av, och
+   `albedo * emissive` är Storms eget påfund, inte specens `tint * map`).
+   Varje plats är en egen `gfx.Texture` med egen sampler, som 3c beslutade
+   för basen: *en textur är bild + sampler*. Den delade ORM-packningen
+   är då samma handtag i två fält — inget specialfall.
+2. **Set 1 får fem bindings (0–4), fortfarande ett set per slot.**
+   Vulkan: `texture.ddr`:s layout får `bindingCount = 5`, och varje slot
+   bygger fortfarande **ett** set — `sets: [ptr; 64]` med alla fem
+   bindings (mätt: bara mesh-pipelinen binder set 1, `pipeline.ddr`
+   `setLayoutCount = 2`; `ibl`, `post` och `ui` har ett set vardera),
+   så `set_of(table, id)` är oförändrat och shadern deklarerar `binding
+   = 1..4`. Slot 0 (vit) fyller alla fem med samma vita bild, så
+   `no_texture()` fortfarande är identiteten: vit MR
+   = faktor × 1, vit occlusion = 1 (ooccluderat), svart emissive = 0,
+   **och en normal-karta måste vara (0.5, 0.5, 1) — inte vit** — det är
+   slot 0:s enda undantag, och shadern får inte grensa på det. Metal:
+   `mesh_fragment` har i dag `texture(0..4)` / `sampler(0..2)` (skugga,
+   prefiltered, irradiance, brdf-lut, bas), så de fyra nya blir
+   `texture(5..8)` + `sampler(3..6)`, en bindning per fält i
+   `metal.ddr` `mesh`. Bindningsordningen på `gfx.Backend::mesh`
+   ändras från `texture: Texture` till `material: &Textures` (en post med
+   fem `gfx.Texture`) — ett argument till, inte fem.
+3. **Inga nya push-constant-fält.** Blocket är **exakt 240 byte, alla
+   använda** (mätt: 0–15 mvp, 16–31 model, 32–35 base, 36–39 params,
+   40–42 kamera med **43 som enda lediga float**, 44–47 sol, 48–50
+   solfärg + 51 `diffuse_fill`, 52–55 zenit, 56–59 horisont; 60 ord), och 240 är
+   taket (fynd 25). `normalScale` och `aoStrength` bärs därför **inte**
+   än: båda är 1.0 i alla elva filer, och en ledig float rymmer inte
+   båda. När en fil ber om dem hör de hemma i en per-yta-uniform (§7),
+   inte i push constants — det är nästa grind, och den är designad för
+   i §7 ("en uniform buffer per frame med en ljusarray").
+4. **Tangentbas: shadern deriverar, och `TANGENT` läses inte in än.**
+   Beslutet är *avgränsat*: referensshaderns form
+   (`t = normalize(t_ − ng·dot(ng, t_))`, `b = cross(ng, t)`) är tolv
+   rader GLSL och
+   Metal, kräver ingen vertexändring och fungerar för DamagedHelmet
+   (authorad utan tangenter) lika bra som för referensshadern. MikkTSpace
+   är rätt slutmål för kvalitet vid UV-sömmar och speglingar, men det är
+   en lastningsalgoritm (oindexera, beräkna, indexera om) plus ett
+   **fjärde vertexattribut** (`TANGENT`, 4 floats: `gfx.Vertex` 8 → 12
+   floats, 32 → 48 byte) genom `vertex_input()` → `interleave` → båda
+   shaders — inte en timme.
+   Det blir 3e. Innan dess: en fil med `TANGENT` får samma deriverade
+   bas som en utan, och den mäts i en capture mot en referensbild
+   (Khronos referensviewer är målbilden för Avokado/Lantern).
+5. **Occlusion påverkar bara indirekt ljus**, som specen säger: `ao` skalas
+   med `strength` och multiplicerar `diffuse_ambient` och
+   `specular_ambient`, inte `direct`. Shaderns befintliga
+   `ambient_occlusion = mix(0.55, 1.0, shadow)` (`mesh.frag:153`) är
+   skuggans kontaktmörkning och lämnas ifred; de två multipliceras.
+6. **Ordningen inom 3d är MR → emissive → occlusion → normal**, efter
+   vad filerna ber om och vad som är billigast att bevisa: MR är två
+   kanaler och en capture på Avokado (matt metall → dielektrisk frukt),
+   emissive är svart-utöver-ljus (Lantern), occlusion är en multiplication
+   (DamagedHelmet, när JPEG finns), normal är tolv rader plus beslut 4.
+   Varje steg: `AE = 0` på Box/Fox/spelscenen (inga av de fyra — inget
+   ändras), och en capture på filen som har kartan.
+7. **`storm-gltf` läser de fyra platserna som basen:** `Part` får fyra
+   `texture`-index (−1 = saknas) och fyra `gfx.Sampler`, samma
+   `textures[i].source → images[source]`-väg, `Err` på ett ogiltigt
+   index. `emissiveFactor` läses som `core.Color` (fyra komponenter,
+   `factor`-valideringen per kanal, A = 1). Appens `upload_model_textures`
+   laddar varje (bild, sampler)-par en gång och delar handtaget mellan
+   platser som pekar på samma par — ORM är då inget specialfall.
+
+**Vad som mättes och inte gissades (2026-11-25):** vilka av de elva
+filerna som har de fyra kartorna (chunk-läsare i Python över GLB-JSON
+och IHDR/SOF), kanalmedelvärden i MR-kartorna (Pillow: avokado
+(0,219,0), lantern (0,156,50)), push-constant-ordningen i
+`vulkan.ddr:mesh_pass` (60 ord, 43 ledig), set 1:s bindningstal
+(`bindingCount = 1`), `TANGENT` i fyra av elva filer och i **ingen** rad
+Storm. Spec-citaten är ur §3.9.2–3.9.3; occlusion-regeln ur Khronos
+glTF#1982; MikkTSpace-kravet ur MikkTSpace:s egen readme och three.js
+PR #23802.
+
+**Kvar i 3d efter besluten:** `TANGENT` som vertexattribut + MikkTSpace
+(3e), `normalScale`/`aoStrength` (uniform, §7), `KHR_materials_*
+emissive_strength`, `texCoord` ≠ 0 (ingen fil använder det; beslut 1 i
+3c:s research gäller: Storm läser `TEXCOORD_0`).
 
 ## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning, ECS-frågor
 
