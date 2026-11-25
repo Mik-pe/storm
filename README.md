@@ -19,9 +19,9 @@ av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexp
 
 ## Förutsättningar
 
-- `dunder` 0.11.3 eller senare; senast verifierad med 0.12.0. Version 0.11.3
-  införde den paketrelativa Metal-shadern och de lånade ECS-frågorna som
-  används i spelet.
+- `dunder` 0.12.0 eller senare; senast verifierad med 0.12.0. `layout.ddr` använder
+  ett fält som är en fast array av en annan `@c_layout`-post (`VkImageBlit` med
+  `[Offset3D; 2]`), en konstruktion som är mätt på 0.12.0 men inte på 0.11.3.
 - Git i `PATH` och nätåtkomst vid första bygget. Dunder hämtar de låsta revisionerna av `dunder-skrift` och dess zlib-beroende automatiskt.
 - **Linux:** `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …)
   och `sdl2` för fönstret. `glslangValidator` behövs bara när GLSL-shaders
@@ -76,7 +76,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | --- | --- | --- |
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
-| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `trait Backend`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
+| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture` (ett värde, aldrig en pekare), `trait Backend` med `upload_texture`/`mesh(…, texture, surface)`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer och PBR-material. | `core` |
@@ -109,13 +109,15 @@ match window.begin() {
 }
 _ := window.begin_pass()
 _ := window.sky(&inv_view_projection.m, &sun, &zenith, &horizon)
-_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, .Opaque)
+_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, gfx.no_texture(), .Opaque)
 _ := window.end()
 ```
 
 Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar åtta
 `f32` per vertex för position, normal och UV, en `Sky` (solen, himlen och
-ljusmatrisen, samlade i `gfx.sky_params`) och kamerans position.
+ljusmatrisen, samlade i `gfx.sky_params`), kamerans position, en `gfx.Texture`
+(`upload_texture` ger en från RGBA8-pixlar med en färdig mipkedja;
+`gfx.no_texture()` låter basfärgen stå) och ytan: `.Opaque` eller `.Blended`.
 
 - **På Vulkan** går konstanterna med push constants: 240 byte i meshpasset
   (två matriser, material, kamera och himmelsljus), och ljusmatrisen ligger i
@@ -195,6 +197,9 @@ för blendingens skull.
   `--eye` står kameran på baslinjen som varje pixeljämförelse mäter mot.
 - `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på
   marken mitt framför kameran)
+- `--texture fil.ppm` – studions golv bär en Storm-capture (P6, läst med
+  `image.read_rgba`); inget annat i scenen har textur. Utan flaggan är golvet
+  `gfx.no_texture()`.
 - `--no-glass` och `--no-shadows` stänger av glaset respektive skuggorna vid start. Inspektorn har också reglagen **Anti-aliasing** och **Color and glow**.
 - `--trace` – skriv varje inläsningssteg
 
