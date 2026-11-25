@@ -524,6 +524,23 @@ fn main() { x := draw(Blend.Opaque); print(x) }
 ```
 ger `expected __dunder_module_0, got __dunder_module_1`. Samma sak med två structar (`Shape { n }`, `Blend { n }`): `__dunder_module_0` mot `__dunder_module_1`. Mot en inbyggd typ namnges den inbyggda: `draw(1)` ger `expected __dunder_module_0, got i32`. Samma nummer i E2003: `x := make()` där `make() -> Shape`, sedan `x.nope` ger `unknown member 'nope' on __dunder_module_0`. Numret är modulens ordning i trädet, inte typen, och ingenting skiljer `Shape` från `Blend` i texten. I Storm (över 100 moduler) är det oläslbart: under städningen av pipeline-skapandet stod `vertices: pipelines.mesh_vertices()` (en `vk.VertexInput`) där `Vertices` väntades, och diagnostiken skickade mig till `enums.ImageTiling`/`ImageUsage` — två enumtyper som inte ingick i felet alls. Workaround här: läsa signaturen på det anrop som careten pekar på och räkna argumenten (fynd 63), och när det inte räcker byta en mot en `i32` för att se vilka sidor som byter — inget av det är en diagnostic. Rekommendation: varje diagnostic som skriver en typ ska skriva namnet som den deklarerades (`expected vk.VertexInput, got pipeline.Vertices`; för en anonym post fälten). Typen bär namnet — `dunder check` på ett program utan fel skriver inga nummer — så det är en formatteringsfunktion som används av E3001 och E2003, inte typkontrollen, som saknar det; en funktion att rätta på ett ställe.
 
+**85. En lokal som skickas till en `move`-parameter kräver `move` vid anropet — även när det är lokalens enda användning, och diagnostiken säger det med en text som måste läsas bokstavligt.** Symptom (0.12.0): `fn asset(move images: []Img) -> Asset`, kallat med `asset(images)` där `images` är en lokal som inte används igen, ger
+```
+tests/executor.ddr:331:25: error[E4001]: consuming parameter requires 'move value' or a fresh owned expression
+331 |     model := asset(parts, images)
+    |                         ^
+```
+Med markören på det *andra* argumentet lästes det som att `images` redan var flyttat — E4001 är nämligen också koden för "use of moved value", och en läsare som ser E4001 på ett argument letar efter en tidigare flytt av det värdet; två rundor gick åt till det innan en prob i `/tmp` visade att lokalens enda användning räcker för att få felet. Mätt i `/tmp` att regeln inte har med "sista användning" att göra: `takes(arr)` där `arr: [f32; 4]` är en lokal som aldrig nämns igen ger samma E4001, och `takes(move arr)` kompilerar — en **immutable** lokal får alltså flyttas med ett uttryckligt `move`. Ett färskt uttryck (litteral, funktionsanrop) behöver inget. Minimal repro:
+```
+fn takes(move a: [f32; 4]) -> f32 { a[0] }
+pub fn main() {
+    arr: [f32; 4] = [0.0, 1.0, 0.0, 3.0]
+    one := takes(arr)
+    print(one.str())
+}
+```
+ger E4001 på `arr`; `takes(move arr)` går. Uppstod i Storm `tests/executor.ddr` (tre tester som bygger en `gltf.Asset` ur lokaler). Skillen hade regeln för *parametrar* utan `move` (de lånas) men inte denna sida: att en lokal utan `move` **inte** flyttas vid sista användningen heller. Workaround här: `move` på varje argument som konsumeras, eller bygg värdet i anropet (`asset([part(...)], jpeg_and_png())`). Rekommendation: antingen (a) en sista användning av en lokal flyttar den automatiskt (Rusts regel; då är `move` på argument overflödigt och E4001 blir ett verkligt fel — använd efter flytt), eller (b) behåll kravet men låt diagnostiken säga *vilket* av de två fallen det är: "pass 'move images' — a local is not moved by its last use" mot "use of moved value" (E4001 är idag samma text för båda, och den ena är ett syntaxkrav, den andra ett verkligt fel). Dessutom: E4001 på raden gjorde att `one` på nästa rad rapporterades som `E2002 unknown local 'one'` — ett följdfel utan egen orsak.
+
 ## Grafikobservationer på macOS (Metal)
 
 Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen

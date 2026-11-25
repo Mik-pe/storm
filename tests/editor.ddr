@@ -1,0 +1,43 @@
+// Where a pointer counts as being over the 3D view: the editor routes input
+// to the camera only inside this area, and to the panels around it elsewhere.
+// The rules are the layout's -- the bar and footer are never the view, a wide
+// window keeps both panels out of it, a compact one with nothing open has
+// the full width as its view. Focus and the compact panels' open state are
+// switched only by `draw`, which the compact-editor test in suite.ddr drives.
+import core
+import scene as scenegraph
+import ..src.editor as editor
+
+// `selected` is never read by in_viewport; any live entity will do.
+fn fresh() -> editor.State {
+    mut graph := scenegraph.Graph::new()
+    node := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    editor.new(node, false, false, false)
+}
+
+@test fn the_bar_and_footer_are_never_the_view() {
+    state := fresh()
+    assert(!editor.in_viewport(&state, 600.0, 47.9, 1400.0, 900.0))
+    assert(!editor.in_viewport(&state, 600.0, 868.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 600.0, 48.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 600.0, 867.9, 1400.0, 900.0))
+}
+
+@test fn a_wide_window_keeps_both_panels_out_of_the_view() {
+    state := fresh()
+    // Scene tree is 204 wide on the left, the inspector 236 on the right.
+    assert(!editor.in_viewport(&state, 203.9, 300.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 204.0, 300.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 1163.9, 300.0, 1400.0, 900.0))
+    assert(!editor.in_viewport(&state, 1164.0, 300.0, 1400.0, 900.0))
+    // 920 is the narrowest "wide" window: 480 wide of view between the panels.
+    assert(editor.in_viewport(&state, 683.9, 300.0, 920.0, 900.0))
+    assert(!editor.in_viewport(&state, 684.0, 300.0, 920.0, 900.0))
+}
+
+@test fn a_compact_window_with_nothing_open_views_its_full_width() {
+    state := fresh()
+    assert(editor.in_viewport(&state, 0.0, 300.0, 800.0, 900.0))
+    assert(editor.in_viewport(&state, 799.9, 300.0, 800.0, 900.0))
+    assert(!editor.in_viewport(&state, 0.0, 10.0, 800.0, 900.0))
+}

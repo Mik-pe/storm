@@ -55,7 +55,7 @@ pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, tex
     place_model(&mut graph, &model, path, at, textures)
 }
 
-fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Texture) -> Result<(), string> {
+pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Texture) -> Result<(), string> {
     mut lo := core.vec3(0.0,0.0,0.0)
     mut hi := lo
     mut first := true
@@ -97,7 +97,7 @@ fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, a
 // A texture is an image and a sampler, so every distinct pair a part uses is
 // one upload; a part without a baseColorTexture gets no_texture(). A JPEG
 // is refused by name: one unsupported format is a message, not a guess.
-fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Texture, string> {
+pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Texture, string> {
     mut textures: []gfx.Texture = []
     for part in &asset.parts {
         if part.texture < 0 { textures.push(gfx.no_texture()); continue }
@@ -138,7 +138,7 @@ fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Textu
     window.upload_texture(decoded.pixels, decoded.width, decoded.height, &sampler)
 }
 
-fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
+pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
     camera_position: core.Vec3, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
     if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
     mvp := core.multiply(view_projection, item.model)
@@ -151,7 +151,7 @@ fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegra
     window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, item.material.texture, surface)
 }
 
-fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
+pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
     cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
     for index in 0..items.len {
         item := &items[index]
@@ -211,7 +211,7 @@ pub fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec
     game.sort_back_to_front(&mut frame.glass)
 }
 
-fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
+pub fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
     eye := core.add(center, core.scale(sun, radius * 1.6))
     view := core.look_at(eye, center, core.vec3(0.0, 1.0, 0.0))
     projection := core.orthographic(-radius, radius, -radius, radius, 1.0, radius * 4.0)

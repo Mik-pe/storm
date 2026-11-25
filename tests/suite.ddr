@@ -236,6 +236,9 @@ import .fox_animation as _
 import .fox_expression as _
 import .model_rig as _
 import .app_frame as _
+import .executor as _
+import .orb as _
+import .editor as _
 import .woodland_ground as _
 import text
 import ui
