@@ -76,8 +76,8 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | --- | --- | --- |
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
-| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, &sampler)`/`mesh(…, texture, surface)`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
-| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71 C-poster ur registret + fyra par-poster) och `enums.ddr` (35 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
+| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture`, `Textures` (materialets fem platser), `Encoding` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, encoding, &sampler)`/`mesh(…, &textures, surface)`, och geometrihjälparna (`cube`, `plane`, `sphere`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
+| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (82 prototyper + `load()`), `layout.ddr` (71 C-poster ur registret + fyra par-poster) och `enums.ddr` (35 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx`, `vk` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer, PBR-material med `baseColorTexture` (bilder som bytes + samplern som `gfx.Sampler`). | `core`, `gfx` |
@@ -110,15 +110,20 @@ match window.begin() {
 }
 _ := window.begin_pass()
 _ := window.sky(&inv_view_projection.m, &sun, &zenith, &horizon)
-_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, gfx.no_texture(), .Opaque)
+_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, &gfx.no_textures(), .Opaque)
 _ := window.end()
 ```
 
 Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar åtta
 `f32` per vertex för position, normal och UV, en `Sky` (solen, himlen och
-ljusmatrisen, samlade i `gfx.sky_params`), kamerans position, en `gfx.Texture`
-(`upload_texture` ger en från RGBA8-pixlar med en färdig mipkedja;
-`gfx.no_texture()` låter basfärgen stå) och ytan: `.Opaque` eller `.Blended`.
+ljusmatrisen, samlade i `gfx.sky_params`), kamerans position, materialets fem
+texturer som **ett** värde `gfx.Textures` (`base`, `metallic_roughness`,
+`normal`, `occlusion`, `emissive`; `gfx.no_textures()` är fem gånger
+`no_texture()` och låter faktorerna stå) och ytan: `.Opaque` eller `.Blended`.
+`upload_texture(pixels, width, height, encoding, &sampler)` ger en `gfx.Texture`
+från RGBA8-pixlar: `encoding` säger om texeln är sRGB (en basfärg) eller
+linjär (en Metallic/Roughness-, normal- eller occlusion-karta), och mipkedjan
+byggs av backenden.
 
 - **På Vulkan** går konstanterna med push constants: 240 byte i meshpasset
   (två matriser, material, kamera och himmelsljus), och ljusmatrisen ligger i
@@ -191,7 +196,11 @@ för blendingens skull.
   Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
-- `--help` (eller `-h`) – skriv användningsraden och avsluta
+- `--help` (eller `-h`) – skriv varje flagga med en rad och avsluta. Listan är
+  hela programmet: ett test (`tests/flags.ddr`) håller varje `--x` i `src/`
+  mot en rad i `args.flags()`, så en flagga utan hjälp-rad är rött.
+- `--scene fil` – ladda en bana i stället för demobanan; `--watch` läser om
+  den när filen sparas; `--font sökväg` väljer UI-typsnittet
 - `--capture fil.ppm` – rendera en bildruta till PPM, 1280 × 800 pixlar, utan att öppna ett fönster.
   Fungerar på en låst session; det är så QA görs utan tangentbord.
 - `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
@@ -201,7 +210,8 @@ för blendingens skull.
   marken mitt framför kameran)
 - `--texture fil.ppm` – studions golv bär en Storm-capture (P6, läst med
   `image.read_rgba`); inget annat i scenen har textur. Utan flaggan är golvet
-  `gfx.no_texture()`.
+  `gfx.no_textures()`. I spelet (`--play`, en bana) vägras flaggan med en
+  text: det finns inget golv att bära den.
 - `--no-glass` och `--no-shadows` stänger av glaset respektive skuggorna vid start. Inspektorn har också reglagen **Anti-aliasing** och **Color and glow**.
 - `--trace` – skriv varje inläsningssteg
 
@@ -317,7 +327,7 @@ Atlasen vet själv i vilken pixelstorlek dess glyfer rastrerades
 (`raster_size`), och `ui.Canvas` frågar den: texten ritas `RASTER_SIZE` punkter
 oavsett, så en Retina-display packar atlasen på dubbla storleken och får
 dubbel skärpa. Rita texten nära den storlek den rastrerades vid — `ui.RASTER_SIZE`
-är 22 px och editorn använder skalorna 0.8–1.2. En backend behöver en
+är 22 px och editorn ritar 11–22 punkter, alltså skalorna 0.5–1.0. En backend behöver en
 texturpipeline för att rita dem; Storms egna finns i `packages/storm-vulkan/src/ui.ddr`
 och `packages/storm-metal/src/ui.ddr`.
 

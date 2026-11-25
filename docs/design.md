@@ -85,20 +85,21 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`9f879c9`,
-  Dunder 0.12.0, låst session) omfattade **240 egna `@test`** — 61 i roten
-  och 179 i de 16 paketen, räknade med `grep -c '@test'` — alla gröna, varje
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`e264590` + `--help`-tabellen,
+  Dunder 0.12.0, låst session) omfattade **248 egna `@test`** — 67 i roten
+  och 181 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
+  sträng räknas inte) — alla gröna, varje
   svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
   i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
-  `N passed` blir 246). 17 sviter
+  `N passed` blir 254). 17 sviter
   kördes med `dunder test` i roten och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
   `load_model`) är testbar utan fönster: vad ett pass får, när
   mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
   per instans (`tests/app_frame.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **18 200 och 18 244 ms** på `9f879c9` med Dunder 0.12.0 (två
-  mätningar samma kväll) — 16,4 s innan `decode_png` + zlib nås från `main`
+  mätte **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen, Dunder 0.12.0 (två
+  mätningar samma kväll, efter femtexturkedjan), 18 996 ms på `9f879c9` — 16,4 s innan `decode_png` + zlib nås från `main`
   (fynd 82), och **16 249 ms** på trädet med `depth.Depth`, **16 241 ms** på
   `1a7f0e2` (16 197–16 523 ms över
   tre mätningar samma kväll). Trädet på
@@ -112,23 +113,23 @@
   207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Registret är ett eget paket, **`storm-vk`** (2 059 rader, allt genererat ur
-`vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (343:
-81 prototyper + `load()`), `layout.ddr` (1 285: 71 registriposter med
+Registret är ett eget paket, **`storm-vk`** (2 063 rader, allt genererat ur
+`vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (347:
+82 prototyper + `load()`), `layout.ddr` (1 285: 71 registriposter med
 `new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 34
 konverterare, `result_name` och registrets konstanter). Det som är Storms
 val står i storm-vulkan `records.ddr` (158): vertexformaterna, `Blend` och
 `apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
 vad ett swapchain-tal betyder Storm.
 
-Lagren i storm-vulkan (4 306 rader + 4 223 genererade i `shader.ddr`), räknade 2026-11-25:
+Lagren i storm-vulkan (4 456 rader + 4 243 genererade i `shader.ddr`), räknade 2026-11-26:
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 222 |
 | Storms värden ovanpå registret | `records.ddr` | 158 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 070 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 856 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 215 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 861 |
 
 `ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
 var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,
@@ -138,7 +139,7 @@ och storm-metal har samma två moduler som backend-tjänster (`ui.ddr`,
 kontraktet, som anropar `ui_atlas`/`ui_draw`/`post_process` och inte vet att
 modulerna finns.
 
-Lagren i storm-metal (2 411 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden):
+Lagren i storm-metal (2 453 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-26:
 
 | Lager | Moduler | Rader |
 |---|---|---|
@@ -146,8 +147,8 @@ Lagren i storm-metal (2 411 rader + inbäddad `shaders/storm.metal` via `@embed_
 | Ramverkens värden | `enums.ddr`, `records.ddr` | 201 |
 | Fönstret och input | `appkit.ddr` | 508 |
 | Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 362 |
-| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 389 |
-| Orkestrering | `metal.ddr` | 671 |
+| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 416 |
+| Orkestrering | `metal.ddr` | 685 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
@@ -442,7 +443,7 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
 - **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
   i `tests/suite.ddr` (`Depth` 24, `Atlas` 128, `Shadow` 120, `Environment`
-  960, `Material` 32, `Renderer` 6112 byte — alla mätta, ingen räknad: en
+  960, `Material` 152, `Renderer` 6 240 byte — alla mätta, ingen räknad: en
   storlek gissad i huvudet var fel två gånger av tre, och testet var rött
   tills den var mätt). Registret allokerar `size_of(state.Renderer) + 8192`,
   så nästa kluster som flyttar ändrar det talet — medvetet, i testet, inte
