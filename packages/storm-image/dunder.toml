@@ -2,3 +2,6 @@ name = "storm-image"
 version = "0.1.0"
 root = "src/image.ddr"
 test_root = "tests/suite.ddr"
+
+[dependencies]
+zlib = { git = "https://github.com/Mik-pe/dunder.git", rev = "50cb55968d2df84b9c80b9b74afcf42fb6f1da52", subdir = "packages/zlib" }

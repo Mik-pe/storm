@@ -7,6 +7,8 @@ import std.dl as dl
 import std.path as path
 import sys
 
+import .png as png
+
 fn sample() -> []u8 {
     mut data := bytes.from_text("P6\n2 1\n255\n")
     pixels: []u8 = [10, 35, 32, 255, 0, 42]

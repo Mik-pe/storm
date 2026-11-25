@@ -5,6 +5,7 @@ import std.bytes as bytes
 import std.dl as dl
 import std.fs as fs
 import sys
+import .decode as decode
 
 const PREVIEW_EDGE: i32 = 768
 const CAPTURE_BYTES: i64 = 67108864
@@ -39,6 +40,18 @@ fn header(data: &[]u8) -> Result<Header, string> {
 // An image in the form a backend uploads: 8-bit RGBA, rows top to bottom,
 // no padding (gfx.upload_texture).
 pub struct Image { width: i32, height: i32, pixels: []u8 }
+
+// A PNG file as RGBA: glTF's embedded images, `--texture`, the MCP preview.
+// Every colour type becomes RGBA8; bit depth 16 and interlacing are refused.
+pub fn decode_png(data: &[]u8) -> Result<Image, string> {
+    decode.decode(data)
+}
+
+// The empty image: width 0 and no pixels, the value a material without a
+// baseColorTexture carries.
+pub fn empty() -> Image {
+    Image { width: 0, height: 0, pixels: [] }
+}
 
 // The pixels of a P6 capture as RGBA (alpha 255). The same parser that
 // encodes a capture validates the file, so a texture and a preview agree on
