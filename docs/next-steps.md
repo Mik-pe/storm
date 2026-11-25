@@ -15,7 +15,7 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
-**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. Nästa är **3d**: de linjära texturerna (metallicRoughness, normal, occlusion, emissive) i egna samplers — researchat med sju beslut (avsnitt 3d); första steget att landa är MR-kartan, i ordningen MR → emissive → occlusion → normal.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. Kvar i 3d, i ordningen: **emissive** (Lantern är släkt: kartan läses inte än, steg 2) → occlusion → normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (81 prototyper + `load()`), `layout.ddr` (71
@@ -382,32 +382,38 @@ kvalitetsproblem.
 
 **Beslut:**
 
-1. **Fyra nya texturplatser på materialet, inte en textur till.**
-   `storm-scene.Material` får `metallic_roughness`, `normal`, `occlusion`
-   och `emissive` (`gfx.Texture`, `no_texture()` = saknas), och
-   `emissive`-skalären blir `emissive_tint: core.Color` (specens
-   `emissiveFactor`, default svart — idag är skalären 0 = av, och
-   `albedo * emissive` är Storms eget påfund, inte specens `tint * map`).
-   Varje plats är en egen `gfx.Texture` med egen sampler, som 3c beslutade
-   för basen: *en textur är bild + sampler*. Den delade ORM-packningen
-   är då samma handtag i två fält — inget specialfall.
-2. **Set 1 får fem bindings (0–4), fortfarande ett set per slot.**
-   Vulkan: `texture.ddr`:s layout får `bindingCount = 5`, och varje slot
-   bygger fortfarande **ett** set — `sets: [ptr; 64]` med alla fem
-   bindings (mätt: bara mesh-pipelinen binder set 1, `pipeline.ddr`
-   `setLayoutCount = 2`; `ibl`, `post` och `ui` har ett set vardera),
-   så `set_of(table, id)` är oförändrat och shadern deklarerar `binding
-   = 1..4`. Slot 0 (vit) fyller alla fem med samma vita bild, så
-   `no_texture()` fortfarande är identiteten: vit MR
-   = faktor × 1, vit occlusion = 1 (ooccluderat), svart emissive = 0,
-   **och en normal-karta måste vara (0.5, 0.5, 1) — inte vit** — det är
-   slot 0:s enda undantag, och shadern får inte grensa på det. Metal:
-   `mesh_fragment` har i dag `texture(0..4)` / `sampler(0..2)` (skugga,
-   prefiltered, irradiance, brdf-lut, bas), så de fyra nya blir
-   `texture(5..8)` + `sampler(3..6)`, en bindning per fält i
-   `metal.ddr` `mesh`. Bindningsordningen på `gfx.Backend::mesh`
-   ändras från `texture: Texture` till `material: &Textures` (en post med
-   fem `gfx.Texture`) — ett argument till, inte fem.
+1. **Fem texturer på materialet, som en post: `gfx.Textures`.** `base`,
+   `metallic_roughness`, `normal`, `occlusion`, `emissive` (`gfx.Texture`,
+   `no_texture()` = saknas), `no_textures()` = alla fem. En textur är
+   **bild + sampler + encoding** (landat): bara basen är sRGB, de fyra
+   kartorna är linjära — mätt på Lanterns MR-karta: metallic 0,196 läst
+   som sRGB blir 0,032 (6× fel), och en platt normal (128,128,255) blir
+   (−0,45,−0,45,0,78). Därför delas ett handtag mellan platser som pekar
+   på samma *trippel*, inte samma (bild, sampler): ORM i en fil är en
+   trippel, och bas + MR i samma bild är två uppladdningar. `emissive`-
+   skalären (`core.Color`, specens `emissiveFactor`) är steg 2.
+2. **Set 1 har fem bindings (0–4) och skrivs per draw, inte per slot.**
+   Forskningens första beslut — ett set per slot med alla fem bindings —
+   gäller bara när alla fem kartor är samma bild (ORM-filer där basen
+   också ligger där); med bas och MR som olika bilder finns inget enskilt
+   handtag som äger setet. Ett `VkDescriptorSet` är en bindning av
+   resurser i en draw (Filament: "a descriptor set per draw"), så
+   `mesh()` binder set 1 efter `CmdBindPipeline`. Poolen kan inte växa i
+   Vulkan, och den ska inte heller uppskattas: `bind` skapar en ny pool
+   med dubbla storlek när den tar slut (`Material.pools`, en lista per
+   frame), `begin` frigör alla efter fence-väntet och skapar en ny. Inget
+   tak, ingen kapacitetsparameter i kontraktet, ingen regel att komma
+   ihåg. Fel propagerar (`BeginResult`, inte ett svalt `VkResult`).
+   Slot 0 (vit) är identiteten för MR (faktor × 1), occlusion (1) och
+   emissive; normalens "saknas" är den **platta** normalen (128,128,255),
+   en egen post i `Material` utanför tabellen (inget handtag namnger
+   den, och tabellens slot 1 ska vara första lediga). Metal binder fem
+   `setFragmentTexture`/`setFragmentSampler` vid 4..8 / 2..6 per draw —
+   redan per draw, inget pool-begrepp. `gfx.Backend::mesh` tar
+   `textures: &Textures`. Shadern deklarerar bara de bindings den läser
+   (0 och 1 i steg 1); en layout med fem är ett giltigt superset.
+   Vulkan garanterar `maxDescriptorSetSampledImages` ≥ 16, så fem är
+   inom garantin.
 3. **Inga nya push-constant-fält.** Blocket är **exakt 240 byte, alla
    använda** (mätt: 0–15 mvp, 16–31 model, 32–35 base, 36–39 params,
    40–42 kamera med **43 som enda lediga float**, 44–47 sol, 48–50
@@ -443,13 +449,18 @@ kvalitetsproblem.
    (DamagedHelmet, när JPEG finns), normal är tolv rader plus beslut 4.
    Varje steg: `AE = 0` på Box/Fox/spelscenen (inga av de fyra — inget
    ändras), och en capture på filen som har kartan.
-7. **`storm-gltf` läser de fyra platserna som basen:** `Part` får fyra
-   `texture`-index (−1 = saknas) och fyra `gfx.Sampler`, samma
-   `textures[i].source → images[source]`-väg, `Err` på ett ogiltigt
-   index. `emissiveFactor` läses som `core.Color` (fyra komponenter,
-   `factor`-valideringen per kanal, A = 1). Appens `upload_model_textures`
-   laddar varje (bild, sampler)-par en gång och delar handtaget mellan
-   platser som pekar på samma par — ORM är då inget specialfall.
+7. **`storm-gltf` läser varje texturplats som en `TextureInfo`** (bild,
+   sampler, −1 = saknas), samma `textures[i].source → images[source]`-väg
+   som basen, `Err` på ett ogiltigt index eller en textur utan `source`.
+   Landat för bas och MR (steg 1); normal, occlusion, emissive samma form.
+   `emissiveFactor` läses som `core.Color` i steg 2. Appens
+   `upload_model_textures` delar upp arbetet efter vem som behöver
+   backenden: `upload_or_refused` (icke-generisk) avgör och avkodar, och
+   det enda `window.upload_texture`-anropet står inline i den generiska
+   funktionen — en generisk funktion som bara vidarebefordrar till en
+   annan generisk över samma `B` kostar 1,8 s byggtid (dogfood 89). En
+   vägran namnger del och roll: "part helmet: metallic-roughness map
+   names image 1 which does not exist".
 
 **Vad som mättes och inte gissades (2026-11-25):** vilka av de elva
 filerna som har de fyra kartorna (chunk-läsare i Python över GLB-JSON
@@ -457,9 +468,28 @@ och IHDR/SOF), kanalmedelvärden i MR-kartorna (Pillow: avokado
 (0,219,0), lantern (0,156,50)), push-constant-ordningen i
 `vulkan.ddr:mesh_pass` (60 ord, 43 ledig), set 1:s bindningstal
 (`bindingCount = 1`), `TANGENT` i fyra av elva filer och i **ingen** rad
-Storm. Spec-citaten är ur §3.9.2–3.9.3; occlusion-regeln ur Khronos
+Storm, sRGB-fel på en linjär karta (metallic 0,196 → 0,032; platt normal
+→ (−0,45,−0,45,0,78)), och en `@c_layout`-post inuti en fast array av
+poster i en annan (mätt i `/tmp`: 48 byte per `Slot`, stride 48, 64
+slots = 3 072 byte — den gamla kommentaren "E5003" var från en äldre
+kompilator). Spec-citaten är ur §3.9.2–3.9.3; occlusion-regeln ur Khronos
 glTF#1982; MikkTSpace-kravet ur MikkTSpace:s egen readme och three.js
 PR #23802.
+
+**Landat i 3d, steg 1 (2026-11-25):** kedjan genom kontrakt (`gfx.Textures`,
+`gfx.Encoding`, `mesh(&Textures)`, `upload_texture(…, encoding)`), scen
+(`Material.textures`), båda backendar, shaders (GLSL och Metal: binding 1 =
+MR, `metallic = params.x × B`, `roughness = params.y × G`, clamp),
+glTF-läsare, app och inspelartest. Bevis: Avokado är en ogenomskinlig
+frukt (före: grönt glas). Captures mot en baslinje byggd från `3c2ed7c`
+i en ren worktree med samma kompilator (den första "baslinjen" var en
+capture från en äldre binär — Fox skilde sig 2 328 px tills båda byggdes
+om; skillen: mtime på binären mot källan): AE = 0 på spelscenen,
+`--studio`, Box.glb och Fox.glb (ingen MR-karta, oförändrade — vit
+fallback × faktor = faktor), 8 009 px på Avokado (bbox 533–745 ×
+423–717: bara modellen), 2 026 px på Lantern (metallens roughness;
+emissive är steg 2). Bygge 18,4 s; tester: rot 65, storm-vulkan 20,
+storm-gltf 14.
 
 **Kvar i 3d efter besluten:** `TANGENT` som vertexattribut + MikkTSpace
 (3e), `normalScale`/`aoStrength` (uniform, §7), `KHR_materials_*

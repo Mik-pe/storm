@@ -604,6 +604,35 @@ tests/suite.ddr:130:37: error[E5003]: type 'extern fn(ptr, ptr, ptr) -> i32' doe
 
 `ffi_fn(ptr)` går åt ett håll (ptr → extern fn) och inget åt det andra, och `Eq` saknas. Minimal repro: `@c_layout struct Api { CreateInstance: extern fn(ptr) -> i32 }`, `mut table: Api = zeroed()`, `assert(table.CreateInstance == ptr(0))`. Workaround här: asserta returvärdet (`assert(!api.load(&mut table, libc, false))`) och bevisa det starkare på det riktiga biblioteket i stället för "inget fält skrivet" — `assert(api.load(&mut table, loader, false))` mot `/usr/lib/libvulkan.so.1`, alltså att varje namn registret gav tabellen finns i loadern. Rekommendation: antingen `Eq` (jämförelse med `ptr(0)`) på `extern fn`-fält, eller en `fn_addr(extern fn) -> ptr`-builtin, spegelvändningen av `ffi_fn`. Det är frågan varje FFI-test vill ställa: är den här funktionspekaren noll?
 
+**89. Två generiska funktioner över samma trait-bundna typ på en kedja kostar kompileringstid för den inres hela nåd — enligt `--timings` utan att en enda MIR-operation läggs till.** Symptom (0.12.0): Storms `src/app.ddr` fick en hjälpfunktion `uploaded<B: gfx.Backend>(window: &mut B, …)` som anropades från den generiska `upload_model_textures<B>`; `tools/build-time.ddr` gick från 18,2 s till 20,1 s (över budget) medan `dunder build --timings` rapporterade 1431 → 1433 funktioner och 433 611 → 434 139 operationer — tre funktioner och 1 900 op som enligt fynd 82 är värda ~0,1 s. `--profile-compiler` visade +212 ms fördelat på faserna men +2 172 ms på `compiler=`-totalen, dvs. nästan allt låg utanför varje namngiven fas. Bisektion på riktig kod (samma worktree, samma kompilator, `git stash` mellan mätningarna): exakt samma två rader `decode_png` + `upload_texture` **inline** i `upload_model_textures<B>` gav 18,3 s; samma rader i en egen `uploaded<B>` gav 20,1 s; en extra generisk funktion `<B>` som bara anropade en trivial trait-metod kostade 0 ms. Minimal repro (`/tmp`, beroende `storm-image` som `path`, `decode_png` som tung löv; två mätningar per variant, Mikparchy):
+
+```
+fn direct<B: Backend>(window: &mut B, data: &[]u8) -> i32 {
+    decoded := image.decode_png(data)
+    match decoded { .Ok(d) => d.pixels.len + window.name().len, .Err(_) => 0 }
+}
+fn leaf<B: Backend>(window: &mut B, data: &[]u8) -> i32 { …samma kropp… }
+fn through<B: Backend>(window: &mut B, data: &[]u8) -> i32 { leaf(&mut window, data) }
+```
+
+| `main` når | byggtid |
+|---|---|
+| `direct<B>` (ett generiskt lager) | 1 900 ms |
+| `through<B>` → `leaf<B>` (två) | 2 170 ms |
+| `through<B>` → `leaf` **utan** `<B>` | 1 913 ms |
+
+Så det är inte nestling i sig och inte antalet call sites (en oanropad-generisk funktion kostade 0; decode i en *icke-generisk* funktion utöver den generiska kostade 0): det är att den inre funktionen är generisk över samma `B`. Workaround här, och den design som är rätt ändå: **en generisk funktion per kedja** — `upload_or_refused` (icke-generisk) avgör vad som ska laddas (decode, uppslag i tidigare uppladdningar, vägran med text) och lämnar det enda `window.upload_texture(…)`-anropet inline i `upload_model_textures<B>`; 18,4 s. Rekommendation: när två generiska funktioner instansieras med samma typargument ska den inres nåd inte kompileras en gång till — eller, om den gör det av skäl jag inte sett, ska `--timings`/`--profile-compiler` redovisa kostnaden per funktion så att 1,8 s syns var den finns i stället för i mellanskillnaden mellan `compiler=` och summan av faserna.
+
+**90. En `@embed_file`-shader har ingen kompileringskontroll vid `dunder check`, så en Metal-shader kan vara trasig i flera commit medan allt är grönt.** Symptom: `packages/storm-metal/shaders/storm.metal` läste `in.uv` i `mesh_fragment` sedan `6f325a8` (3b, 2026-11-24), men `struct MeshOut` aldrig haft fältet `uv` (`c876002`-matchen var `MeshVertex.uv`, attributet): shadern har inte kompilerat på Mac sedan dess, och `newLibraryWithSource` hade fallit vid start. `dunder check`, `dunder test` och `tools/shaders.ddr --check` (GLSL → SPIR-V via glslang) var alla gröna, för `.metal`-filen är en sträng (`@embed_file` i `shader.ddr`) som kompileras först vid körning. Upptäcktes av en slump vid läsning av shadern för MR-kartan. Fix: `uv` i `MeshOut`, skrivet i `mesh_vertex` (två rader). Workaround: inget på Linux — Metal-kompilatorn (`xcrun metal`) finns bara på macOS. Rekommendation: två saker. (1) I Dunder: ett `@embed_file`-alternativ som validerar innehållet mot ett verktyg vid bygget (`@embed_file("x.metal", check = ["xcrun", "metal", "-std=metal3.1"])`) eller allmän `dunder build --prebuild`-steg så `tools/shaders.ddr`:s kontrakt (`--check` exit 1/2) kan gälla Metal-shadern på Mac. (2) I Storm: `packages/storm-metal/tools/shaders.ddr` som `tools/shaders.ddr`, med en QA-punkt i `selftest.ddr` att shadern kompilerar — nästa steg 0f.
+
+**91. En fast array implementerar inte `Eq`, så två `[i64; 5]` kan inte jämföras — och därmed inte heller en struct som bär en.** Symptom (0.12.0): ett test ville jämföra de fem texturhandtag en inspelad draw bar mot en literal, `a == b` med `a, b: [i64; 5]`:
+
+```
+tests/executor.ddr:336:10: error[E3004]: type '[i64; 5]' does not implement Eq
+```
+
+Workaround här: elementvis helper i testet (`fn same_maps(a: [i64; 5], b: [i64; 5]) -> bool`, en `&&`-kedja av fem `==`). Rekommendation: `Eq` för fasta arrayer av `Eq`-element — samma regel som gäller structar av sådana fält.
+
 
 ## Grafikobservationer på macOS (Metal)
 
