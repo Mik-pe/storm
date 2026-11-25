@@ -167,3 +167,122 @@ fn pointer(x: f32, y: f32, down: bool, pressed: bool) -> widgets.Pointer {
     assert(widgets.decimal2(-2.345) == "-2.35")
     assert(widgets.decimal2(12.0) == "12.00")
 }
+
+// --- rounded_rect: three strips and four quarter-circles ---
+
+// Every vertex a rounded rect emits lies on or inside its box: that is
+// what makes the shape a rounded version of the rect and not a blob that
+// spills over the layout. Returns the farthest a vertex lies outside.
+fn rounded_spill(canvas: &ui.Canvas, x: f32, y: f32, w: f32, h: f32) -> f32 {
+    vertices := canvas.vertices()
+    mut worst: f32 = 0.0
+    for i in 0..canvas.vertex_count() {
+        px := vertices[i * 8]
+        py := vertices[i * 8 + 1]
+        if x - px > worst { worst = x - px }
+        if px - (x + w) > worst { worst = px - (x + w) }
+        if y - py > worst { worst = y - py }
+        if py - (y + h) > worst { worst = py - (y + h) }
+    }
+    worst
+}
+
+fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
+    vertices := canvas.vertices()
+    mut found := false
+    for i in 0..canvas.vertex_count() {
+        if vertices[i * 8] == x && vertices[i * 8 + 1] == y { found = true }
+    }
+    found
+}
+
+@test fn rounded_rect_is_three_strips_and_four_quarter_circles() {
+    mut canvas := ui.Canvas::new()
+    canvas.rounded_rect(0.0, 0.0, 100.0, 40.0, 8.0, &ui.white(1.0))
+    // 3 rects x 6 vertices + 4 corners x 4 triangles x 3 vertices.
+    assert(canvas.vertex_count() == 66)
+    // Nothing outside the box ...
+    assert(rounded_spill(&canvas, 0.0, 0.0, 100.0, 40.0) < 0.001)
+    // ... and the sharp corners are exactly what is missing: the left
+    // edge starts at y + r, the top edge at x + r.
+    assert(!has_vertex(&canvas, 0.0, 0.0))
+    assert(has_vertex(&canvas, 0.0, 8.0))
+    assert(has_vertex(&canvas, 8.0, 0.0))
+    assert(has_vertex(&canvas, 92.0, 40.0))
+    assert(has_vertex(&canvas, 100.0, 32.0))
+    // Each corner fan: every vertex of a triangle but the centre is r from
+    // that corner's centre, so the arc is a circle and not an ellipse.
+    vertices := canvas.vertices()
+    for i in 18..66 {
+        cx: f32 = if vertices[i * 8] < 50.0 { 8.0 } else { 92.0 }
+        cy: f32 = if vertices[i * 8 + 1] < 20.0 { 8.0 } else { 32.0 }
+        dx := vertices[i * 8] - cx
+        dy := vertices[i * 8 + 1] - cy
+        d := (dx * dx + dy * dy).sqrt()
+        assert(d < 0.001 || (d - 8.0).abs() < 0.001)
+    }
+    // The arc's first outer point is the top of the circle, its last the
+    // left: the quarter is covered end to end.
+    // The first corner's first triangle is (centre, top of circle, next on
+    // the arc); its last triangle ends on the left of the circle.
+    assert(vertices[18 * 8] == 8.0 && vertices[18 * 8 + 1] == 8.0)
+    assert(vertices[19 * 8] == 8.0 && vertices[19 * 8 + 1] == 0.0)
+    assert(vertices[29 * 8] == 0.0 && vertices[29 * 8 + 1] == 8.0)
+}
+
+@test fn rounded_rect_clamps_its_radius_and_falls_back_to_a_rect() {
+    mut canvas := ui.Canvas::new()
+    // A radius larger than half the short side is half the short side.
+    canvas.rounded_rect(0.0, 0.0, 20.0, 10.0, 50.0, &ui.white(1.0))
+    assert(canvas.vertex_count() == 66)
+    assert(has_vertex(&canvas, 0.0, 5.0) && has_vertex(&canvas, 5.0, 0.0))
+    // Radius zero is a plain rect; an empty box is nothing at all.
+    canvas.clear()
+    canvas.rounded_rect(0.0, 0.0, 20.0, 10.0, 0.0, &ui.white(1.0))
+    assert(canvas.vertex_count() == 6)
+    canvas.clear()
+    canvas.rounded_rect(0.0, 0.0, 0.0, 10.0, 4.0, &ui.white(1.0))
+    canvas.rounded_rect(0.0, 0.0, 20.0, -1.0, 4.0, &ui.white(1.0))
+    assert(canvas.is_empty())
+}
+
+// A slider whose range is empty (min == max) has nothing to interpolate:
+// the knob sits at the start of the track rather than at a NaN, which a
+// division by the zero span would produce and that the shader would draw
+// nowhere at all.
+@test fn slider_with_an_empty_range_keeps_the_knob_on_the_track() {
+    atlas := widget_atlas()
+    mut state := widgets.State::new()
+    mut canvas := ui.Canvas::new()
+    theme := widgets.theme()
+    mut value: f32 = 3.0
+    state.begin()
+    state.end(&pointer(0.0, 0.0, false, false))
+    state.begin()
+    _ := state.slider(&mut canvas, &atlas, 3, &pointer(0.0, 0.0, false, false), 40.0, 140.0, 240.0, "x", &mut value, 3.0, 3.0, &theme)
+    vertices := canvas.vertices()
+    // Track and knob are the untextured vertices (u == -1); the text is the
+    // atlas's business. With t = 0 the knob sits at the start of the track.
+    mut shapes := 0
+    mut left: f32 = 10000.0
+    mut right: f32 = -1.0
+    for i in 0..canvas.vertex_count() {
+        assert(vertices[i * 8] == vertices[i * 8])
+        if vertices[i * 8 + 2] == -1.0 {
+            shapes += 1
+            if vertices[i * 8] < left { left = vertices[i * 8] }
+            if vertices[i * 8] > right { right = vertices[i * 8] }
+        }
+    }
+    // Track (3 strips + 4 corners = 66) + knob (66); the fill is zero wide.
+    assert(shapes == 132)
+    // Track starts at x + 92; the knob is centred on that start, 4 either side.
+    // Track starts at x + 92 = 132 and is 96 wide (ends 228); the knob is
+    // centred on that start, 4 either side (128).
+    assert(left == 128.0 && right == 228.0)
+    // Dragging in an empty range leaves the value alone and reports no change.
+    state.begin()
+    changed := state.slider(&mut canvas, &atlas, 3, &pointer(200.0, 150.0, true, true), 40.0, 140.0, 240.0, "x", &mut value, 3.0, 3.0, &theme)
+    assert(!changed)
+    assert(value == 3.0)
+}
