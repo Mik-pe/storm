@@ -18,7 +18,7 @@ Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. 
 **3b är landat (2026-11-24):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen; bevis i avsnittet). Nästa är **3c**: glTF-bilder (PNG via Dunder-repots `packages/zlib`), `Material.texture` i `storm-scene`, samplarens parametrar som enum i `storm-gfx` (anisotropi, wrap, filter) och Metal:s mipkedja. *Beslut inför 3c* (avsnitt 3c) är researchat och mätt 2026-11-25: avkodaren i `storm-image`, samplaren som enum i `storm-gfx` (flyttad från `storm-gltf` — det är materialet som äger samplingen, och `storm-scene` känner inte till glTF), och inflate-tiden för de elva Khronos-/Katla-filerna.
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
 (genererade bindings). Två delar är landade: `tools/vk.ddr` skriver
-`api.ddr` ur `vk.xml` (80 prototyper + `load()`) och `layout.ddr` (71
+`api.ddr` ur `vk.xml` (81 prototyper + `load()`) och `layout.ddr` (71
 `@c_layout`-poster + en `impl X { pub unsafe fn new() -> X }`-fabrik per post
 som nollställer och skriver `sType` ur registret; 135 `x.sType = N` vid
 anropsplatserna blev `X::new()`, inget strukturtal står kvar utanför
@@ -90,8 +90,8 @@ Scenfärgen kan filtreras på GPU:n på både Metal och Vulkan. FXAA och färgto
 
 ## 0b. Klart: textrenderingen
 
-Textatlasen samplar: UI-vertexen matar `vec4(x, y, u, v)` på location 0 och
-`vec4(r, g, b, a)` på location 16, descriptor-layouten deklarerar binding 0 som
+Textatlasen samplar: UI-vertexen matar `vec4(x, y, u, v)` på location 0 (offset 0) och
+`vec4(r, g, b, a)` på location 1 (offset 16), descriptor-layouten deklarerar binding 0 som
 `COMBINED_IMAGE_SAMPLER`, och UI-shadern räknar NDC med Vulkans y-ned-konvention.
 Felen och deras orsaker står i [dogfood.md](dogfood.md#uppföljning-editor-ui-overlay-effekter-och-textatlasen)
 (fynd 34–36).
@@ -403,8 +403,8 @@ parsern läser riktiga filer (fynd 59); ECS:t har frågor (`join2`/`join3` med
 dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
 `AGENTS.md` (bygget under 20 s, mätt med `tools/build-time.ddr`; bara main,
 inga PR:s eller CI). Kvar: texturer (avsnitt 3), resten av glTF (nodes/
-materials/scenes nedan), `storm-vk` som eget paket (design.md steg 1), sub-5-s-
-bygge (fynd 56: det är Dunders kompilator).
+materials/scenes nedan), `storm-vk` som eget paket (design.md steg 1) och
+byggtiden (fynd 56: den är kompilatorns, och budgeten står i avsnittet ovan).
 
 ## 0f. Klart: gränssnittet och Metal
 

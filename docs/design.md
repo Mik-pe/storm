@@ -1,7 +1,7 @@
 # Storm — design från första principer
 
-> Status: **levande dokument** — uppmätt 2026-11-24 mot trädet efter
-> `storm-gfx`, Metal-backenden och Blomsterskogen. Skrevs efter djupbufferten, av en
+> Status: **levande dokument** — uppmätt 2026-11-25 mot trädet efter
+> `storm-gfx`, Metal-backenden, Blomsterskogen och materialtexturerna (3b). Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
 > heltalen för hand och läste tabellen baklänges. Det här dokumentet
@@ -29,11 +29,12 @@
    är en self-test som läser pixlar och input och kan köras igen.
 7. **Plattformsvalet görs i `src/main.ddr`.** Där väljs både det interaktiva fönstret och renderaren för bildexport. Spel, editor och agentprotokoll använder samma scen och renderingskontrakt på båda plattformarna.
 
-## 1. Nuläge (mätt i koden, 2026-11-24)
+## 1. Nuläge (mätt i koden, 2026-11-25)
 
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
-  som bitar i en `u32`), `Mouse` (med `scroll`), `Sky`, `Surface`, `Vertex` och `PostProcess`.
-  `trait Backend` beskriver pass, ritning och bildexport i 20 metoder
+  som bitar i en `u32`), `Mouse` (med `scroll`), `Sky`, `Surface`, `Texture`,
+  `Vertex` och `PostProcess`.
+  `trait Backend` beskriver pass, ritning, texturer och bildexport i 22 metoder
   (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet. Åtta tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
@@ -42,16 +43,17 @@
   `sType`-tal** (var 135 i nio moduler): `layout.ddr` genereras ur `vk.xml`
   och varje post har en `new()`-fabrik som skriver strukturtypen, så talet
   finns på en rad per post i en fil ingen skriver för hand (§6).
-- **Enums är ett eget lager:** `enums.ddr` har 34 `pub enum` och 42
-  `pub fn`: 40 konverterare/namngivna värden och två skrivare av C-poster
-  (`apply_blend`, `apply_vertex_input`). Endast två
+- **Enums är ett eget lager:** `enums.ddr` (genererad, §6) har 33 `pub enum` och 43
+  `pub fn`: 41 konverterare/namngivna värden och två `unsafe` skrivare av
+  C-poster (`apply_blend`, `apply_vertex_input`). Endast två
   namngivna `u32`-konstanter lever kvar i `layout.ddr`
   (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
 - `state.ddr` `Renderer`: **121 fält** (var ~60 när steget skrevs; IBL,
   djup, skuggor, post, UI och headless har alla lagt till sina). Varje
   modul tar `&mut Renderer`. Ägarskapet är redan modulvis (varje modul har
-  sin `create`/`destroy`); fälten ligger platt. 70 av dem tillhör fem
-  kluster med en ägare och 1 är en färdig post (`depth.Depth`) — §3b.
+  sin `create`/`destroy`); fälten ligger platt. 69 av dem tillhör fem
+  kluster med en ägare och två är färdiga poster (`depth.Depth`,
+  `material: texture.Material`) — §3b.
 - **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
   returnerar `state.SetupStep` (`Ready` eller steget som föll); `device.fail(&mut r, code, step)`
   sätter `r.lastResult` och ger steget tillbaka, så en Vulkan-kod kan inte
@@ -102,26 +104,26 @@
   207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Lagren i storm-vulkan (5 202 rader + 4 212 genererad `shader.ddr`):
+Lagren i storm-vulkan (6 313 rader + 4 223 genererad `shader.ddr`), räknade 2026-11-25:
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | FFI-bindings | `api.ddr`, `layout.ddr` (båda genererade), `sdl.ddr` | 1 896 |
-| Enums vid gränsen | `enums.ddr` | 357 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 149 |
-| App-nära kod | `ui.ddr`, `post.ddr` | 562 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 875 |
+| Enums vid gränsen | `enums.ddr` (genererad) | 494 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr` | 2 489 |
+| App-nära kod | `ui.ddr`, `post.ddr` | 536 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 898 |
 
-Lagren i storm-metal (2 266 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
+Lagren i storm-metal (2 382 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | Runtingen | `objc.ddr` | 280 |
 | Ramverkens värden | `enums.ddr`, `records.ddr` | 189 |
 | Fönstret och input | `appkit.ddr` | 508 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 345 |
-| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr` | 295 |
-| Orkestrering | `metal.ddr` | 649 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 361 |
+| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 370 |
+| Orkestrering | `metal.ddr` | 674 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
@@ -243,7 +245,7 @@ Två gränser till har samma regel, om än inte enums:
 - `api.ddr`, `layout.ddr` → `storm-vk` (kvar).
 - `device.ddr`, `pipeline.ddr` → `Result` och ägda strukturer (kvar i
   storm-vulkan; **genomfört i storm-metal**, som byggdes så från början:
-  `Renderer` med 33 fält, och en skapare och en förstörare per ägd resurs).
+  `Renderer` med 38 fält, och en skapare och en förstörare per ägd resurs).
 - `vulkan.ddr`:s 17 setup-steg → en `Setup`-kedja med `Result` (kvar; på
   kontraktets nivå är det klart: varje anrop är en `Result`).
 - `ui.ddr` + `post.ddr` ur backend-lagret (kvar).
@@ -277,7 +279,7 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    *Andra halvan påbörjad 2026-11-24 (§3b): `depth.Depth` är det första
    klustret som flyttade in i en post hos sin ägare (`r.depth.image`
    i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett
-   test. `Renderer` har **121 fält**; 70 av dem hör till fem kluster som
+   test. `Renderer` har **121 fält**; 69 av dem hör till fem kluster som
    redan har en ägare och bara ligger platt (§3b).*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
@@ -387,7 +389,7 @@ Mätt 2026-11-24 med ett skript som räknar `r.<fält>` per modul (kolumnen
 | ui | 11 | `ui.ddr` | 0 | `ui.Atlas` — samma namn som Metals |
 | post | 12 | `post.ddr` | 6 (`pipeline`, `device`, `vulkan`: `scenePass`, `compositePass`, `sceneFramebuffer`) | `post.Stage` |
 | shadow | 17 | `shadow.ddr` | 6 (`ibl`, `vulkan` binder `shadowSet`; `pipeline` läser `shadowSetLayout`) | `shadow.Shadow` |
-| ibl | 25 | `ibl.ddr` | 0 | `ibl.Environment` — samma namn som Metals |
+| ibl | 24 | `ibl.ddr` | 0 | `ibl.Environment` — samma namn som Metals |
 | capture | 5 | `headless.ddr` | 2 (`vulkan` binder `captureFramebuffer`) | `headless.Capture` |
 
 Regler som gör att flytten inte blir något att "komma ihåg":
