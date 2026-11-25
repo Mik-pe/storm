@@ -82,12 +82,12 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`1a7f0e2` +
-  exekutortesterna och `depth.Depth`, Dunder 0.12.0, låst session) omfattade **196 egna
-  `@test`** — 45 i roten och 151 i de 15 paketen — alla gröna, varje svit
-  lika många som den har `@test` (Skrifts två följer med i roten,
-  `storm-text` och `storm-ui`). 16 sviter kördes med `dunder test` i roten
-  och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`1ac2860`,
+  Dunder 0.12.0, låst session) omfattade **232 egna `@test`** — 60 i roten
+  och 172 i de 15 paketen, räknade med `grep -c '@test'` — alla gröna, varje
+  svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
+  i roten, `storm-text` och `storm-ui`, så `N passed` blir 240). 16 sviter
+  kördes med `dunder test` i roten och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
   `load_model`) är testbar utan fönster: vad ett pass får, när
   mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
