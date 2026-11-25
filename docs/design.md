@@ -258,8 +258,8 @@ Varje steg lämnar träd och tester grönt. Capture-filer före/efter måste
 vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 1. **Skapa `storm-vk` med enums + bindings.** *Status: enums-modulen finns
-   (`packages/storm-vulkan/src/enums.ddr`, 34 enums, 266 anrop);
-   paketdelningen är kvar.*
+   och genereras ur `vk.xml` (`packages/storm-vulkan/src/enums.ddr`, 33 enums,
+   urvalet i `tools/vk.ddr`); paketdelningen är kvar.*
 2. **Ersätt de 135 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
    *Status: klart 2026-11-23. 135 → **0** råa enum-heltal i structfält: de
@@ -434,8 +434,11 @@ Ordningen efter depth: **ui** (11 fält, 0 utanför, redan Metalls namn),
   migreringen verifierade varje tal mot registret innan det togs bort, och
   alla stämde. En union blir sitt största medlemsslag (`VkClearValue` →
   `color: ClearColorValue`, 16 byte), och Storms egna poster står under en
-  markör som generatorn kopierar oförändrat. `enums.ddr` (34 enums) är nästa
-  med samma taggläsare. För Metal behövs det inte på samma sätt: det
+  markör som generatorn kopierar oförändrat. `enums.ddr` görs på samma sätt:
+  registret äger talen, Storm äger urvalet (en tabell i verktyget: Dunder-namn,
+  registrets block, varje variant med registrets konstant och Storms kommentar),
+  kombinerade flaggor är summan av namngivna bitar, och ett namn registret inte
+  känner är exit 2 med namnet. För Metal behövs det inte på samma sätt: det
   som hålls för hand är 109 selektorer och 53 deklarerade meddelandetyper
   (34 unika signaturer), och det
   som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin

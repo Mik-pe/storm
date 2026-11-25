@@ -28,8 +28,10 @@ från registriet; `--check api`/`--check layout` för en fil). Anropet är
 `dunder run` flaggan själv (`unknown option: --check`). Storms egna poster
 (`Dependencies`, `ShaderStages`, `FrameViewport`, `vertex_input()`, de två
 tiling-konstanterna) står under `// --- Storm's own records ---` och kopieras
-oförändrade. Kvar: `enums.ddr` (34 enums som i dag pinnas av tester mot
-Khronos-tabellerna) med samma taggläsare; `state.ddr`:s `MemoryProperties`
+oförändrade. `enums.ddr` är genererad på samma sätt (`--check enums`): 33
+enums, urvalet som data i verktyget, talen ur registret, Storms egna värden
+(`binding_word`, `is_success`, `alpha_over` …) under
+`// --- Storm's own values and writers ---`. Kvar: `state.ddr`:s `MemoryProperties`
 (skrivs idag ur ett rått `raw[]`-fältord i `device.ddr`) som en genererad
 `VkPhysicalDeviceMemoryProperties`; de nio egna par-posterna (`Dependencies`
 o.s.v.) är
