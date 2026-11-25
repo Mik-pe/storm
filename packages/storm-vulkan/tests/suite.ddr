@@ -367,7 +367,7 @@ fn setup_steps() -> [state.SetupStep; 17] {
     unsafe {
         assert(size_of(depth.Depth) == 24)
         assert(size_of(texture.Material) == 32)
-        assert(size_of(state.Renderer) == 6128)
+        assert(size_of(state.Renderer) == 6112)
     }
 }
 
