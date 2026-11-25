@@ -1,7 +1,8 @@
 # Storm — design från första principer
 
 > Status: **levande dokument** — uppmätt 2026-11-25 mot trädet efter
-> `storm-gfx`, Metal-backenden, Blomsterskogen och materialtexturerna (3b). Skrevs efter djupbufferten, av en
+> `storm-gfx`, Metal-backenden, Blomsterskogen, materialtexturerna (3b) och
+> glTF-bilderna med samplare per textur (3c). Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
 > heltalen för hand och läste tabellen baklänges. Det här dokumentet
@@ -66,8 +67,9 @@
 - **Spelet är fyra paket under kontraktet, inget över det.** `storm-physics`
   (translaterande rigid bodies i meter och sekunder) beror bara på
   `storm-core`; `storm-play` (autorerade scener, `Session` med fast tick
-  60 Hz, `Input`-värde) på `physics` och `core`; `storm-image` (PNG-utdata
-  och `preview<T>`-omslag) på stdlib; `storm-mcp` (JSON-RPC på stdio,
+  60 Hz, `Input`-värde) på `physics` och `core`; `storm-image` (PNG-utdata,
+  PNG-avkodning över Dunder-repots `zlib`, och `preview<T>`-omslag) på stdlib
+  och `zlib`; `storm-mcp` (JSON-RPC på stdio,
   validerat mot sin egen katalog) på `play` och `image` och tar
   renderaren som **funktionspekare** `fn(&play.Session, string) ->
   Result<(), string>` — sammansättningsroten (`src/main.ddr: preview`) är

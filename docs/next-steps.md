@@ -15,7 +15,7 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
-**3b är landat (2026-11-24):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen; bevis i avsnittet). Nästa är **3c**: glTF-bilder (PNG via Dunder-repots `packages/zlib`), `Material.texture` i `storm-scene`, samplarens parametrar som enum i `storm-gfx` (anisotropi, wrap, filter) och Metal:s mipkedja. *Beslut inför 3c* (avsnitt 3c) är researchat och mätt 2026-11-25: avkodaren i `storm-image`, samplaren som enum i `storm-gfx` (flyttad från `storm-gltf` — det är materialet som äger samplingen, och `storm-scene` känner inte till glTF), och inflate-tiden för de elva Khronos-/Katla-filerna.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. Nästa är **3d**: de linjära texturerna (metallicRoughness, normal, occlusion, emissive) i egna samplers.
 `storm-gfx` tog ifrån Vulkan-paketet i namn men inte i kropp: **storm-vk**
 (genererade bindings). Två delar är landade: `tools/vk.ddr` skriver
 `api.ddr` ur `vk.xml` (81 prototyper + `load()`) och `layout.ddr` (71
@@ -147,7 +147,7 @@ och tre attribut, `VERTEX_FLOATS = 8`, `VERTEX_BYTES = 32`) och
 `len % VERTEX_FLOATS`. Stride, offset och format finns inte på någon annan
 plats i paketet.
 
-### Beslut inför 3a–3c (researchad 2026-11-23)
+### Beslut inför 3a–3b (researchad 2026-11-23)
 
 - **Ett ställe äger vertexformatet.** Inte två pipeline-beskrivningar som
   hålls lika "för hand". Ett `vk.Attributes`-värde med tre attribut
@@ -177,20 +177,6 @@ plats i paketet.
   (G = roughness, B = metallic), normal- och occlusion-kartor är **linjära**
   (UNORM). PNG:ns egen ICC/gamma ignoreras (spec: "MUST be ignored").
   `enums.Format` har båda (`R8G8B8A8_SRGB = 43`, `_UNORM = 37`).
-- **PNG i ren Dunder.** Läs `IHDR`, sammanfoga `IDAT` och kontrollera
-  `IEND`. Avkoda med Dunder-repots `packages/zlib` (ett `git`-beroende
-  med `rev` och låsfil; se *Beslut inför 3c* nedan) och begränsa utdata
-  till summan av radlängderna inklusive filterbyte. FoxFixed ger 3 146
-  752 byte för 1 024 × 1 024 RGB-pixlar. Tillämpa radens filter och
-  expandera RGB till RGBA. Testa sedan RGBA och gråskala med alfa.
-- **Sampler från glTF:s `samplers[]`, inte hårdkodat.** FoxFixed:
-  `magFilter 9729` (LINEAR), `wrapS/T 10497` (REPEAT), ingen `minFilter`
-  (→ implementation-defined enligt spec; Fox.glb anger 9987 =
-  LINEAR_MIPMAP_LINEAR, så mipmaps är att vänta). Storm har
-  `enums.Filter` och `enums.SamplerAddressMode`; glTF-talen (9728/9729,
-  33071/33648/10497) ska vara en enum i `storm-gltf`, inte ett `i32` som
-  skickas mot Vulkan. Första steget (3b, checkermönster utan fil) använder
-  `ClampToEdge` + `Linear` som `ibl.create_sampler` redan gör.
 - **Mipmap från dag ett.** En 1024²-textur utan mipmaps skimrar på avstånd;
   `blit`-kedjan finns i `ibl.ddr` (`create_cube` med mipnivåer). Kedjan
   byggs med `vkCmdBlitImage` per nivå (inget `vkGenerateMipmaps` i Vulkan 1.0
@@ -228,170 +214,92 @@ På Metal är det samma kontrakt (`storm-metal/src/texture.ddr`): en lista `[]Te
 
 Bevis (Mikparchy, låst session, `--capture --frames 1`): utan `--texture` är capturer **AE = 0** mot baslinjen både i spelet (`f9fcc23`-binären, 1280×800) och i studion — vit fallback × basfärg = basfärgen, och set 1 binds för varje mesh. Med `--texture` (en 2×2 PPM med fyra färger) på `--studio`: golvet bär texturen och ingenting annat (pixelprover: golv `(92,124,124) → (65,86,76)`, kub `(188,169,139)` oförändrad; AE 72 802 mot studions baslinje). Med en 256×160 capture som textur (9 nivåer, blit-kedjan): bilden syns på golvet och cyclorama-väggen, mjuk på avstånd — mipkedjan fungerar. Kvar av beviset i planen: en 1024²-textur på avstånd mot `mipLevels = 1` (skimret) — det hör till 3c, när en riktig glTF-textur finns.
 
-### 3c. glTF-bilder och material
+### 3c. Klart: glTF-bilder och material (landat 2026-11-25)
 
-`images`/`textures`/`samplers`/`pbrMetallicRoughness` (`baseColorFactor`
-× `baseColorTexture`, `metallicFactor`, `roughnessFactor`) ur GLB:n, med
-PNG-avkodningen ovan. Bevis: FoxFixed renderas med sin päls (compare mot
-Khronos referensbild i komposition), och `Box.glb` (ingen textur, bara
-`baseColorFactor` röd) renderas fortfarande röd — faktorn utan textur är
-den vanligaste glTF-materialtypen och får inte brytas.
+Tre committer: `2c0c33c` (PNG-avkodare), `496d59b` (`gfx.Sampler`), `05a0250`
+(gltf → scene → app). Bevis: FoxFixed.glb renderas med pälsen — medelvärdet
+över rävens kropp gick från neutralgrå (124,121,112) till varm pälsbrun
+(114,91,69), pixel (640,600) = (71,33,8) — och avkodningen av `images[0]`
+ger de pixlar Pillow läser (tre prober: (67,63,30) vid (0,0), (219,135,41)
+vid (512,512), (255,250,242) vid (541,694)). Box.glb, som inte har några
+texturer, ger AE = 0 mot 3b-capturen, liksom spelscenen och `--texture`.
+DamagedHelmet avbrytes med status 1 och `image 0 is image/jpeg, Storm reads
+PNG`.
 
-#### Beslut inför 3c (researchat och mätt 2026-11-25)
+**Vad filerna innehåller** (uppmätt med en chunk-läsare över de elva
+Khronos-/Katla-filerna, 2026-11-25): färgtyp 2 (RGB) och 6 (RGBA) dominerar,
+typ 0/1/3/4 finns i fixturerna men inte i modellerna; bitdjup 8 överallt,
+ingen interlace; DamagedHelmet är den enda med `image/jpeg`. FoxFixed:s
+sampler har `magFilter 9729`, `wrapS/T 10497` och **ingen `minFilter`** —
+specens default ("When magFilter or minFilter are undefined, a sampler with
+repeat wrapping and LINEAR/LINEAR_MIPMAP_LINEAR filters SHOULD be used") är
+alltså det vanliga fallet, inte undantaget.
 
-**Vad filerna faktiskt innehåller.** Uppmätt med en chunk-läsare över de
-elva glTF-filerna i `~/Work/Katla/resources/models/` och Storms två
-fixturer: alla inbäddade bilder är `bufferView` + `mimeType` (ingen `uri`,
-ingen data-URI), PNG med bitdjup 8 och `interlace = 0`. Färgtyperna är
-**2 (RGB)** (Fox, Avocado, Lantern, DamagedHelmet:s PNG-del) och **6
-(RGBA)** (Tiger, Lantern 0). Fox/FoxFixed har `samplers[0]` med
-`magFilter 9729`, `wrapS/T 10497`; Fox.glb `minFilter 9987`, Tiger
-`9985` (LINEAR_MIPMAP_NEAREST); FoxBlender, Avocado och Lantern har
-**ingen samplar alls**. DamagedHelmet är den enda med `image/jpeg` (fem
-bilder). Tre bitar av specen äger valen:
+**Vad som landade, och två beslut som ändrades mot planen:**
 
-- **`mimeType` är obligatoriskt för `bufferView`-bilder** (§5.25.2) och
-  `uri`/`bufferView` är ömsesidigt uteslutande. Storm läser bara GLB, så
-  fallet "inget mimeType" finns inte: okänt eller saknat `mimeType` är ett
-  fel med bildens index, inte en gissning. Godots fallback ("försök PNG,
-  sedan JPEG", PR 51052) finns för `.gltf`-filer med data-URI:er och
-  felaktiga mime-typer i produktion; det är ett problem Storm inte har.
-- **"When `texture.sampler` is undefined, a sampler with repeat wrapping
-  (in both directions) and auto filtering MUST be used"** (§5.25.1), och
-  "When the latter are undefined, client implementations MAY set their
-  own default texture filtering settings" (§3.8.4.1). "Auto filtering" är
-  inte definierat (KhronosGroup/glTF#2096 är fortfarande öppen); three.js
-  väljer `LINEAR`/`LINEAR_MIPMAP_LINEAR`, Filament samma
-  (`getMinFilter` faller till `LINEAR_MIPMAP_LINEAR`, `getWrapMode` till
-  `REPEAT`), och det är vad Storms samplare redan gör (3b). Det är
-  alltså **ett val som får göras**, och Storm har gjort det.
-- **Mipfilter utan mipkedja:** "When runtime mipmap generation is not
-  possible, client implementations SHOULD override the minification
-  filtering mode" (`…MIPMAP_NEAREST` → `NEAREST`, `…MIPMAP_LINEAR` →
-  `LINEAR`, §3.8.4.2). Vulkan-backenden har kedjan; Metal har en nivå
-  tills vidare — så den mappar filter enligt tabellen när den bara har
-  en nivå, och tabellen är ett faktum att pinta i ett test, inte en
-  glömd regel.
+- **Avkodaren är `storm-image`**, inte `storm-gltf`: `image.decode_png(data)
+  -> Result<Image, string>` ger samma `Image { width, height, pixels }` som
+  `image.rgba` (RGBA8, rader uppifrån och ned, ingen padding). Bitdjup 16 och
+  Adam7 vägras med meddelande; fem färgtyper och fem radfilter; gräns 256 MiB
+  räknad i `i64` innan något allokeras; zlib som `git`-beroende med `rev` och
+  låsfil. Femton tester med PNG:er skrivna av Python/zlib och Pillow, och
+  referenspixlarna är *Pillow*s, inte skriptets.
+- **`storm-gltf` läser bilderna men dekodar dem inte** — *ändrat mot planen*
+  (`Part.texture: image.Image`). En bild i glTF-paketet är `Image { mime,
+  data }`: mime-typen och bufferView:ns bytes, och `Part.texture` är indexet i
+  `Asset.images` (−1 = ingen). Skäl: storm-gltf ska inte bero på storm-image
+  (avkodaren kostar 1,1 s kompilering, dogfood 82, och avkodning hör hemma
+  där en backend finns); en MCP-förhandsvisning dekodar `asset.images[i].data`
+  själv. Appens `load_model_into` dekodar varje bild och laddar upp den.
+  `mimeType` != `image/png` → `Err("image N is image/jpeg, Storm reads PNG")`.
+- **Samplern följer texturen vid uppladdning, inte ritposten** — *ändrat
+  mot planen* (`Material.sampler: gfx.Sampler`). `gfx.Sampler { mag, min,
+  mips, wrap }` med `Filter { Nearest, Linear }`, `MipFilter { None, Nearest,
+  Linear }` (`None` = ingen mipkedja alls) och `Wrap { Repeat, MirroredRepeat,
+  ClampToEdge }`; `gfx.sampler()` är specens default. `upload_texture` tar
+  den, båda backends bygger en sampler per textur (Vulkan: `samplers: [ptr; 64]`
+  i tabellen, förstörd med bilden; Metal: `MTLSamplerDescriptor` per textur,
+  `sampler_of(textures, id)`), och den delade `Material.sampler` i Vulkan är
+  borta. Skäl: en `VkSampler` är en resurs per textur, och planen sa det själv
+  ("samplern hör till texturen i glTF") men placerade den på ritposten — ett
+  värde på `Material` som backenden får bygga om varje frame. En textur är
+  bild + sampler; det är vad en `gfx.Texture` nu är.
+- **Ett okänt filter- eller wrap-tal är `Err`, inte default** (som planen,
+  Filament och glTF-SDK): `sampler 0: magFilter 97 is not a glTF filter`.
+  glTF:s tal är `pub const` i `storm-gltf/src/textures.ddr`, inte en enum —
+  och översättningen är en if-kedja, för en `const` kan inte vara ett
+  `match`-mönster (dogfood 83).
+- **`storm-scene.Material.texture: gfx.Texture`** (kontraktets värde, inte en
+  backend), satt av `scene.textured(material, texture)`; `set_material`
+  kopierar det och `record_mesh` binder `item.material.texture`. Appens
+  specialfall "golvet bär `--texture`" är borta: golvet sätter texten i sitt
+  material som alla andra, och `--texture` utan studio säger det med text i
+  stället för att indexera ett golv som inte finns (exit 103, tyst).
 
-**PNG i ren Dunder — mätt, inte antaget.** Dunder-repots
-`packages/zlib` (`zlib.decompress(src, max_bytes) -> Result<[]u8, string>`,
-RFC 1950/1951, Adler-32-kontrollerad, ren Dunder, inga capabilities) är
-den enda inflate som finns på språket; Skrifts `sfnt.zlib_decompress` är
-sedan `c973a09` bara ett omslag runt den. Mätning på Mikparchy med
-`sys.now_ms()` runt chunk-läsning + `decompress`, Dunder 0.12.0:
+**Kvar i 3c:**
 
-| Bild | Storlek | IDAT | Förh. | Dekodat | Inflate |
-|---|---|---|---|---|---|
-| Fox `images[0]` (RGB) | 1024² | 26 kB | 118:1 | 3,1 MB | **212 ms** |
-| Lantern `images[3]` (RGB) | 2048² | 169 kB | 75:1 | 12,6 MB | **876 ms** |
-| Tiger `images[2]` (RGBA) | 2048² | 1,99 MB | 8:1 | 16,8 MB | **2 138 ms** |
-| Tiger `images[1]` (RGBA) | 1024² | 1,18 MB | 4:1 | 4,2 MB | **814 ms** |
-| Avocado `images[1]` (RGB) | 2048² | 1,65 MB | 8:1 | 12,6 MB | **1 717 ms** |
-| Tiger `images[0]` (RGBA) | 2048² | 7,5 MB | 2:1 | 16,8 MB | **4 323 ms** |
-
-Alla tretton PNG-bilderna i sex Khronos-modeller (Avocado 3, Fox, FoxBlender
-och FoxFixed 1 var, Lantern 4, Tiger 4) är dekoderade med `got == inflated`
-(`~/Work/Katla/resources/models/`): 3,9–14,8 MB/s, dvs. **67–258 ns per
-dekodat byte, och kostnaden per byte styrs av kompressionsförhållandet,
-inte av storleken** — Fox (118:1, mest långa
-back-referenser) går 4× snabbare per byte än Tiger 0 (2:1, mest literaler).
-Referens: libpng och stb_image dekodar 100–300 MB/s, Wuffs upp till 1 GB/s
-(Nigel Tao, *The Fastest, Safest PNG Decoder*, mätt på en i5-10210U) —
-Dunder-zliben ligger **20–26× efter libpng/stb**. Var tiden går, uppdelat
-med prov i
-`/tmp` (push av samma antal byte utan inflate: 4,2 M `out.push` ~190 ms,
-4,2 M index-skrivningar ~60 ms) och läsning av slingan i `zlib.ddr`:
-`HuffTable.decode` läser **ett bit i taget** (`read_bits(&src, 1)` upp till
-15 gånger per symbol, `ensure` i varje) och en back-referens pushar **en
-byte i taget** (`for _ in 0..copy_len { out.push(out[out.len - dist]) }`).
-Långa referenser (Fox) betalar mest push, korta (Tiger 0) betalar mest
-Huffman — därav förhållandet. Mätt samma dag med fyra kopieringsformer på
-4,2 M byte (145–168 ms, brus) och med strömmen stoppad vid första utbyte
-(0–1 ms): kopieringsformen är ingen lever, och **ca 75 % av tiden är
-`HuffTable.decode`** — bitarna läses ett i taget, `ensure` i varje
-(dogfood 80). Konsekvensen för Storm: Fox (0,2 s) är
-omedelbart; **Tiger (fyra bilder) 10,0 s, Lantern (fyra) 7,7 s, Avocado
-(tre) 6,3 s** — det är inte omedelbart. **Det är inte ett Storm-problem
-att lappa runt** — `packages/zlib` ligger i Dunder-repot och
-rekommendationen står i dogfood 80. Storm bygger 3c mot det API som finns
-(`decompress`), och det går snabbare när Dunder gör det.
-
-**Beslut:**
-
-- **Avkodaren är `storm-image`, inte `storm-gltf`.** `image.decode_png(data)
-  -> Result<Image, string>` ger samma `Image { width, height, pixels }`
-  som `image.rgba` (RGBA8, rader uppifrån och ned, ingen padding): den
-  form `gfx.upload_texture` tar. En PNG är inte glTF: MCP:s
-  förhandsvisning och `--texture` kan ladda en PNG utan att veta vad en
-  accessor är. Chunk-
-  vandringen (signatur, `IHDR`, `IDAT`-sammanfogning, `IEND`), zlib via
-  Dunder-repots `packages/zlib` som `git`-beroende med `rev` och låsfil
-  (samma regel som `storm-text → skrift`), och de fem radfilterna
-  (`None`, `Sub`, `Up`, `Average`, `Paeth`) i en loop över rader med
-  `prev`/`cur`. Utdata är alltid RGBA8: typ 0 (grå) och 4 (grå+alfa)
-  expanderas, typ 2 får alfa 255, typ 3 (palett) läser `PLTE` och
-  `tRNS`. **Bitdjup 16 avvisas** med ett tydligt fel (ingen av de elva
-  filerna använder det; "sample as 8-bit" är Filaments val men en
-  tyst halvering av precision är inte vårt), och **interlace (Adam7)
-  avvisas** (ingen använder det; sju pass är en egen decoders värt).
-  Gränser: `width * height * 4` räknas i `i64` och avvisas över 256 MiB
-  innan något allokeras; `IHDR`-CRC kontrolleras inte (Wuffs och stb
-  hoppar också CRC på ancillary chunks; `IDAT`:s innehåll skyddas av
-  zlib:ens Adler-32). Ett test dekodar Fox `images[0]` (1024² RGB) och
-  jämför **alla** 4,2 M byte mot Pythons `PIL`/`zlib` utskrivna
-  referens (fixtures: en liten 2×2 RGBA och en 3×2 grå, handbyggda med
-  kända byte) — en fixture koden under test producerat är inget bevis.
-- **glTF-laddaren läser bilderna, inte pixlarna.** `storm-gltf` får
-  **`Part.texture: image.Image`**, ett tomt `Image` (`width == 0`) när
-  materialet saknar `baseColorTexture`. Det är `asset()` som fyller
-  det, ur `images[texture.source].bufferView` →
-  `image.decode_png(&doc.bin[view])`. `mimeType` != `image/png` →
-  `Err("image N: image/jpeg is not supported (PNG only)")` — DamagedHelmet
-  laddar alltså inte, och det sägs, i stället för att ritas vit.
-  `metallicRoughnessTexture`, `normalTexture`, `occlusionTexture` och
-  `emissiveTexture` läses **inte** i 3c (de är linjära och ska i egna
-  samplers; det är 3d).
-- **Samplaren blir en enum i `storm-gfx`, inte i `storm-gltf`.** Det är
-  materialet som ska få säga hur det samplas, och `storm-scene.Material`
-  känner inte till glTF. `gfx.Sampler { mag: MagFilter, min: MinFilter,
-  wrap_s: Wrap, wrap_t: Wrap }` med `MagFilter { Nearest, Linear }`,
-  `MinFilter { Nearest, Linear, NearestMipmapNearest,
-  LinearMipmapNearest, NearestMipmapLinear, LinearMipmapLinear }`,
-  `Wrap { Repeat, MirroredRepeat, ClampToEdge }` och
-  `gfx.sampler_default()` = Linear/LinearMipmapLinear/Repeat (specens
-  "auto"). `upload_texture(pixels, w, h)` får samplaren som fjärde
-  argument, för samplaren hör till texturen i glTF (`texture.sampler`),
-  inte till Ritposten. Vulkan bakar den i en `VkSampler` per textur
-  (tabellen får en `[]ptr` till samplerslot, förstörd med bilden) ur
-  `enums.Filter`/`SamplerMipmapMode`/`SamplerAddressMode`; en
-  mip-filter på en textur med **en** nivå (`r.material.blit == 0`)
-  mappas enligt §3.8.4.2-tabellen. Metal gör samma mapping i
-  `texture.ddr` och bygger `MTLSamplerDescriptor` per textur.
-  glTF-talen (9728/9729, 9984–9987, 33071/33648/10497) blir en enum
-  **i `storm-gltf`** (`gltf.MagFilter` …) som översätts till `gfx.*`
-  med en `match` — ett okänt tal är `Err` (Filament och glTF-SDK kastar
-  båda på okända filter), inte ett fall till default.
-- **Anisotropi läses när den behöverivas, inte nu.** Vulkan kräver
-  `samplerAnisotropy` påslagen på enheten *innan* `anisotropyEnable`
-  får vara `VK_TRUE` (features.html), och Intel Iris Plus rapporterar
-  `maxSamplerAnisotropy = 16.0` (dogfood 25). 3c sätter `anisotropyEnable
-  = false`; en `gfx.Sampler.anisotropy: f32` (0 = av) är fältet som
-  läggas till när en fil ber om det.
-- **`storm-scene.Material` får `texture: gfx.Texture` och `sampler:
-  gfx.Sampler`.** `scene.material(...)` får dem som parametrar med
-  default (`no_texture()`, `sampler_default()`); `set_material` kopierar
-  dem; `drawables()` bär dem i `Drawable`; `app.ddr` skickar dem vidare
-  till `window.mesh(...)`, som tar `texture` sedan 3b och får `sampler`
-  som ett argument till — samplaren följer ritposten, den blir inget
-  artonde positionellt tal i push constants (240 byte, fulla).
-- **Bevis för 3c:** FoxFixed renderas med pälsen (pixelprober på tre
-  kända UV-punkter mot `PIL`-dekoden av `images[0]`: ±3 per kanal eftersom
-  sRGB-avkodning + ACES-tonemapping ändrar värdet — jämför *förhållandet*
-  mellan päls och mörk parti, inte absolutvalet), `Box.glb` är fortfarande
-  röd med AE = 0 mot 3b-capturen, DamagedHelmet ger status 1 med
-  `image/jpeg is not supported`, och en tamperad PNG (fel Adler) ger
-  status 1 med bildens index. Byggtiden mäts före/efter: `storm-gltf`
-  når `storm-image` och `packages/zlib` når `main` för första gången.
+- **JPEG.** DamagedHelmet har fem JPEG-bilder; ingen annan av de elva. En
+  baslinje-JPEG (utan progression, med chroma-upsampling och IDCT i heltal)
+  är ~400 rader Dunder i `storm-image`, samma form som PNG: `decode_jpeg(data)
+  -> Result<Image, string>`, och `load_model_into` väljer på mime-typen.
+  Mät inflate-kostnaden först (dogfood 80:s recept): 2048² JPEG är 4–8×
+  mindre data än PNG men IDCT är per block, inte per bit.
+- **Metal:s mipkedja.** `storm-metal/src/texture.ddr` fyller nivå 0 med
+  `replaceRegion` och har ingen blit-kodare: en textur på Metal har **en**
+  nivå, och `mips != None` mappas idag till `NotMipmapped`. Vulkan bygger
+  kedjan med `vkCmdBlitImage`; Metal behöver `MTLBlitCommandEncoder` i samma
+  upload, och det syns bara i en bildruta på en inloggad Mac
+  (`tools/selftest.ddr`).
+- **`wrapT` och anisotropi** läggs till när en fil ber om dem: `gfx.Sampler`
+  har `wrap` (en) och ingen anisotropi; ingen av de elva filerna skiljer
+  wrapS från wrapT eller har `KHR_texture_transform`. Vulkan kräver
+  `samplerAnisotropy` påslaget på enheten innan `anisotropyEnable` (dogfood
+  25: Intel Iris Plus har `maxSamplerAnisotropy = 16.0`).
+- **Byggtiden:** 16,4 s → 18,2 s när `decode_png` + zlib nås från `main`
+  (dogfood 82) — 91 % av budgeten. Nästa paket som lägga på den här vägen
+  (JPEG) mäts med `tools/build-time.ddr` före och efter, och om det hamnar
+  över 19 s hör det till Dunder-repot att mäta vad som är dyrt, inte till
+  Storm att hoppa över funktionen.
 
 ## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning, ECS-frågor
 
