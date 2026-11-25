@@ -800,6 +800,54 @@ mot `(251,198,208)`, marken `(191,216,198)` mot `(186,214,197)`); i studion
 `--capture` utan fil, `--glb` utan fil, `--scene` utan fil; `--frames abc`
 och `--eye 1 2` faller till default.
 
+**QA 2026-11-25 (låst session, `c213029`, Dunder 0.12.0, tjugoen captures på
+1280 × 800, sju fönsterkörningar).** Felvägen gav ett fynd och en commit:
+`--capture --frames 1` **skrev en fil döpt `--frames`** i arbetskatalogen
+(3 MB), `--glb --capture x.ppm` läste `--capture` som modellnamn och
+`--texture --studio` läste `--studio` som textur — `args.value` tog ordet
+efter en flagga som dess värde även när det var en annan flagga, och bara
+`--scene` hade regeln "nästa ord börjar med `--`" inbakad vid anropet
+(`c213029`: regeln i `args.value`, `--scene`:s egen kontroll en enrading som
+`--capture`:s; AE = 0 mot baslinjen). Nu: `--capture --frames 1` → status 1
+`--capture requires an output file`; `--glb`/`--texture`/`--font` utan värde
+är "not given" (standardscenen), som `--eye 1 2` alltid varit. Övriga
+felvägar oförändrade: `--capture`/`--scene` utan fil, `--glb /nope/x.glb`,
+`--glb base.ppm` (`glTF file is neither GLB nor UTF-8 JSON`),
+DamagedHelmet (`image 0 is image/jpeg`) — alla status 1 med texten.
+
+Fönsterläget på den låsta sessionen: `--frames 5` **7/7 status 0**
+(standard, `--studio`, `--play`, `--glb Fox.glb`, `--effects`,
+`--no-post --no-aa`, `--trace`), 4,3–4,8 s, och `--trace` visar
+`acquired image` → `render pass begun` → `presented 0` × 5. Captures mot
+baslinjen: `--eye 6 4 -7` AE 172 373, `--eye 0 0 4.2` AE 175 318,
+`--eye 12 9 14` AE 134 217, `--studio` AE 418 555, `--glb Fox.glb` AE
+420 815, `--no-shadows` AE 39 599, `--no-post` AE 6 958, `--no-aa` AE
+1 564, `--studio --effects` mot `--studio` AE 2 421, `--studio --no-glass` AE
+372 — **samma tal som 2026-11-24 kväll** (deterministiskt: en andra
+baslinjecapture är AE = 0 mot den första). `--play`, `--effects` och
+`--no-glass` i spelet: AE = 0.
+
+Alla elva Katla-modeller (`~/Work/Katla/resources/models`) genom `--glb`:
+nio laddar med status 0 (Box, BoxInterleaved, Fox, FoxFixed, FoxBlender,
+Regular_plane, Avocado, Lantern) och två vägras med text: DamagedHelmet
+(JPEG, ovan) och Tiger (nedan). Läst i bilderna: Avokadon bär skal och kärna, Lanternen bär
+trätextur, kedja och hänge, Tiger är **helt vit** — dess material är
+`KHR_materials_pbrSpecularGlossiness` (`diffuseTexture` i en extension,
+inga `pbrMetallicRoughness`-fält) och filen listar den i
+`extensionsRequired`, så extensionens tabell säger "fail to load"; Storm
+laddade den och ritade vit. Rättat direkt efter: nu status 1 `requires
+extension KHR_materials_pbrSpecularGlossiness, which Storm does not read`
+(beslutet i next-steps 3c). Fox.glb är riggad
+(`JOINTS_0`/`WEIGHTS_0`, tre klipp) och ritas i bind-posen: Steg 4.
+Från `(6,4,-7)` står kameran mitt i molnen (`Cloud / Pearl`), som då fyller
+högra halvan av bilden med en grå yta — kameran, inte motorn.
+
+Editorn i studion: scenträd med sju objekt (`+ Collectibles 8` kollapsad),
+inspektorn med Metallic 0.98 / Roughness 0.24 / Opacity 1.00 och
+Rendering-reglagen, statusraden `0/8 collected  6 passes  – fps` oskuren.
+Spelet: Vallmo på gräset med fyra tassar i marken, skugga, somrar, bi,
+blommor, studsmolnet med guldpilar, inga svarta facetter, inget z-fighting.
+
 **På macOS, 2026-11-23 (gränssnittet och Metal).** Dunder 0.11.0, Apple M5,
 macOS 27.2. Trädet kompilerade inte på macOS innan detta arbete
 (`static_bytes("linux")`). Efteråt: `dunder check` rent på arm64-macos,

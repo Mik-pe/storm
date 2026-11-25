@@ -298,6 +298,17 @@ alltså det vanliga fallet, inte undantaget.
   wrapS från wrapT eller har `KHR_texture_transform`. Vulkan kräver
   `samplerAnisotropy` påslaget på enheten innan `anisotropyEnable` (dogfood
   25: Intel Iris Plus har `maxSamplerAnisotropy = 16.0`).
+- **`KHR_materials_pbrSpecularGlossiness`.** Tiger.glb är den enda av de elva
+  som använder det (QA 2026-11-25): `diffuseTexture` och
+  `specularGlossinessTexture` i en extension, inga
+  `pbrMetallicRoughness`-fält, och filen listar den i **båda**
+  `extensionsUsed` och `extensionsRequired`. Extensionens egen tabell
+  säger "fail to load" för en klient utan stöd när den är required — Storm
+  laddade den och ritade vit, ett svalt fel. Nu vägrar `storm-gltf` varje
+  `extensionsRequired`-namnet med namnet (glTF 2.0 §4, testat). Extensionen
+  är **arkiverad** av Khronos ("Superseded by KHR_materials_specular",
+  2021), och three.js tog bort sitt stöd 2022 till förmån för
+  `gltf-transform metalrough`. Beslut: Storm läser den inte.
 - **Byggtiden:** 16,4 s → 18,2 s när `decode_png` + zlib nås från `main`
   (dogfood 82) — 91 % av budgeten. Nästa paket som lägga på den här vägen
   (JPEG) mäts med `tools/build-time.ddr` före och efter, och om det hamnar
