@@ -7,6 +7,7 @@ import .device as device
 import .enums as enums
 import .depth as depth
 import .layout as vk
+import .pipeline as pipelines
 import .shader as shader
 import .state as state
 
@@ -19,12 +20,9 @@ unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 const SHADOW_SIZE: u32 = 1024
 const CLEAR_FAR: f32 = 1000.0
 
-@c_layout
-struct StagePair { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
-
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // --- image ---
-    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.ColorAttachmentSampled))
+    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, enums.ImageTiling.Optimal, enums.ImageUsage.ColorAttachmentSampled)
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&image_create_info), ptr(0), addr(&mut image))
     if code != 0 {
@@ -38,7 +36,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    code = device.allocate(&r, &requirements, 1, addr(&mut memory))
+    code = device.allocate(&r, &requirements, .Some(enums.Memory.DeviceLocal), addr(&mut memory))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
@@ -78,7 +76,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut breq: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, light_buffer, addr(&mut breq))
     mut light_memory := ptr(0)
-    code = device.allocate(&r, &breq, 6, addr(&mut light_memory))
+    code = device.allocate(&r, &breq, .Some(enums.Memory.HostVisibleCoherent), addr(&mut light_memory))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     code = r.api.BindBufferMemory(r.device, light_buffer, light_memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
@@ -236,77 +234,18 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info2), ptr(0), addr(&mut pipeline_layout))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
-    stage.stage = enums.shader_stage(.Vertex)
-    stage.module = vshader
-    stage.pName = cstr("main")
-    mut stages: StagePair = zeroed()
-    stages.vertex = stage
-    stages.fragment = stage
-    stages.fragment.stage = enums.shader_stage(.Fragment)
-    stages.fragment.module = fshader
-
-    // Same vertex layout as the mesh pipeline, from the same record: the
-    // shadow shader reads only position, but the pipeline must declare the
-    // whole 32-byte stream or the stride is wrong.
-    mut vertex_input := vk.vertex_input()
-    enums.apply_vertex_input(&mut vertex_input)
-    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
-    input.vertexBindingDescriptionCount = 1
-    input.pVertexBindingDescriptions = addr(&vertex_input.binding)
-    input.vertexAttributeDescriptionCount = 3
-    input.pVertexAttributeDescriptions = addr(&vertex_input.attributes)
-
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
-    assembly.topology = enums.primitive_topology(.TriangleList)
-
-    mut viewport: vk.Viewport = zeroed()
-    viewport.width = f32(SHADOW_SIZE)
-    viewport.height = f32(SHADOW_SIZE)
-    viewport.maxDepth = 1.0
-    mut scissor: vk.Rect2D = zeroed()
-    scissor.extent.width = SHADOW_SIZE
-    scissor.extent.height = SHADOW_SIZE
-    mut viewport_state: vk.PipelineViewportStateCreateInfo = vk.PipelineViewportStateCreateInfo::new()
-    viewport_state.viewportCount = 1
-    viewport_state.pViewports = addr(&viewport)
-    viewport_state.scissorCount = 1
-    viewport_state.pScissors = addr(&scissor)
-
-    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.Back)
-    raster.frontFace = enums.front_face(.CounterClockwise)
-    raster.lineWidth = 1.0
-
-    mut multisample: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
-    multisample.rasterizationSamples = 1
-
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
-
-    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-    // MAX keeps the surface closest to the sun in every texel.
-    enums.apply_blend(&mut blend_attachment, &enums.shadow_max())
-    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&blend_attachment)
-
-    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&input)
-    info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&viewport_state)
-    info.pRasterizationState = addr(&raster)
-    info.pMultisampleState = addr(&multisample)
-    info.pDepthStencilState = addr(&depth_state)
-    info.pColorBlendState = addr(&blend)
-    info.layout = pipeline_layout
-    info.renderPass = pass
-    info.basePipelineIndex = -1
+    // The shadow pass draws the scene from the light: the whole mesh stream
+    // declared, back faces culled, no depth buffer — MAX blending keeps the
+    // surface closest to the sun in every texel.
+    mut plan := pipelines.Plan {
+        vertex: vshader, fragment: fshader,
+        layout: pipeline_layout, pass: pass,
+        cull: .Back, depth: pipelines.depth_off(), blend: .Some(enums.shadow_max()),
+        vertices: .Mesh, viewport: .Square(SHADOW_SIZE), encoded: false,
+    }
     mut pipeline := ptr(0)
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut pipeline))
-    if code != 0 { return device.fail(&mut r, code, .Shadow) }
+    code = pipelines.build(&r, &plan, addr(&mut pipeline))
+        if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     r.shadowImage = image
     r.shadowMemory = memory

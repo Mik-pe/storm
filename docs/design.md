@@ -44,11 +44,11 @@
   `sType`-tal** (var 135 i nio moduler): `layout.ddr` genereras ur `vk.xml`
   och varje post har en `new()`-fabrik som skriver strukturtypen, så talet
   finns på en rad per post i en fil ingen skriver för hand (§6).
-- **Enums är ett eget lager:** `enums.ddr` (genererad, §6) har 33 `pub enum` och 43
-  `pub fn`: 41 konverterare/namngivna värden och två `unsafe` skrivare av
-  C-poster (`apply_blend`, `apply_vertex_input`). Endast två
-  namngivna `u32`-konstanter lever kvar i `layout.ddr`
-  (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
+- **Enums är ett eget lager:** `enums.ddr` (genererad, §6) har 35 `pub enum` och 46
+  `pub fn`: 43 konverterare/namngivna värden och tre `unsafe` skrivare av
+  C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`). Inga
+  namngivna `u32`-konstanter lever kvar i `layout.ddr`; allt är enums, och
+  registret äger talen (`tools/vk.ddr --check`).
 - `state.ddr` `Renderer`: **121 fält** (var ~60 när steget skrevs; IBL,
   djup, skuggor, post, UI och headless har alla lagt till sina). Varje
   modul tar `&mut Renderer`. Ägarskapet är redan modulvis (varje modul har
@@ -106,14 +106,14 @@
   207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Lagren i storm-vulkan (6 313 rader + 4 223 genererad `shader.ddr`), räknade 2026-11-25:
+Lagren i storm-vulkan (6 310 rader + 4 223 genererad `shader.ddr`), räknade 2026-11-25:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr` (båda genererade), `sdl.ddr` | 1 896 |
-| Enums vid gränsen | `enums.ddr` (genererad) | 494 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr` | 2 489 |
-| App-nära kod | `ui.ddr`, `post.ddr` | 536 |
+| FFI-bindings | `api.ddr`, `layout.ddr` (båda genererade), `sdl.ddr` | 1 912 |
+| Enums vid gränsen | `enums.ddr` (genererad) | 515 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr` | 2 539 |
+| App-nära kod | `ui.ddr`, `post.ddr` | 446 |
 | Orkestrering | `vulkan.ddr`, `state.ddr` | 898 |
 
 Lagren i storm-metal (2 382 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
@@ -262,7 +262,7 @@ Varje steg lämnar träd och tester grönt. Capture-filer före/efter måste
 vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 1. **Skapa `storm-vk` med enums + bindings.** *Status: enums-modulen finns
-   och genereras ur `vk.xml` (`packages/storm-vulkan/src/enums.ddr`, 33 enums,
+   och genereras ur `vk.xml` (`packages/storm-vulkan/src/enums.ddr`, 35 enums,
    urvalet i `tools/vk.ddr`); paketdelningen är kvar.*
 2. **Ersätt de 135 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
@@ -276,8 +276,8 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
    *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
-   (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
-   `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade.*
+   (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.VertexInput`,
+   `vk.UiVertices`, `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade.*
    *Andra halvan påbörjad 2026-11-24 (§3b): `depth.Depth` är det första
    klustret som flyttade in i en post hos sin ägare (`r.depth.image`
    i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett

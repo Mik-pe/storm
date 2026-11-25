@@ -4,6 +4,7 @@ import gfx
 import .device as device
 import .enums as enums
 import .layout as vk2
+import .pipeline as pipelines
 import .shader as shader
 import .state as state
 
@@ -19,42 +20,11 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .PostProcess) }
     r.postFragShader = frag_module
 
-    mut encoding: vk2.DisplayEncoding = zeroed()
-    stages := vk2.ShaderStages {
-        vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Vertex), module: r.postVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
-        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Fragment), module: r.postFragShader, pName: cstr("main"), pSpecializationInfo: device.display_encoding(r.format, &mut encoding) },
-    }
-
-    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = vk2.PipelineVertexInputStateCreateInfo::new()
-
-    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = vk2.PipelineInputAssemblyStateCreateInfo::new()
-    assembly.topology = enums.primitive_topology(.TriangleList)
-
-    mut view: vk2.FrameViewport = zeroed()
-    device.frame_viewport(&mut view)
-
-    mut raster: vk2.PipelineRasterizationStateCreateInfo = vk2.PipelineRasterizationStateCreateInfo::new()
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.None)
-    raster.frontFace = enums.front_face(.Clockwise)
-    raster.lineWidth = 1.0
-
-    mut multisample: vk2.PipelineMultisampleStateCreateInfo = vk2.PipelineMultisampleStateCreateInfo::new()
-    multisample.rasterizationSamples = 1
-
-    mut depth: vk2.PipelineDepthStencilStateCreateInfo = vk2.PipelineDepthStencilStateCreateInfo::new()
-
-    mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-
-    mut blend: vk2.PipelineColorBlendStateCreateInfo = vk2.PipelineColorBlendStateCreateInfo::new()
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&mut blend_attachment)
-
+    // The post pass reads the scene colour as a fullscreen triangle and
+    // writes the final image: nothing is culled, depth is not touched.
     mut push_range: vk2.PushConstantRange = zeroed()
     push_range.stageFlags = enums.shader_stage(.Fragment)
     push_range.size = 16
-
     mut layout_info: vk2.PipelineLayoutCreateInfo = vk2.PipelineLayoutCreateInfo::new()
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&r.postTexture.layout)
@@ -63,23 +33,16 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.postPipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .PostProcess) }
 
-    mut info: vk2.GraphicsPipelineCreateInfo = vk2.GraphicsPipelineCreateInfo::new()
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&mut vertex_input)
-    info.pInputAssemblyState = addr(&mut assembly)
-    info.pViewportState = addr(&view.viewport)
-    info.pDynamicState = addr(&view.dynamic)
-    info.pRasterizationState = addr(&mut raster)
-    info.pMultisampleState = addr(&mut multisample)
-    info.pDepthStencilState = addr(&mut depth)
-    info.pColorBlendState = addr(&mut blend)
-    info.layout = r.postPipelineLayout
-    info.renderPass = r.renderPass
-    info.subpass = 0
-    info.basePipelineIndex = -1
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.postPipeline))
+    plan := pipelines.Plan {
+        vertex: r.postVertShader, fragment: r.postFragShader,
+        layout: r.postPipelineLayout, pass: r.renderPass,
+        cull: .None, depth: pipelines.depth_off(), blend: .None,
+        vertices: .None, viewport: .Frame, encoded: true,
+    }
+    mut pipeline := ptr(0)
+    code = pipelines.build(&r, &plan, addr(&mut pipeline))
     if code != 0 { return device.fail(&mut r, code, .PostProcess) }
+    r.postPipeline = pipeline
     .Ready
 }
 
@@ -106,14 +69,14 @@ unsafe fn create_target(r: &mut state.Renderer) -> i32 {
     // Match the scene attachment's transfer function to the display target.
     // The sampling view always reads the resulting display-encoded bytes.
     sampled := if enums.format_is_bgra(r.format) { enums.format(.B8G8R8A8_UNORM) } else { enums.format(.R8G8B8A8_UNORM) }
-    mut info := device.image_2d_info(r.format, r.width, r.height, enums.image_tiling(.Optimal), enums.image_usage(.ColorAttachmentSampled))
+    mut info := device.image_2d_info(r.format, r.width, r.height, enums.ImageTiling.Optimal, enums.ImageUsage.ColorAttachmentSampled)
     if sampled != r.format { info.flags = enums.image_create(.MutableFormat) }
     mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut r.sceneImage))
     if code != 0 { return code }
     mut req: vk2.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, r.sceneImage, addr(&mut req))
     mut memory := ptr(0)
-    code = device.allocate(&r, &req, 1, addr(&mut memory))
+    code = device.allocate(&r, &req, .Some(enums.Memory.DeviceLocal), addr(&mut memory))
     r.sceneMemory = memory
     if code != 0 { return code }
     code = r.api.BindImageMemory(r.device, r.sceneImage, memory, 0)

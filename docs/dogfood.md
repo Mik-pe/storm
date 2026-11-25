@@ -511,6 +511,19 @@ match v { NEAREST => 1, _ => 2 }
 ```
 `E3006: unreachable match pattern` med caret på `_`; med tre armar (`NEAREST`, `LINEAR`, `_`) står careten på `LINEAR`; med `9728 => 1, NEAREST => 2, _ => 3` står den på `_` — och `NEAREST => 2` fångar då *allt utom 9728* utan ett ord. Mätt: ett gemens namn (`other => 2`) binder likadant, så regeln är Rusts (ett ensamt namn är en binding, konstanter matchas bara som sökväg), men Dunder har ingen sökväg att skriva (`NEAREST` *är* konstantens hela namn), och det finns inget sätt alls att matcha en `const` i ett mönster. Minimal repro: `/tmp`-manifest, `const NEAREST: i64 = 9728`, `fn pick(v: i64) -> i32 { match v { NEAREST => 1, _ => 2 } }`, `dunder run` → E3006 på `_`. Uppstod i Storm `storm-gltf/src/textures.ddr` (`05a0250`-serien): glTF:s filter är tal (9728, 9729, 9984–9987), och en `match` med konstantnamn som mönster var den naturliga översättningen — den såg ut som en enum-`match`. Workaround här: if-kedjor med `==` (sex tal, läsbart), med en kommentar som pekar hit. Rekommendation: när ett mönster är ett ensamt namn som också är en `const` i scope, är det nästan alltid avsett som konstant: antingen (a) gör det till en konstant-match (då behöver Dunder en regel för när ett namn är konstant och när det binder — Rust skiljer på sökväg, och `self.path::CONST` är en sökväg Dunder redan har i `Enum.Variant`-mönster), eller (b) flytta diagnostiken till det första mönstret: "'NEAREST' binds a new variable and matches every value; a name that is a constant in scope cannot be matched — compare with `==`". E3006 på armen efter är korrekt men ett symptom.
 
+**84. Diagnostiker namnger varje användardefinierad typ som `__dunder_module_N` — struct och enum, i alla moduler, även i samma modul.** Symptom (0.12.0): en funktion som väntar en enum och får en annan ger
+```
+src/shadow.ddr:244:19: error[E3001]: type mismatch: expected __dunder_module_437, got __dunder_module_421
+```
+Minimal repro (tio rader i `main.ddr`, mätt i `/tmp`):
+```
+pub enum Shape { Cube, Plane }
+pub enum Blend { Opaque, Alpha }
+fn draw(shape: Shape) -> i32 { i32(shape) }
+fn main() { x := draw(Blend.Opaque); print(x) }
+```
+ger `expected __dunder_module_0, got __dunder_module_1`. Samma sak med två structar (`Shape { n }`, `Blend { n }`): `__dunder_module_0` mot `__dunder_module_1`. Mot en inbyggd typ namnges den inbyggda: `draw(1)` ger `expected __dunder_module_0, got i32`. Samma nummer i E2003: `x := make()` där `make() -> Shape`, sedan `x.nope` ger `unknown member 'nope' on __dunder_module_0`. Numret är modulens ordning i trädet, inte typen, och ingenting skiljer `Shape` från `Blend` i texten. I Storm (över 100 moduler) är det oläslbart: under städningen av pipeline-skapandet stod `vertices: pipelines.mesh_vertices()` (en `vk.VertexInput`) där `Vertices` väntades, och diagnostiken skickade mig till `enums.ImageTiling`/`ImageUsage` — två enumtyper som inte ingick i felet alls. Workaround här: läsa signaturen på det anrop som careten pekar på och räkna argumenten (fynd 63), och när det inte räcker byta en mot en `i32` för att se vilka sidor som byter — inget av det är en diagnostic. Rekommendation: varje diagnostic som skriver en typ ska skriva namnet som den deklarerades (`expected vk.VertexInput, got pipeline.Vertices`; för en anonym post fälten). Typen bär namnet — `dunder check` på ett program utan fel skriver inga nummer — så det är en formatteringsfunktion som används av E3001 och E2003, inte typkontrollen, som saknar det; en funktion att rätta på ett ställe.
+
 ## Grafikobservationer på macOS (Metal)
 
 Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen

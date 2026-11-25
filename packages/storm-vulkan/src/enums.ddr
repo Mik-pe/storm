@@ -217,6 +217,19 @@ pub enum ImageTiling {
 
 pub fn image_tiling(v: ImageTiling) -> u32 { u32(i32(v)) }
 
+pub enum ImageType {
+    Type2D = 1,
+}
+
+pub fn image_type(v: ImageType) -> u32 { u32(i32(v)) }
+
+pub enum Memory {
+    DeviceLocal = 1,
+    HostVisibleCoherent = 6, // HOST_VISIBLE | HOST_COHERENT: mappable and coherent, for uploads and readback
+}
+
+pub fn memory(v: Memory) -> u32 { u32(i32(v)) }
+
 pub enum CommandPoolFlag {
     ResetCommandBuffer = 2,
 }
@@ -491,4 +504,12 @@ pub unsafe fn apply_vertex_input(input: &mut layout.VertexInput) {
     input.attributes.position.format = format(.R32G32B32_SFLOAT)
     input.attributes.normal.format = format(.R32G32B32_SFLOAT)
     input.attributes.uv.format = format(.R32G32_SFLOAT)
+}
+
+// The only writer of the UI vertex layout's enum fields: one binding in
+// vertex rate, position/uv and colour both as vec4.
+pub unsafe fn apply_ui_vertices(input: &mut layout.UiVertices) {
+    input.binding.inputRate = vertex_input_rate(.Vertex)
+    input.position.format = format(.R32G32B32A32_SFLOAT)
+    input.color.format = format(.R32G32B32A32_SFLOAT)
 }

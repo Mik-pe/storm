@@ -121,78 +121,29 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.pipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
-    stage.stage = enums.shader_stage(.Vertex)
-    stage.module = r.vertexShader
-    stage.pName = cstr("main")
-    mut stages := vk.ShaderStages { vertex: stage, fragment: stage }
-    stages.fragment.stage = enums.shader_stage(.Fragment)
-    stages.fragment.module = r.fragmentShader
-    mut encoding: vk.DisplayEncoding = zeroed()
-    stages.fragment.pSpecializationInfo = device.display_encoding(r.format, &mut encoding)
-
-    // The one mesh vertex layout (position, normal, uv), declared here and
-    // in the shadow pipeline from the same record.
-    mut vertex_input := vk.vertex_input()
-    enums.apply_vertex_input(&mut vertex_input)
-    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
-    input.vertexBindingDescriptionCount = 1
-    input.pVertexBindingDescriptions = addr(&vertex_input.binding)
-    input.vertexAttributeDescriptionCount = 3
-    input.pVertexAttributeDescriptions = addr(&vertex_input.attributes)
-
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
-    assembly.topology = enums.primitive_topology(.TriangleList)
-
-    mut view: vk.FrameViewport = zeroed()
-    device.frame_viewport(&mut view)
-
-    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.Back)
-    // The projection negates Y for Vulkan's clip space, which mirrors the
-    // winding, so counter-clockwise is the front face.
-    raster.frontFace = enums.front_face(.CounterClockwise)
-    raster.lineWidth = 1.0
-
-    mut samples: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
-    samples.rasterizationSamples = 1
-
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
-    // Opaque geometry: closer fragments win and write their depth.
-    depth_state.depthTestEnable = 1
-    depth_state.depthWriteEnable = 1
-    depth_state.depthCompareOp = enums.compare_op(.Less)
-
-    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&blend_attachment)
-
-    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&input)
-    info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&view.viewport)
-    info.pDynamicState = addr(&view.dynamic)
-    info.pRasterizationState = addr(&raster)
-    info.pMultisampleState = addr(&samples)
-    info.pDepthStencilState = addr(&depth_state)
-    info.pColorBlendState = addr(&blend)
-    info.layout = r.pipelineLayout
-    info.renderPass = r.renderPass
-    info.basePipelineIndex = -1
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.pipeline))
+    // Opaque geometry: closer fragments win and write their depth. The
+    // transparent pipeline is the same pipeline with alpha blending and no
+    // depth write: glass is sorted back to front and must not hide geometry.
+    mut opaque := Plan {
+        vertex: r.vertexShader, fragment: r.fragmentShader,
+        layout: r.pipelineLayout, pass: r.renderPass,
+        cull: .Back, depth: depth_write(), blend: .None,
+        vertices: .Mesh, viewport: .Frame, encoded: true,
+    }
+    mut opaque_pipeline := ptr(0)
+    code = build(&r, &opaque, addr(&mut opaque_pipeline))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
-    // Same pipeline with alpha blending for the transparent pass.
-    enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
-    // Glass is sorted back to front and must not hide geometry behind it:
-    // test against the depth buffer, but never write to it.
-    depth_state.depthWriteEnable = 0
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.transparentPipeline))
+    r.pipeline = opaque_pipeline
+    mut glass := Plan {
+        vertex: r.vertexShader, fragment: r.fragmentShader,
+        layout: r.pipelineLayout, pass: r.renderPass,
+        cull: .Back, depth: depth_test_only(), blend: .Some(enums.alpha_over()),
+        vertices: .Mesh, viewport: .Frame, encoded: true,
+    }
+    mut glass_pipeline := ptr(0)
+    code = build(&r, &glass, addr(&mut glass_pipeline))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
+    r.transparentPipeline = glass_pipeline
     .Ready
 }
 
@@ -223,59 +174,18 @@ unsafe fn sky_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout), ptr(0), addr(&mut r.skyPipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
-    stage.stage = enums.shader_stage(.Vertex)
-    stage.module = r.skyVertexShader
-    stage.pName = cstr("main")
-    mut stages := vk.ShaderStages { vertex: stage, fragment: stage }
-    stages.fragment.stage = enums.shader_stage(.Fragment)
-    stages.fragment.module = r.skyFragmentShader
-    mut encoding: vk.DisplayEncoding = zeroed()
-    stages.fragment.pSpecializationInfo = device.display_encoding(r.format, &mut encoding)
-
-    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
-    assembly.topology = enums.primitive_topology(.TriangleList)
-
-    mut view: vk.FrameViewport = zeroed()
-    device.frame_viewport(&mut view)
-
-    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.None)
-    raster.frontFace = enums.front_face(.Clockwise)
-    raster.lineWidth = 1.0
-
-    mut samples: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
-    samples.rasterizationSamples = 1
-
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
-    depth_state.depthTestEnable = 0
-    depth_state.depthWriteEnable = 0
-    depth_state.depthCompareOp = enums.compare_op(.LessOrEqual)
-
-    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&blend_attachment)
-
-    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&input)
-    info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&view.viewport)
-    info.pDynamicState = addr(&view.dynamic)
-    info.pRasterizationState = addr(&raster)
-    info.pMultisampleState = addr(&samples)
-    info.pDepthStencilState = addr(&depth_state)
-    info.pColorBlendState = addr(&blend)
-    info.layout = r.skyPipelineLayout
-    info.renderPass = r.renderPass
-    info.basePipelineIndex = -1
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut r.skyPipeline))
+    // The sky is a fullscreen triangle drawn over everything: no depth test,
+    // no depth write, nothing culled.
+    plan := Plan {
+        vertex: r.skyVertexShader, fragment: r.skyFragmentShader,
+        layout: r.skyPipelineLayout, pass: r.renderPass,
+        cull: .None, depth: depth_off(), blend: .None,
+        vertices: .None, viewport: .Frame, encoded: true,
+    }
+    mut sky_pipeline := ptr(0)
+    code = build(&r, &plan, addr(&mut sky_pipeline))
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
+    r.skyPipeline = sky_pipeline
     .Ready
 }
 
@@ -299,4 +209,219 @@ pub unsafe fn destroy_framebuffers(r: &mut state.Renderer) {
         r.api.DestroyFramebuffer(r.device, r.framebuffers[i], ptr(0))
         r.framebuffers[i] = ptr(0)
     }
+}
+
+// --- one description of a graphics pipeline ---
+//
+// Seven pipelines were built from seven copies of the same ~45 lines: two
+// shader stages, the nine state records, GraphicsPipelineCreateInfo,
+// CreateGraphicsPipelines. The copies agreed on most fields (triangle list,
+// fill, one sample, one attachment) and disagreed on the few that are
+// decisions: which faces are culled, whether depth is tested or written,
+// how colour blends, which vertex layout, which viewport. A copy that
+// drifted was invisible — the front face was Clockwise in three and
+// CounterClockwise in one with the same cull mode, which is correct only
+// because cull None ignores it. A Plan names the decisions and nothing else;
+// `build` writes everything the decisions imply, once.
+
+// Depth testing and writing. `compare` is written even when nothing is
+// tested, so the record never carries a stale operation.
+pub struct Depth { test: bool, write: bool, compare: enums.CompareOp }
+
+pub fn depth_off() -> Depth { Depth { test: false, write: false, compare: .LessOrEqual } }
+// Opaque geometry: closer fragments win and keep their depth.
+pub fn depth_write() -> Depth { Depth { test: true, write: true, compare: .Less } }
+// Glass is sorted back to front and must not hide geometry behind it.
+pub fn depth_test_only() -> Depth { Depth { test: true, write: false, compare: .Less } }
+
+// Which vertex layout the pipeline declares: none (a fullscreen triangle),
+// the mesh stream (position, normal, uv — `layout.vertex_input`), or a UI
+// vertex (position/uv and colour — `layout.UiVertices`, byte size given by
+// the UI, which pushes the vertices). Each layout is its own record with its
+// own writer; a pipeline never declares part of another layout.
+pub enum Vertices { None, Mesh, Ui(u32) }
+
+// The viewport: the frame's extent, set dynamically per pass, or a fixed
+// square baked into the pipeline (the environment faces).
+pub enum Viewport { Frame, Square(u32) }
+
+pub struct Plan {
+    vertex: ptr,
+    fragment: ptr,
+    layout: ptr,
+    pass: ptr,
+    cull: enums.CullMode,
+    depth: Depth,
+    blend: Option<enums.Blend>,
+    vertices: Vertices,
+    viewport: Viewport,
+    // Display shaders specialise on whether the target is sRGB.
+    encoded: bool,
+}
+
+// The face that counts as front. Storm's projection negates Y for Vulkan's
+// clip space, which mirrors the winding, so counter-clockwise is the front
+// face — but it only matters when something is culled, and a pass that culls
+// nothing takes the other one: it is not a decision, so it is not in the Plan.
+unsafe fn front_face(cull: enums.CullMode) -> u32 {
+    if cull == enums.CullMode.None { enums.front_face(.Clockwise) } else { enums.front_face(.CounterClockwise) }
+}
+
+// The two vertex layouts a Plan names, as records with their enum fields
+// written by the one writer each: the mesh stream (three attributes) and a
+// UI vertex of `stride` bytes (two). The records travel by value so they
+// live in `build`'s frame, where the pointers into them are made.
+unsafe fn mesh_vertices() -> vk.VertexInput {
+    mut vertices: vk.VertexInput = vk.vertex_input()
+    enums.apply_vertex_input(&mut vertices)
+    vertices
+}
+
+unsafe fn ui_vertices(stride: u32) -> vk.UiVertices {
+    mut vertices: vk.UiVertices = vk.ui_vertices(stride)
+    enums.apply_ui_vertices(&mut vertices)
+    vertices
+}
+
+// Everything a pipeline's creation reads, in one record so that the pointers
+// between the state records stay inside it: the caller owns the record,
+// `describe` fills it from a Plan, and `create` hands it to Vulkan. Tests
+// read a described record without a device.
+@c_layout
+pub struct Description {
+    stages: vk.ShaderStages,
+    encoding: vk.DisplayEncoding,
+    mesh: vk.VertexInput,
+    ui: vk.UiVertices,
+    input: vk.PipelineVertexInputStateCreateInfo,
+    assembly: vk.PipelineInputAssemblyStateCreateInfo,
+    frame_view: vk.FrameViewport,
+    viewport: vk.Viewport,
+    scissor: vk.Rect2D,
+    square_view: vk.PipelineViewportStateCreateInfo,
+    raster: vk.PipelineRasterizationStateCreateInfo,
+    samples: vk.PipelineMultisampleStateCreateInfo,
+    depth_state: vk.PipelineDepthStencilStateCreateInfo,
+    blend_attachment: vk.PipelineColorBlendAttachmentState,
+    blend: vk.PipelineColorBlendStateCreateInfo,
+    info: vk.GraphicsPipelineCreateInfo,
+}
+
+// Writes every record a Plan implies. What the Plan does not name is a fact
+// of Storm's pipelines and is written here: triangle list, fill, width 1,
+// one sample, one colour attachment, subpass 0, no base pipeline.
+pub unsafe fn describe(r: &state.Renderer, plan: &Plan, description: &mut Description) {
+    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
+    stage.stage = enums.shader_stage(.Vertex)
+    stage.module = plan.vertex
+    stage.pName = cstr("main")
+    description.stages = vk.ShaderStages { vertex: stage, fragment: stage }
+    description.stages.fragment.stage = enums.shader_stage(.Fragment)
+    description.stages.fragment.module = plan.fragment
+    description.encoding = zeroed()
+    description.stages.fragment.pSpecializationInfo = ptr(0)
+    if plan.encoded { description.stages.fragment.pSpecializationInfo = device.display_encoding(r.format, &mut description.encoding) }
+
+    description.input = vk.PipelineVertexInputStateCreateInfo::new()
+    description.mesh = zeroed()
+    description.ui = zeroed()
+    match plan.vertices {
+        .Mesh => {
+            description.mesh = mesh_vertices()
+            description.input.vertexBindingDescriptionCount = 1
+            description.input.pVertexBindingDescriptions = addr(&description.mesh.binding)
+            description.input.vertexAttributeDescriptionCount = 3
+            description.input.pVertexAttributeDescriptions = addr(&description.mesh.attributes)
+        },
+        .Ui(stride) => {
+            description.ui = ui_vertices(stride)
+            description.input.vertexBindingDescriptionCount = 1
+            description.input.pVertexBindingDescriptions = addr(&description.ui.binding)
+            description.input.vertexAttributeDescriptionCount = 2
+            description.input.pVertexAttributeDescriptions = addr(&description.ui.position)
+        },
+        .None => {},
+    }
+
+    description.assembly = vk.PipelineInputAssemblyStateCreateInfo::new()
+    description.assembly.topology = enums.primitive_topology(.TriangleList)
+
+    // The viewport state and the dynamic state that goes with it: the
+    // frame's extent is set per pass, a square is baked in.
+    description.frame_view = zeroed()
+    device.frame_viewport(&mut description.frame_view)
+    description.viewport = zeroed()
+    description.scissor = zeroed()
+    description.square_view = vk.PipelineViewportStateCreateInfo::new()
+    mut view := addr(&description.frame_view.viewport)
+    mut dynamic := addr(&description.frame_view.dynamic)
+    match plan.viewport {
+        .Square(size) => {
+            description.viewport.width = f32(size)
+            description.viewport.height = f32(size)
+            description.viewport.maxDepth = 1.0
+            description.scissor.extent.width = size
+            description.scissor.extent.height = size
+            description.square_view.viewportCount = 1
+            description.square_view.pViewports = addr(&description.viewport)
+            description.square_view.scissorCount = 1
+            description.square_view.pScissors = addr(&description.scissor)
+            view = addr(&description.square_view)
+            dynamic = ptr(0)
+        },
+        .Frame => {},
+    }
+
+    description.raster = vk.PipelineRasterizationStateCreateInfo::new()
+    description.raster.polygonMode = enums.polygon_mode(.Fill)
+    description.raster.cullMode = enums.cull_mode(plan.cull)
+    description.raster.frontFace = front_face(plan.cull)
+    description.raster.lineWidth = 1.0
+
+    description.samples = vk.PipelineMultisampleStateCreateInfo::new()
+    description.samples.rasterizationSamples = enums.samples(.Type1)
+
+    description.depth_state = vk.PipelineDepthStencilStateCreateInfo::new()
+    description.depth_state.depthTestEnable = if plan.depth.test { 1 } else { 0 }
+    description.depth_state.depthWriteEnable = if plan.depth.write { 1 } else { 0 }
+    description.depth_state.depthCompareOp = enums.compare_op(plan.depth.compare)
+
+    description.blend_attachment = zeroed()
+    description.blend_attachment.colorWriteMask = enums.color_component(.RGBA)
+    match plan.blend {
+        .Some(blend) => { enums.apply_blend(&mut description.blend_attachment, &blend) },
+        .None => { description.blend_attachment.blendEnable = 0 },
+    }
+    description.blend = vk.PipelineColorBlendStateCreateInfo::new()
+    description.blend.attachmentCount = 1
+    description.blend.pAttachments = addr(&description.blend_attachment)
+
+    description.info = vk.GraphicsPipelineCreateInfo::new()
+    description.info.stageCount = 2
+    description.info.pStages = addr(&description.stages)
+    description.info.pVertexInputState = addr(&description.input)
+    description.info.pInputAssemblyState = addr(&description.assembly)
+    description.info.pViewportState = view
+    description.info.pDynamicState = dynamic
+    description.info.pRasterizationState = addr(&description.raster)
+    description.info.pMultisampleState = addr(&description.samples)
+    description.info.pDepthStencilState = addr(&description.depth_state)
+    description.info.pColorBlendState = addr(&description.blend)
+    description.info.layout = plan.layout
+    description.info.renderPass = plan.pass
+    description.info.subpass = 0
+    description.info.basePipelineIndex = -1
+}
+
+// Creates the pipeline a Plan describes. `output` receives the handle; the
+// caller owns the description record so the pointers in it stay valid.
+pub unsafe fn create(r: &state.Renderer, description: &Description, output: ptr) -> i32 {
+    r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&description.info), ptr(0), output)
+}
+
+// Describe and create in one step, for the setups that have nothing to check.
+pub unsafe fn build(r: &state.Renderer, plan: &Plan, output: ptr) -> i32 {
+    mut description: Description = zeroed()
+    describe(r, plan, &mut description)
+    create(r, &description, output)
 }

@@ -31,7 +31,7 @@ pub fn depth_clear(depth: f32) -> u64 {
 
 pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.SetupStep {
     if width == 0 || height == 0 { return .DepthBuffer }
-    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.DepthStencilAttachment))
+    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, enums.ImageTiling.Optimal, enums.ImageUsage.DepthStencilAttachment)
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
     if code != 0 {
@@ -44,7 +44,7 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.S
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    if device.allocate(&r, &requirements, 0, addr(&mut memory)) != 0 {
+    if device.allocate(&r, &requirements, .None, addr(&mut memory)) != 0 {
         r.api.DestroyImage(r.device, image, ptr(0))
         return .DepthBuffer
     }

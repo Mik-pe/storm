@@ -7,6 +7,7 @@ import ..src.device as device
 import ..src.enums as enums
 import gfx
 import ..src.headless as headless
+import ..src.pipeline as pipelines
 import ..src.sdl as sdl
 import ..src.state as state
 import ..src.texture as texture
@@ -129,11 +130,11 @@ import ..src.texture as texture
         mut properties: state.Properties = zeroed()
         assert(usize(addr(&properties.limits.maxPushConstantsSize)) - usize(addr(&properties)) == 328)
         assert(size_of(state.Properties) >= 824)
-        image := device.image_2d_info(126, 512, 128, vk.IMAGE_TILING_OPTIMAL, 32)
+        image := device.image_2d_info(126, 512, 128, enums.ImageTiling.Optimal, enums.ImageUsage.DepthStencilAttachment)
         assert(image.sType == 14 && image.imageType == 1 && image.format == 126)
         assert(image.extent.width == 512 && image.extent.height == 128 && image.extent.depth == 1)
         assert(image.mipLevels == 1 && image.arrayLayers == 1 && image.samples == 1)
-        assert(image.tiling == 0 && vk.IMAGE_TILING_LINEAR == 1 && image.usage == 32)
+        assert(image.tiling == 0 && enums.image_tiling(.Linear) == 1 && image.usage == 32)
         assert(image.sharingMode == 0 && image.pNext == ptr(0))
     }
 }
@@ -190,7 +191,7 @@ import ..src.texture as texture
 
 @test fn c_record_pairs_and_arrays_are_contiguous() {
     // The pairs handed to Vulkan (vk.Dependencies, Attachments, ShaderStages,
-    // References, Attributes) are records of records; this pins that the
+    // References, UiVertices) are records of records; this pins that the
     // second element starts right after the first and that a named stage /
     // external subpass value lands where C puts it. A plain [T; N] of the
     // same record is contiguous too (measured: size 56, stride 28); the
@@ -202,7 +203,7 @@ import ..src.texture as texture
     assert(size_of(vk.Attachments) == 72)
     assert(size_of(vk.ShaderStages) == 96)
     assert(size_of(vk.References) == 16)
-    assert(size_of(vk.Attributes) == 32)
+    assert(size_of(vk.UiVertices) == 44)
     assert(size_of([vk.SubpassDependency; 2]) == 56)
     unsafe {
         mut before: vk.SubpassDependency = zeroed()
@@ -367,5 +368,144 @@ fn setup_steps() -> [state.SetupStep; 17] {
         assert(size_of(depth.Depth) == 24)
         assert(size_of(texture.Material) == 32)
         assert(size_of(state.Renderer) == 6128)
+    }
+}
+
+// Every graphics pipeline is one Plan described into one record. The seven
+// pipelines were seven hand-written copies of the same state; these read
+// what a Plan writes, without a device, and pin the values the copies agreed
+// on (the facts) and the few they differed in (the decisions). The numbers
+// are the Khronos ones from enums.ddr: CullMode Back = 2, FrontFace
+// CounterClockwise = 0 and Clockwise = 1, CompareOp Less = 1 and LessOrEqual
+// = 3, BlendFactor SrcAlpha = 6 and OneMinusSrcAlpha = 7.
+@test fn a_plan_writes_the_facts_every_pipeline_shares() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        mut d: pipelines.Description = zeroed()
+        plan := pipelines.Plan {
+            vertex: ptr(11), fragment: ptr(22), layout: ptr(33), pass: ptr(44),
+            cull: .None, depth: pipelines.depth_off(), blend: .None,
+            vertices: .None, viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &plan, &mut d)
+        // Two stages, the right modules, entry point "main", nothing specialised.
+        assert(d.info.stageCount == 2 && d.stages.vertex.module == ptr(11) && d.stages.fragment.module == ptr(22))
+        assert(d.stages.vertex.stage == enums.shader_stage(.Vertex) && d.stages.fragment.stage == enums.shader_stage(.Fragment))
+        assert(d.stages.fragment.pSpecializationInfo == ptr(0))
+        assert(d.info.layout == ptr(33) && d.info.renderPass == ptr(44) && d.info.subpass == 0 && d.info.basePipelineIndex == -1)
+        // Triangle list, fill, width 1, one sample, one attachment.
+        assert(d.assembly.topology == enums.primitive_topology(.TriangleList))
+        assert(d.raster.polygonMode == enums.polygon_mode(.Fill) && d.raster.lineWidth == 1.0)
+        assert(d.samples.rasterizationSamples == 1 && d.blend.attachmentCount == 1)
+        // Every pointer the info holds points into the description itself.
+        assert(d.info.pStages == addr(&d.stages) && d.info.pVertexInputState == addr(&d.input))
+        assert(d.info.pRasterizationState == addr(&d.raster) && d.info.pDepthStencilState == addr(&d.depth_state))
+        assert(d.info.pColorBlendState == addr(&d.blend) && d.blend.pAttachments == addr(&d.blend_attachment))
+        // No vertex buffer, no dynamic state: a fullscreen pass with no cull.
+        assert(d.input.vertexBindingDescriptionCount == 0 && d.input.vertexAttributeDescriptionCount == 0)
+        assert(d.raster.cullMode == 0 && d.raster.frontFace == 1)
+        // Depth off still names a comparison, so no stale operation rides along.
+        assert(d.depth_state.depthTestEnable == 0 && d.depth_state.depthWriteEnable == 0 && d.depth_state.depthCompareOp == 3)
+        assert(d.blend_attachment.blendEnable == 0 && d.blend_attachment.colorWriteMask == 15)
+    }
+}
+
+@test fn a_plan_decides_cull_depth_blend_vertices_and_viewport() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        r.width = 1280
+        r.height = 800
+        mut d: pipelines.Description = zeroed()
+        // Opaque mesh: back faces culled (so the front face follows), depth
+        // tested and written, no blending, the whole 32-byte stream declared.
+        opaque := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .Back, depth: pipelines.depth_write(), blend: .None,
+            vertices: .Mesh, viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &opaque, &mut d)
+        assert(d.raster.cullMode == 2 && d.raster.frontFace == 0)
+        assert(d.depth_state.depthTestEnable == 1 && d.depth_state.depthWriteEnable == 1 && d.depth_state.depthCompareOp == 1)
+        assert(d.blend_attachment.blendEnable == 0)
+        assert(d.input.vertexBindingDescriptionCount == 1 && d.input.vertexAttributeDescriptionCount == 3)
+        assert(d.input.pVertexBindingDescriptions == addr(&d.mesh.binding) && d.input.pVertexAttributeDescriptions == addr(&d.mesh.attributes))
+        assert(d.mesh.binding.stride == 32 && d.mesh.attributes.uv.offset == 24)
+        // The frame's viewport, taken dynamically: the state points at the
+        // frame record and the dynamic state is there too.
+        assert(d.info.pViewportState == addr(&d.frame_view.viewport) && d.info.pDynamicState == addr(&d.frame_view.dynamic))
+        assert(d.frame_view.dynamic.dynamicStateCount == 2)
+
+        // Glass is the same pipeline with alpha-over and no depth write.
+        glass := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .Back, depth: pipelines.depth_test_only(), blend: .Some(enums.alpha_over()),
+            vertices: .Mesh, viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &glass, &mut d)
+        assert(d.depth_state.depthTestEnable == 1 && d.depth_state.depthWriteEnable == 0)
+        assert(d.blend_attachment.blendEnable == 1 && d.blend_attachment.srcColorBlendFactor == 6 && d.blend_attachment.dstColorBlendFactor == 7)
+        assert(d.raster.cullMode == 2 && d.raster.frontFace == 0)
+
+        // The shadow pass: a fixed 1024 square baked in, so no dynamic state,
+        // and MAX blending keeps the surface closest to the light.
+        shadow := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .Back, depth: pipelines.depth_off(), blend: .Some(enums.shadow_max()),
+            vertices: .Mesh, viewport: .Square(1024), encoded: false,
+        }
+        pipelines.describe(&r, &shadow, &mut d)
+        assert(d.info.pViewportState == addr(&d.square_view) && d.info.pDynamicState == ptr(0))
+        assert(d.square_view.pViewports == addr(&d.viewport) && d.square_view.pScissors == addr(&d.scissor))
+        assert(d.viewport.width == 1024.0 && d.viewport.height == 1024.0 && d.viewport.maxDepth == 1.0)
+        assert(d.scissor.extent.width == 1024 && d.scissor.extent.height == 1024)
+        assert(d.blend_attachment.blendEnable == 1 && d.blend_attachment.colorBlendOp == enums.blend_op(.Max))
+
+        // The UI declares its own two attributes and nothing is culled.
+        ui := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .None, depth: pipelines.depth_off(), blend: .Some(enums.alpha_over()),
+            vertices: .Ui(32), viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &ui, &mut d)
+        assert(d.raster.cullMode == 0 && d.raster.frontFace == 1)
+        assert(d.input.vertexBindingDescriptionCount == 1 && d.input.vertexAttributeDescriptionCount == 2)
+        assert(d.ui.binding.stride == 32 && d.ui.position.location == 0 && d.ui.color.location == 1)
+        assert(d.ui.color.offset == 16 && d.blend_attachment.blendEnable == 1)
+    }
+}
+
+@test fn the_ui_vertex_layout_is_written_by_its_one_writer() {
+    // The factory leaves the formats zero; the writer fills them, and the
+    // words are the registry's: vec4 for position/uv and vec4 for colour.
+    unsafe {
+        mut ui := vk.ui_vertices(32)
+        enums.apply_ui_vertices(&mut ui)
+        assert(ui.binding.stride == 32 && ui.binding.inputRate == 0)
+        assert(ui.position.location == 0 && ui.position.offset == 0 && ui.position.format == 109)
+        assert(ui.color.location == 1 && ui.color.offset == 16 && ui.color.format == 109)
+        // And the mesh's writer still writes vec3, vec3, vec2 (106, 106, 103).
+        mut mesh := vk.vertex_input()
+        enums.apply_vertex_input(&mut mesh)
+        assert(mesh.attributes.position.format == 106 && mesh.attributes.normal.format == 106 && mesh.attributes.uv.format == 103)
+    }
+}
+
+@test fn a_display_pipeline_specialises_its_fragment_on_the_target_format() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        mut d: pipelines.Description = zeroed()
+        plan := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .None, depth: pipelines.depth_off(), blend: .None,
+            vertices: .None, viewport: .Frame, encoded: true,
+        }
+        // An sRGB target: the fragment is told, through the description's own
+        // encoding record; a byte target gets no specialisation at all.
+        r.format = enums.format(.B8G8R8A8_SRGB)
+        pipelines.describe(&r, &plan, &mut d)
+        assert(d.stages.fragment.pSpecializationInfo == addr(&d.encoding.info) && d.encoding.srgb == 1)
+        r.format = enums.format(.B8G8R8A8_UNORM)
+        pipelines.describe(&r, &plan, &mut d)
+        assert(d.stages.fragment.pSpecializationInfo == ptr(0))
     }
 }

@@ -5,6 +5,7 @@ import std.sys as sys
 import .device as device
 import .enums as enums
 import .layout as vk
+import .pipeline as pipelines
 import .shader as shader
 import .state as state
 
@@ -59,57 +60,15 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
         return code
     }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = vk.PipelineShaderStageCreateInfo::new()
-    stage.stage = enums.shader_stage(.Vertex)
-    stage.module = vmodule
-    stage.pName = cstr("main")
-    mut stages := vk.ShaderStages { vertex: stage, fragment: stage }
-    stages.fragment.stage = enums.shader_stage(.Fragment)
-    stages.fragment.module = fmodule
-
-    mut input: vk.PipelineVertexInputStateCreateInfo = vk.PipelineVertexInputStateCreateInfo::new()
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = vk.PipelineInputAssemblyStateCreateInfo::new()
-    assembly.topology = enums.primitive_topology(.TriangleList)
-    mut viewport: vk.Viewport = zeroed()
-    viewport.width = f32(size)
-    viewport.height = f32(size)
-    viewport.maxDepth = 1.0
-    mut scissor: vk.Rect2D = zeroed()
-    scissor.extent.width = size
-    scissor.extent.height = size
-    mut view: vk.PipelineViewportStateCreateInfo = vk.PipelineViewportStateCreateInfo::new()
-    view.viewportCount = 1
-    view.pViewports = addr(&viewport)
-    view.scissorCount = 1
-    view.pScissors = addr(&scissor)
-    mut raster: vk.PipelineRasterizationStateCreateInfo = vk.PipelineRasterizationStateCreateInfo::new()
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.None)
-    raster.frontFace = enums.front_face(.CounterClockwise)
-    raster.lineWidth = 1.0
-    mut samples: vk.PipelineMultisampleStateCreateInfo = vk.PipelineMultisampleStateCreateInfo::new()
-    samples.rasterizationSamples = 1
-    mut depth: vk.PipelineDepthStencilStateCreateInfo = vk.PipelineDepthStencilStateCreateInfo::new()
-    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-    blend_attachment.colorWriteMask = enums.color_component(.RGBA)
-    mut blend: vk.PipelineColorBlendStateCreateInfo = vk.PipelineColorBlendStateCreateInfo::new()
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&blend_attachment)
-
-    mut info: vk.GraphicsPipelineCreateInfo = vk.GraphicsPipelineCreateInfo::new()
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&input)
-    info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&view)
-    info.pRasterizationState = addr(&raster)
-    info.pMultisampleState = addr(&samples)
-    info.pDepthStencilState = addr(&depth)
-    info.pColorBlendState = addr(&blend)
-    info.layout = layout
-    info.renderPass = pass
-    info.basePipelineIndex = -1
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), output)
+    // An environment face is a fullscreen triangle into a fixed square:
+    // nothing is culled, no vertex buffer, no depth, no blending.
+    plan := pipelines.Plan {
+        vertex: vmodule, fragment: fmodule,
+        layout: layout, pass: pass,
+        cull: .None, depth: pipelines.depth_off(), blend: .None,
+        vertices: .None, viewport: .Square(size), encoded: false,
+    }
+    code = pipelines.build(r, &plan, output)
     // The pipeline keeps its own reference; the modules are not needed again.
     r.api.DestroyShaderModule(r.device, vmodule, ptr(0))
     r.api.DestroyShaderModule(r.device, fmodule, ptr(0))
@@ -122,13 +81,13 @@ unsafe fn fullscreen_pipeline(r: &state.Renderer, vertex_words: ptr, vertex_coun
 unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemory {
     mut info: vk.ImageCreateInfo = vk.ImageCreateInfo::new()
     info.flags = enums.image_create(.CubeCompatible)
-    info.imageType = 1
+    info.imageType = enums.image_type(.Type2D)
     info.format = enums.format(.R16G16B16A16_SFLOAT)
     info.extent = vk.Extent3D { width: size, height: size, depth: 1 }
     info.mipLevels = mips
     info.arrayLayers = 6
     info.samples = enums.samples(.Type1)
-    info.tiling = vk.IMAGE_TILING_OPTIMAL
+    info.tiling = enums.image_tiling(.Optimal)
     info.usage = enums.image_usage(.ColorAttachmentSampled)
     info.sharingMode = enums.sharing_mode(.Exclusive)
     info.initialLayout = enums.image_layout(.Undefined)
@@ -140,7 +99,7 @@ unsafe fn create_cube(r: &mut state.Renderer, size: u32, mips: u32) -> ImageMemo
     requirements.size = req[0]
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
-    if device.allocate(&r, &requirements, 1, addr(&mut result.memory)) != 0 {
+    if device.allocate(&r, &requirements, .Some(enums.Memory.DeviceLocal), addr(&mut result.memory)) != 0 {
         r.api.DestroyImage(r.device, result.image, ptr(0))
         result.image = ptr(0)
         return result
@@ -265,7 +224,7 @@ unsafe fn stage_lut(r: &mut state.Renderer, cmd: ptr, words: &[]u32) -> Staging 
     if r.api.CreateBuffer(r.device, addr(&stage_info), ptr(0), addr(&mut staging.buffer)) != 0 { return staging }
     mut requirements: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, staging.buffer, addr(&requirements))
-    if device.allocate(&r, &requirements, 6, addr(&mut staging.memory)) != 0 {
+    if device.allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut staging.memory)) != 0 {
         r.api.DestroyBuffer(r.device, staging.buffer, ptr(0))
         staging.buffer = ptr(0)
         return staging
@@ -351,14 +310,14 @@ pub unsafe fn setup(r: &mut state.Renderer, sun: &[f32; 4], zenith: &[f32; 4], h
         _ := sys.eprint("ibl: could not create the irradiance cubemap\n")
         return .Environment
     }
-    mut lut_info := device.image_2d_info(enums.format(.R32G32_SFLOAT), LUT_SIZE, LUT_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.TransferDstSampled))
+    mut lut_info := device.image_2d_info(enums.format(.R32G32_SFLOAT), LUT_SIZE, LUT_SIZE, enums.ImageTiling.Optimal, enums.ImageUsage.TransferDstSampled)
     mut lut_image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&lut_info), ptr(0), addr(&mut lut_image))
     if code != 0 { return device.fail(&mut r, code, .Environment) }
     mut lut_req: vk.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, lut_image, addr(&mut lut_req))
     mut lut_memory := ptr(0)
-    code = device.allocate(&r, &lut_req, 1, addr(&mut lut_memory))
+    code = device.allocate(&r, &lut_req, .Some(enums.Memory.DeviceLocal), addr(&mut lut_memory))
     if code != 0 { return device.fail(&mut r, code, .Environment) }
     code = r.api.BindImageMemory(r.device, lut_image, lut_memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Environment) }

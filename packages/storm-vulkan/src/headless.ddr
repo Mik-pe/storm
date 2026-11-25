@@ -28,13 +28,13 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
 // The color attachment uses optimal tiling, including on devices that cannot
 // render into a linear image. Transfer into a tightly packed coherent buffer.
 unsafe fn create(r: &mut state.Renderer) -> i32 {
-    info := device.image_2d_info(r.format, r.width, r.height, enums.image_tiling(.Optimal), enums.image_usage(.ColorAttachmentTransferSrc))
+    info := device.image_2d_info(r.format, r.width, r.height, enums.ImageTiling.Optimal, enums.ImageUsage.ColorAttachmentTransferSrc)
     mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut r.captureImage))
     if code != 0 { return code }
     mut req: vk.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, r.captureImage, addr(&mut req))
     mut memory := ptr(0)
-    code = device.allocate(&r, &req, 0, addr(&mut memory))
+    code = device.allocate(&r, &req, .None, addr(&mut memory))
     r.captureMemory = memory
     if code != 0 { return code }
     code = r.api.BindImageMemory(r.device, r.captureImage, r.captureMemory, 0)
@@ -60,7 +60,7 @@ unsafe fn create(r: &mut state.Renderer) -> i32 {
     if code != 0 { return code }
     r.api.GetBufferMemoryRequirements(r.device, r.readback.handle, addr(&mut req))
     memory = ptr(0)
-    code = device.allocate(&r, &req, 6, addr(&mut memory))
+    code = device.allocate(&r, &req, .Some(enums.Memory.HostVisibleCoherent), addr(&mut memory))
     r.readback.memory = memory
     if code != 0 { return code }
     code = r.api.BindBufferMemory(r.device, r.readback.handle, r.readback.memory, 0)
@@ -101,7 +101,9 @@ pub unsafe fn copy_to_host(r: &state.Renderer) {
     copy.imageExtent.height = r.height
     copy.imageExtent.depth = 1
     r.api.CmdCopyImageToBuffer(cmd, r.captureImage, enums.image_layout(.TransferSrcOptimal), r.readback.handle, 1, addr(&copy))
-    host := vk.MemoryBarrier { sType: 46, pNext: ptr(0), srcAccessMask: enums.access(.TransferWrite), dstAccessMask: enums.access(.HostRead) }
+    mut host := vk.MemoryBarrier::new()
+    host.srcAccessMask = enums.access(.TransferWrite)
+    host.dstAccessMask = enums.access(.HostRead)
     r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Host), 0, 1, addr(&host), 0, ptr(0), 0, ptr(0))
 }
 

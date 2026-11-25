@@ -75,16 +75,19 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> state.SetupStep {
     .Ready
 }
 
-pub unsafe fn image_2d_info(format: u32, width: u32, height: u32, tiling: u32, usage: u32) -> vk.ImageCreateInfo {
+// The 2D image Storm creates: one mip level, one layer, one sample, sharing
+// mode exclusive, no initial layout. `tiling` and `usage` are enums written
+// here, so no caller holds a registry number.
+pub unsafe fn image_2d_info(format: u32, width: u32, height: u32, tiling: enums.ImageTiling, usage: enums.ImageUsage) -> vk.ImageCreateInfo {
     mut info: vk.ImageCreateInfo = vk.ImageCreateInfo::new()
-    info.imageType = 1
+    info.imageType = enums.image_type(.Type2D)
     info.format = format
     info.extent = vk.Extent3D { width: width, height: height, depth: 1 }
     info.mipLevels = 1
     info.arrayLayers = 1
     info.samples = enums.samples(.Type1)
-    info.tiling = tiling
-    info.usage = usage
+    info.tiling = enums.image_tiling(tiling)
+    info.usage = enums.image_usage(usage)
     info
 }
 
@@ -382,8 +385,15 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
 
 // Returns the VkResult of vkAllocateMemory, or VK_ERROR_UNKNOWN (-13) when no
 // memory type satisfies the requirements: Vulkan was never asked, so there is
-// no code from it, and -13 is Khronos' spelling of "unspecified".
-pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, flags: i32, output: ptr) -> i32 {
+// no code from it, and -13 is Khronos' spelling of "unspecified". `want` is
+// the memory property every chosen type must have; `.None` asks for nothing
+// and takes the first type the requirements allow.
+pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, want: Option<enums.Memory>, output: ptr) -> i32 {
+    mut flags: i32 = 0
+    match want {
+        .Some(memory) => { flags = i32(enums.memory(memory)) },
+        .None => {},
+    }
     mut i := 0
     while i < i32(r.memoryProperties.typeCount) {
         bits := i32(requirements.memoryTypeBits)
@@ -426,7 +436,7 @@ pub unsafe fn replace_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state
     mut requirements: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
     mut memory := ptr(0)
-    code = allocate(&r, &requirements, 6, addr(&mut memory))
+    code = allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut memory))
     if code != 0 {
         r.api.DestroyBuffer(r.device, handle, ptr(0))
         return fail(&mut r, code, .VertexBuffer)

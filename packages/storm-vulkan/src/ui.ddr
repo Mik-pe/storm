@@ -4,6 +4,7 @@ import std.sys as sys
 import .device as device
 import .enums as enums
 import .layout as vk2
+import .pipeline as pipelines
 import .shader as shader
 import .state as state
 
@@ -49,7 +50,7 @@ unsafe fn create_atlas(r: &mut state.Renderer) -> state.SetupStep {
     mut requirements: vk2.MemoryRequirements = zeroed()
     r.api.GetImageMemoryRequirements(r.device, image, addr(&mut requirements))
     mut memory := ptr(0)
-    code = device.allocate(&r, &requirements, 6, addr(&mut memory))
+    code = device.allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut memory))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
     if memory == ptr(0) { return .Ui }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
@@ -86,57 +87,11 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     r.uiVertShader = vert_module
     r.uiFragShader = frag_module
 
-    mut encoding: vk2.DisplayEncoding = zeroed()
-    stages := vk2.ShaderStages {
-        vertex: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Vertex), module: r.uiVertShader, pName: cstr("main"), pSpecializationInfo: ptr(0) },
-        fragment: vk2.PipelineShaderStageCreateInfo { sType: 18, pNext: ptr(0), flags: 0, stage: enums.shader_stage(.Fragment), module: r.uiFragShader, pName: cstr("main"), pSpecializationInfo: device.display_encoding(r.format, &mut encoding) },
-    }
-
-    mut binding_desc: vk2.VertexInputBindingDescription = zeroed()
-    binding_desc.binding = 0
-    binding_desc.stride = FLOATS_PER_VERTEX * 4
-    binding_desc.inputRate = enums.vertex_input_rate(.Vertex)
-
-    // One vertex is 8 floats: xy = position, zw = uv, then rgba.
-    attributes := vk2.Attributes {
-        first: vk2.VertexInputAttributeDescription { location: 0, binding: 0, format: enums.format(.R32G32B32A32_SFLOAT), offset: 0 },
-        second: vk2.VertexInputAttributeDescription { location: 1, binding: 0, format: enums.format(.R32G32B32A32_SFLOAT), offset: 16 },
-    }
-
-    mut vertex_input: vk2.PipelineVertexInputStateCreateInfo = vk2.PipelineVertexInputStateCreateInfo::new()
-    vertex_input.vertexBindingDescriptionCount = 1
-    vertex_input.pVertexBindingDescriptions = addr(&mut binding_desc)
-    vertex_input.vertexAttributeDescriptionCount = 2
-    vertex_input.pVertexAttributeDescriptions = addr(&attributes)
-
-    mut assembly: vk2.PipelineInputAssemblyStateCreateInfo = vk2.PipelineInputAssemblyStateCreateInfo::new()
-    assembly.topology = enums.primitive_topology(.TriangleList)
-
-    mut view: vk2.FrameViewport = zeroed()
-    device.frame_viewport(&mut view)
-
-    mut raster: vk2.PipelineRasterizationStateCreateInfo = vk2.PipelineRasterizationStateCreateInfo::new()
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.None)
-    raster.frontFace = enums.front_face(.Clockwise)
-    raster.lineWidth = 1.0
-
-    mut multisample: vk2.PipelineMultisampleStateCreateInfo = vk2.PipelineMultisampleStateCreateInfo::new()
-    multisample.rasterizationSamples = 1
-
-    mut depth: vk2.PipelineDepthStencilStateCreateInfo = vk2.PipelineDepthStencilStateCreateInfo::new()
-
-    mut blend_attachment: vk2.PipelineColorBlendAttachmentState = zeroed()
-    enums.apply_blend(&mut blend_attachment, &enums.alpha_over())
-
-    mut blend: vk2.PipelineColorBlendStateCreateInfo = vk2.PipelineColorBlendStateCreateInfo::new()
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&mut blend_attachment)
-
+    // UI quads blend alpha-over over the frame, in frame coordinates, and
+    // never touch depth. One vertex is 8 floats: xy = position, zw = uv, rgba.
     mut push_range: vk2.PushConstantRange = zeroed()
     push_range.stageFlags = enums.shader_stage(.Vertex)
     push_range.size = 16
-
     mut layout_info: vk2.PipelineLayoutCreateInfo = vk2.PipelineLayoutCreateInfo::new()
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&mut r.uiTexture.layout)
@@ -145,24 +100,16 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info), ptr(0), addr(&mut r.uiPipelineLayout))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    mut info: vk2.GraphicsPipelineCreateInfo = vk2.GraphicsPipelineCreateInfo::new()
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&mut vertex_input)
-    info.pInputAssemblyState = addr(&mut assembly)
-    info.pViewportState = addr(&view.viewport)
-    info.pDynamicState = addr(&view.dynamic)
-    info.pRasterizationState = addr(&mut raster)
-    info.pMultisampleState = addr(&mut multisample)
-    info.pDepthStencilState = addr(&mut depth)
-    info.pColorBlendState = addr(&mut blend)
-    info.layout = r.uiPipelineLayout
-    info.renderPass = r.renderPass
-    info.subpass = 0
-    info.basePipelineIndex = -1
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&mut info), ptr(0), addr(&mut r.uiPipeline))
+    plan := pipelines.Plan {
+        vertex: r.uiVertShader, fragment: r.uiFragShader,
+        layout: r.uiPipelineLayout, pass: r.renderPass,
+        cull: .None, depth: pipelines.depth_off(), blend: .Some(enums.alpha_over()),
+        vertices: .Ui(FLOATS_PER_VERTEX * 4), viewport: .Frame, encoded: true,
+    }
+    mut pipeline := ptr(0)
+    code = pipelines.build(&r, &plan, addr(&mut pipeline))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
-
+    r.uiPipeline = pipeline
     .Ready
 }
 
@@ -177,7 +124,7 @@ unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
     mut requirements: vk2.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
     mut memory := ptr(0)
-    code = device.allocate(&r, &requirements, 6, addr(&mut memory))
+    code = device.allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut memory))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
     if memory == ptr(0) { return .Ui }
     code = r.api.BindBufferMemory(r.device, handle, memory, 0)
@@ -224,7 +171,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     mut requirements: vk2.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, staging, addr(&mut requirements))
     mut staging_memory := ptr(0)
-    code = device.allocate(&r, &requirements, 6, addr(&mut staging_memory))
+    code = device.allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut staging_memory))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
     code = r.api.BindBufferMemory(r.device, staging, staging_memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Ui) }

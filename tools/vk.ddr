@@ -326,6 +326,21 @@ fn selected_enums() -> []SelectedEnum {
                 Selected { dunder: "Linear", constant: "VK_IMAGE_TILING_LINEAR", comment: "" },
             ]
         },
+        // VkImageType
+        SelectedEnum {
+            dunder: "ImageType", block: "VkImageType", comment: "", variants: [
+                Selected { dunder: "Type2D", constant: "VK_IMAGE_TYPE_2D", comment: "" },
+            ]
+        },
+        // VkMemoryPropertyFlagBits: what `device.allocate` asks of a memory
+        // type. "No requirement" is the absence of a value (Option), not a
+        // variant, so the number 0 is never written at a call site.
+        SelectedEnum {
+            dunder: "Memory", block: "VkMemoryPropertyFlagBits", comment: "", variants: [
+                Selected { dunder: "DeviceLocal", constant: "VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT", comment: "" },
+                Selected { dunder: "HostVisibleCoherent", constant: "", comment: "HOST_VISIBLE | HOST_COHERENT: mappable and coherent, for uploads and readback" },
+            ]
+        },
         // VkCommandPoolCreateFlagBits
         SelectedEnum {
             dunder: "CommandPoolFlag", block: "VkCommandPoolCreateFlagBits", comment: "", variants: [
@@ -474,6 +489,7 @@ fn flag_sets() -> []FlagSet {
         FlagSet { dunder: "TransferSrcTransferDstSampled", bits: ["VK_IMAGE_USAGE_SAMPLED_BIT", "VK_IMAGE_USAGE_TRANSFER_DST_BIT", "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"] },
         FlagSet { dunder: "RGBA", bits: ["VK_COLOR_COMPONENT_A_BIT", "VK_COLOR_COMPONENT_B_BIT", "VK_COLOR_COMPONENT_G_BIT", "VK_COLOR_COMPONENT_R_BIT"] },
         FlagSet { dunder: "ColorDepthWrite", bits: ["VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT", "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT"] },
+        FlagSet { dunder: "HostVisibleCoherent", bits: ["VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT", "VK_MEMORY_PROPERTY_HOST_COHERENT_BIT"] },
     ]
 }
 

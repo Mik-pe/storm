@@ -1283,9 +1283,6 @@ pub struct Attachments { color: AttachmentDescription, depth: AttachmentDescript
 pub struct References { color: AttachmentReference, depth: AttachmentReference }
 
 @c_layout
-pub struct Attributes { first: VertexInputAttributeDescription, second: VertexInputAttributeDescription }
-
-@c_layout
 pub struct ShaderStages { vertex: PipelineShaderStageCreateInfo, fragment: PipelineShaderStageCreateInfo }
 
 @c_layout
@@ -1319,6 +1316,28 @@ pub fn vertex_input() -> VertexInput {
     }
 }
 
+// The binding and the two attributes the UI pipeline declares: one vertex is
+// eight floats, xy = position and zw = uv at location 0, rgba at location 1.
+// Its own record, not two of the mesh's three: a layout that is described by
+// how much of another layout it uses is a layout nobody can read.
+@c_layout
+pub struct UiVertices {
+    binding: VertexInputBindingDescription,
+    position: VertexInputAttributeDescription,
+    color: VertexInputAttributeDescription,
+}
+
+// The UI layout, with zeroed format fields: `enums.apply_ui_vertices` fills
+// them. `stride` is the vertex's byte size, which the caller owns since it is
+// the vertex it pushes.
+pub fn ui_vertices(stride: u32) -> UiVertices {
+    UiVertices {
+        binding: VertexInputBindingDescription { binding: 0, stride: stride, inputRate: 0 },
+        position: VertexInputAttributeDescription { location: 0, binding: 0, format: 0, offset: 0 },
+        color: VertexInputAttributeDescription { location: 1, binding: 0, format: 0, offset: 16 },
+    }
+}
+
 @c_layout
 pub struct FrameViewport {
     viewport: PipelineViewportStateCreateInfo,
@@ -1326,6 +1345,3 @@ pub struct FrameViewport {
     states: [u32; 2],
 }
 
-pub const IMAGE_TILING_OPTIMAL: u32 = 0
-
-pub const IMAGE_TILING_LINEAR: u32 = 1

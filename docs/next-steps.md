@@ -150,12 +150,15 @@ plats i paketet.
 ### Beslut inför 3a–3b (researchad 2026-11-23)
 
 - **Ett ställe äger vertexformatet.** Inte två pipeline-beskrivningar som
-  hålls lika "för hand". Ett `vk.Attributes`-värde med tre attribut
-  (location 0 pos, 1 normal, 2 uv; offset 0/12/24, stride 32) byggs av en
-  funktion i `pipeline.ddr`, och `shadow.ddr` använder samma beskrivning
-  (shadern läser bara location 0, men pipelinen måste fortfarande deklarera
-  allt bufferten innehåller — annars läser skuggpasset 24-byte-stride ur
-  en 32-byte-ström och hela skuggkartan blir fel *utan något felmeddelande*).
+  hålls lika "för hand". `pipeline.ddr`:s `Vertices` namnger layouten en
+  pipeline deklarerar (`.Mesh`, `.Ui(stride)` eller ingen), och `describe`
+  skriver varje forms post från en enda fabrik + skribent per layout
+  (`vk.vertex_input` + `enums.apply_vertex_input` för meshens tre attribut,
+  `vk.ui_vertices` + `enums.apply_ui_vertices` för UI:ts två); `shadow.ddr`
+  deklarerar `.Mesh` som alla andra (shadern läser bara location 0, men
+  pipelinen måste fortfarande deklarera allt bufferten innehåller — annars
+  läser skuggpasset 24-byte-stride ur en 32-byte-ström och hela skuggkartan
+  blir fel *utan något felmeddelande*).
   Det är det enda sättet "ändra på alla platser eller ingen" upphör att vara
   en regel man kommer ihåg: det finns en plats. `stride` och `% 8`-valideringen
   i `mesh_pass`/`shadow.mesh` härleds ur samma konstant (`VERTEX_FLOATS`).
