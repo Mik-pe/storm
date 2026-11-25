@@ -33,8 +33,8 @@ Tabellen följer spelets test för alla tio blommor och visar en rutt som besök
 | --- | --- | --- |
 | Starta banan | `storm_new` `{"template":"demo"}` | Vallmo står i Körsbärsgläntan med 0 av 10 blommor |
 | Smörblomma (Körsbärsgläntan) | `storm_step` `{"x":-1,"z":0.16,"ticks":29}` + `{"ticks":3}` | 1 blomma |
-| Prästkrage (Picknickgläntan) | `storm_step` `{"x":-1,"z":0.58,"ticks":81}` | 2 blommor |
-| Klöverblomma (Södra Klöverängen) | `storm_step` `{"x":1,"z":0.36,"ticks":99}` | 3 blommor |
+| Prästkrage (Picknickgläntan) | `storm_step` `{"x":-1,"z":0.55,"ticks":58}`, `{"z":1,"ticks":10}` | 2 blommor |
+| Klöverblomma (Södra Klöverängen) | `storm_step` `{"x":1,"z":0.46,"ticks":86}` | 3 blommor |
 | Gullviva (Solkullen) | `storm_step` `{"x":1,"z":-0.32,"ticks":123}` | 4 blommor |
 | Linnea (Bärgläntan) | `storm_step` `{"x":0.12,"z":-1,"ticks":90}` | 5 blommor |
 | Blåklocka (Körsbärsgläntan öst) | `storm_step` `{"x":-1,"z":0.35,"ticks":93}` | 6 blommor |

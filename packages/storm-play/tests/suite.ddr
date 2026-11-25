@@ -63,12 +63,13 @@ fn walk(s: &mut play.Session, x: f32, z: f32, ticks: i32) {
     walk(&mut s, 0.0, 0.0, 3)
     assert(s.picked_tick == picked1 && s.flowers == 1)
 
-    // 2. Prästkrage [4] (-7.40, 5.40) in Picknickgläntan (SW)
-    walk(&mut s, -1.0, 0.58, 81)
+    // 2. Prästkrage [4] (-6.15, 5.10) beside Picknickgläntan's quilt edge (SW)
+    walk(&mut s, -1.0, 0.55, 58)
+    walk(&mut s, 0.0, 1.0, 10)
     assert(s.flowers == 2 && s.last_flower == 4 && s.collected[4] && !s.won)
 
     // 3. Klöverblomma [9] (-0.40, 7.90) in Södra Klöverängen (S)
-    walk(&mut s, 1.0, 0.36, 99)
+    walk(&mut s, 1.0, 0.46, 86)
     assert(s.flowers == 3 && s.last_flower == 9 && s.collected[9] && !s.won)
 
     // 4. Gullviva [8] (8.40, 5.10) on Solkullen (SE)
@@ -692,10 +693,15 @@ fn meadow() -> play.Scene {
         }
     }
     assert(flowers == 10 && clouds == 12 && boosts == 4 && butterflies == 5 && colliders == 26)
-    // Verify no flower or player spawn overlaps any collider box.
+    // Verify no flower or player spawn overlaps any collider box, and no flower grows through the picnic quilt.
     for i in 0..scene.entities.len {
         e := &scene.entities[i]
         if e.role != .Flower && e.role != .Player { continue }
+        if e.role == .Flower {
+            in_quilt := e.position.x >= -10.14 - 0.32 && e.position.x <= -6.66 + 0.32 &&
+            e.position.z >= 3.76 - 0.32 && e.position.z <= 6.64 + 0.32
+            assert(!in_quilt)
+        }
         r := e.size.x * 0.5
         for c in scene.entities {
             if c.role != .Collider { continue }
