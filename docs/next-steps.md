@@ -37,9 +37,11 @@ enums, urvalet som data i verktyget, talen ur registret, Storms egna värden
 o.s.v.) är
 möjliga som raka `[T; 2]`-fält i 0.12.0 men byts inte förrän registret
 genererar dem; och paketet som eget namn. Sedan **Renderer-uppdelningen**,
-kluster för kluster (design.md §3b): `depth.Depth` är gjord, nästa är `ui.Atlas`
-(11 fält, inga läsningar utanför `ui.ddr`). Instancing (5), fler ljus (7)
-och input (8) kommer efter det.
+kluster för kluster (design.md §3b): `depth.Depth`, `ui.Atlas`,
+`ibl.Environment` och `shadow.Shadow` är gjorda (2026-11-25, `Renderer`
+121 → 72 fält), nästa är `post.Stage` (10 fält; `scenePass`,
+`compositePass`, `sceneFramebuffer` lämnas ut) och `headless.Capture`.
+Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy
 
