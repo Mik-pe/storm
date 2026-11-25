@@ -77,6 +77,8 @@ pub struct Renderer {
     environment: ibl.Environment,
     // Material textures: slot 0 is the white fallback (texture.ddr).
     textures: []texture.Texture,
+    // The flat normal a missing normal map binds.
+    flat: texture.Flat,
     atlas: ui.Atlas,
     vertices: device.Buffer,
     // The frame being recorded: its autorelease pool, its drawable, and
@@ -120,6 +122,7 @@ unsafe fn empty() -> Renderer {
         shadow_sampler: ptr(0), shadow_map: ptr(0), depth_buffer: ptr(0), scene_color: ptr(0),
         environment: ibl.empty(),
         textures: [],
+        flat: texture.Flat { image: ptr(0), sampler: ptr(0) },
         atlas: ui.empty(),
         vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
         pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), submitted: ptr(0), encoder: ptr(0),
@@ -184,7 +187,7 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
     exact := device.exact()
     r.shadow_sampler = device.sampler(&r.objc, r.device, &exact)?
     r.shadow_map = device.texture(&r.objc, r.device, .Type2D, depth, SHADOW_SIZE, SHADOW_SIZE, 1, .RenderTargetAndShaderRead, .Private)?
-    texture.setup(&r.objc, r.device, &mut r.textures)?
+    texture.setup(&r.objc, r.device, &mut r.textures, &mut r.flat)?
     r.atlas = ui.create(&r.objc, r.device, r.library)?
     .Ok
 }
@@ -403,7 +406,7 @@ unsafe fn record_sky(r: &mut Renderer, inv_view_projection: &[f32; 16], sun: &[f
 }
 
 unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, texture_id: i64, blended: bool) -> Result<(), string> {
+    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, blended: bool) -> Result<(), string> {
     require_main(&r)?
     if blended {
         use_pipeline(r, &r.glass_pipeline, r.depth_test)
@@ -432,10 +435,20 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     pass.fragment_texture(&r.objc, r.encoder, r.environment.cube, 1)
     pass.fragment_texture(&r.objc, r.encoder, r.environment.irradiance, 2)
     pass.fragment_texture(&r.objc, r.encoder, r.environment.brdf, 3)
-    pass.fragment_texture(&r.objc, r.encoder, texture.image_of(&r.textures, texture_id), 4)
+    // The material's five maps, one index each; the normal binding's "none"
+    // is the flat normal, every other "none" the white fallback.
+    ids := [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id]
+    for b in 0..5 {
+        if b == 2 && !texture.live(&r.textures, ids[i32(b)]) {
+            pass.fragment_texture(&r.objc, r.encoder, r.flat.image, u64(4 + b))
+            pass.fragment_sampler(&r.objc, r.encoder, r.flat.sampler, u64(2 + b))
+        } else {
+            pass.fragment_texture(&r.objc, r.encoder, texture.image_of(&r.textures, ids[i32(b)]), u64(4 + b))
+            pass.fragment_sampler(&r.objc, r.encoder, texture.sampler_of(&r.textures, ids[i32(b)]), u64(2 + b))
+        }
+    }
     pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
     pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
-    pass.fragment_sampler(&r.objc, r.encoder, texture.sampler_of(&r.textures, texture_id), 2)
     pass.triangles(&r.objc, r.encoder, u64(vertices.len / gfx.VERTEX_FLOATS))
     .Ok
 }
@@ -516,6 +529,7 @@ unsafe fn destroy(r: &mut Renderer) {
     }
     device.release_buffer(&r.objc, &mut r.vertices)
     texture.destroy(&r.objc, &mut r.textures)
+    texture.destroy_flat(&r.objc, &mut r.flat)
     ui.destroy(&r.objc, &mut r.atlas)
     ibl.destroy(&r.objc, &mut r.environment)
     for owned in [r.scene_color, r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
@@ -629,13 +643,13 @@ impl gfx.Backend for Renderer {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, handle: gfx.Texture, surface: gfx.Surface) -> Result<(), string> {
-        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, handle.id, surface == gfx.Surface.Blended) }
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, surface: gfx.Surface) -> Result<(), string> {
+        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, textures, surface == gfx.Surface.Blended) }
     }
 
-    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
         unsafe {
-            match texture.upload(&self.objc, self.device, &mut self.textures, pixels, width, height, sampler) {
+            match texture.upload(&self.objc, self.device, &mut self.textures, pixels, width, height, encoding, sampler) {
                 .Ok(id) => .Ok(gfx.Texture { id: id }),
                 .Err(message) => .Err(message),
             }

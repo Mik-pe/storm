@@ -50,19 +50,19 @@ pub enum TransformField { X = 0, Y = 1, Z = 2, Rotation = 3, ScaleX = 4, ScaleY 
 
 // A PBR surface as the mesh shader takes it. Transparent surfaces are drawn
 // in the blended pass, back to front; everything else relies on depth.
-// `texture` is the surface's base colour image, multiplied onto `base`, or
-// `gfx.no_texture()` for a surface that is only a colour: the handle of an
-// uploaded texture is a plain value, and the one who uploaded it owns it.
+// `textures` are the surface's maps as the contract names them, each one
+// `gfx.no_texture()` or the handle of an uploaded texture: a handle is a
+// plain value, and the one who uploaded it owns it.
 pub struct Material {
     base: core.Color,
     metallic: f32,
     roughness: f32,
     emissive: f32,
-    texture: gfx.Texture,
+    textures: gfx.Textures,
 }
 
 pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, texture: gfx.no_texture() }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, textures: gfx.no_textures() }
 }
 
 // The same surface with a base colour image. The image replaces nothing
@@ -70,14 +70,23 @@ pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -
 // the shader multiplies onto the texel (glTF's baseColorFactor).
 pub fn textured(move surface: Material, texture: gfx.Texture) -> Material {
     mut m := move surface
-    m.texture = texture
+    m.textures.base = texture
+    m
+}
+
+// The same surface with all its maps at once: what a glTF material hands
+// over. `base` is the first one's slot, so `textured` and this agree on
+// where the base colour lives.
+pub fn mapped(move surface: Material, move textures: gfx.Textures) -> Material {
+    mut m := move surface
+    m.textures = move textures
     m
 }
 
 // The same surface with an emissive term: what the shader adds on its own,
 // for orbs, lamps and anything that should glow rather than reflect.
 pub fn emissive_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, texture: gfx.no_texture() }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, textures: gfx.no_textures() }
 }
 
 pub struct Drawable {
@@ -295,7 +304,7 @@ impl Graph {
             self.materials.get_mut(entity).metallic = value.metallic
             self.materials.get_mut(entity).roughness = value.roughness
             self.materials.get_mut(entity).emissive = value.emissive
-            self.materials.get_mut(entity).texture = value.texture
+            self.materials.get_mut(entity).textures = value.textures
             return true
         }
         self.materials.insert(entity, value) >= 0

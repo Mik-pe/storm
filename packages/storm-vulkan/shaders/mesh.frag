@@ -34,6 +34,10 @@ layout(set = 0, binding = 4) uniform sampler2D brdf_lut;
 // The material's base texture, set 1: a white 1x1 texture when it has none,
 // so the multiply below is the identity for untextured surfaces.
 layout(set = 1, binding = 0) uniform sampler2D base_texture;
+// The material's metallic-roughness map (G = roughness, B = metallic), read
+// as written: a linear texture. White (the fallback) leaves the factors as
+// they are, so a material without a map is unchanged.
+layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
 
 const float ENV_MIPS = 6.0;   // prefiltered_env mip count
 
@@ -113,8 +117,11 @@ void main() {
     vec3 h = normalize(v + l);
 
     vec3 albedo = vertex_base_color.rgb * texture(base_texture, vertex_uv).rgb;
-    float metallic = clamp(vertex_params.x, 0.0, 1.0);
-    float roughness = clamp(vertex_params.y, 0.045, 1.0);
+    // The factors multiply the map (glTF 2.0 3.9.2): a map that is white
+    // leaves them as they are, and a factor of 1 is the map alone.
+    vec2 mr = texture(metallic_roughness_texture, vertex_uv).gb;
+    float metallic = clamp(vertex_params.x * mr.y, 0.0, 1.0);
+    float roughness = clamp(vertex_params.y * mr.x, 0.045, 1.0);
     float emissive = max(vertex_params.z, 0.0);
     float shadows_on = vertex_params.w;
 

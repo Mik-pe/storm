@@ -119,12 +119,50 @@ pub struct Texture { id: i64 }
 
 pub fn no_texture() -> Texture { Texture { id: 0 } }
 
+// The material's textures, in the order a glTF material names them. Each is
+// a texture of its own (image, sampler and encoding, as uploaded), and a
+// missing one is `no_texture()`, which every backend binds as a white 1x1
+// texture: white base colour leaves the colour as it is, white
+// metallic-roughness (1, 1) leaves the factors as they are, white occlusion
+// is unoccluded. Only a normal map has a different identity (a flat normal),
+// and that is the one binding a backend fills with its own flat texture for
+// `no_texture()`. A shared packing (occlusion and metallic-roughness in one
+// image) is one image, but a handle is one upload -- image, sampler and
+// encoding together: two slots that name the same upload share a handle
+// (occlusion and metallic-roughness in one image, both linear), and two
+// that name different uploads have two (a base colour and a metallic-
+// roughness map in one image, sRGB and linear). The emissive slot is
+// carried and not read yet (the scene has an emissive factor, not a map).
+pub struct Textures {
+    base: Texture,
+    metallic_roughness: Texture,
+    normal: Texture,
+    occlusion: Texture,
+    emissive: Texture,
+}
+
+// A surface with no textures at all: five times `no_texture()`.
+pub fn no_textures() -> Textures {
+    Textures { base: no_texture(), metallic_roughness: no_texture(), normal: no_texture(), occlusion: no_texture(), emissive: no_texture() }
+}
+
 // An uploaded texture is 8-bit RGBA, `width` x `height`, rows top to bottom,
 // with no padding between rows: the decoded form of a PNG or a generated
 // pattern. A backend builds a mip chain when its device can filter between
 // levels, and one level otherwise; either way the texture is complete when
 // upload_texture returns.
 pub const TEXTURE_BYTES_PER_PIXEL: i32 = 4
+
+// What the bytes of an uploaded texture mean. Srgb: the texel holds a
+// colour encoded with the sRGB transfer function (a base colour), and the
+// hardware decodes it to linear before the shader sees it and filters it in
+// linear light. Linear: the texel holds the value itself (a metallic,
+// roughness, occlusion or normal map), and an sRGB decoding would be a lie:
+// the lantern's metallic 0.20 would read as 0.03, and a flat normal
+// (127, 127, 255) would point sideways. Which one a texture is comes from
+// the file (glTF 2.0 section 3.9.2), and the uploader is told, so a backend
+// never has to guess it from the binding.
+pub enum Encoding { Srgb = 0, Linear = 1 }
 
 // How a texture is sampled. A value the application copies, in the shape the
 // glTF sampler object has: `mag` and `min` choose between the four texels
@@ -179,10 +217,11 @@ pub trait Backend {
     // the same value every frame passes to sky().
     fn build_environment(&mut self, sky: &Sky) -> Result<(), string>
 
-    // Upload RGBA8 pixels as a texture, sampled as `sampler` says, and hand
-    // back its handle. The pixels are read before the call returns; the
-    // handle stays valid until free_texture, and is refused afterwards.
-    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, sampler: &Sampler) -> Result<Texture, string>
+    // Upload RGBA8 pixels as a texture, read as `encoding` says and sampled
+    // as `sampler` says, and hand back its handle. The pixels are read
+    // before the call returns; the handle stays valid until free_texture,
+    // and is refused afterwards.
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: Encoding, sampler: &Sampler) -> Result<Texture, string>;
 
     fn free_texture(&mut self, texture: Texture)
 
@@ -203,11 +242,13 @@ pub trait Backend {
     fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string>
 
     // Vertices are interleaved [x, y, z, nx, ny, nz, u, v] f32 (32 bytes); the
-    // helpers below are the only way Storm makes them. `texture` multiplies
-    // the base colour where the surface has uv; NO_TEXTURE leaves the colour
-    // as it is.
+    // helpers below are the only way Storm makes them. `textures.base`
+    // multiplies the base colour where the surface has uv, and the linear
+    // maps scale `params` as glTF says: metallic = params.x * mr.b,
+    // roughness = params.y * mr.g. NO_TEXTURE in a slot is that map's
+    // identity.
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, texture: Texture, surface: Surface) -> Result<(), string>
+        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, textures: &Textures, surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
     fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>

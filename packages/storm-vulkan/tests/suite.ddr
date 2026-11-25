@@ -129,31 +129,51 @@ import ..src.ui as ui
 }
 
 // A handle names a slot and a generation; a freed-and-reused slot must not
-// answer to the old handle, and zero names nothing.
+// answer to the old handle, and zero names nothing. A dead handle resolves
+// to the fallback slot, never to the slot it used to name.
 @test fn texture_handles_survive_a_slot_being_reused() {
     unsafe {
         mut table: texture.Table = zeroed()
         assert(!texture.live(&table, 0))
         assert(!texture.live(&table, texture.handle(1, 1)))
-        table.images[1] = ptr(1)
+        assert(texture.first_free(&table) == 1)
+        table.slots[1].image = ptr(1)
+        assert(texture.first_free(&table) == 2)
         first := texture.claim(&mut table, 1)
         assert(texture.handle(1, 1) == first)
         assert(texture.live(&table, first))
-        table.images[1] = ptr(0)
+        assert(texture.index_of(first) == 1 && texture.generation_of(first) == 1)
+        table.slots[1].image = ptr(0)
         assert(!texture.live(&table, first))
-        table.images[1] = ptr(1)
+        table.slots[1].image = ptr(1)
         second := texture.claim(&mut table, 1)
-        assert(second != first)
+        assert(second != first && texture.generation_of(second) == 2)
         assert(!texture.live(&table, first))
         assert(texture.live(&table, second))
-        // The fallback set is what a dead or zero handle resolves to.
-        table.sets[0] = ptr(100)
-        table.sets[1] = ptr(200)
-        assert(texture.set_of(&table, 0) == ptr(100))
-        assert(texture.set_of(&table, second) == ptr(200))
-        assert(texture.set_of(&table, first) == ptr(100))
-        assert(texture.set_of(&table, texture.handle(999, 1)) == ptr(100))
+        // What a draw binds: the fallback for 0, a dead handle and a slot
+        // out of range; the slot's own view and sampler for a live one.
+        table.slots[0].view = ptr(100)
+        table.slots[0].sampler = ptr(101)
+        table.slots[1].view = ptr(200)
+        table.slots[1].sampler = ptr(201)
+        assert(texture.slot_of(&table, 0) == 0)
+        assert(texture.slot_of(&table, second) == 1)
+        assert(texture.slot_of(&table, first) == 0)
+        assert(texture.slot_of(&table, texture.handle(999, 1)) == 0)
+        assert(texture.view_of(&table, second) == ptr(200) && texture.sampler_of(&table, second) == ptr(201))
+        assert(texture.view_of(&table, first) == ptr(100) && texture.sampler_of(&table, 0) == ptr(101))
+        assert(texture.view_of(&table, texture.handle(999, 1)) == ptr(100))
     }
+}
+
+// The table is allocated by size_of and indexed as C, so a field that
+// silently appears in a slot is a wrong draw with no diagnostic. Slot is
+// four pointers and an i64 (40) plus a u32 padded to 48; the table is 64
+// of them.
+@test fn texture_records_keep_their_size() {
+    assert(size_of(texture.Slot) == 48)
+    assert(size_of(texture.Table) == 3072)
+    assert(texture.CAPACITY == 64 && texture.BINDINGS == 5 && texture.NORMAL_BINDING == 2)
 }
 
 @test fn image_creation_and_device_limits_match_the_vulkan_abi() {
@@ -256,11 +276,11 @@ fn setup_steps() -> [state.SetupStep; 17] {
 @test fn owned_records_keep_their_size() {
     unsafe {
         assert(size_of(depth.Depth) == 24)
-        assert(size_of(texture.Material) == 32)
+        assert(size_of(texture.Material) == 152)
         assert(size_of(ui.Atlas) == 128)
         assert(size_of(ibl.Environment) == 960)
         assert(size_of(shadow.Shadow) == 120)
-        assert(size_of(state.Renderer) == 6112)
+        assert(size_of(state.Renderer) == 6240)
     }
 }
 

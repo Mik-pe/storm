@@ -21,12 +21,13 @@ struct MeshCall {
     color: [f32; 4],
     params: [f32; 4],
     camera: [f32; 3],
-    texture: i64,
+    // The five map handles in binding order.
+    textures: [i64; 5],
     blended: bool,
 }
 
 struct ShadowCall { stream: i32, model: [f32; 16] }
-struct Upload { width: i32, height: i32, bytes: i32, sampler: gfx.Sampler }
+struct Upload { width: i32, height: i32, bytes: i32, sampler: gfx.Sampler, encoding: gfx.Encoding }
 
 // The backend as a notebook: every contract call appends a row, nothing is
 // drawn, and texture handles count up from 1 so two uploads never share one.
@@ -62,8 +63,8 @@ impl gfx.Backend for Recorder {
     fn capture_next(&mut self) -> Result<(), string> { .Ok }
     fn save_capture(&mut self, path: string) -> Result<(), string> { .Err(path.clone()) }
     fn build_environment(&mut self, sky: &gfx.Sky) -> Result<(), string> { _ := sky.sun[0]; .Ok }
-    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
-        self.uploads.push(Upload { width: width, height: height, bytes: pixels.len, sampler: sampler.clone() })
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
+        self.uploads.push(Upload { width: width, height: height, bytes: pixels.len, sampler: sampler.clone(), encoding: encoding })
         .Ok(gfx.Texture { id: i64(self.uploads.len) })
     }
     fn free_texture(&mut self, texture: gfx.Texture) { self.freed.push(texture.id) }
@@ -81,11 +82,13 @@ impl gfx.Backend for Recorder {
         .Ok
     }
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, texture: gfx.Texture, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, surface: gfx.Surface) -> Result<(), string> {
         _ := sky.sun[0]
         self.meshes.push(MeshCall {
             stream: vertices.len, mvp: mvp.clone(), model: model.clone(), color: base_color.clone(),
-            params: params.clone(), camera: camera.clone(), texture: texture.id, blended: surface == gfx.Surface.Blended
+            params: params.clone(), camera: camera.clone(),
+            textures: [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id],
+            blended: surface == gfx.Surface.Blended
         })
         self.gate()
     }
@@ -222,7 +225,7 @@ const PLANE_STREAM: i32 = 48
     assert(draw.color[0] == 0.2 && draw.color[1] == 0.4 && draw.color[2] == 0.6 && draw.color[3] == 1.0)
     assert(draw.params[0] == 0.7 && draw.params[1] == 0.3 && draw.params[2] == 1.5 && draw.params[3] == 1.0)
     assert(draw.camera[0] == 1.0 && draw.camera[1] == 2.0 && draw.camera[2] == 3.0)
-    assert(draw.texture == 0 && !draw.blended)
+    assert(no_maps(draw.textures) && !draw.blended)
     // mvp = view * model: the node's translation is applied first.
     assert((draw.mvp[14] - (-5.0)).abs() < 0.0001)
 
@@ -231,14 +234,18 @@ const PLANE_STREAM: i32 = 48
     _ := app.record_mesh(&mut dark, cube_stream(), &frame.solids()[0], view, core.vec3(1.0, 2.0, 3.0), &sky(), false, render.PassKind.Opaque)
     assert(dark.meshes[0].params[3] == 0.0 && dark.meshes[0].color[2] == 0.6)
 
-    // A material's texture is the one the graph holds, by handle.
+    // A material's maps are the ones the graph holds, by handle and slot.
     handle := gfx.Texture { id: 42 }
-    _ := world.set_material(body, scenegraph.textured(world.material_at(body).clone(), handle))
+    rough := gfx.Texture { id: 43 }
+    mut maps := gfx.no_textures()
+    maps.base = handle
+    maps.metallic_roughness = rough
+    _ := world.set_material(body, scenegraph.mapped(world.material_at(body).clone(), maps))
     world.propagate()
     app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     mut textured := Recorder::new()
     _ := app.record_mesh(&mut textured, cube_stream(), &frame.solids()[0], view, core.vec3(1.0, 2.0, 3.0), &sky(), true, render.PassKind.Opaque)
-    assert(textured.meshes[0].texture == 42)
+    assert(same_maps(textured.meshes[0].textures, [42, 43, 0, 0, 0]))
 }
 
 // The sun's view-projection: the eye sits back along the sun direction and
@@ -312,9 +319,25 @@ fn png() -> []u8 {
 fn part(move name: string, image: i32, move sampler: gfx.Sampler) -> gltf.Part {
     gltf.Part {
         name: name, material_name: "", color: [1.0, 1.0, 1.0, 1.0], metallic: 0.0, roughness: 0.5,
-        vertices: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], texture: image, sampler: sampler
+        vertices: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], texture: image, sampler: sampler,
+        metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler()
     }
 }
+
+// The same part with a metallic-roughness map.
+fn rough_part(move name: string, base: i32, map: i32) -> gltf.Part {
+    mut p := part(move name, base, gfx.sampler())
+    p.metallic_roughness = map
+    p
+}
+
+// A fixed array has no Eq: the comparison is a loop.
+fn same_maps(a: [i64; 5], b: [i64; 5]) -> bool {
+    for i in 0..5 { if a[i] != b[i] { return false } }
+    return true
+}
+
+fn no_maps(a: [i64; 5]) -> bool { same_maps(a, [0, 0, 0, 0, 0]) }
 
 fn nearest() -> gfx.Sampler { gfx.Sampler { mag: gfx.Filter.Nearest, min: gfx.Filter.Nearest, mips: gfx.MipFilter.None, wrap: gfx.Wrap.ClampToEdge } }
 
@@ -327,13 +350,14 @@ fn jpeg_and_png() -> []textures.Image {
     [textures.Image { mime: "image/jpeg", data: jpeg }, textures.Image { mime: "image/png", data: png() }]
 }
 
-fn reason(r: &Result<[]gfx.Texture, string>) -> string {
+fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     match r { .Ok(_) => "", .Err(s) => s.clone() }
 }
 
 // Two parts that show the same image with the same sampler are one upload
 // and share its handle; a part with another sampler (or only a colour) is
-// its own row -- no_texture for the colour.
+// its own row -- no_texture for the colour. A base colour is uploaded as
+// sRGB.
 @test fn parts_sharing_an_image_and_sampler_share_one_upload() {
     pixels := png()
     images: []textures.Image = [textures.Image { mime: "image/png", data: pixels }]
@@ -348,7 +372,41 @@ fn reason(r: &Result<[]gfx.Texture, string>) -> string {
     // Both PNG uploads were handed the decoded 2x2 image and its sampler.
     assert(recorder.uploads[0].width == 2 && recorder.uploads[0].height == 2 && recorder.uploads[0].bytes == 16)
     assert(recorder.uploads[0].sampler.wrap == gfx.Wrap.Repeat && recorder.uploads[1].sampler.wrap == gfx.Wrap.ClampToEdge)
-    assert(textures[0].id == 1 && textures[1].id == 1 && textures[3].id == 2 && textures[2].id == 0)
+    assert(recorder.uploads[0].encoding == gfx.Encoding.Srgb && recorder.uploads[1].encoding == gfx.Encoding.Srgb)
+    assert(textures[0].base.id == 1 && textures[1].base.id == 1 && textures[3].base.id == 2 && textures[2].base.id == 0)
+    // Every other slot of these parts is empty.
+    assert(textures[0].metallic_roughness.id == 0 && textures[0].normal.id == 0 && textures[0].occlusion.id == 0 && textures[0].emissive.id == 0)
+}
+
+// One image used as a part's base colour and as its metallic-roughness map
+// is two uploads: the colour is sRGB, the map is read as written (linear).
+// A second part reading the same map shares the map's handle, never the
+// colour's.
+@test fn the_same_image_is_one_upload_per_encoding() {
+    parts: []gltf.Part = [rough_part("skin", 0, 0), rough_part("scale", -1, 0)]
+    model := asset(move parts, [textures.Image { mime: "image/png", data: png() }])
+    mut recorder := Recorder::new()
+    handles := app.upload_model_textures(&mut recorder, &model).unwrap()
+    assert(recorder.uploads.len == 2)
+    assert(recorder.uploads[0].encoding == gfx.Encoding.Srgb && recorder.uploads[1].encoding == gfx.Encoding.Linear)
+    assert(handles[0].base.id == 1 && handles[0].metallic_roughness.id == 2)
+    assert(handles[1].base.id == 0 && handles[1].metallic_roughness.id == 2)
+}
+
+// A metallic-roughness map naming an image the asset lacks is refused with
+// the part and the map's name, before anything is drawn.
+@test fn a_roughness_map_without_an_image_is_refused_by_name() {
+    mut recorder := Recorder::new()
+    wing := asset([rough_part("wing", -1, 2)], jpeg_and_png())
+    missing := app.upload_model_textures(&mut recorder, &wing)
+    assert(reason(&missing) == "part wing: metallic-roughness map names image 2 which does not exist")
+    assert(recorder.uploads.len == 0)
+
+    mut jpeg_recorder := Recorder::new()
+    helmet := asset([rough_part("helmet", -1, 0)], jpeg_and_png())
+    unreadable := app.upload_model_textures(&mut jpeg_recorder, &helmet)
+    assert(reason(&unreadable) == "part helmet: metallic-roughness map: image 0 is image/jpeg, Storm reads PNG")
+    assert(jpeg_recorder.uploads.len == 0)
 }
 
 // A part naming an image the asset does not have, or an image in a format
@@ -357,13 +415,13 @@ fn reason(r: &Result<[]gfx.Texture, string>) -> string {
     mut recorder := Recorder::new()
     wing := asset([part("wing", 2, gfx.sampler())], jpeg_and_png())
     missing := app.upload_model_textures(&mut recorder, &wing)
-    assert(reason(&missing) == "part wing names image 2 which does not exist")
+    assert(reason(&missing) == "part wing: base colour names image 2 which does not exist")
     assert(recorder.uploads.len == 0)
 
     mut jpeg_recorder := Recorder::new()
     helmet := asset([part("helmet", 0, gfx.sampler())], jpeg_and_png())
     unreadable := app.upload_model_textures(&mut jpeg_recorder, &helmet)
-    assert(reason(&unreadable) == "image 0 is image/jpeg, Storm reads PNG")
+    assert(reason(&unreadable) == "part helmet: base colour: image 0 is image/jpeg, Storm reads PNG")
     assert(jpeg_recorder.uploads.len == 0)
 
     // The same asset with the JPEG part after a good one: the good one is
@@ -371,7 +429,7 @@ fn reason(r: &Result<[]gfx.Texture, string>) -> string {
     mut later := Recorder::new()
     visor := asset([part("skin", 1, gfx.sampler()), part("visor", 0, gfx.sampler())], jpeg_and_png())
     mixed := app.upload_model_textures(&mut later, &visor)
-    assert(reason(&mixed) == "image 0 is image/jpeg, Storm reads PNG" && later.uploads.len == 1)
+    assert(reason(&mixed) == "part visor: base colour: image 0 is image/jpeg, Storm reads PNG" && later.uploads.len == 1)
 }
 
 // The handles the uploader hands back are what the placed parts carry: the
@@ -392,6 +450,6 @@ fn reason(r: &Result<[]gfx.Texture, string>) -> string {
     assert(frame.solids().len == 2)
     // Parts are placed and gathered in declaration order: fur first (the
     // textured part), nose second (plain colour, no_texture).
-    assert(frame.solids()[0].material.texture.id == 1)
-    assert(frame.solids()[1].material.texture.id == 0)
+    assert(frame.solids()[0].material.textures.base.id == 1)
+    assert(frame.solids()[1].material.textures.base.id == 0)
 }

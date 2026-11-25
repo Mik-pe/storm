@@ -95,6 +95,7 @@ struct MeshOut {
     float4 position [[position]];
     float3 world_normal;
     float3 world_position;
+    float2 uv;
 };
 
 vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [[buffer(1)]]) {
@@ -103,6 +104,7 @@ vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [
     // Uniform scale is assumed; a non-uniform model matrix needs its inverse transpose.
     out.world_normal = float3x3(push.model[0].xyz, push.model[1].xyz, push.model[2].xyz) * in.normal;
     out.world_position = world.xyz;
+    out.uv = in.uv;
     out.position = push.mvp * float4(in.position, 1.0);
     return out;
 }
@@ -177,9 +179,14 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     texturecube<float> irradiance_map [[texture(2)]],
     texture2d<float> brdf_lut [[texture(3)]],
     texture2d<float> base_texture [[texture(4)]],
+    // The material's metallic-roughness map (G = roughness, B = metallic),
+    // read as written: a linear texture. White (the fallback) leaves the
+    // factors as they are.
+    texture2d<float> metallic_roughness_texture [[texture(5)]],
     sampler shadow_sampler [[sampler(0)]],
     sampler env_sampler [[sampler(1)]],
-    sampler material_sampler [[sampler(2)]]) {
+    sampler material_sampler [[sampler(2)]],
+    sampler metallic_roughness_sampler [[sampler(3)]]) {
     float3 n = normalize(in.world_normal);
     float3 v = normalize(push.camera_pos.xyz - in.world_position);
     float3 l = normalize(push.sun_direction.xyz);
@@ -188,8 +195,11 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     // The material's base texture; white 1x1 when it has none, so the
     // multiply is the identity for untextured surfaces.
     float3 albedo = push.base_color.rgb * base_texture.sample(material_sampler, in.uv).rgb;
-    float metallic = clamp(push.params.x, 0.0, 1.0);
-    float roughness = clamp(push.params.y, 0.045, 1.0);
+    // The factors multiply the map (glTF 2.0 3.9.2): a map that is white
+    // leaves them as they are, and a factor of 1 is the map alone.
+    float2 mr = metallic_roughness_texture.sample(metallic_roughness_sampler, in.uv).gb;
+    float metallic = clamp(push.params.x * mr.y, 0.0, 1.0);
+    float roughness = clamp(push.params.y * mr.x, 0.045, 1.0);
     float emissive = max(push.params.z, 0.0);
     float shadows_on = push.params.w;
 

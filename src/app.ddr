@@ -49,13 +49,13 @@ pub const MODEL_SIZE: f32 = 2.4
 // Place a GLB in the graph, scaled to MODEL_SIZE and centred on `at`.
 // `textures[i]` is the uploaded base colour image of part i, or
 // `gfx.no_texture()` for a part that is only a colour.
-pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, textures: &[]gfx.Texture) -> Result<(), string> {
+pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
     doc := gltf.load(path)
     model := gltf.asset(&doc)?
     place_model(&mut graph, &model, path, at, textures)
 }
 
-pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Texture) -> Result<(), string> {
+pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
     mut lo := core.vec3(0.0,0.0,0.0)
     mut hi := lo
     mut first := true
@@ -86,40 +86,82 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: strin
         _ := graph.set_name(node, part.name.clone())
         c := part.color.clone()
         mut material := scenegraph.material(c[0],c[1],c[2],c[3],part.metallic,part.roughness)
-        if i < textures.len { material = scenegraph.textured(move material, textures[i]) }
+        if i < textures.len { material = scenegraph.mapped(move material, textures[i].clone()) }
         _ := graph.set_material(node, move material)
         _ := graph.set_mesh(node, part.vertices.clone())
     }
     .Ok
 }
 
-// The same, with the asset's images decoded and uploaded through `window`.
-// A texture is an image and a sampler, so every distinct pair a part uses is
-// one upload; a part without a baseColorTexture gets no_texture(). A JPEG
-// is refused by name: one unsupported format is a message, not a guess.
-pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Texture, string> {
-    mut textures: []gfx.Texture = []
+// One uploaded image of a model: which image it is, the sampler and the
+// encoding it was taken with. A texture is those three, so two parts that
+// use one image as base colour and as metallic-roughness map are two
+// uploads, and two parts that use it the same way share one.
+struct Upload { image: i32, sampler: gfx.Sampler, encoding: gfx.Encoding, texture: gfx.Texture }
+
+// The same, with the asset's images decoded and uploaded through `window`:
+// one Textures per part, in the order of the parts. A map a part does not
+// have is no_texture(). A JPEG is refused by name: one unsupported format is
+// a message, not a guess.
+//
+// Only this function is generic over the backend. Everything it reaches is
+// compiled once per generic function that reaches it (Storm dogfood 89), so
+// the deciding -- which image, which sampler, already uploaded or not, is it
+// a PNG -- lives in plain functions, and the one call that needs the backend
+// is written here.
+pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Textures, string> {
+    mut uploads: []Upload = []
+    mut textures: []gfx.Textures = []
     for part in &asset.parts {
-        if part.texture < 0 { textures.push(gfx.no_texture()); continue }
-        if part.texture >= asset.images.len { return .Err("part " + part.name + " names image " + part.texture.str() + " which does not exist") }
-        mut shared := false
-        for j in 0..asset.parts.len {
-            if j == textures.len { break }
-            other := &asset.parts[j]
-            if other.texture == part.texture && other.sampler.mag == part.sampler.mag && other.sampler.min == part.sampler.min &&
-                other.sampler.mips == part.sampler.mips && other.sampler.wrap == part.sampler.wrap {
-                textures.push(textures[j])
-                shared = true
-                break
-            }
+        base := upload_or_refused(&uploads, asset, part.name, "base colour", part.texture, &part.sampler, .Srgb)?
+        rough := upload_or_refused(&uploads, asset, part.name, "metallic-roughness map", part.metallic_roughness, &part.metallic_roughness_sampler, .Linear)?
+        mut base_handle := base.handle
+        if base.decoded.pixels.len > 0 {
+            base_handle = window.upload_texture(base.decoded.pixels, base.decoded.width, base.decoded.height, base.encoding, &base.sampler)?
+            remember(&mut uploads, &base, base_handle)
         }
-        if shared { continue }
-        part_image := &asset.images[part.texture]
-        if part_image.mime != "image/png" { return .Err("image " + part.texture.str() + " is " + part_image.mime + ", Storm reads PNG") }
-        decoded := image.decode_png(&part_image.data)?
-        textures.push(window.upload_texture(decoded.pixels, decoded.width, decoded.height, &part.sampler)?)
+        mut rough_handle := rough.handle
+        if rough.decoded.pixels.len > 0 {
+            rough_handle = window.upload_texture(rough.decoded.pixels, rough.decoded.width, rough.decoded.height, rough.encoding, &rough.sampler)?
+            remember(&mut uploads, &rough, rough_handle)
+        }
+        textures.push(gfx.Textures { base: base_handle, metallic_roughness: rough_handle, normal: gfx.no_texture(),
+            occlusion: gfx.no_texture(), emissive: gfx.no_texture() })
     }
     .Ok(textures)
+}
+
+// What a map asks for: the handle it already has, or the decoded pixels
+// waiting for the backend. `map` names the slot the image is read in ("base
+// colour", "metallic-roughness map"), so a refusal says what was looked for.
+struct Pending { image: i32, sampler: gfx.Sampler, encoding: gfx.Encoding, decoded: image.Image, handle: gfx.Texture }
+
+fn upload_or_refused(uploads: &[]Upload, asset: &gltf.Asset, part_name: string, map: string, image_index: i32,
+    sampler: &gfx.Sampler, encoding: gfx.Encoding) -> Result<Pending, string> {
+    if image_index < 0 { return .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: image.empty(), handle: gfx.no_texture() }) }
+    if image_index >= asset.images.len { return .Err("part " + part_name + ": " + map + " names image " + image_index.str() + " which does not exist") }
+    for u in uploads {
+        if u.image == image_index && u.encoding == encoding && same_sampler(&u.sampler, sampler) {
+            return .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: image.empty(), handle: u.texture })
+        }
+    }
+    part_image := &asset.images[image_index]
+    if part_image.mime != "image/png" { return .Err("part " + part_name + ": " + map + ": image " + image_index.str() + " is " + part_image.mime + ", Storm reads PNG") }
+    decoded := image.decode_png(&part_image.data)?
+    .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: decoded, handle: gfx.no_texture() })
+}
+
+// After the backend took the pixels: the upload is known by its image,
+// sampler and encoding from now on.
+fn remember(uploads: &mut []Upload, pending: &Pending, handle: gfx.Texture) {
+    uploads.push(Upload { image: pending.image, sampler: copy_sampler(&pending.sampler), encoding: pending.encoding, texture: handle })
+}
+
+fn copy_sampler(s: &gfx.Sampler) -> gfx.Sampler { gfx.Sampler { mag: s.mag, min: s.min, mips: s.mips, wrap: s.wrap } }
+
+// Whether two samplers would sample the same way.
+fn same_sampler(a: &gfx.Sampler, b: &gfx.Sampler) -> bool {
+    a.mag == b.mag && a.min == b.min && a.mips == b.mips && a.wrap == b.wrap
 }
 
 // load_model for the running app: reads, decodes, uploads, places.
@@ -131,11 +173,11 @@ pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Gr
 }
 
 // A P6 capture as the ground texture, uploaded once; the backend owns the
-// pixels from here on.
+// pixels from here on. A ground is a colour, so it is sRGB.
 fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Texture, string> {
     decoded := image.read_rgba(path)?
     sampler := gfx.sampler()
-    window.upload_texture(decoded.pixels, decoded.width, decoded.height, &sampler)
+    window.upload_texture(decoded.pixels, decoded.width, decoded.height, .Srgb, &sampler)
 }
 
 pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
@@ -148,7 +190,7 @@ pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scen
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
     mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
     surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, item.material.texture, surface)
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, &item.material.textures, surface)
 }
 
 pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,

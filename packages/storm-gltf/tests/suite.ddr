@@ -232,6 +232,33 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(part.sampler.min == gfx.Filter.Linear)
     assert(part.sampler.mips == gfx.MipFilter.Linear)
     assert(part.sampler.wrap == gfx.Wrap.Repeat)
+    // No metallic-roughness map: no image, and the spec's default sampler.
+    assert(part.metallic_roughness == -1)
+    assert(part.metallic_roughness_sampler.mag == gfx.Filter.Linear && part.metallic_roughness_sampler.wrap == gfx.Wrap.Repeat)
+}
+
+// mapped_triangle.glb (make_mapped_fixture.py beside it) has one material
+// with a baseColorTexture (texture 0 -> image 0) and a
+// metallicRoughnessTexture (texture 1 -> image 1), and one sampler for
+// texture 0: 9728 (NEAREST) and 33071 (CLAMP_TO_EDGE). Texture 1 names no
+// sampler, so it takes the spec's default. The image bytes are the two
+// PNGs the script wrote: 73 and 72 bytes, a 2x2 (200, 40, 0) and a 2x2
+// (0, 160, 0). All of it was read back from the file, not from this test.
+@test fn reads_the_metallic_roughness_map_and_its_own_sampler() {
+    doc := gltf.load("tests/fixtures/mapped_triangle.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+    assert(asset.parts.len == 1 && asset.images.len == 2)
+    part := &asset.parts[0]
+    assert(part.name == "painted" || part.material_name == "painted")
+    assert(part.metallic == 0.5 && part.roughness == 0.25)
+    assert(part.texture == 0 && part.metallic_roughness == 1)
+    // The base colour goes with texture 0's sampler.
+    assert(part.sampler.mag == gfx.Filter.Nearest && part.sampler.min == gfx.Filter.Nearest)
+    assert(part.sampler.mips == gfx.MipFilter.None && part.sampler.wrap == gfx.Wrap.ClampToEdge)
+    // The map's texture names no sampler: the spec's default.
+    assert(part.metallic_roughness_sampler.mag == gfx.Filter.Linear && part.metallic_roughness_sampler.wrap == gfx.Wrap.Repeat)
+    assert(asset.images[0].data.len == 73 && asset.images[1].data.len == 72)
 }
 
 // Khronos's Box.glb has no textures: the surface is a colour only.

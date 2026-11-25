@@ -114,8 +114,8 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     layout.pushConstantRangeCount = 1
     layout.pPushConstantRanges = addr(&push_range)
     // Set 0: shadow map sampler + light uniform buffer + environment.
-    // Set 1: the material's base texture (texture.ddr). Both layouts exist
-    // before this step (shadow.setup, texture.setup).
+    // Set 1: the material's five maps (texture.ddr), one set per draw. Both
+    // layouts exist before this step (shadow.setup, texture.setup).
     r.meshSetLayouts = [r.shadowSetLayout, r.material.setLayout]
     layout.setLayoutCount = 2
     layout.pSetLayouts = addr(&r.meshSetLayouts[0])

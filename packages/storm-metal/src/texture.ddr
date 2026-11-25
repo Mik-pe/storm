@@ -2,11 +2,16 @@
 // 1x1 fallback, with the same handle arithmetic as the Vulkan backend:
 // `generation << 16 | slot + 1`, zero always the fallback. Each texture is
 // one mip level (replaceRegion fills level 0 only) and owns its sampler,
-// made from the gfx.Sampler it was uploaded with.
+// made from the gfx.Sampler it was uploaded with, in the pixel format its
+// encoding names: sRGB for a colour, Unorm for a map read as written.
+// Metal has no descriptor sets, so a draw binds its five maps directly
+// (metal.ddr record_mesh); the flat normal a missing normal map binds is
+// made here, as on the Vulkan backend.
 capability unsafe
 
 import gfx
 import .device as device
+import .enums as enums
 import .objc as objc
 
 pub const CAPACITY: i32 = 64
@@ -15,50 +20,72 @@ pub const CAPACITY: i32 = 64
 // the generation its handle carries. A null image marks a freed slot.
 pub struct Texture { image: ptr, sampler: ptr, generation: i64 }
 
+// The flat normal, what a material without a normal map binds at that
+// index: (127, 127, 255) read linearly is the surface's own normal.
+pub struct Flat { image: ptr, sampler: ptr }
+
+// The pixel format an encoding uploads as.
+fn format_of(encoding: gfx.Encoding) -> enums.PixelFormat {
+    if encoding == .Linear { .RGBA8Unorm } else { .RGBA8Unorm_sRGB }
+}
+
 pub fn slot_of(id: i64) -> i32 { i32(id.bit_and(0xFFFF)) - 1 }
 
 pub fn generation_of(id: i64) -> i64 { id.shr(16) }
 
 pub fn handle(slot: i32, generation: i64) -> i64 { generation.shl(16).bit_or(i64(slot + 1)) }
 
-// The white 1x1 fallback in slot 0 of a fresh list, with the default sampler.
-pub unsafe fn setup(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture) -> Result<(), string> {
+// The white 1x1 fallback in slot 0 of a fresh list, with the default sampler,
+// and the flat normal beside it.
+pub unsafe fn setup(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture, flat: &mut Flat) -> Result<(), string> {
     default := gfx.sampler()
     made := device.sampler(rt, gpu, &default)?
     white := device.texture(rt, gpu, .Type2D, .RGBA8Unorm_sRGB, 1, 1, 1, .ShaderRead, .Shared)?
     pixels := [255, 255, 255, 255]
     device.upload(rt, white, 1, 1, 4, addr(&pixels[0]))
     textures.push(Texture { image: white, sampler: made, generation: 1 })
+    flat.image = device.texture(rt, gpu, .Type2D, .RGBA8Unorm, 1, 1, 1, .ShaderRead, .Shared)?
+    flat.sampler = device.sampler(rt, gpu, &default)?
+    normal := [127, 127, 255, 255]
+    device.upload(rt, flat.image, 1, 1, 4, addr(&normal[0]))
     .Ok
+}
+
+pub unsafe fn destroy_flat(rt: &objc.Runtime, flat: &mut Flat) {
+    if flat.image != ptr(0) { rt.release(flat.image) }
+    if flat.sampler != ptr(0) { rt.release(flat.sampler) }
+    flat.image = ptr(0)
+    flat.sampler = ptr(0)
+}
+
+// Whether a handle still names a live texture: its slot exists, its
+// generation matches and it holds an image.
+pub unsafe fn live(textures: &[]Texture, id: i64) -> bool {
+    if id == 0 { return false }
+    slot := slot_of(id)
+    if slot < 1 || slot >= CAPACITY || slot >= textures.len { return false }
+    textures[slot].generation == generation_of(id) && textures[slot].image != ptr(0)
 }
 
 // The texture a handle names, or the fallback for zero, unknown and freed
 // handles: a stale handle draws white, it does not draw garbage.
 pub unsafe fn image_of(textures: &[]Texture, id: i64) -> ptr {
-    if id == 0 { return textures[0].image }
-    slot := slot_of(id)
-    if slot < 1 || slot >= CAPACITY { return textures[0].image }
-    if textures[slot].generation != generation_of(id) || textures[slot].image == ptr(0) { return textures[0].image }
-    textures[slot].image
+    if live(textures, id) { textures[slot_of(id)].image } else { textures[0].image }
 }
 
 // The sampler of the texture a handle names, resolved like image_of: a stale
 // handle samples the fallback with the fallback's sampler.
 pub unsafe fn sampler_of(textures: &[]Texture, id: i64) -> ptr {
-    if id == 0 { return textures[0].sampler }
-    slot := slot_of(id)
-    if slot < 1 || slot >= CAPACITY { return textures[0].sampler }
-    if textures[slot].generation != generation_of(id) || textures[slot].image == ptr(0) { return textures[0].sampler }
-    textures[slot].sampler
+    if live(textures, id) { textures[slot_of(id)].sampler } else { textures[0].sampler }
 }
 
-pub unsafe fn upload(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture, pixels: []u8, width: i32, height: i32, spec: &gfx.Sampler) -> Result<i64, string> {
+pub unsafe fn upload(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, spec: &gfx.Sampler) -> Result<i64, string> {
     if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("texture dimensions must be between 1 and 16384") }
     if i64(pixels.len) != i64(width) * i64(height) * i64(gfx.TEXTURE_BYTES_PER_PIXEL) { return .Err("texture pixels must be width x height x 4 bytes") }
     mut slot := 1
     while slot < textures.len && textures[slot].image != ptr(0) { slot = slot + 1 }
     if slot == CAPACITY { return .Err("the texture table is full") }
-    image := device.texture(rt, gpu, .Type2D, .RGBA8Unorm_sRGB, u64(width), u64(height), 1, .ShaderRead, .Shared)?
+    image := device.texture(rt, gpu, .Type2D, format_of(encoding), u64(width), u64(height), 1, .ShaderRead, .Shared)?
     made := device.sampler(rt, gpu, spec)?
     device.upload(rt, image, u64(width), u64(height), u64(width) * u64(gfx.TEXTURE_BYTES_PER_PIXEL), addr(&pixels[0]))
     generation := if slot < textures.len { textures[slot].generation + 1 } else { 1 }

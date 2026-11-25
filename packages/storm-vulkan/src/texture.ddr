@@ -1,6 +1,5 @@
 // Material textures: a table of uploaded 2D images, each with its own
-// sampler (built from the gfx.Sampler it was uploaded with) and its own
-// descriptor set for set 1 of the mesh pipeline.
+// sampler (built from the gfx.Sampler it was uploaded with).
 //
 // A texture handle is a value, `generation << 16 | slot + 1`; slot 0 is a white
 // 1x1 fallback that handle 0 always resolves to, so a draw without a texture
@@ -8,6 +7,11 @@
 // Every upload is a one-time command buffer: copy into level 0, then blit
 // level i-1 into level i for the rest of the chain (the device is asked
 // whether the format can blit and filter; without it the chain is one level).
+//
+// The descriptor set of a draw is not the texture's: set 1 binds the five
+// maps of one material, which are five different images, so it is written
+// per draw (bind) out of a pool that begin resets. A texture owns its image,
+// its sampler and nothing else.
 capability unsafe
 
 import gfx
@@ -17,6 +21,11 @@ import vk.layout as vkl
 import .state as state
 
 pub const CAPACITY: i32 = 64
+// The bindings of set 1, in the order the mesh shader declares them.
+pub const BINDINGS: i32 = 5
+// Which binding is the normal map: the one whose "no texture" is a flat
+// normal and not white.
+pub const NORMAL_BINDING: i32 = 2
 
 // BLIT_SRC (bit 10), BLIT_DST (bit 11) and SAMPLED_IMAGE_FILTER_LINEAR (bit 15)
 // of VkFormatFeatureFlagBits, for the optimal-tiling features of a format.
@@ -24,32 +33,55 @@ pub const FEATURE_BLIT_SRC: u32 = 1024
 pub const FEATURE_BLIT_DST: u32 = 2048
 pub const FEATURE_LINEAR_FILTER: u32 = 32768
 
-// Parallel arrays rather than an array of records: a C layout cannot hold an
-// array of another C layout (E5003). Slot 0 is the fallback and is never
-// freed. The table is zeroed with the renderer: a null image marks a free
-// slot.
+// One uploaded texture: its Vulkan objects and the generation its handle
+// carries. A null image marks a free slot. `linear` says whether the image
+// was created UNORM (1) or sRGB (0), so one table holds a base colour and
+// its maps.
+@c_layout
+pub struct Slot {
+    image: ptr,
+    memory: ptr,
+    view: ptr,
+    sampler: ptr,
+    generation: i64,
+    linear: u32,
+}
+
+// The textures of a window. Slot 0 is the white fallback and is never
+// freed; a table zeroed with the renderer has every slot free.
 @c_layout
 pub struct Table {
-    images: [ptr; 64],
-    memories: [ptr; 64],
-    views: [ptr; 64],
-    sets: [ptr; 64],
-    samplers: [ptr; 64],
-    generations: [i64; 64],
+    slots: [Slot; 64],
 }
 
 // Everything set 1 of the mesh pipeline owns: the layout, the pool the sets
-// come from, the table (its own allocation, so a helper can hold `&mut` to
-// it beside a shared `&Renderer`), and whether this device can build the mip
-// chain by blit (1) or not (0). Each texture's sampler lives in its slot.
-// All zeroed with the renderer; setup fills it, destroy empties it.
+// of the frame come from and how many it holds and has taken (a frame whose
+// draws outgrow its pool gets a second, larger one: there is no ceiling), the
+// table (its own allocation, so a helper can hold `&mut` to it beside a
+// shared `&Renderer`), the flat normal the normal binding falls back on (a
+// texture of its own: white would be a normal pointing off the surface), and
+// whether this device can build the mip chain by blit (1) or not (0). All
+// zeroed with the renderer; setup fills it, destroy empties it.
 @c_layout
 pub struct Material {
     setLayout: ptr,
-    pool: ptr,
+    // The frame's pools: the first holds `sets` draws, and one that runs out
+    // adds the next at twice the size. begin frees them all after the fence.
+    pools: [ptr; 8],
+    poolCount: u32,
+    sets: u32,
+    taken: u32,
     table: ptr,
+    flat: Slot,
     blit: u32,
 }
+
+// The first pool of a frame holds this many draws, and a frame whose draws
+// outgrow it gets the next pool at twice the size. POOLS pools at doubling
+// sizes hold (2^POOLS - 1) times the first: 255 times 256, beyond any frame.
+// Past the last, the draw is refused with a reason, never drawn wrong.
+pub const INITIAL_SETS: u32 = 256
+pub const POOLS: u32 = 8
 
 @extern("c", "calloc")
 unsafe fn allocate(count: usize, bytes: usize) -> ptr
@@ -58,8 +90,10 @@ unsafe fn release(address: ptr)
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
-// The slot a handle names, or -1 for the zero handle.
-pub fn slot_of(id: i64) -> i32 { i32(id.bit_and(0xFFFF)) - 1 }
+// The two halves of a handle -- the slot it carries (-1 for the zero
+// handle) and its generation. The format is the contract, so the test that
+// pins it reads them; nothing else does.
+pub fn index_of(id: i64) -> i32 { i32(id.bit_and(0xFFFF)) - 1 }
 
 pub fn generation_of(id: i64) -> i64 { id.shr(16) }
 
@@ -88,45 +122,48 @@ pub fn mip_size(size: i32, level: i32) -> i32 {
     if value < 1 { 1 } else { value }
 }
 
+// The format an encoding uploads as: sRGB for a colour the hardware decodes,
+// UNORM for a value the shader must read as written.
+fn format_of(encoding: gfx.Encoding) -> enums.Format {
+    if encoding == .Linear { .R8G8B8A8_UNORM } else { .R8G8B8A8_SRGB }
+}
+
 // The first slot without an image, or CAPACITY when the table is full.
 pub unsafe fn first_free(table: &Table) -> i32 {
     mut slot := 1
-    while slot < CAPACITY && table.images[slot] != ptr(0) { slot = slot + 1 }
+    while slot < CAPACITY && table.slots[slot].image != ptr(0) { slot = slot + 1 }
     slot
 }
 
 // Whether a handle still names a live texture (its slot's generation matches
-// and the slot holds an image).
+// and the slot holds an image). Zero, out of range and freed handles are
+// not live.
 pub unsafe fn live(table: &Table, id: i64) -> bool {
-    slot := slot_of(id)
-    if slot < 1 || slot >= CAPACITY { return false }
-    table.generations[slot] == generation_of(id) && table.images[slot] != ptr(0)
+    index := index_of(id)
+    if index < 1 || index >= CAPACITY { return false }
+    table.slots[index].image != ptr(0) && table.slots[index].generation == generation_of(id)
 }
 
 // Whether a slot holds an image.
-pub unsafe fn occupied(table: &Table, slot: i32) -> bool { table.images[slot] != ptr(0) }
+unsafe fn occupied(table: &Table, slot: i32) -> bool { table.slots[slot].image != ptr(0) }
 
 // Move a slot to its next generation and hand back the handle that names it.
 pub unsafe fn claim(table: &mut Table, slot: i32) -> i64 {
-    table.generations[slot] = table.generations[slot] + 1
-    handle(slot, table.generations[slot])
+    table.slots[slot].generation = table.slots[slot].generation + 1
+    handle(slot, table.slots[slot].generation)
 }
 
-// The descriptor set of the texture a handle names: the fallback for 0 or for
-// a handle whose generation no longer matches (a freed texture draws white,
-// it does not draw garbage).
-pub unsafe fn set_of(table: &Table, id: i64) -> ptr {
-    if id == 0 { return table.sets[0] }
-    slot := slot_of(id)
-    if slot < 1 || slot >= CAPACITY { return table.sets[0] }
-    if table.generations[slot] != generation_of(id) || table.images[slot] == ptr(0) { return table.sets[0] }
-    table.sets[slot]
+// The slot a handle names: its own when it is live, the fallback's
+// otherwise (a freed texture draws white, it does not draw garbage).
+pub unsafe fn slot_of(table: &Table, id: i64) -> i32 {
+    if live(table, id) { index_of(id) } else { 0 }
 }
 
-unsafe fn bind_sampler(r: &state.Renderer, set: ptr, sampler: ptr, view: ptr) {
+unsafe fn bind_sampler(r: &state.Renderer, set: ptr, binding: u32, sampler: ptr, view: ptr) {
     image := vkl.DescriptorImageInfo { sampler: sampler, imageView: view, imageLayout: enums.image_layout(.ShaderReadOnlyOptimal) }
     mut write: vkl.WriteDescriptorSet = vkl.WriteDescriptorSet::new()
     write.dstSet = set
+    write.dstBinding = binding
     write.descriptorCount = 1
     write.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     write.pImageInfo = addr(&image)
@@ -213,12 +250,12 @@ unsafe fn release_staging(r: &state.Renderer, buffer: ptr, memory: ptr) {
     r.api.FreeMemory(r.device, memory, ptr(0))
 }
 
-// Create a single-layer RGBA8 sRGB image with `levels` mips, allocate and
-// bind its memory, and make the view over the whole chain.
-unsafe fn create_image(r: &state.Renderer, width: u32, height: u32, levels: u32, image_out: ptr, memory_out: ptr, view_out: ptr) -> i32 {
+// Create a single-layer RGBA8 image of `format` with `levels` mips, allocate
+// and bind its memory, and make the view over the whole chain.
+unsafe fn create_image(r: &state.Renderer, format: enums.Format, width: u32, height: u32, levels: u32, image_out: ptr, memory_out: ptr, view_out: ptr) -> i32 {
     mut info: vkl.ImageCreateInfo = vkl.ImageCreateInfo::new()
     info.imageType = enums.image_type(.Type2D)
-    info.format = enums.format(.R8G8B8A8_SRGB)
+    info.format = enums.format(format)
     info.extent = vkl.Extent3D { width: width, height: height, depth: 1 }
     info.mipLevels = levels
     info.arrayLayers = 1
@@ -238,7 +275,7 @@ unsafe fn create_image(r: &state.Renderer, width: u32, height: u32, levels: u32,
     mut view: vkl.ImageViewCreateInfo = vkl.ImageViewCreateInfo::new()
     view.image = image
     view.viewType = 1
-    view.format = enums.format(.R8G8B8A8_SRGB)
+    view.format = enums.format(format)
     view.subresourceRange.aspectMask = enums.image_aspect(.Color)
     view.subresourceRange.levelCount = levels
     view.subresourceRange.layerCount = 1
@@ -311,21 +348,15 @@ fn wrap(mode: gfx.Wrap) -> enums.SamplerAddressMode {
     match mode { .Repeat => .Repeat, .MirroredRepeat => .MirroredRepeat, .ClampToEdge => .ClampToEdge }
 }
 
-// Allocate the descriptor set of one slot from the shared pool.
-unsafe fn allocate_set(r: &state.Renderer, table: &mut Table, slot: i32) -> i32 {
-    mut allocation: vkl.DescriptorSetAllocateInfo = vkl.DescriptorSetAllocateInfo::new()
-    allocation.descriptorPool = r.material.pool
-    allocation.descriptorSetCount = 1
-    allocation.pSetLayouts = addr(&r.material.setLayout)
-    r.api.AllocateDescriptorSets(r.device, addr(&allocation), addr(&mut table.sets[slot]))
-}
-
-// Upload pixels into a slot: image, memory, view, sampler and descriptor
-// set. The slot's generation is bumped by the caller.
-unsafe fn upload_slot(r: &state.Renderer, table: &mut Table, slot: i32, pixels: []u8, width: i32, height: i32, spec: &gfx.Sampler) -> i32 {
+// Upload pixels into a slot: image, memory, view and sampler. The slot's
+// generation is bumped by the caller.
+unsafe fn upload_slot(r: &state.Renderer, table: &mut Table, slot: i32, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, spec: &gfx.Sampler) -> i32 {
+    place := &mut table.slots[slot]
+    format := format_of(encoding)
     levels := if r.material.blit == 1 && spec.mips != .None { mip_levels(width, height) } else { 1 }
-    mut code := create_image(r, u32(width), u32(height), u32(levels), addr(&mut table.images[slot]), addr(&mut table.memories[slot]), addr(&mut table.views[slot]))
+    mut code := create_image(r, format, u32(width), u32(height), u32(levels), addr(&mut place.image), addr(&mut place.memory), addr(&mut place.view))
     if code != 0 { return code }
+    place.linear = if encoding == .Linear { 1 } else { 0 }
     bytes := u64(width) * u64(height) * u64(gfx.TEXTURE_BYTES_PER_PIXEL)
     mut staging := ptr(0)
     mut staging_memory := ptr(0)
@@ -336,74 +367,189 @@ unsafe fn upload_slot(r: &state.Renderer, table: &mut Table, slot: i32, pixels: 
     mut cmd := ptr(0)
     code = begin(r, addr(&mut cmd))
     if code != 0 { return code }
-    record_upload(r, cmd, staging, table.images[slot], width, height, levels, r.material.blit == 1)
+    record_upload(r, cmd, staging, place.image, width, height, levels, r.material.blit == 1)
     code = finish(r, cmd)
     release_staging(r, staging, staging_memory)
     made := make_sampler(&r, spec)
     if made.is_err() { return -1 }
-    table.samplers[slot] = made.unwrap()
-    code = allocate_set(r, &mut table, slot)
-    if code != 0 { return code }
-    bind_sampler(r, table.sets[slot], table.samplers[slot], table.views[slot])
+    place.sampler = made.unwrap()
     0
 }
 
-// Free the Vulkan objects of a slot. The image stays in the table as null so
-// the handle keeps resolving to the fallback until the slot is reused.
+// Free the Vulkan objects of table slot `slot`. A freed slot keeps its
+// generation and has a null image, so a stale handle resolves to the
+// fallback until the slot is reused.
 unsafe fn free_slot(r: &state.Renderer, table: &mut Table, slot: i32) {
-    r.api.DestroyImageView(r.device, table.views[slot], ptr(0))
-    r.api.DestroyImage(r.device, table.images[slot], ptr(0))
-    r.api.FreeMemory(r.device, table.memories[slot], ptr(0))
-    r.api.DestroySampler(r.device, table.samplers[slot], ptr(0))
-    table.views[slot] = ptr(0)
-    table.images[slot] = ptr(0)
-    table.memories[slot] = ptr(0)
-    table.samplers[slot] = ptr(0)
+    place := &mut table.slots[slot]
+    r.api.DestroyImageView(r.device, place.view, ptr(0))
+    r.api.DestroyImage(r.device, place.image, ptr(0))
+    r.api.FreeMemory(r.device, place.memory, ptr(0))
+    r.api.DestroySampler(r.device, place.sampler, ptr(0))
+    place.view = ptr(0)
+    place.image = ptr(0)
+    place.memory = ptr(0)
+    place.sampler = ptr(0)
+}
+
+// The same for the flat normal, which is a slot outside the table.
+unsafe fn free_flat(r: &mut state.Renderer) {
+    r.api.DestroyImageView(r.device, r.material.flat.view, ptr(0))
+    r.api.DestroyImage(r.device, r.material.flat.image, ptr(0))
+    r.api.FreeMemory(r.device, r.material.flat.memory, ptr(0))
+    r.api.DestroySampler(r.device, r.material.flat.sampler, ptr(0))
+    r.material.flat.view = ptr(0)
+    r.material.flat.image = ptr(0)
+    r.material.flat.memory = ptr(0)
+    r.material.flat.sampler = ptr(0)
 }
 
 // Build the layout, the pool and the white fallback in slot 0 (with the
-// default sampler). The format features decide the mip chain: `blit` is 1
-// when the device can blit and filter this format.
+// default sampler), then the flat normal the normal binding falls back on.
+// The format features decide the mip chain: `blit` is 1 when the device can
+// blit and filter this format.
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut features: vkl.FormatProperties = zeroed()
     r.api.GetPhysicalDeviceFormatProperties(r.physical, enums.format(.R8G8B8A8_SRGB), addr(&mut features))
     needed := FEATURE_BLIT_SRC.bit_or(FEATURE_BLIT_DST).bit_or(FEATURE_LINEAR_FILTER)
     r.material.blit = if features.optimalTilingFeatures.bit_and(needed) == needed { 1 } else { 0 }
 
-    mut binding: vkl.DescriptorSetLayoutBinding = zeroed()
-    binding.descriptorType = enums.descriptor_type(.CombinedImageSampler)
-    binding.descriptorCount = 1
-    binding.stageFlags = enums.shader_stage(.Fragment)
+    // One binding per map of a material, all sampled images in the fragment
+    // stage; a draw binds all five, a missing one as its identity.
+    mut bindings: [vkl.DescriptorSetLayoutBinding; 5] = [vkl.DescriptorSetLayoutBinding::new(), vkl.DescriptorSetLayoutBinding::new(), vkl.DescriptorSetLayoutBinding::new(), vkl.DescriptorSetLayoutBinding::new(), vkl.DescriptorSetLayoutBinding::new()]
+    for b in 0..BINDINGS {
+        bindings[i32(b)].binding = u32(b)
+        bindings[i32(b)].descriptorType = enums.descriptor_type(.CombinedImageSampler)
+        bindings[i32(b)].descriptorCount = 1
+        bindings[i32(b)].stageFlags = enums.shader_stage(.Fragment)
+    }
     mut layout: vkl.DescriptorSetLayoutCreateInfo = vkl.DescriptorSetLayoutCreateInfo::new()
-    layout.bindingCount = 1
-    layout.pBindings = addr(&binding)
+    layout.bindingCount = u32(BINDINGS)
+    layout.pBindings = addr(&bindings[0])
     mut code := r.api.CreateDescriptorSetLayout(r.device, addr(&layout), ptr(0), addr(&mut r.material.setLayout))
     if code != 0 { return device.fail(&mut r, code, .Texture) }
 
-    size := vkl.DescriptorPoolSize { type: enums.descriptor_type(.CombinedImageSampler), descriptorCount: u32(CAPACITY) }
-    mut pool: vkl.DescriptorPoolCreateInfo = vkl.DescriptorPoolCreateInfo::new()
-    pool.maxSets = u32(CAPACITY)
-    pool.poolSizeCount = 1
-    pool.pPoolSizes = addr(&size)
-    code = r.api.CreateDescriptorPool(r.device, addr(&pool), ptr(0), addr(&mut r.material.pool))
+    code = make_pool(&mut r, INITIAL_SETS)
     if code != 0 { return device.fail(&mut r, code, .Texture) }
 
     r.material.table = allocate(1, size_of(Table))
     if r.material.table == ptr(0) { return device.fail(&mut r, -1, .Texture) }
     default := gfx.sampler()
-    code = upload_slot(&r, ref_at(r.material.table), 0, [255, 255, 255, 255], 1, 1, &default)
+    code = upload_slot(&r, ref_at(r.material.table), 0, [255, 255, 255, 255], 1, 1, .Srgb, &default)
     if code != 0 { return device.fail(&mut r, code, .Texture) }
+    // The flat normal is a texture outside the table: no handle names it, the
+    // normal binding resolves to it, and destroy frees it with the table.
+    // It is uploaded like any slot, into the one place it lives.
+    mut place := r.material.flat
+    code = upload_flat(&r, &mut place)
+    if code != 0 { return device.fail(&mut r, code, .Texture) }
+    r.material.flat = place
     .Ready
 }
 
+// The flat normal (127, 127, 255): what a surface without a normal map
+// has, read as written.
+unsafe fn upload_flat(r: &state.Renderer, place: &mut Slot) -> i32 {
+    mut code := create_image(r, .R8G8B8A8_UNORM, 1, 1, 1, addr(&mut place.image), addr(&mut place.memory), addr(&mut place.view))
+    if code != 0 { return code }
+    place.linear = 1
+    mut staging := ptr(0)
+    mut staging_memory := ptr(0)
+    mut mapped := ptr(0)
+    code = staging_buffer(r, 4, addr(&mut staging), addr(&mut staging_memory), addr(&mut mapped))
+    if code != 0 { return code }
+    normal := [127, 127, 255, 255]
+    _ := copy_bytes(mapped, addr(&normal[0]), 4)
+    mut cmd := ptr(0)
+    code = begin(r, addr(&mut cmd))
+    if code != 0 { return code }
+    record_upload(r, cmd, staging, place.image, 1, 1, 1, false)
+    code = finish(r, cmd)
+    release_staging(r, staging, staging_memory)
+    made := make_sampler(&r, &gfx.sampler())
+    if made.is_err() { return -1 }
+    place.sampler = made.unwrap()
+    0
+}
+
+// Create a pool holding `sets` draws and make it the one `bind` takes from.
+// The pools of the frame are kept (up to POOLS) so begin can free them once
+// the frame is done; one that ran out is not reused.
+unsafe fn make_pool(r: &mut state.Renderer, sets: u32) -> i32 {
+    if r.material.poolCount >= POOLS { return -1 }
+    size := vkl.DescriptorPoolSize { type: enums.descriptor_type(.CombinedImageSampler), descriptorCount: sets * u32(BINDINGS) }
+    mut pool: vkl.DescriptorPoolCreateInfo = vkl.DescriptorPoolCreateInfo::new()
+    pool.maxSets = sets
+    pool.poolSizeCount = 1
+    pool.pPoolSizes = addr(&size)
+    mut made := ptr(0)
+    code := r.api.CreateDescriptorPool(r.device, addr(&pool), ptr(0), addr(&mut made))
+    if code != 0 { return code }
+    r.material.pools[i32(r.material.poolCount)] = made
+    r.material.poolCount = r.material.poolCount + 1
+    r.material.sets = sets
+    r.material.taken = 0
+    0
+}
+
+// Free every pool of the last frame and start this one with a first pool as
+// large as the largest the last frame needed. Called after the frame's fence
+// has been waited for, so no set is in use.
+pub unsafe fn begin_frame(r: &mut state.Renderer) -> i32 {
+    if r.material.table == ptr(0) { return 0 }
+    largest := r.material.sets
+    for p in 0..i32(r.material.poolCount) { r.api.DestroyDescriptorPool(r.device, r.material.pools[p], ptr(0)) }
+    r.material.poolCount = 0
+    make_pool(&mut r, largest)
+}
+
+// Allocate the next set of the frame and write the five maps into it. The
+// normal binding's identity is the flat normal; every other missing map is
+// white. A pool that runs out is followed by one twice its size; when the
+// frame has used every pool it can have, the set is null and the caller
+// refuses the draw with a reason.
+// Returns 0 when the frame has used every pool it can have or the device
+// refused one; the caller refuses the draw with a reason.
+pub unsafe fn bind(r: &mut state.Renderer, textures: &gfx.Textures) -> ptr {
+    if r.material.table == ptr(0) { return ptr(0) }
+    if r.material.taken >= r.material.sets {
+        if make_pool(&mut r, r.material.sets * 2) != 0 { return ptr(0) }
+    }
+    mut set := ptr(0)
+    mut allocation: vkl.DescriptorSetAllocateInfo = vkl.DescriptorSetAllocateInfo::new()
+    allocation.descriptorPool = r.material.pools[i32(r.material.poolCount - 1)]
+    allocation.descriptorSetCount = 1
+    allocation.pSetLayouts = addr(&r.material.setLayout)
+    if r.api.AllocateDescriptorSets(r.device, addr(&allocation), addr(&mut set)) != 0 { return ptr(0) }
+    r.material.taken = r.material.taken + 1
+    // The five maps in binding order, each as the (sampler, view) its
+    // handle names: the white fallback for a missing one, the flat normal
+    // for a missing normal map.
+    ids := [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id]
+    for b in 0..BINDINGS {
+        if b == NORMAL_BINDING && !live(ref_at(r.material.table), ids[i32(b)]) {
+            bind_sampler(&r, set, u32(b), r.material.flat.sampler, r.material.flat.view)
+        } else {
+            bind_sampler(&r, set, u32(b), sampler_of(ref_at(r.material.table), ids[i32(b)]), view_of(ref_at(r.material.table), ids[i32(b)]))
+        }
+    }
+    set
+}
+
+// The image view of the texture a handle names, the fallback's for one
+// that is not live.
+pub unsafe fn view_of(table: &Table, id: i64) -> ptr { table.slots[slot_of(table, id)].view }
+
+// The sampler of the texture a handle names, resolved like view_of.
+pub unsafe fn sampler_of(table: &Table, id: i64) -> ptr { table.slots[slot_of(table, id)].sampler }
+
 // Upload RGBA8 pixels as a new texture: the first free slot, or the error.
-pub unsafe fn upload(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32, spec: &gfx.Sampler) -> Result<i64, string> {
+pub unsafe fn upload(r: &mut state.Renderer, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, spec: &gfx.Sampler) -> Result<i64, string> {
     if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("texture dimensions must be between 1 and 16384") }
     if i64(pixels.len) != i64(width) * i64(height) * i64(gfx.TEXTURE_BYTES_PER_PIXEL) { return .Err("texture pixels must be width x height x 4 bytes") }
     if r.material.table == ptr(0) { return .Err("textures are not available on this window") }
     slot := first_free(ref_at(r.material.table))
     if slot == CAPACITY { return .Err("the texture table is full") }
-    mut code := upload_slot(&r, ref_at(r.material.table), slot, pixels, width, height, spec)
+    mut code := upload_slot(&r, ref_at(r.material.table), slot, pixels, width, height, encoding, spec)
     if code != 0 { return .Err("texture upload failed with " + enums.result_name(code)) }
     .Ok(claim(ref_at(r.material.table), slot))
 }
@@ -411,24 +557,23 @@ pub unsafe fn upload(r: &mut state.Renderer, pixels: []u8, width: i32, height: i
 // Free a texture. Unknown, zero and already freed handles are ignored: a
 // handle is a value, and a stale one must be harmless.
 pub unsafe fn free(r: &mut state.Renderer, id: i64) {
-    if id == 0 { return }
-    slot := slot_of(id)
-    if slot < 1 || slot >= CAPACITY { return }
     if r.material.table == ptr(0) { return }
     if !live(ref_at(r.material.table), id) { return }
     _ := r.api.QueueWaitIdle(r.queue)
-    free_slot(&r, ref_at(r.material.table), slot)
+    free_slot(&r, ref_at(r.material.table), index_of(id))
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
-    if r.material.table == ptr(0) { return }
-    mut slot := 0
-    while slot < CAPACITY {
-        if occupied(ref_at(r.material.table), slot) { free_slot(&r, ref_at(r.material.table), slot) }
-        slot = slot + 1
+    if r.material.table != ptr(0) {
+        for slot in 0..CAPACITY {
+            if occupied(ref_at(r.material.table), slot) { free_slot(&r, ref_at(r.material.table), slot) }
+        }
+        release(r.material.table)
+        r.material.table = ptr(0)
     }
-    release(r.material.table)
-    r.material.table = ptr(0)
-    r.api.DestroyDescriptorPool(r.device, r.material.pool, ptr(0))
+    if r.material.flat.image != ptr(0) { free_flat(&mut r) }
+    for p in 0..i32(r.material.poolCount) { r.api.DestroyDescriptorPool(r.device, r.material.pools[p], ptr(0)) }
+    r.material.poolCount = 0
     r.api.DestroyDescriptorSetLayout(r.device, r.material.setLayout, ptr(0))
+    r.material.setLayout = ptr(0)
 }

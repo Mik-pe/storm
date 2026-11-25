@@ -167,5 +167,5 @@ fn probe(img: &image.Image, x: i32, y: i32, c: i32) -> i32 { i32(img.pixels[(y *
     mut frame := app.FrameGeometry::new()
     app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     assert(frame.solids().len == 1)
-    assert(frame.solids()[0].material.texture.id == 0)
+    assert(frame.solids()[0].material.textures.base.id == 0)
 }
