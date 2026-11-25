@@ -1,5 +1,5 @@
-// Cloud art rests on the collision plane. The animation deforms the underside
-// and briefly dips the crown under the player's feet on impact.
+// Cloud art rests on the collision plane. The animation deforms the underside,
+// cushions impacts with a soft marshmallow ripple, and adds a dreamy floating bob.
 import .art_asset
 import .model
 import .particles
@@ -12,7 +12,7 @@ import scene
 import scene.animation as anim
 import std.math as _
 
-const REBOUND_SECONDS: f32 = 0.43
+const REBOUND_SECONDS: f32 = 0.62
 
 struct Pad { index: i32, node: ecs.Entity }
 struct Prize { index: i32, root: ecs.Entity, left: ecs.Entity, right: ecs.Entity }
@@ -21,6 +21,13 @@ pub struct Course { pads: []Pad, prizes: []Prize, impact: anim.Clip, cloud_top: 
 pub fn platform(role: play.Role) -> bool { role == .Cloud || role == .BoostCloud }
 pub fn modeled(role: play.Role) -> bool { platform(role) || role == .SuperButterfly }
 fn zero() -> core.Vec3 { core.vec3(0.0, 0.0, 0.0) }
+
+fn smooth(start: f32, end: f32, n: f32) -> f32 {
+    if n <= start { return 0.0 }
+    if n >= end { return 1.0 }
+    t := (n - start) / (end - start)
+    t * t * (3.0 - 2.0 * t)
+}
 
 fn mount(g: &mut scene.Graph, parent: ecs.Entity, art: &mut gltf.Asset, name: string,
     joints: &[]model.Joint, first: &mut []ecs.Entity, paint: &[]model.Paint) -> Result<(), string> {
@@ -33,11 +40,14 @@ fn mount(g: &mut scene.Graph, parent: ecs.Entity, art: &mut gltf.Asset, name: st
 }
 
 pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) -> Result<Course, string> {
+    // Soft pillowy cushion squash, plump rebound, and two damped marshmallow settle ripples.
     impact := anim.clip(REBOUND_SECONDS, [], [], [
         anim.key(0.0, 1.0, 1.0, 1.0, .EaseOut),
-        anim.key(0.055, 1.11, 0.63, 1.11, .Smooth),
-        anim.key(0.17, 0.97, 1.11, 0.97, .Smooth),
-        anim.key(0.28, 1.025, 0.95, 1.025, .Smooth),
+        anim.key(0.055, 1.15, 0.58, 1.15, .Smooth),
+        anim.key(0.175, 0.94, 1.14, 0.94, .Smooth),
+        anim.key(0.31, 1.055, 0.91, 1.055, .Smooth),
+        anim.key(0.45, 0.985, 1.038, 0.985, .Smooth),
+        anim.key(0.55, 1.008, 0.988, 1.008, .Smooth),
         anim.key(REBOUND_SECONDS, 1.0, 1.0, 1.0, .Smooth)])?
     mut course := Course {
         pads: [], prizes: [], impact: move impact,
@@ -84,18 +94,42 @@ struct PadPose { scale: core.Vec3, y: f32 }
 
 fn pad_pose(course: &Course, s: &play.Session, index: i32, sub: f32) -> PadPose {
     e := &s.scene.entities[index]
+    boost := e.role == .BoostCloud
+    t := (f32(s.tick % 216000) + sub) / f32(play.TICK_RATE)
     since_landing := (f32(s.tick - s.cloud_tick) + sub) / f32(play.TICK_RATE)
     mut squash := core.vec3(1.0, 1.0, 1.0)
     if index == s.last_cloud && since_landing >= 0.0 && since_landing < REBOUND_SECONDS {
         rest := anim.identity()
         impact := anim.sample(&course.impact, since_landing, .Clamp, rest)
-        weight := if e.role == .BoostCloud { f32(1.0) } else { f32(0.62) }
+        weight: f32 = if boost { 1.0 } else { 0.70 }
         squash = anim.mix(rest, impact, 0.0, 0.0, weight).scale
+        // Subtle out-of-phase pillowy wobble ripple across X and Z as the cloud rebounds.
+        u := since_landing / REBOUND_SECONDS
+        decay := (1.0 - u) * (1.0 - u)
+        ripple := (since_landing * 22.0).sin() * decay * weight * 0.046
+        squash.x += ripple
+        squash.z -= ripple
+    }
+    // Ease dreamy ambient float and BoostCloud pulse in after tick 0 so spawn poses align with collision tops.
+    float_w := smooth(0.0, 0.35, t)
+    phase := f32(index) * 1.47
+    bob_freq: f32 = if boost { 1.65 } else { 1.18 }
+    bob_amp: f32 = if boost { 0.034 } else { 0.024 }
+    mut bob := float_w * bob_amp * (t * bob_freq + phase).sin()
+    breathe := float_w * 0.012 * (t * 0.95 + phase * 1.3).cos()
+    squash.x += breathe
+    squash.z -= breathe * 0.65
+    if boost {
+        pulse := float_w * (0.5 + 0.5 * (t * 3.1 + phase).sin())
+        squash.x += 0.038 * pulse
+        squash.z += 0.038 * pulse
+        squash.y += 0.045 * pulse
+        bob += float_w * 0.010 * (t * 3.1 + phase).sin()
     }
     h := e.size.y * 1.9
     PadPose {
         scale: core.vec3(e.size.x * squash.x, h * squash.y, e.size.z * squash.z),
-        y: (e.size.y - h) * 0.5 + h * 0.18 * (1.0 - squash.y)
+        y: (e.size.y - h) * 0.5 + h * 0.22 * (1.0 - squash.y) + bob
     }
 }
 
@@ -168,9 +202,9 @@ pub fn animate(g: &mut scene.Graph, course: &Course, s: &play.Session, exact: bo
         g.set_visible(prize.root, !s.collected[prize.index])
         if s.collected[prize.index] { continue }
         phase := t + f32(prize.index) * 1.83
-        g.set_position(prize.root, core.vec3(0.065 * phase.sin(), 0.105 * (phase * 2.7).sin(), 0.058 * (phase * 1.2).cos()))
-        g.set_angles(prize.root, 0.06 * phase.sin(), 0.23 * (phase * 1.37).cos(), 0.10 * (phase * 1.67).sin())
-        flap := 0.30 + 0.54 * (phase * 8.9).sin()
+        g.set_position(prize.root, core.vec3(0.082 * phase.sin(), 0.125 * (phase * 2.5).sin(), 0.068 * (phase * 1.25).cos()))
+        g.set_angles(prize.root, 0.07 * phase.sin(), 0.25 * (phase * 1.37).cos(), 0.12 * (phase * 1.67).sin())
+        flap := 0.28 + 0.56 * (phase * 8.6).sin() + 0.05 * (phase * 17.2).cos()
         g.set_rotation(prize.left, flap)
         g.set_rotation(prize.right, -flap)
     }

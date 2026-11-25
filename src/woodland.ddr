@@ -20,11 +20,11 @@ struct TailBox { lo: core.Vec3, hi: core.Vec3 }
 struct TailGuard { hinge: ecs.Entity, basis: core.Mat4, inverse: core.Mat4 }
 struct TailLink { joint: Socket, bounds: [TailBox; 4] }
 struct Limb { plane: ecs.Entity, upper: ecs.Entity, shin: ecs.Entity, foot: ecs.Entity, bind: fox_animation.Leg, sole_points: []core.Vec3 }
-struct BouquetStem { node: ecs.Entity, flower_index: i32 }
+struct BouquetStem { node: ecs.Entity, flower_index: i32, base_scale: f32 }
 struct FlowerNode { root: ecs.Entity, entity_index: i32, base_pos: core.Vec3, base_scale: f32 }
 struct Fox {
     root: ecs.Entity, body: Socket, chest: Socket, head: Socket, nose: core.Vec3, bloom_offset: core.Vec3,
-    bouquet: ecs.Entity, stems: []BouquetStem, blush: Option<ecs.Entity>,
+    bouquet: ecs.Entity, bouquet_pivot: core.Vec3, stems: []BouquetStem, blush: Option<ecs.Entity>,
     tail_guard: TailGuard, tail: [TailLink; 3], limbs: []Limb, eyes: []Socket, lids: []ecs.Entity, ears: []ecs.Entity, clips: fox_animation.Clips, gestures: fox_expression.Gestures,
 }
 struct Flyer { root: ecs.Entity, left: ecs.Entity, right: ecs.Entity, home: core.Vec3, bee: bool }
@@ -157,29 +157,57 @@ fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Ri
     for node in first {
         if g.name(node) == "Head_Blush" { blush = .Some(node); break }
     }
-    bouquet := g.create_child(head.mount, core.vec3(0.0, 0.973, 0.77))
+    bouquet_pivot := core.vec3(0.0, 0.973, 0.77)
+    bouquet := g.create_child(head.mount, bouquet_pivot)
     _ := g.set_name(bouquet, "Bouquet")
     g.set_visible(bouquet, false)
     clips := fox_animation.clips()?
     .Ok(Fox {
         root: root, body: Socket { hinge: body.hinge, pivot: g.local(body.hinge).position },
         chest: Socket { hinge: chest.hinge, pivot: g.local(chest.hinge).position }, head: Socket { hinge: head.hinge, pivot: g.local(head.hinge).position },
-        nose: fox_expression.nose_tip(art)?, bloom_offset: bloom_offset, bouquet: bouquet, stems: [], blush: blush,
+        nose: fox_expression.nose_tip(art)?, bloom_offset: bloom_offset, bouquet: bouquet, bouquet_pivot: bouquet_pivot, stems: [], blush: blush,
         tail_guard: guard,
         tail: [tail_link(g, &tail, art, axis), tail_link(g, &mid, art, axis), tail_link(g, &tip, art, axis)], limbs: move limbs, eyes: move eyes, lids: move lids, ears: move ears, clips: move clips, gestures: fox_expression.gestures()?
     })
 }
 
-fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, cast: &mut Cast) {
-    homes := if bee { [core.vec3(1.43, 0.92, 1.25), core.vec3(-2.4, 1.12, -1.1)] }
-    else { [core.vec3(-1.32, 1.34, 1.3), core.vec3(2.65, 1.55, -1.3)] }
+fn inside_bounds(pos: core.Vec3, bounds: Option<play.Bounds>) -> bool {
+    match bounds {
+        .Some(b) => pos.x >= b.min_x + 0.4 && pos.x <= b.max_x - 0.4 && pos.z >= b.min_z + 0.4 && pos.z <= b.max_z - 0.4,
+        .None => true,
+    }
+}
+
+fn insects(g: &mut scene.Graph, art: &gltf.Asset, bee: bool, bounds: Option<play.Bounds>, cast: &mut Cast) {
+    // Central Körsbärsgläntan flyers come first, followed by zone flyers across the expanded Blomsterskogen.
+    homes: []core.Vec3 = if bee {
+        [
+            core.vec3(1.43, 0.92, 1.25), core.vec3(-2.4, 1.12, -1.1),
+            core.vec3(-8.8, 1.08, 5.4), core.vec3(-9.5, 1.16, -3.1),
+            core.vec3(-4.8, 1.14, -5.6), core.vec3(2.2, 1.26, -8.7),
+            core.vec3(9.1, 1.06, -2.0), core.vec3(8.0, 1.10, 4.3),
+            core.vec3(1.1, 1.04, 8.1),
+        ]
+    } else {
+        [
+            core.vec3(-1.32, 1.34, 1.3), core.vec3(2.65, 1.55, -1.3),
+            core.vec3(-7.9, 1.48, 4.9), core.vec3(-8.8, 1.52, -2.3),
+            core.vec3(0.3, 1.72, -5.1), core.vec3(-1.5, 1.66, -9.1),
+            core.vec3(8.6, 1.54, -1.5), core.vec3(8.3, 1.48, 4.9),
+            core.vec3(-0.7, 1.42, 7.7), core.vec3(-1.2, 4.45, -4.8),
+            core.vec3(5.0, 3.65, -2.2),
+        ]
+    }
     mut first: []ecs.Entity = []
-    for home in homes {
+    for idx in 0..homes.len {
+        home := homes[idx]
+        if idx >= 2 && !inside_bounds(home, bounds) { continue }
         root := g.create_root(home)
         pivot := if bee { core.vec3(0.032, 0.025, 0.0) } else { core.vec3(0.010, 0.0, 0.0) }
         left := model.joint(&mut g, root, "WingL_", core.vec3(-pivot.x, pivot.y, pivot.z))
         right := model.joint(&mut g, root, "WingR_", pivot)
-        g.set_scale(root, core.vec3(1.16, 1.16, 1.16))
+        scale: f32 = if bee { 1.18 } else { 1.14 + 0.08 * f32(idx % 3) }
+        g.set_scale(root, core.vec3(scale, scale, scale))
         joints: []model.Joint = [left.clone(), right.clone()]
         model.attach(&mut g, root, art, &joints, &mut first, &[])
         cast.insects.push(Flyer { root: root, left: left.hinge, right: right.hinge, home: home, bee: bee })
@@ -221,12 +249,14 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
     flower_mount := core.vec3(0.0, -0.425, 0.0)
     bloom_offset := core.add(fox_expression.bloom_center(&daisy)?, flower_mount)
     mut flower_meshes: []ecs.Entity = []
+    mut flower_count := 0
     for i in 0..session.scene.entities.len {
         def := &session.scene.entities[i]
         if def.role == .Player {
             fox_art := art_asset.load_rigged("fox")?
             cast.foxes.push(fox(&mut g, nodes[i], &fox_art.art, &fox_art.rig, bloom_offset)?)
         } else if def.role == .Flower {
+            flower_count += 1
             scale := def.size.x / 0.64
             base_pos := core.scale(flower_mount, scale)
             flower := g.create_child(nodes[i], base_pos)
@@ -236,38 +266,67 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
             cast.flowers.push(FlowerNode { root: flower, entity_index: i, base_pos: base_pos, base_scale: scale })
         }
     }
-    // The reward uses the same flower meshes and petal colors as the clearing.
+    // The reward uses the same flower meshes and petal colors as the clearing, arranged as a
+    // single fan up to 5 flowers or a lush two-tier wildflower posy for 6..16+ flowers.
     for f_idx in 0..cast.foxes.len {
         bouquet_node := cast.foxes[f_idx].bouquet
+        row0 := if flower_count <= 5 { flower_count } else { (flower_count + 1) / 2 }
+        row1 := flower_count - row0
         mut n := 0
         for i in 0..session.scene.entities.len {
             item := &session.scene.entities[i]
             if item.role != .Flower { continue }
-            stem := g.create_child(bouquet_node, core.vec3(0.0, 0.0, 0.0))
+            mut offset := origin()
+            mut size: f32 = 0.53
+            mut rx: f32 = 0.0
+            mut ry: f32 = 0.0
+            mut rz: f32 = -1.87
+            if flower_count <= 5 {
+                spread := f32(n) - 0.5 * f32(flower_count - 1)
+                size = 0.53 + 0.05 * f32(n % 2)
+                rx = 0.23 * spread
+                ry = 0.19 * spread
+                rz = -1.87 + spread * 0.23
+            } else if n < row0 {
+                half0 := if row0 > 1 { 0.5 * f32(row0 - 1) } else { f32(1.0) }
+                u := (f32(n) - 0.5 * f32(row0 - 1)) / (if half0 > 2.0 { half0 * 0.5 } else { f32(1.0) })
+                offset = core.vec3(0.008 * u, 0.0, 0.0)
+                size = 0.45 + 0.04 * f32(n % 2)
+                rx = 0.20 * u
+                ry = 0.17 * u
+                rz = -1.86 + u * 0.21
+            } else {
+                k := n - row0
+                half1 := if row1 > 1 { 0.5 * f32(row1 - 1) } else { f32(1.0) }
+                u := (f32(k) - 0.5 * f32(row1 - 1)) / (if half1 > 2.0 { half1 * 0.5 } else { f32(1.0) })
+                offset = core.vec3(0.014 * u, -0.026, 0.024)
+                size = 0.41 + 0.04 * f32(k % 2)
+                rx = 0.25 * u + 0.12
+                ry = 0.21 * u
+                rz = -2.02 + u * 0.24
+            }
+            stem := g.create_child(bouquet_node, offset)
             _ := g.set_name(stem, "BouquetStem_" + n.str())
-            spread := f32(n) - 2.0
-            size := 0.53 + 0.05 * f32(n % 2)
             g.set_scale(stem, core.vec3(size, size, size))
-            g.set_angles(stem, 0.23 * spread, 0.19 * spread, -1.87 + spread * 0.23)
+            g.set_angles(stem, rx, ry, rz)
             paint := petal_colors(item.color)
             model.attach(&mut g, stem, &daisy, &[], &mut flower_meshes, &paint)
             g.set_visible(stem, false)
-            cast.foxes[f_idx].stems.push(BouquetStem { node: stem, flower_index: i })
+            cast.foxes[f_idx].stems.push(BouquetStem { node: stem, flower_index: i, base_scale: size })
             n += 1
-            if n == 5 { break }
         }
     }
     butterfly := art_asset.load("butterfly")?
     bee := art_asset.load("bee")?
-    insects(&mut g, &butterfly, false, &mut cast)
-    insects(&mut g, &bee, true, &mut cast)
-    for i in 0..6 {
+    insects(&mut g, &butterfly, false, session.scene.bounds, &mut cast)
+    insects(&mut g, &bee, true, session.scene.bounds, &mut cast)
+    for i in 0..8 {
         heart := i % 2 == 0
         mote := g.create_root(origin())
         if i < 2 { _ := g.set_mesh(mote, emblem(heart)) }
         else { _ := g.share_mesh(mote, cast.motes[i % 2]) }
-        _ := g.set_material(mote, if heart { scene.emissive_material(0.95, 0.12, 0.27, 1.0, 0.0, 0.6, 0.32) }
-            else { scene.emissive_material(1.0, 0.67, 0.13, 1.0, 0.0, 0.5, 0.50) })
+        _ := g.set_material(mote, if heart { scene.emissive_material(0.98, 0.24, 0.46, 0.92, 0.0, 0.58, 0.42) }
+            else { scene.emissive_material(1.0, 0.76, 0.26, 0.90, 0.0, 0.52, 0.58) })
         g.set_visible(mote, false)
         cast.motes.push(mote)
     }
@@ -279,12 +338,15 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
     gfx.push_triangle(&mut petal, ridge, edge, gfx.vertex(0.35, 0.48, 0.0, 0.0, 0.3, 0.95, 0.0, 0.0))
     gfx.push_triangle(&mut petal, tip, ridge, gfx.vertex(0.35, 0.48, 0.0, 0.0, 0.3, 0.95, 0.0, 0.0))
     gfx.push_triangle(&mut petal, ridge, gfx.vertex(0.28, -0.36, 0.0, 0.0, -0.3, 0.95, 0.0, 0.0), edge)
-    for i in 0..24 {
+    for i in 0..48 {
         node := g.create_root(origin())
         if i == 0 { _ := g.set_mesh(node, petal.clone()) } else { _ := g.share_mesh(node, cast.petals[0]) }
-        _ := g.set_material(node, if i % 3 == 0 { scene.material(0.97, 0.36, 0.48, 1.0, 0.0, 0.8) }
-            else { scene.material(1.0, 0.67, 0.73, 1.0, 0.0, 0.8) })
-        radius := 0.04 + 0.014 * f32(i % 4)
+        mat := if i % 4 == 0 { scene.material(0.98, 0.48, 0.62, 1.0, 0.0, 0.78) }
+        else if i % 4 == 1 { scene.material(1.0, 0.72, 0.79, 1.0, 0.0, 0.78) }
+        else if i % 4 == 2 { scene.material(1.0, 0.84, 0.78, 1.0, 0.0, 0.78) }
+        else { scene.material(1.0, 0.91, 0.94, 1.0, 0.0, 0.78) }
+        _ := g.set_material(node, mat)
+        radius := 0.042 + 0.015 * f32(i % 4)
         g.set_scale(node, core.vec3(radius, radius, radius))
         cast.petals.push(node)
     }
@@ -357,27 +419,78 @@ fn animate_tail(g: &mut scene.Graph, actor: &Fox, body: &core.Mat4, p: &fox_anim
 }
 
 fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground, course: &canopy.Course,
-    s: &play.Session, player: i32, exact: bool) {
+    insects: &[]Flyer, s: &play.Session, player: i32, exact: bool) {
     motion := play.render_motion(s, exact)
+    cozy := play.render_cozy(s, exact)
     mut p := fox_animation.pose(&actor.clips, &motion)
     radius := s.scene.entities[player].size.y * 0.5
     scale := radius / 0.4
     center := if exact { play.position(s, player) } else { play.render_position(s, player) }
     acting := fox_expression.apply(&mut p, &actor.gestures, s, &motion, center, scale, exact, actor.bloom_offset)
     focus := acting.focus
+    // Subtle curious ear-perk and glance toward nearby ambient butterflies and bees while standing idle.
+    if motion.run_weight < 0.05 && p.air == 0.0 && acting.sit < 0.12 && acting.snooze == 0.0 && acting.happy < 0.12 && focus.weight < 0.05 {
+        mut best_dist: f32 = 3.6
+        mut best_d := origin()
+        mut found_bug := false
+        for flyer in insects {
+            d := core.sub(g.local(flyer.root).position, center)
+            dist := core.length(d)
+            if dist > 0.25 && dist < best_dist {
+                best_dist = dist
+                best_d = d
+                found_bug = true
+            }
+        }
+        if found_bug {
+            sn := motion.heading.sin()
+            cs := motion.heading.cos()
+            fwd := best_d.x * sn + best_d.z * cs
+            if fwd > -0.25 {
+                left := best_d.x * cs - best_d.z * sn
+                horiz := (best_d.x * best_d.x + best_d.z * best_d.z).sqrt()
+                yaw := clamp_f(f32(math.atan2(f64(left), f64(if fwd > 0.15 { fwd } else { f32(0.15) }))), -0.85, 0.85)
+                lift := clamp_f(f32(math.atan2(f64(best_d.y - 0.15), f64(if horiz > 0.25 { horiz } else { f32(0.25) }))), 0.0, 0.42)
+                w := (1.0 - smooth_step(1.9, 3.6, best_dist)) * (1.0 - smooth_step(0.0, 0.05, motion.run_weight)) *
+                (1.0 - acting.sit) * (1.0 - acting.happy)
+                p.head.y += 0.18 * w * yaw
+                p.head.x -= 0.12 * w * lift
+                p.ears[0].x += (if left >= 0.0 { f32(0.14) } else { f32(0.08) }) * w
+                p.ears[1].x += (if left < 0.0 { f32(0.14) } else { f32(0.08) }) * w
+                p.ears[0].y += 0.14 * w * yaw
+                p.ears[1].y += 0.14 * w * yaw
+            }
+        }
+    }
     g.set_scale(actor.root, core.vec3(scale, scale, scale))
-    g.set_position(actor.root, core.vec3(0.0, -radius, 0.0))
-    g.set_rotation(actor.root, motion.heading)
+    g.set_position(actor.root, core.vec3(0.0, -radius + acting.hop_y * scale, 0.0))
+    g.set_rotation(actor.root, motion.heading + acting.spin_yaw)
     match actor.blush {
-        .Some(node) => { _ := g.set_material_value(node, .Emissive, 0.42 * acting.blush) },
+        .Some(node) => { _ := g.set_material_value(node, .Emissive, 0.48 * acting.blush) },
         .None => {},
     }
     g.set_visible(actor.bouquet, s.flowers > 0)
-    for stem in actor.stems {
-        g.set_visible(stem.node, s.collected[stem.flower_index])
+    if s.flowers > 0 {
+        run_sway := motion.run_weight * (1.0 - p.air) * (2.0 * motion.walk_phase - 0.6).sin() * 0.045
+        b_scale := 1.0 + 0.13 * acting.bouquet_pop
+        g.set_position(actor.bouquet, core.add(actor.bouquet_pivot, core.vec3(0.0, 0.018 * acting.bouquet_pop, 0.0)))
+        g.set_scale(actor.bouquet, core.vec3(b_scale, b_scale, b_scale))
+        g.set_angles(actor.bouquet, 0.08 * acting.bouquet_pop + run_sway, 0.0, 0.18 * acting.bouquet_wiggle + 0.5 * run_sway)
     }
-    body := joint_matrix(&actor.body, &p.body)
-    chest := core.multiply(body, joint_matrix(&actor.chest, &p.chest))
+    for stem in actor.stems {
+        shown := s.collected[stem.flower_index]
+        g.set_visible(stem.node, shown)
+        if shown {
+            mut mult: f32 = 1.0
+            if stem.flower_index == s.last_flower && cozy.flower_age >= 0.0 && cozy.flower_age < 0.45 {
+                u := smooth_step(0.0, 0.30, cozy.flower_age)
+                overshoot := (3.14159265 * smooth_step(0.0, 0.45, cozy.flower_age)).sin()
+                mult = 0.38 + 0.62 * u + 0.16 * overshoot
+            }
+            sc := stem.base_scale * mult
+            g.set_scale(stem.node, core.vec3(sc, sc, sc))
+        }
+    }
     mut hips: [core.Vec3; 4] = [origin(); 4]
     mut ankles: [core.Vec3; 4] = [origin(); 4]
     mut pitches: [f32; 4] = [0.0; 4]
@@ -391,10 +504,22 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
     }
     heading_x := motion.heading.sin()
     heading_z := motion.heading.cos()
-    contact_weight := if motion.grounded { f32(1.0) } else { 1.0 - p.air }
+    hop_air := smooth_step(0.008, 0.055, acting.hop_y)
+    contact_weight := (if motion.grounded { f32(1.0) } else { 1.0 - p.air }) * (1.0 - hop_air)
     mut support := if motion.grounded { center } else { play.last_support_anchor(s, 0.0).position }
     support.y -= radius
     probe := woodland_ground.probe(ground, course, s, support, !motion.grounded && contact_weight > 0.0, exact)
+    mut terrain_lift: f32 = 0.0
+    if motion.grounded && play.render_platform(s, exact) < 0 {
+        // Follow gentle raised decks like Bäckbron and rolling meadow knolls cleanly with the torso.
+        center_h := woodland_ground.sample(ground, course, &probe, center.x, center.z) / scale
+        if center_h > 0.035 {
+            terrain_lift = clamp_f(center_h - 0.035, 0.0, 0.25)
+            p.body.position.y += terrain_lift
+        }
+    }
+    body := joint_matrix(&actor.body, &p.body)
+    chest := core.multiply(body, joint_matrix(&actor.chest, &p.chest))
     if motion.grounded {
         tail_samples := [core.vec2(0.0, -0.60), core.vec2(0.0, -1.05), core.vec2(0.0, -1.45), core.vec2(-0.55, -0.60)]
         for pt in tail_samples {
@@ -407,19 +532,55 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
             hx := center.x + scale * (heading_x * -0.45)
             hz := center.z + scale * (heading_z * -0.45)
             haunch := woodland_ground.sample(ground, course, &probe, hx, hz) / scale
-            if haunch > 0.025 { p.body.position.y += (haunch - 0.025) * acting.sit }
+            if haunch > 0.025 + terrain_lift { p.body.position.y += (haunch - 0.025 - terrain_lift) * acting.sit }
         }
     }
+    if acting.hop_y > 0.0 { tail_floor -= acting.hop_y }
+    hop_tuck := clamp_f(acting.hop_y / 0.18, 0.0, 1.0)
     for i in 0..4 {
         leg := &actor.limbs[i].bind
-        socket := core.add(leg.hip, p.shoulders[i])
+        mut shoulder := p.shoulders[i]
+        if acting.paw_tap > 0.0 && !leg.hind && acting.hop_y <= 0.001 {
+            phase := 17.0 * cozy.pet_age + (if leg.index == 0 { f32(0.0) } else { f32(3.14159265) })
+            tap := phase.sin()
+            if tap > 0.0 { shoulder.y += 0.022 * tap * acting.paw_tap }
+        }
+        socket := core.add(leg.hip, shoulder)
         hips[i] = if leg.hind { core.transform_point(&body, socket) } else { core.transform_point(&chest, socket) }
         mut foot := fox_animation.foot(leg, &p, &motion, s, exact, center, scale)
-        if acting.sit > 0.0 && leg.hind {
+        if acting.sit > 0.0 {
             side: f32 = if leg.index % 2 == 0 { 1.0 } else { -1.0 }
-            foot.sole.x += side * 0.025 * acting.sit
-            foot.sole.z += 0.16 * acting.sit
-            foot.pitch *= 1.0 - acting.sit
+            if leg.hind {
+                foot.sole.x += side * 0.025 * acting.sit
+                foot.sole.z += 0.16 * acting.sit
+                foot.pitch *= 1.0 - acting.sit
+            } else if acting.loaf > 0.0 {
+                // Softly tuck front paws inward when settling into a cozy fox loaf.
+                foot.sole.x -= side * 0.024 * acting.loaf
+                foot.sole.z -= 0.028 * acting.loaf
+            }
+        }
+        if acting.paw_tap > 0.0 && !leg.hind && acting.hop_y <= 0.001 {
+            // Adorable alternating front-paw tippy-taps during petting.
+            phase := 17.0 * cozy.pet_age + (if leg.index == 0 { f32(0.0) } else { f32(3.14159265) })
+            tap := phase.sin()
+            if tap > 0.0 {
+                foot.sole.y += tap * tap * 0.085 * acting.paw_tap
+                foot.sole.z += 0.024 * tap * acting.paw_tap
+                foot.pitch += 0.34 * tap * acting.paw_tap
+            }
+        }
+        if hop_tuck > 0.0 {
+            // Gather all four paws neatly during playful emote hops and twirls.
+            if leg.hind {
+                foot.sole.y += 0.11 * hop_tuck
+                foot.sole.z += 0.07 * hop_tuck
+                foot.pitch += 0.42 * hop_tuck
+            } else {
+                foot.sole.y += 0.14 * hop_tuck
+                foot.sole.z -= 0.07 * hop_tuck
+                foot.pitch += 0.56 * hop_tuck
+            }
         }
         if contact_weight > 0.0 {
             contact := paw_contact.fit(ground, course, &probe, &actor.limbs[i].sole_points, leg, &foot, hips[i], center, scale, heading_x, heading_z)
@@ -428,7 +589,7 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
         }
         ankles[i] = fox_animation.ankle_target(leg, &foot)
         pitches[i] = foot.pitch
-        if (motion.grounded || p.air < 1.0) && foot.sole.y < 0.065 {
+        if (motion.grounded || p.air < 1.0) && hop_air < 0.05 && foot.sole.y < 0.065 {
             delta := core.sub(hips[i], ankles[i])
             reach := (leg.thigh + leg.shin) * 0.998
             remaining := reach * reach - delta.x * delta.x - delta.z * delta.z
@@ -460,16 +621,17 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
     }
     g.set_angles(actor.head.hinge, p.head.x, p.head.y, p.head.z)
     animate_tail(&mut g, actor, &joint_matrix(&actor.body, &p.body), &p, tail_floor)
-    closed := 1.0 - p.eye_open
-    fold := if closed < 0.51 { f32(0.0) } else if closed > 0.84 { f32(1.0) } else { (closed - 0.51) / 0.33 }
-    iris := 1.0 - fold * fold * (3.0 - 2.0 * fold)
     for i in 0..2 {
         e := p.ears[i]
         g.set_angles(actor.ears[i], e.x, e.y, e.z)
+        eye_open := if i == 1 { p.eye_open * (1.0 - acting.wink_right) } else { p.eye_open }
+        closed := 1.0 - eye_open
+        fold := if closed < 0.51 { f32(0.0) } else if closed > 0.84 { f32(1.0) } else { (closed - 0.51) / 0.33 }
+        iris := 1.0 - fold * fold * (3.0 - 2.0 * fold)
         eye := &actor.eyes[i]
         // The lid keeps its authored curve against the cheek while the open eye narrows over it.
         g.set_visible(actor.lids[i], closed > 0.56)
-        g.set_scale(eye.hinge, core.vec3(0.68 + 0.32 * iris, (0.055 + 0.945 * p.eye_open) * iris, 0.13 + 0.87 * iris))
+        g.set_scale(eye.hinge, core.vec3(0.68 + 0.32 * iris, (0.055 + 0.945 * eye_open) * iris, 0.13 + 0.87 * iris))
         g.set_position(eye.hinge, core.add(eye.pivot, core.vec3(0.0, -0.010 * closed, -0.017 * closed)))
         g.set_visible(eye.hinge, iris > 0.02)
     }
@@ -478,12 +640,55 @@ fn animate_fox(g: &mut scene.Graph, actor: &Fox, ground: &woodland_ground.Ground
 pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player: i32, exact: bool, course: &canopy.Course) {
     sub := play.render_tick_offset(session, exact)
     time := f32(session.tick % 216000) / 60.0 + sub / 60.0
-    for i in 0..cast.foxes.len { animate_fox(&mut g, &cast.foxes[i], &cast.ground, course, session, player, exact) }
     has_player := player >= 0
     player_pos := if has_player {
         if exact { play.position(session, player) } else { play.render_position(session, player) }
     } else { origin() }
     cozy := play.render_cozy(session, exact)
+    sit_f := smooth_step(0.2, 0.75, cozy.sit_weight)
+    pet_f := if cozy.pet_age >= 0.0 && cozy.pet_age < 2.0 {
+        smooth_step(0.0, 0.25, cozy.pet_age) * (1.0 - smooth_step(1.4, 2.0, cozy.pet_age))
+    } else { f32(0.0) }
+    emote_f := if cozy.emote_age >= 0.0 && cozy.emote_age < 1.5 {
+        smooth_step(0.0, 0.20, cozy.emote_age) * (1.0 - smooth_step(1.05, 1.5, cozy.emote_age))
+    } else { f32(0.0) }
+    mut friend := sit_f
+    if pet_f > friend { friend = pet_f }
+    if emote_f > friend { friend = emote_f }
+    for i in 0..cast.insects.len {
+        flyer := &cast.insects[i]
+        t := time * (if flyer.bee { f32(1.24) } else { f32(0.86) }) + f32(i) * 1.93
+        sx: f32 = if flyer.bee { 0.46 } else { 0.62 }
+        sz: f32 = if flyer.bee { 0.34 } else { 0.46 }
+        home_pos := core.add(flyer.home, core.vec3(sx * t.sin(), 0.17 * (2.0 * t).cos() + 0.05 * (t * 0.7).sin(), sz * (t * 1.0).cos()))
+        mut pos := home_pos
+        mut yaw := 0.72 * t.cos()
+        if has_player && friend > 0.0 {
+            dist := core.length(core.sub(flyer.home, player_pos))
+            prox := 1.0 - smooth_step(2.8, 5.2, dist)
+            blend := friend * prox
+            if blend > 0.0 {
+                orbit_ang := time * (if flyer.bee { f32(1.45) } else { f32(1.05) }) + f32(i) * 1.5708
+                orbit_r: f32 = if flyer.bee { 0.68 } else { 0.78 }
+                orbit_y := (if flyer.bee { f32(0.40) } else { f32(0.58) }) + 0.10 * (time * 2.1 + f32(i)).sin()
+                orbit_pos := core.add(player_pos, core.vec3(orbit_r * orbit_ang.cos(), orbit_y, orbit_r * orbit_ang.sin()))
+                pos = core.add(core.scale(home_pos, 1.0 - blend), core.scale(orbit_pos, blend))
+                orbit_yaw := orbit_ang + 1.5708
+                yaw = yaw + (orbit_yaw - yaw) * blend
+            }
+        }
+        g.set_position(flyer.root, pos)
+        g.set_angles(flyer.root, 0.12 * (t * 1.6).cos(), yaw, 0.12 * t.sin())
+        wave: f32 = if flyer.bee { 0.13 + 0.44 * (time * 44.0 + f32(i)).sin() } else { 0.28 + 0.54 * (time * 10.5 + f32(i)).sin() }
+        if flyer.bee {
+            g.set_angles(flyer.left, 0.0, 0.0, wave)
+            g.set_angles(flyer.right, 0.0, 0.0, -wave)
+        } else {
+            g.set_rotation(flyer.left, wave)
+            g.set_rotation(flyer.right, -wave)
+        }
+    }
+    for i in 0..cast.foxes.len { animate_fox(&mut g, &cast.foxes[i], &cast.ground, course, &cast.insects, session, player, exact) }
     for fl in cast.flowers {
         if session.collected[fl.entity_index] { continue }
         phase := f32(fl.entity_index) * 1.73
@@ -513,62 +718,39 @@ pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player:
         g.set_scale(fl.root, core.vec3(s_val, s_val, s_val))
         g.set_angles(fl.root, pitch, 0.0, roll)
     }
-    sit_f := smooth_step(0.2, 0.75, cozy.sit_weight)
-    pet_f := if cozy.pet_age >= 0.0 && cozy.pet_age < 2.0 {
-        smooth_step(0.0, 0.25, cozy.pet_age) * (1.0 - smooth_step(1.4, 2.0, cozy.pet_age))
-    } else { f32(0.0) }
-    emote_f := if cozy.emote_age >= 0.0 && cozy.emote_age < 1.5 {
-        smooth_step(0.0, 0.20, cozy.emote_age) * (1.0 - smooth_step(1.05, 1.5, cozy.emote_age))
-    } else { f32(0.0) }
-    mut friend := sit_f
-    if pet_f > friend { friend = pet_f }
-    if emote_f > friend { friend = emote_f }
-    for i in 0..cast.insects.len {
-        flyer := &cast.insects[i]
-        t := time * (if flyer.bee { f32(1.21) } else { f32(0.84) }) + f32(i) * 1.93
-        home_pos := core.add(flyer.home, core.vec3(0.43 * t.sin(), 0.16 * (2.0 * t).cos(), 0.30 * t.cos()))
-        mut pos := home_pos
-        mut yaw := 0.67 * t.cos()
-        if has_player && friend > 0.0 {
-            dist := core.length(core.sub(flyer.home, player_pos))
-            prox := 1.0 - smooth_step(2.6, 4.6, dist)
-            blend := friend * prox
-            if blend > 0.0 {
-                orbit_ang := time * (if flyer.bee { f32(1.45) } else { f32(1.05) }) + f32(i) * 1.5708
-                orbit_r: f32 = if flyer.bee { 0.68 } else { 0.78 }
-                orbit_y := (if flyer.bee { f32(0.40) } else { f32(0.58) }) + 0.10 * (time * 2.1 + f32(i)).sin()
-                orbit_pos := core.add(player_pos, core.vec3(orbit_r * orbit_ang.cos(), orbit_y, orbit_r * orbit_ang.sin()))
-                pos = core.add(core.scale(home_pos, 1.0 - blend), core.scale(orbit_pos, blend))
-                orbit_yaw := orbit_ang + 1.5708
-                yaw = yaw + (orbit_yaw - yaw) * blend
-            }
-        }
-        g.set_position(flyer.root, pos)
-        g.set_angles(flyer.root, 0.12 * (t * 1.6).cos(), yaw, 0.10 * t.sin())
-        wave: f32 = if flyer.bee { 0.13 + 0.44 * (time * 44.0 + f32(i)).sin() } else { 0.28 + 0.52 * (time * 11.0 + f32(i)).sin() }
-        if flyer.bee {
-            g.set_angles(flyer.left, 0.0, 0.0, wave)
-            g.set_angles(flyer.right, 0.0, 0.0, -wave)
-        } else {
-            g.set_rotation(flyer.left, wave)
-            g.set_rotation(flyer.right, -wave)
-        }
+    mut min_x: f32 = -7.0
+    mut max_x: f32 = 7.0
+    mut min_z: f32 = -5.5
+    mut max_z: f32 = 5.5
+    match session.scene.bounds {
+        .Some(b) => {
+            min_x = b.min_x - 1.5
+            max_x = b.max_x + 1.5
+            min_z = b.min_z - 1.5
+            max_z = b.max_z + 1.5
+        },
+        .None => {},
     }
+    span_x := max_x - min_x
+    span_z := max_z - min_z
+    ceiling: f32 = if span_x > 16.0 { 6.2 } else { 4.0 }
     for i in 0..cast.petals.len {
         f := f32(i)
-        cycle := time * (0.084 + f32(i % 3) * 0.010) + f * 0.618034
+        cycle := time * (0.068 + f32(i % 4) * 0.008) + f * 0.618034
         u := cycle - cycle.floor()
-        phase := f * 2.47 + time * 1.6
-        x := f32((i * 7) % 17) * 0.81 - 6.7 + u * 0.90 + 0.28 * phase.sin()
-        z := f32((i * 5) % 13) * 0.70 - 5.5 + 0.15 * phase.cos()
+        phase := f * 2.47 + time * 1.45
+        hx := f32((i * 11 + 3) % 47) / 46.0
+        hz := f32((i * 19 + 7) % 43) / 42.0
+        x := min_x + hx * span_x + u * 1.15 + 0.34 * phase.sin()
+        z := min_z + hz * span_z + 0.22 * phase.cos()
         node := cast.petals[i]
-        g.set_position(node, core.vec3(x, 3.85 * (1.0 - u), z))
-        g.set_angles(node, 0.5 * phase.sin(), 0.8 * phase.cos(), f + 0.55 * time)
+        g.set_position(node, core.vec3(x, ceiling * (1.0 - u), z))
+        g.set_angles(node, 0.52 * phase.sin(), 0.85 * phase.cos(), f + 0.55 * time)
     }
     flower_age := f32(session.tick - session.picked_tick) + sub
     flower_active := session.last_flower >= 0 && flower_age >= 0.0 && flower_age < 54.0
-    pet_active := has_player && cozy.pet_age >= 0.0 && cozy.pet_age < 1.35
-    emote_active := has_player && cozy.emote_age >= 0.0 && cozy.emote_age < 1.15
+    pet_active := has_player && cozy.pet_age >= 0.0 && cozy.pet_age < 1.45
+    emote_active := has_player && cozy.emote_age >= 0.0 && cozy.emote_age < 1.25
     // Prefer the most recently triggered celebration so rapid actions transition cleanly.
     mut mode := 0
     mut best_age: f32 = 1.0e9
@@ -580,21 +762,21 @@ pub fn animate(g: &mut scene.Graph, cast: &Cast, session: &play.Session, player:
         g.set_visible(mote, mode != 0)
         if mode == 1 {
             u := flower_age / 54.0
-            angle := f32(i) * 1.0471976 + 0.26
+            angle := f32(i) * 0.7853982 + 0.26
             pos := session.scene.entities[session.last_flower].position
-            drift := (0.12 + u * 0.92) * angle.cos()
-            g.set_position(mote, core.add(pos, core.vec3(drift, 0.35 + u * (1.3 + angle.sin() * 0.52), 0.22 + 0.12 * angle.sin())))
-            radius := (0.075 + 0.066 * (3.14159 * u).sin()) * (1.0 - u * u)
+            drift := (0.12 + u * 0.96) * angle.cos()
+            g.set_position(mote, core.add(pos, core.vec3(drift, 0.35 + u * (1.35 + angle.sin() * 0.52), 0.22 + 0.14 * angle.sin())))
+            radius := (0.075 + 0.068 * (3.14159 * u).sin()) * (1.0 - u * u)
             g.set_scale(mote, core.vec3(radius, radius, radius))
             g.set_angles(mote, -0.24, 0.0, angle.cos() * 0.4 + u * 0.65)
         } else if mode != 0 {
-            dur: f32 = if mode == 2 { 1.35 } else { 1.15 }
+            dur: f32 = if mode == 2 { 1.45 } else { 1.25 }
             u := best_age / dur
-            angle := f32(i) * 1.0471976 + 0.35 + best_age * 1.4
-            head_base := core.add(player_pos, core.vec3(0.0, 0.50, 0.0))
-            spread := 0.22 + u * 0.52
-            g.set_position(mote, core.add(head_base, core.vec3(spread * angle.cos(), u * (0.92 + 0.22 * angle.sin()), spread * angle.sin())))
-            radius := (0.065 + 0.055 * (3.14159 * u).sin()) * (1.0 - u * u)
+            angle := f32(i) * 0.7853982 + 0.35 + best_age * 1.4
+            head_base := core.add(player_pos, core.vec3(0.0, 0.52, 0.0))
+            spread := 0.24 + u * 0.56
+            g.set_position(mote, core.add(head_base, core.vec3(spread * angle.cos(), u * (0.98 + 0.22 * angle.sin()), spread * angle.sin())))
+            radius := (0.068 + 0.058 * (3.14159 * u).sin()) * (1.0 - u * u)
             g.set_scale(mote, core.vec3(radius, radius, radius))
             g.set_angles(mote, -0.22, 0.0, angle.cos() * 0.35 + u * 0.60)
         }

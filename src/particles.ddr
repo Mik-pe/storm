@@ -9,24 +9,33 @@ import std.math as _
 
 const TAU: f32 = 6.2831853
 const PI: f32 = 3.14159265
-const RING_TICKS: f32 = 27.0
-const TRAIL_TICKS: f32 = 39.0
-const BURST_TICKS: f32 = 66.0
+const RING_TICKS: f32 = 30.0
+const TRAIL_TICKS: f32 = 42.0
+const BURST_TICKS: f32 = 68.0
 
-pub struct Effects { puffs: []ecs.Entity, trail: []ecs.Entity, burst: []ecs.Entity, aura: []ecs.Entity }
-pub fn empty() -> Effects { Effects { puffs: [], trail: [], burst: [], aura: [] } }
+pub struct Effects {
+    puffs: []ecs.Entity,
+    trail: []ecs.Entity,
+    burst: []ecs.Entity,
+    aura: []ecs.Entity,
+    boost_sparkles: []ecs.Entity,
+}
+pub fn empty() -> Effects { Effects { puffs: [], trail: [], burst: [], aura: [], boost_sparkles: [] } }
 
+// Five overlapping smooth lobes form a plush, marshmallow-like cloud wisp.
 fn puff_mesh() -> []f32 {
-    sphere := gfx.sphere(8, 4)
+    sphere := gfx.sphere(8, 5)
+    ox: [f32; 5] = [-0.54, 0.0, 0.54, 0.14, -0.16]
+    oy: [f32; 5] = [0.02, 0.22, 0.02, 0.05, 0.06]
+    oz: [f32; 5] = [0.08, 0.0, -0.06, 0.42, -0.42]
+    rad: [f32; 5] = [0.64, 0.84, 0.64, 0.56, 0.55]
     mut out: []f32 = []
-    out.reserve(3 * sphere.len)
-    for lobe in 0..3 {
-        x := (f32(lobe) - 1.0) * 0.49
-        r: f32 = if lobe == 1 { 0.84 } else { 0.63 }
-        y: f32 = if lobe == 1 { 0.17 } else { 0.0 }
+    out.reserve(5 * sphere.len)
+    for lobe in 0..5 {
+        r := rad[lobe]
         for i in 0..sphere.len / gfx.VERTEX_FLOATS {
             at := i * gfx.VERTEX_FLOATS
-            gfx.push_vertex(&mut out, gfx.vertex(sphere[at] * r + x, sphere[at + 1] * r + y, sphere[at + 2] * r,
+            gfx.push_vertex(&mut out, gfx.vertex(sphere[at] * r + ox[lobe], sphere[at + 1] * r + oy[lobe], sphere[at + 2] * r + oz[lobe],
                 sphere[at + 3], sphere[at + 4], sphere[at + 5], sphere[at + 6], sphere[at + 7]))
         }
     }
@@ -53,6 +62,33 @@ fn glint_mesh(heart: bool) -> []f32 {
     tip := gfx.vertex(0.0, 0.0, 0.19, 0.0, 0.0, 1.0, 0.0, 0.0)
     for i in 0..n { gfx.push_triangle(&mut vertices, tip, edge(i, n, heart), edge((i + 1) % n, n, heart)) }
     vertices
+}
+
+// Delicate dandelion seed tuft: tiny warm core crowned by a soft starburst of fluffy filaments.
+fn dandelion_mesh() -> []f32 {
+    core_ball := gfx.sphere(6, 4)
+    mut out: []f32 = []
+    for i in 0..core_ball.len / gfx.VERTEX_FLOATS {
+        at := i * gfx.VERTEX_FLOATS
+        gfx.push_vertex(&mut out, gfx.vertex(core_ball[at] * 0.34, core_ball[at + 1] * 0.34 - 0.14, core_ball[at + 2] * 0.34,
+            core_ball[at + 3], core_ball[at + 4], core_ball[at + 5], core_ball[at + 6], core_ball[at + 7]))
+    }
+    hub := gfx.vertex(0.0, 0.10, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+    for i in 0..6 {
+        a := f32(i) * TAU / 6.0
+        b := a + 0.36
+        ca := a.cos(); sa := a.sin()
+        cb := b.cos(); sb := b.sin()
+        outer_a := gfx.vertex(ca * 1.0, 0.56, sa * 1.0, ca * 0.5, 0.85, sa * 0.5, 0.0, 0.0)
+        outer_b := gfx.vertex(cb * 0.86, 0.42, sb * 0.86, cb * 0.5, 0.85, sb * 0.5, 0.0, 0.0)
+        gfx.push_triangle(&mut out, hub, outer_a, outer_b)
+        gfx.push_triangle(&mut out, hub, outer_b, outer_a)
+    }
+    out
+}
+
+fn bubble_mesh() -> []f32 {
+    gfx.sphere(10, 6)
 }
 
 fn ring_point(index: i32, segs: i32, outer: bool) -> gfx.Vertex {
@@ -95,11 +131,12 @@ fn copy_node(g: &mut scene.Graph, mesh: ecs.Entity, mat: &scene.Material) -> ecs
 
 pub fn build(g: &mut scene.Graph) -> Effects {
     mut fx := empty()
-    mist := scene.emissive_material(0.82, 0.94, 1.0, 1.0, 0.0, 0.88, 0.13)
-    gold := scene.emissive_material(1.0, 0.62, 0.095, 1.0, 0.0, 0.62, 0.78)
-    pink := scene.emissive_material(1.0, 0.21, 0.46, 1.0, 0.0, 0.64, 0.56)
-    lilac := scene.emissive_material(0.63, 0.39, 1.0, 1.0, 0.0, 0.64, 0.55)
-    pearl := scene.emissive_material(1.0, 0.86, 0.54, 1.0, 0.0, 0.62, 0.67)
+    mist := scene.emissive_material(0.90, 0.96, 1.0, 0.92, 0.0, 0.88, 0.16)
+    blush_mist := scene.emissive_material(1.0, 0.91, 0.94, 0.90, 0.0, 0.88, 0.18)
+    gold := scene.emissive_material(1.0, 0.68, 0.16, 1.0, 0.0, 0.60, 0.78)
+    pink := scene.emissive_material(1.0, 0.28, 0.52, 1.0, 0.0, 0.62, 0.58)
+    lilac := scene.emissive_material(0.68, 0.44, 1.0, 1.0, 0.0, 0.62, 0.56)
+    pearl := scene.emissive_material(1.0, 0.89, 0.60, 1.0, 0.0, 0.60, 0.68)
     puff := make_node(&mut g, &mist)
     star := make_node(&mut g, &gold)
     heart := make_node(&mut g, &pink)
@@ -109,13 +146,16 @@ pub fn build(g: &mut scene.Graph) -> Effects {
     fx.puffs.push(puff)
     fx.trail.push(star)
     fx.burst.push(heart)
-    for _ in 1..6 { fx.puffs.push(copy_node(&mut g, puff, &mist)) }
-    for i in 1..8 { fx.trail.push(copy_node(&mut g, star, &if i % 2 == 1 { pink } else { gold })) }
-    for i in 1..12 {
+    for i in 1..8 { fx.puffs.push(copy_node(&mut g, puff, &if i % 3 == 0 { blush_mist } else { mist })) }
+    for i in 1..10 { fx.trail.push(copy_node(&mut g, star, &if i % 2 == 1 { pink } else { gold })) }
+    for i in 1..14 {
         if i % 3 == 0 { fx.burst.push(copy_node(&mut g, heart, &pink)) }
         else { fx.burst.push(copy_node(&mut g, star, &if i % 3 == 1 { pearl } else { lilac })) }
     }
-    for _ in 0..3 { fx.aura.push(copy_node(&mut g, star, &pearl)) }
+    for i in 0..4 { fx.aura.push(copy_node(&mut g, star, &if i % 2 == 0 { pearl } else { lilac })) }
+    for i in 0..9 {
+        fx.boost_sparkles.push(copy_node(&mut g, star, &if i % 3 == 1 { gold } else { pink }))
+    }
     fx
 }
 
@@ -131,12 +171,12 @@ fn ring(g: &mut scene.Graph, nodes: &[]ecs.Entity, origin: core.Vec3, age: f32) 
         node := nodes[i]
         if age < 0.0 || age >= RING_TICKS { g.set_visible(node, false); continue }
         t := age / RING_TICKS
-        a := f32(i) * TAU / f32(nodes.len) + 0.28
-        travel := 0.36 + 0.65 * (1.0 - (1.0 - t) * (1.0 - t))
-        altitude := 0.12 + (3.14159265 * t).sin() * 0.23
+        a := f32(i) * TAU / f32(nodes.len) + 0.28 + 0.22 * t
+        travel := 0.34 + 0.72 * (1.0 - (1.0 - t) * (1.0 - t))
+        altitude := 0.12 + (PI * t).sin() * 0.26 + 0.05 * t
         pos := core.add(origin, core.vec3(a.cos() * travel, altitude, a.sin() * travel))
-        rad := (0.12 + 0.11 * (3.14159265 * t).sin()) * (1.0 - t * t)
-        pose(&mut g, node, pos, core.vec3(rad * 1.32, rad * 0.63, rad), 0.13 * a.cos())
+        rad := (0.11 + 0.12 * (PI * t).sin()) * (1.0 - t * t)
+        pose(&mut g, node, pos, core.vec3(rad * 1.36, rad * 0.68, rad * 1.12), 0.16 * a.cos())
     }
 }
 
@@ -147,12 +187,12 @@ fn boost_trail(g: &mut scene.Graph, nodes: &[]ecs.Entity, origin: core.Vec3, fox
         if local < 0.0 || local >= TRAIL_TICKS { g.set_visible(node, false); continue }
         t := local / TRAIL_TICKS
         layer := (f32(i) + 0.5) / f32(nodes.len)
-        a := f32(i) * 2.40 + t * 2.0
-        radius := 0.34 + 0.22 * t
+        a := f32(i) * 2.40 + t * 2.2
+        radius := 0.34 + 0.24 * t
         line := core.add(origin, core.scale(core.sub(fox, origin), layer))
-        pos := core.add(line, core.vec3(a.cos() * radius, 0.15 + 0.42 * t, a.sin() * radius))
-        rad := (0.095 + 0.031 * f32(i % 3)) * (1.0 - t * t)
-        pose(&mut g, node, pos, core.vec3(rad * 0.8, rad * 1.34, rad), a.sin() * 0.36 + t * 0.4)
+        pos := core.add(line, core.vec3(a.cos() * radius, 0.16 + 0.45 * t, a.sin() * radius))
+        rad := (0.095 + 0.032 * f32(i % 3)) * (1.0 - t * t)
+        pose(&mut g, node, pos, core.vec3(rad * 0.82, rad * 1.36, rad), a.sin() * 0.36 + t * 0.45)
     }
 }
 
@@ -163,10 +203,10 @@ fn butterfly_burst(g: &mut scene.Graph, nodes: &[]ecs.Entity, origin: core.Vec3,
         if local < 0.0 || local >= BURST_TICKS { g.set_visible(node, false); continue }
         t := local / BURST_TICKS
         a := f32(i) * 2.39996
-        distance := 0.24 + (0.78 + 0.11 * f32(i % 4)) * (2.0 * t - t * t)
-        rise := 0.20 + t * (1.26 + 0.32 * a.sin()) + 0.23 * (3.14159265 * t).sin()
+        distance := 0.24 + (0.82 + 0.11 * f32(i % 4)) * (2.0 * t - t * t)
+        rise := 0.20 + t * (1.30 + 0.32 * a.sin()) + 0.24 * (PI * t).sin()
         pos := core.add(origin, core.vec3(a.cos() * distance, rise, a.sin() * distance))
-        rad := (0.12 + 0.026 * f32(i % 3)) * (1.0 - t * t)
+        rad := (0.12 + 0.028 * f32(i % 3)) * (1.0 - t * t)
         pose(&mut g, node, pos, core.vec3(rad, rad, rad), 0.33 * a.sin() + t * (a.cos() * 0.7))
     }
 }
@@ -185,11 +225,39 @@ fn aura(g: &mut scene.Graph, nodes: &[]ecs.Entity, s: &play.Session, fox: core.V
     for i in 0..nodes.len {
         node := nodes[i]
         if nearest < 0 { g.set_visible(node, false); continue }
-        a := time + f32(i) * TAU / 3.0
+        a := time + f32(i) * TAU / f32(nodes.len)
         pulse := 0.5 + 0.5 * (a * 2.0).sin()
-        rad := 0.033 + 0.050 * pulse * pulse
-        pos := core.add(s.scene.entities[nearest].position, core.vec3(0.49 * a.cos(), 0.14 + 0.17 * (a * 2.0).sin(), 0.33 * a.sin()))
-        pose(&mut g, node, pos, core.vec3(rad * 0.75, rad * 1.16, rad), 0.19 * a.sin())
+        rad := 0.034 + 0.052 * pulse * pulse
+        pos := core.add(s.scene.entities[nearest].position, core.vec3(0.50 * a.cos(), 0.14 + 0.18 * (a * 2.0).sin(), 0.34 * a.sin()))
+        pose(&mut g, node, pos, core.vec3(rad * 0.76, rad * 1.18, rad), 0.20 * a.sin())
+    }
+}
+
+// Add soft sparkling star motes around additional BoostClouds beyond the first (which CozyEffects covers).
+fn extra_boost_sparkles(g: &mut scene.Graph, nodes: &[]ecs.Entity, s: &play.Session, sub: f32) {
+    if nodes.len == 0 { return }
+    mut extra_clouds: []core.Vec3 = []
+    mut seen_first := false
+    for i in 0..s.scene.entities.len {
+        if s.scene.entities[i].role != .BoostCloud { continue }
+        if !seen_first { seen_first = true; continue }
+        extra_clouds.push(play.position(s, i))
+    }
+    seconds := (f32(s.tick % 216000) + sub) / f32(play.TICK_RATE)
+    for i in 0..nodes.len {
+        cloud_idx := i / 3
+        if cloud_idx >= extra_clouds.len {
+            g.set_visible(nodes[i], false)
+            continue
+        }
+        slot := i % 3
+        bp := extra_clouds[cloud_idx]
+        a := seconds * 1.32 + f32(slot) * TAU / 3.0 + f32(cloud_idx) * 1.15
+        bob := 0.16 + 0.13 * (a * 2.0).sin()
+        pulse := 0.5 + 0.5 * (seconds * 3.0 + f32(i) * 1.7).sin()
+        rad := 0.035 + 0.032 * pulse
+        pos := core.add(bp, core.vec3(0.86 * a.cos(), bob, 0.76 * a.sin()))
+        pose(&mut g, nodes[i], pos, core.vec3(rad * 0.82, rad * 1.18, rad), 0.24 * a.sin())
     }
 }
 
@@ -208,24 +276,29 @@ pub fn animate(g: &mut scene.Graph, fx: &Effects, s: &play.Session, exact: bool)
         butterfly_burst(&mut g, &fx.burst, s.scene.entities[insect].position, f32(s.tick - s.butterfly_tick) + sub)
     } else { butterfly_burst(&mut g, &fx.burst, fox, -1.0) }
     aura(&mut g, &fx.aura, s, fox, sub)
+    extra_boost_sparkles(&mut g, &fx.boost_sparkles, s, sub)
 }
 
 pub struct CozyEffects {
     fireflies: []ecs.Entity,
+    sun_motes: []ecs.Entity,
+    dandelions: []ecs.Entity,
     landing_halo: ecs.Entity,
     guide_ring: ecs.Entity,
     guide_heart: ecs.Entity,
     landing_puffs: []ecs.Entity,
     hearts: []ecs.Entity,
     snooze: []ecs.Entity,
+    snooze_bubbles: []ecs.Entity,
     boost_shimmer: []ecs.Entity,
 }
 
 pub fn empty_cozy() -> CozyEffects {
     none := ecs.Entity { index: -1, generation: 0 }
     CozyEffects {
-        fireflies: [], landing_halo: none, guide_ring: none, guide_heart: none,
-        landing_puffs: [], hearts: [], snooze: [], boost_shimmer: [],
+        fireflies: [], sun_motes: [], dandelions: [],
+        landing_halo: none, guide_ring: none, guide_heart: none,
+        landing_puffs: [], hearts: [], snooze: [], snooze_bubbles: [], boost_shimmer: [],
     }
 }
 
@@ -250,14 +323,19 @@ pub fn build_cozy(g: &mut scene.Graph) -> CozyEffects {
     peach_spark := scene.emissive_material(1.0, 0.74, 0.62, 0.86, 0.0, 0.55, 0.82)
     pearl_star := scene.emissive_material(1.0, 0.93, 0.78, 0.86, 0.0, 0.55, 0.80)
     lavender_pearl := scene.emissive_material(0.84, 0.74, 1.0, 0.84, 0.0, 0.55, 0.78)
-    blush_rose := scene.emissive_material(1.0, 0.46, 0.66, 0.90, 0.0, 0.58, 0.72)
+    blush_rose := scene.emissive_material(1.0, 0.46, 0.66, 0.90, 0.0, 0.58, 0.74)
     strawberry_gold := scene.emissive_material(1.0, 0.68, 0.74, 0.90, 0.0, 0.54, 0.84)
     cream_blush := scene.emissive_material(1.0, 0.90, 0.88, 0.74, 0.0, 0.70, 0.58)
     blush_ring := scene.emissive_material(1.0, 0.78, 0.84, 0.80, 0.0, 0.66, 0.62)
-    blush_puff := scene.emissive_material(1.0, 0.87, 0.90, 0.76, 0.0, 0.84, 0.25)
-    cream_puff := scene.emissive_material(1.0, 0.94, 0.88, 0.76, 0.0, 0.84, 0.24)
+    blush_puff := scene.emissive_material(1.0, 0.90, 0.93, 0.76, 0.0, 0.88, 0.28)
+    cream_puff := scene.emissive_material(1.0, 0.96, 0.91, 0.76, 0.0, 0.88, 0.26)
+    pearl_puff := scene.emissive_material(0.95, 0.96, 1.0, 0.74, 0.0, 0.88, 0.26)
+    fluff_cream := scene.emissive_material(1.0, 0.97, 0.90, 0.82, 0.0, 0.82, 0.36)
+    fluff_peach := scene.emissive_material(1.0, 0.92, 0.86, 0.80, 0.0, 0.82, 0.34)
+    sleep_bubble := scene.emissive_material(0.90, 0.88, 1.0, 0.66, 0.0, 0.32, 0.52)
+    sleep_rose := scene.emissive_material(1.0, 0.88, 0.95, 0.64, 0.0, 0.32, 0.50)
 
-    // Own each of the four shared geometries on its first node so nothing sits idle.
+    // Own each shared geometry on its first node so nothing sits idle.
     star_owner := make_node(&mut g, &honey_gold)
     _ := g.set_mesh(star_owner, glint_mesh(false))
     ring_owner := make_node(&mut g, &cream_blush)
@@ -266,6 +344,10 @@ pub fn build_cozy(g: &mut scene.Graph) -> CozyEffects {
     _ := g.set_mesh(heart_owner, glint_mesh(true))
     puff_owner := make_node(&mut g, &blush_puff)
     _ := g.set_mesh(puff_owner, puff_mesh())
+    fluff_owner := make_node(&mut g, &fluff_cream)
+    _ := g.set_mesh(fluff_owner, dandelion_mesh())
+    bubble_owner := make_node(&mut g, &sleep_bubble)
+    _ := g.set_mesh(bubble_owner, bubble_mesh())
 
     mut fx := empty_cozy()
     fx.fireflies.push(star_owner)
@@ -274,22 +356,37 @@ pub fn build_cozy(g: &mut scene.Graph) -> CozyEffects {
         else if i % 4 == 2 { pearl_star } else { lavender_pearl }
         fx.fireflies.push(copy_node(&mut g, star_owner, &mat))
     }
+    for i in 0..20 {
+        mat := if i % 4 == 0 { honey_gold } else if i % 4 == 1 { peach_spark }
+        else if i % 4 == 2 { pearl_star } else { lavender_pearl }
+        fx.sun_motes.push(copy_node(&mut g, star_owner, &mat))
+    }
+    fx.dandelions.push(fluff_owner)
+    for i in 1..24 {
+        fx.dandelions.push(copy_node(&mut g, fluff_owner, &if i % 3 == 0 { fluff_peach } else { fluff_cream }))
+    }
     fx.landing_halo = ring_owner
     fx.guide_ring = copy_node(&mut g, ring_owner, &blush_ring)
     fx.guide_heart = heart_owner
     fx.landing_puffs.push(puff_owner)
-    for i in 1..5 {
-        fx.landing_puffs.push(copy_node(&mut g, puff_owner, &if i % 2 == 0 { blush_puff } else { cream_puff }))
+    for i in 1..7 {
+        mat := if i % 3 == 0 { blush_puff } else if i % 3 == 1 { cream_puff } else { pearl_puff }
+        fx.landing_puffs.push(copy_node(&mut g, puff_owner, &mat))
     }
-    for i in 0..6 {
+    for i in 0..10 {
         if i % 2 == 0 {
-            fx.hearts.push(copy_node(&mut g, heart_owner, &if i == 2 { strawberry_gold } else { blush_rose }))
+            fx.hearts.push(copy_node(&mut g, heart_owner, &if i % 4 == 2 { strawberry_gold } else { blush_rose }))
         } else {
-            fx.hearts.push(copy_node(&mut g, star_owner, &if i == 3 { pearl_star } else { honey_gold }))
+            mat := if i % 4 == 1 { honey_gold } else { pearl_star }
+            fx.hearts.push(copy_node(&mut g, star_owner, &mat))
         }
     }
     for i in 0..4 {
         fx.snooze.push(copy_node(&mut g, star_owner, &if i % 2 == 0 { lavender_pearl } else { pearl_star }))
+    }
+    fx.snooze_bubbles.push(bubble_owner)
+    for i in 1..4 {
+        fx.snooze_bubbles.push(copy_node(&mut g, bubble_owner, &if i % 2 == 0 { sleep_bubble } else { sleep_rose }))
     }
     for i in 0..3 {
         fx.boost_shimmer.push(copy_node(&mut g, star_owner, &if i == 1 { honey_gold } else { strawberry_gold }))
@@ -323,16 +420,68 @@ fn pose_ring(g: &mut scene.Graph, node: ecs.Entity, pos: core.Vec3, radius: f32,
 fn animate_fireflies(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32, won: bool) {
     for i in 0..nodes.len {
         f := f32(i)
-        bx := (f32((i * 5 + 2) % 12) / 11.0 - 0.5) * 8.4
-        bz := (f32((i * 7 + 3) % 12) / 11.0 - 0.5) * 5.6
-        by := 0.42 + f32(i % 4) * 0.28
+        bx := (f32((i * 5 + 2) % 12) / 11.0 - 0.5) * 9.6
+        bz := (f32((i * 7 + 3) % 12) / 11.0 - 0.5) * 7.2 + 0.6
+        by := 0.44 + f32(i % 4) * 0.30
         phase := seconds * (0.42 + f32(i % 3) * 0.08) + f * 1.37
-        pos := core.vec3(bx + 0.52 * phase.sin(), by + 0.14 * (phase * 1.3 + f).cos(), bz + 0.34 * (2.0 * phase).sin())
+        pos := core.vec3(bx + 0.54 * phase.sin(), by + 0.16 * (phase * 1.3 + f).cos(), bz + 0.36 * (2.0 * phase).sin())
         breath := 0.5 + 0.5 * (seconds * (1.3 + f32(i % 4) * 0.25) + f * 2.1).sin()
         glow := if won { f32(1.18) } else { f32(1.0) }
-        rad := (0.022 + 0.028 * breath * breath) * glow
-        alpha := (0.36 + 0.52 * breath) * (if won { f32(1.05) } else { f32(1.0) })
+        rad := (0.024 + 0.030 * breath * breath) * glow
+        alpha := (0.38 + 0.52 * breath) * (if won { f32(1.05) } else { f32(1.0) })
         pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 0.85, rad * 1.15, rad), 0.35 * phase.cos(), if alpha > 0.94 { 0.94 } else { alpha })
+    }
+}
+
+// Warm fireflies and sun-motes anchored to the glowing fairy lanterns and cozy zones of Blomsterskogen.
+fn animate_sun_motes(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32, won: bool) {
+    anchors: [core.Vec3; 20] = [
+        // Exact fairy lantern glow centers (bridge posts/hooks, Lyktängen, Picknickgläntan, Solkullen)
+        core.vec3(-1.62, 1.14, -3.52), core.vec3(1.62, 1.14, -3.52),
+        core.vec3(-1.58, 1.17, -3.05), core.vec3(1.58, 1.18, -3.05),
+        core.vec3(-1.58, 1.19, -6.55), core.vec3(1.58, 1.21, -6.55),
+        core.vec3(-3.36, 1.31, -8.10), core.vec3(3.36, 1.27, -8.10),
+        core.vec3(-1.30, 1.34, -10.16), core.vec3(1.92, 1.32, -10.05),
+        core.vec3(-6.53, 1.12, 6.75), core.vec3(7.53, 1.18, 6.66),
+        // Cozy zone sun-motes: Picknickgläntan, Svampdungen, brook pond, Bärgläntan, Solkullen, Klöverängen, Höga Kronan
+        core.vec3(-8.40, 0.88, 5.20), core.vec3(-9.20, 0.96, -2.80),
+        core.vec3(-5.20, 0.72, -5.80), core.vec3(8.80, 0.96, -1.80),
+        core.vec3(8.60, 0.94, 4.60), core.vec3(0.00, 0.86, 8.00),
+        core.vec3(-0.20, 5.45, -6.60), core.vec3(-0.60, 7.10, -9.40),
+    ]
+    for i in 0..nodes.len {
+        anchor := anchors[i % 20]
+        f := f32(i)
+        phase := seconds * (0.48 + f32(i % 4) * 0.07) + f * 1.63
+        pos := core.add(anchor, core.vec3(0.46 * phase.sin(), 0.18 * (phase * 1.45 + f).cos(), 0.40 * (phase * 1.15).cos()))
+        breath := 0.5 + 0.5 * (seconds * (1.2 + f32(i % 5) * 0.22) + f * 1.9).sin()
+        glow := if won { f32(1.22) } else { f32(1.0) }
+        rad := (0.026 + 0.032 * breath * breath) * glow
+        alpha := (0.36 + 0.54 * breath) * (if won { f32(1.06) } else { f32(1.0) })
+        pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 0.86, rad * 1.18, rad), 0.38 * phase.sin(), if alpha > 0.94 { 0.94 } else { alpha })
+    }
+}
+
+// Lazy dandelion fluff seeds drifting across the entire meadow and sunny knolls.
+fn animate_dandelions(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32) {
+    for i in 0..nodes.len {
+        f := f32(i)
+        cycle := seconds * (0.042 + f32(i % 4) * 0.007) + f * 0.3719
+        u := cycle - cycle.floor()
+        hx := (f32((i * 7 + 5) % 24) / 23.0 - 0.5) * 24.0
+        hz := (f32((i * 11 + 3) % 24) / 23.0 - 0.5) * 20.0
+        sway := seconds * (0.65 + f32(i % 3) * 0.14) + f * 2.13
+        x := hx + u * 2.4 + 0.42 * sway.sin()
+        y := 0.38 + u * 2.45 + 0.22 * (sway * 1.4).cos()
+        z := hz + 0.35 * (sway * 0.85).cos() - u * 0.75
+        fade := (PI * u).sin()
+        rad := (0.048 + 0.018 * f32(i % 3)) * (0.65 + 0.35 * fade)
+        alpha := 0.26 + 0.56 * fade
+        g.set_position(nodes[i], core.vec3(x, y, z))
+        g.set_scale(nodes[i], core.vec3(rad, rad, rad))
+        g.set_angles(nodes[i], 0.22 * sway.sin(), seconds * 0.55 + f, 0.28 * sway.cos())
+        _ := g.set_material_value(nodes[i], .BaseA, alpha)
+        g.set_visible(nodes[i], true)
     }
 }
 
@@ -365,57 +514,75 @@ fn animate_guide(g: &mut scene.Graph, ring_node: ecs.Entity, heart_node: ecs.Ent
 }
 
 fn animate_landing_puffs(g: &mut scene.Graph, nodes: &[]ecs.Entity, cue: &CozyCue) {
-    if !(cue.grounded && cue.landing_age >= 0.0 && cue.landing_age < 0.42 && cue.landing_strength > 0.15) {
+    if !(cue.grounded && cue.landing_age >= 0.0 && cue.landing_age < 0.48 && cue.landing_strength > 0.15) {
         hide_all(&mut g, nodes)
         return
     }
-    t := cue.landing_age / 0.42
+    t := cue.landing_age / 0.48
     strength := clamp01(cue.landing_strength)
     ease := 1.0 - (1.0 - t) * (1.0 - t)
     for i in 0..nodes.len {
-        a := f32(i) * TAU / f32(nodes.len) + 0.35
-        travel := (0.24 + 0.38 * ease) * (0.65 + 0.35 * strength)
-        lift := 0.06 + 0.12 * (PI * t).sin() * strength
+        a := f32(i) * TAU / f32(nodes.len) + 0.35 + 0.20 * t
+        travel := (0.22 + 0.44 * ease) * (0.65 + 0.35 * strength)
+        lift := 0.065 + (0.14 * (PI * t).sin() + 0.05 * t) * strength
         pos := core.vec3(cue.fox.x + a.cos() * travel, cue.support_y + lift, cue.fox.z + a.sin() * travel)
-        rad := (0.065 + 0.055 * (PI * t).sin()) * (1.0 - t * t) * (0.7 + 0.3 * strength)
-        pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 1.25, rad * 0.65, rad), 0.18 * a.cos(), 0.78 * (1.0 - t * t))
+        billow := (0.072 + 0.064 * (PI * t).sin()) * (1.0 - t * t) * (0.72 + 0.28 * strength)
+        pose_soft(&mut g, nodes[i], pos, core.vec3(billow * 1.32, billow * 0.72, billow * 1.10), 0.22 * a.cos(), 0.80 * (1.0 - t * t))
     }
 }
 
 fn animate_hearts(g: &mut scene.Graph, nodes: &[]ecs.Entity, cue: &CozyCue) {
-    pet_on := cue.pet_age >= 0.0 && cue.pet_age < 1.7
-    emote_on := cue.emote_age >= 0.0 && cue.emote_age < 1.25
+    pet_on := cue.pet_age >= 0.0 && cue.pet_age < 1.75
+    emote_on := cue.emote_age >= 0.0 && cue.emote_age < 1.30
     if !pet_on && !emote_on { hide_all(&mut g, nodes); return }
     use_pet := pet_on && (!emote_on || cue.pet_age <= cue.emote_age)
     age := if use_pet { cue.pet_age } else { cue.emote_age }
-    dur: f32 = if use_pet { 1.7 } else { 1.25 }
+    dur: f32 = if use_pet { 1.75 } else { 1.30 }
     for i in 0..nodes.len {
         node := nodes[i]
-        stagger := f32(i % 3) * 0.08
+        stagger := f32(i % 4) * 0.065
         local := age - stagger
         span := dur - stagger
         if local < 0.0 || local >= span { g.set_visible(node, false); continue }
         t := local / span
-        a := f32(i) * 1.0471976 + 0.40 + t * 0.90
-        spread := 0.18 + 0.34 * (1.0 - (1.0 - t) * (1.0 - t))
-        rise := 0.56 + t * 0.84 + 0.08 * (PI * t).sin()
-        pos := core.add(cue.fox, core.vec3(a.cos() * spread, rise, a.sin() * spread * 0.72))
-        rad := (0.068 + 0.044 * (PI * t).sin()) * (1.0 - t * t * 0.55)
-        pose_soft(&mut g, node, pos, core.vec3(rad, rad, rad), 0.28 * a.sin(), 0.92 * (1.0 - t * t))
+        swirl: f32 = if use_pet { 0.95 } else { 1.45 }
+        a := f32(i) * TAU / f32(nodes.len) + 0.40 + t * swirl
+        spread := (if use_pet { f32(0.18) } else { f32(0.22) }) + (if use_pet { f32(0.36) } else { f32(0.46) }) * (1.0 - (1.0 - t) * (1.0 - t))
+        rise := 0.56 + t * (0.90 + 0.12 * f32(i % 3)) + 0.09 * (PI * t).sin()
+        pos := core.add(cue.fox, core.vec3(a.cos() * spread, rise, a.sin() * spread * 0.76))
+        beat := 1.0 + 0.14 * (t * 9.0 + f32(i)).sin().abs()
+        rad := (0.068 + 0.044 * (PI * t).sin()) * (1.0 - t * t * 0.55) * beat
+        pose_soft(&mut g, node, pos, core.vec3(rad, rad, rad), 0.30 * a.sin(), 0.92 * (1.0 - t * t))
     }
 }
 
-fn animate_snooze(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32, cue: &CozyCue) {
-    if !cue.snoozing { hide_all(&mut g, nodes); return }
-    for i in 0..nodes.len {
+fn animate_snooze(g: &mut scene.Graph, stars: &[]ecs.Entity, bubbles: &[]ecs.Entity, seconds: f32, cue: &CozyCue) {
+    if !cue.snoozing {
+        hide_all(&mut g, stars)
+        hide_all(&mut g, bubbles)
+        return
+    }
+    for i in 0..stars.len {
         f := f32(i)
         cycle := seconds * 0.36 + f * 0.25
         u := cycle - cycle.floor()
         sway := (seconds * 1.4 + f * 1.7).sin()
-        pos := core.add(cue.fox, core.vec3(0.16 * sway + (f - 1.5) * 0.07, 0.56 + u * 0.78, 0.14 * (seconds * 1.1 + f).cos()))
+        pos := core.add(cue.fox, core.vec3(0.18 * sway + (f - 1.5) * 0.07, 0.56 + u * 0.82, 0.15 * (seconds * 1.1 + f).cos()))
         fade := (PI * u).sin()
-        rad := 0.025 + 0.055 * fade
-        pose_soft(&mut g, nodes[i], pos, core.vec3(rad * 0.88, rad * 1.15, rad), 0.22 * sway, 0.85 * fade)
+        rad := 0.026 + 0.056 * fade
+        pose_soft(&mut g, stars[i], pos, core.vec3(rad * 0.88, rad * 1.15, rad), 0.22 * sway, 0.86 * fade)
+    }
+    // Soft translucent dream bubbles float gently upward and swell before popping.
+    for i in 0..bubbles.len {
+        f := f32(i)
+        cycle := seconds * 0.28 + f * 0.25 + 0.12
+        u := cycle - cycle.floor()
+        sway := (seconds * 1.15 + f * 2.1).sin()
+        pos := core.add(cue.fox, core.vec3(0.12 * sway + (f - 1.5) * 0.05, 0.52 + u * 0.95, 0.18 + 0.10 * (seconds * 0.9 + f).cos()))
+        fade := (PI * u).sin()
+        rad := (0.022 + 0.042 * u) * (0.65 + 0.35 * fade)
+        wobble := 1.0 + 0.08 * (seconds * 3.8 + f).sin()
+        pose_soft(&mut g, bubbles[i], pos, core.vec3(rad * wobble, rad / wobble, rad), 0.15 * sway, 0.62 * fade)
     }
 }
 
@@ -438,10 +605,12 @@ fn animate_boost_shimmer(g: &mut scene.Graph, nodes: &[]ecs.Entity, seconds: f32
 pub fn animate_cozy(g: &mut scene.Graph, fx: &CozyEffects, seconds: f32, cue: &CozyCue) {
     if fx.fireflies.len == 0 { return }
     animate_fireflies(&mut g, &fx.fireflies, seconds, cue.won)
+    animate_sun_motes(&mut g, &fx.sun_motes, seconds, cue.won)
+    animate_dandelions(&mut g, &fx.dandelions, seconds)
     animate_landing_halo(&mut g, fx.landing_halo, seconds, cue)
     animate_guide(&mut g, fx.guide_ring, fx.guide_heart, seconds, cue)
     animate_landing_puffs(&mut g, &fx.landing_puffs, cue)
     animate_hearts(&mut g, &fx.hearts, cue)
-    animate_snooze(&mut g, &fx.snooze, seconds, cue)
+    animate_snooze(&mut g, &fx.snooze, &fx.snooze_bubbles, seconds, cue)
     animate_boost_shimmer(&mut g, &fx.boost_shimmer, seconds, cue)
 }

@@ -9,7 +9,17 @@ import scene.animation as anim
 import std.math as math
 
 pub struct Focus { height: f32, weight: f32 }
-pub struct Acting { focus: Focus, blush: f32, sit: f32, snooze: f32, happy: f32 }
+pub struct Acting {
+    focus: Focus, blush: f32, sit: f32, snooze: f32, happy: f32,
+    loaf: f32, spin_yaw: f32, hop_y: f32, paw_tap: f32, wink_right: f32,
+    bouquet_wiggle: f32, bouquet_pop: f32, emote_kind: i32,
+}
+
+// Deterministic emote variant selector cycling across three distinct gestures (0=play-bow, 1=twirl-hop, 2=greeting-wink).
+pub fn emote_variant(emote_tick: i64) -> i32 {
+    if emote_tick <= 0 { return 0 }
+    i32((emote_tick + emote_tick / 70) % 3)
+}
 
 // Read the authored landmarks once, in the same coordinates as the visible meshes.
 pub fn nose_tip(art: &gltf.Asset) -> Result<core.Vec3, string> {
@@ -44,7 +54,10 @@ pub fn bloom_center(art: &gltf.Asset) -> Result<core.Vec3, string> {
     .Err("flower model has no pollen center")
 }
 
-pub struct Gestures { sniff: anim.Clip, stretch: anim.Clip, pleased: anim.Clip, pet: anim.Clip, emote: anim.Clip }
+pub struct Gestures {
+    sniff: anim.Clip, stretch: anim.Clip, pleased: anim.Clip, pet: anim.Clip,
+    emote: anim.Clip, emote_twirl: anim.Clip, emote_greet: anim.Clip,
+}
 
 fn key(t: f32, x: f32, y: f32, z: f32) -> anim.Key { anim.key(t, x, y, z, .Spline) }
 
@@ -56,33 +69,52 @@ pub fn gestures() -> Result<Gestures, string> {
         key(1.86, 0.52, 0.28, 0.98), key(2.03, 0.56, 0.25, 0.88),
         key(2.48, -0.14, 0.04, 0.67), key(2.90, -0.05, -0.015, 0.04),
         key(3.33, 0.0, 0.0, 0.0), key(7.4, 0.0, 0.0, 0.0)], [], [])?
-    // Forequarters fold into the stretch, pause, then ease out through a lifted chin.
-    stretch := anim.clip(8.6, [key(0.0, 0.0, 0.0, 0.0), key(0.60, 0.0, 0.0, 0.0),
-        key(1.19, 0.09, 0.22, 0.30), key(1.77, 0.19, 0.40, 0.92),
-        key(2.12, 0.17, 0.42, 0.96), key(2.56, -0.20, 0.17, 0.76),
-        key(3.03, -0.11, -0.025, 0.07), key(3.64, 0.0, 0.0, 0.0),
-        key(8.6, 0.0, 0.0, 0.0)], [], [])?
+    // Forequarters fold into a lush cozy stretch, pause, then ease out through a dreamy chin-lift yawn.
+    stretch := anim.clip(8.6, [key(0.0, 0.0, 0.0, 0.0), key(0.58, 0.0, 0.0, 0.0),
+        key(1.16, 0.10, 0.24, 0.32), key(1.74, 0.20, 0.44, 0.92),
+        key(2.10, 0.18, 0.46, 0.96), key(2.58, -0.25, 0.15, 0.88),
+        key(2.96, -0.18, 0.02, 0.62), key(3.32, -0.07, -0.02, 0.12),
+        key(3.78, 0.0, 0.0, 0.0), key(8.6, 0.0, 0.0, 0.0)], [], [])?
     // A picked flower lifts the chin first. The ears and brush catch up as the eyes soften.
-    pleased := anim.clip(1.18, [key(0.0, 0.0, 0.0, 0.0), key(0.14, 0.05, 0.02, 0.50),
-        key(0.34, -0.28, -0.095, 0.96), key(0.53, -0.23, -0.075, 0.96),
-        key(0.78, -0.06, -0.02, 0.48), key(1.18, 0.0, 0.0, 0.0)], [], [])?
-    // Loving upward muzzle nuzzle, warm head tilt, and contented smiling eyes.
-    pet := anim.clip(1.65, [key(0.0, 0.0, 0.0, 0.0), key(0.16, -0.18, -0.05, 0.72),
-        key(0.36, -0.30, -0.08, 1.0), key(0.68, -0.20, -0.06, 1.0),
-        key(0.95, -0.31, -0.08, 1.0), key(1.22, -0.18, -0.05, 0.94),
-        key(1.48, -0.05, -0.01, 0.32), key(1.65, 0.0, 0.0, 0.0)],
-        [key(0.0, 0.0, 0.0, 0.0), key(0.16, 0.82, 0.08, 0.16),
-            key(0.45, 1.0, 0.12, 0.24), key(0.95, 1.0, -0.06, 0.20),
-            key(1.30, 0.78, 0.04, 0.12), key(1.65, 0.0, 0.0, 0.0)], [])?
-    // Playful fox play-bow dipping the chest then springing up with bright head tilt and happy eyes.
-    emote := anim.clip(1.25, [key(0.0, 0.0, 0.0, 0.0), key(0.14, -0.16, 0.36, 0.22),
-        key(0.32, -0.26, 0.62, 0.48), key(0.46, -0.22, 0.52, 0.62),
-        key(0.72, -0.32, -0.16, 0.85), key(0.94, -0.18, -0.04, 0.55),
-        key(1.25, 0.0, 0.0, 0.0)],
-        [key(0.0, 0.0, 0.0, 0.0), key(0.16, 0.85, 0.10, -0.18),
-            key(0.38, 1.0, 0.14, -0.22), key(0.72, 1.0, -0.14, 0.26),
-            key(1.02, 0.65, 0.06, 0.10), key(1.25, 0.0, 0.0, 0.0)], [])?
-    .Ok(Gestures { sniff: move sniff, stretch: move stretch, pleased: move pleased, pet: move pet, emote: move emote })
+    pleased := anim.clip(1.22, [key(0.0, 0.0, 0.0, 0.0), key(0.14, 0.05, 0.02, 0.52),
+        key(0.34, -0.30, -0.10, 0.98), key(0.56, -0.24, -0.08, 0.96),
+        key(0.82, -0.06, -0.02, 0.48), key(1.22, 0.0, 0.0, 0.0)], [], [])?
+    // Heart-melting upward muzzle nuzzle, affectionate side-to-side head lean, and smiling eyes.
+    pet := anim.clip(1.75, [key(0.0, 0.0, 0.0, 0.0), key(0.14, -0.22, -0.05, 0.78),
+        key(0.38, -0.35, -0.08, 1.0), key(0.68, -0.24, -0.06, 1.0),
+        key(0.98, -0.36, -0.09, 1.0), key(1.28, -0.20, -0.05, 0.94),
+        key(1.55, -0.06, -0.01, 0.30), key(1.75, 0.0, 0.0, 0.0)],
+        [key(0.0, 0.0, 0.0, 0.0), key(0.15, 0.86, 0.14, 0.20),
+            key(0.45, 1.0, 0.20, 0.28), key(0.82, 1.0, -0.14, -0.18),
+            key(1.18, 0.96, 0.12, 0.22), key(1.45, 0.62, 0.04, 0.10),
+            key(1.75, 0.0, 0.0, 0.0)], [])?
+    // Emote 0: Playful fox play-bow dipping the chest with a pounce wiggle, then springing up smiling.
+    emote := anim.clip(1.30, [key(0.0, 0.0, 0.0, 0.0), key(0.14, -0.17, 0.38, 0.24),
+        key(0.32, -0.27, 0.65, 0.50), key(0.48, -0.23, 0.56, 0.66),
+        key(0.74, -0.34, -0.16, 0.88), key(0.98, -0.19, -0.04, 0.56),
+        key(1.30, 0.0, 0.0, 0.0)],
+        [key(0.0, 0.0, 0.0, 0.0), key(0.16, 0.86, 0.12, -0.20),
+            key(0.38, 1.0, 0.16, -0.24), key(0.74, 1.0, -0.15, 0.28),
+            key(1.04, 0.66, 0.06, 0.10), key(1.30, 0.0, 0.0, 0.0)], [])?
+    // Emote 1: Joyful twirl/spin hop with coiled anticipation, airborne arch, and cushioned settle.
+    emote_twirl := anim.clip(1.30, [key(0.0, 0.0, 0.0, 0.0), key(0.16, 0.10, 0.26, 0.18),
+        key(0.42, -0.30, -0.16, 0.86), key(0.68, -0.32, -0.18, 0.92),
+        key(0.96, 0.06, 0.14, 0.55), key(1.14, -0.10, -0.04, 0.28),
+        key(1.30, 0.0, 0.0, 0.0)],
+        [key(0.0, 0.0, 0.0, 0.0), key(0.16, 0.90, -0.08, -0.12),
+            key(0.55, 1.0, 0.14, 0.20), key(0.94, 0.92, -0.06, -0.10),
+            key(1.30, 0.0, 0.0, 0.0)], [])?
+    // Emote 2: Happy greeting double-bounce with sweet head tilt, perked ears, and playful one-eye wink.
+    emote_greet := anim.clip(1.30, [key(0.0, 0.0, 0.0, 0.0), key(0.16, -0.18, -0.10, 0.06),
+        key(0.38, -0.24, -0.14, 0.10), key(0.66, -0.26, -0.16, 0.12),
+        key(0.96, -0.16, -0.06, 0.08), key(1.30, 0.0, 0.0, 0.0)],
+        [key(0.0, 0.0, 0.0, 0.0), key(0.16, 0.88, -0.12, 0.22),
+            key(0.44, 1.0, -0.16, 0.30), key(0.76, 1.0, -0.14, 0.28),
+            key(1.06, 0.62, -0.06, 0.12), key(1.30, 0.0, 0.0, 0.0)], [])?
+    .Ok(Gestures {
+        sniff: move sniff, stretch: move stretch, pleased: move pleased, pet: move pet,
+        emote: move emote, emote_twirl: move emote_twirl, emote_greet: move emote_greet,
+    })
 }
 
 fn smooth(start: f32, end: f32, n: f32) -> f32 {
@@ -135,9 +167,9 @@ fn scent(s: &play.Session, center: core.Vec3, heading: f32, scale: f32, picked_a
     Scent { weight: smooth(0.0, 1.0, interest), side: side / interest, height: height / interest }
 }
 
-// Find the nearest uncollected super butterfly within curious gaze range (~4.2m).
+// Find the nearest uncollected super butterfly within curious gaze range (~5.2m).
 fn curious_butterfly(s: &play.Session, center: core.Vec3, heading: f32) -> Curiosity {
-    mut best_dist: f32 = 4.2
+    mut best_dist: f32 = 5.2
     mut best_d := core.vec3(0.0, 0.0, 0.0)
     mut found := false
     for sensor in s.sensors {
@@ -159,9 +191,9 @@ fn curious_butterfly(s: &play.Session, center: core.Vec3, heading: f32) -> Curio
     left := best_d.x * cs - best_d.z * sn
     horiz := (best_d.x * best_d.x + best_d.z * best_d.z).sqrt()
     yaw := clamp_f(f32(math.atan2(f64(left), f64(fwd))), -1.05, 1.05)
-    up := clamp_f(f32(math.atan2(f64(best_d.y - 0.15), f64(if horiz > 0.25 { horiz } else { f32(0.25) }))), 0.12, 0.55)
-    w := 1.0 - smooth(2.8, 4.2, best_dist)
-    Curiosity { weight: w, yaw: yaw, lift: up, roll: if left >= 0.0 { f32(0.11) } else { f32(-0.11) } }
+    up := clamp_f(f32(math.atan2(f64(best_d.y - 0.15), f64(if horiz > 0.25 { horiz } else { f32(0.25) }))), 0.12, 0.58)
+    w := 1.0 - smooth(3.4, 5.2, best_dist)
+    Curiosity { weight: w, yaw: yaw, lift: up, roll: if left >= 0.0 { f32(0.12) } else { f32(-0.12) } }
 }
 
 pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.PlayerMotion,
@@ -176,9 +208,13 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
     manual_sit := cozy.sit_weight
     auto_sit := if idle > 0.0 && flower.weight < 0.2 && rest.age >= 0.0 { smooth(9.0, 10.2, rest.age) } else { f32(0.0) }
     sit := max2(manual_sit, auto_sit) * (1.0 - p.air) * (1.0 - smooth(0.15, 0.45, m.run_weight))
+    sit_ease := sit * sit * (3.0 - 2.0 * sit)
     snooze_curve := if cozy.sitting && cozy.sit_age >= 0.0 { smooth(4.5, 6.2, cozy.sit_age) }
     else { smooth(14.0, 15.8, rest.age) }
     snooze := snooze_curve * sit
+    sit_clock := if cozy.sitting && cozy.sit_age >= 0.0 { cozy.sit_age }
+    else if rest.age >= 9.5 { rest.age - 9.5 }
+    else { f32(0.0) }
     mut channels := core.vec3(0.0, 0.0, 0.0)
     mut look: f32 = 0.0
     mut focus := Focus { height: 0.0, weight: 0.0 }
@@ -192,20 +228,24 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
         look = flower.weight * flower.side * idle * smooth(0.0, 0.46, rest.age)
     }
     if sit > 0.0 {
-        calm := (1.0 - 0.85 * sit) * (1.0 - snooze)
+        calm := (1.0 - 0.85 * sit_ease) * (1.0 - snooze)
         channels = core.scale(channels, calm)
-        focus.weight *= (1.0 - 0.65 * sit) * (1.0 - snooze)
+        focus.weight *= (1.0 - 0.65 * sit_ease) * (1.0 - snooze)
         look *= 1.0 - 0.65 * snooze
     }
     mut joy: f32 = 0.0
-    if s.last_flower >= 0 && picked >= 0.0 && picked < 1.18 {
+    mut bouquet_wiggle: f32 = 0.0
+    mut bouquet_pop: f32 = 0.0
+    if s.last_flower >= 0 && picked >= 0.0 && picked < 1.22 {
         reward := anim.sample(&clips.pleased, picked, .Clamp, base).position
         channels = core.add(core.scale(channels, 1.0 - reward.z), reward)
         joy = reward.z
         focus.weight *= 1.0 - joy
+        bouquet_wiggle = (1.0 - smooth(0.15, 1.18, picked)) * (16.5 * picked).sin()
+        bouquet_pop = smooth(0.0, 0.16, picked) * (1.0 - smooth(0.24, 0.72, picked))
     }
     mut butterfly_joy: f32 = 0.0
-    if s.last_butterfly >= 0 && cozy.butterfly_age >= 0.0 && cozy.butterfly_age < 1.18 {
+    if s.last_butterfly >= 0 && cozy.butterfly_age >= 0.0 && cozy.butterfly_age < 1.22 {
         reward := anim.sample(&clips.pleased, cozy.butterfly_age, .Clamp, base).position
         channels = core.add(core.scale(channels, 1.0 - reward.z), reward)
         butterfly_joy = reward.z
@@ -214,27 +254,67 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
     mut pet_w: f32 = 0.0
     mut pet_yaw: f32 = 0.0
     mut pet_roll: f32 = 0.0
-    if cozy.pet_age >= 0.0 && cozy.pet_age < 1.65 {
+    mut paw_tap: f32 = 0.0
+    if cozy.pet_age >= 0.0 && cozy.pet_age < 1.75 {
         sample := anim.sample(&clips.pet, cozy.pet_age, .Clamp, base)
         pet_w = sample.rotation.x
         pet_yaw = sample.rotation.y
         pet_roll = sample.rotation.z
         channels = core.add(core.scale(channels, 1.0 - pet_w), sample.position)
         focus.weight *= 1.0 - pet_w
+        if p.air < 0.05 {
+            paw_tap = pet_w * (1.0 - 0.45 * sit_ease) * (1.0 - 0.85 * snooze)
+        }
     }
     mut emote_w: f32 = 0.0
     mut emote_yaw: f32 = 0.0
     mut emote_roll: f32 = 0.0
-    if cozy.emote_age >= 0.0 && cozy.emote_age < 1.25 {
-        sample := anim.sample(&clips.emote, cozy.emote_age, .Clamp, base)
+    mut emote_kind: i32 = -1
+    mut spin_yaw: f32 = 0.0
+    mut hop_y: f32 = 0.0
+    mut wink_right: f32 = 0.0
+    if cozy.emote_age >= 0.0 && cozy.emote_age < 1.30 {
+        variant := emote_variant(s.emote_tick)
+        emote_kind = variant
+        sample := if variant == 1 { anim.sample(&clips.emote_twirl, cozy.emote_age, .Clamp, base) }
+        else if variant == 2 { anim.sample(&clips.emote_greet, cozy.emote_age, .Clamp, base) }
+        else { anim.sample(&clips.emote, cozy.emote_age, .Clamp, base) }
         emote_w = sample.rotation.x
         emote_yaw = sample.rotation.y
         emote_roll = sample.rotation.z
         mut pos := sample.position
-        pos.y *= 1.0 - 0.72 * sit
+        pos.y *= 1.0 - 0.72 * sit_ease
         if s.won { pos.y = pos.y * 0.25 - 0.16 * emote_w }
         channels = core.add(core.scale(channels, 1.0 - emote_w), pos)
         focus.weight *= 1.0 - emote_w
+        stand_free := (1.0 - sit_ease) * (1.0 - p.air) * (1.0 - smooth(0.15, 0.45, m.run_weight))
+        if variant == 1 {
+            // Joyful 360-degree twirl hop with coiled anticipation and cushioned settle.
+            if cozy.emote_age >= 0.18 && cozy.emote_age <= 0.94 {
+                u := (cozy.emote_age - 0.18) / 0.76
+                spin_ease := u * u * (3.0 - 2.0 * u)
+                arc := (3.14159265 * u).sin()
+                spin_yaw = 6.2831853 * spin_ease * stand_free
+                hop_y = 0.25 * arc * stand_free
+            }
+            if cozy.emote_age < 0.20 {
+                coil := (3.14159265 * cozy.emote_age / 0.20).sin() * stand_free
+                p.body.scale = core.add(p.body.scale, core.vec3(0.065 * coil, -0.095 * coil, 0.055 * coil))
+            } else if cozy.emote_age > 0.92 && cozy.emote_age < 1.24 {
+                land := (3.14159265 * (cozy.emote_age - 0.92) / 0.32).sin() * stand_free
+                p.body.scale = core.add(p.body.scale, core.vec3(0.060 * land, -0.080 * land, 0.050 * land))
+            }
+        } else if variant == 2 {
+            // Cheerful double-hop greeting with sweet head tilt and playful right-eye wink.
+            if cozy.emote_age >= 0.10 && cozy.emote_age <= 0.46 {
+                u := (cozy.emote_age - 0.10) / 0.36
+                hop_y = 0.12 * (3.14159265 * u).sin() * stand_free
+            } else if cozy.emote_age >= 0.52 && cozy.emote_age <= 0.90 {
+                u := (cozy.emote_age - 0.52) / 0.38
+                hop_y = 0.16 * (3.14159265 * u).sin() * stand_free
+            }
+            wink_right = smooth(0.20, 0.32, cozy.emote_age) * (1.0 - smooth(0.84, 1.02, cozy.emote_age))
+        }
     }
     mut curious_w: f32 = 0.0
     mut curious := Curiosity { weight: 0.0, yaw: 0.0, lift: 0.0, roll: 0.0 }
@@ -243,6 +323,9 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
         curious_w = curious.weight * smooth(0.1, 0.35, idle) * (1.0 - smooth(0.10, 0.25, flower.weight)) *
         (1.0 - snooze) * (1.0 - max2(pet_w, emote_w))
     }
+    active_social := max2(pet_w, emote_w)
+    loaf := smooth(1.6, 3.0, sit_clock) * sit_ease * (1.0 - 0.85 * active_social)
+    drowsy := smooth(2.8, 4.4, sit_clock) * (1.0 - snooze) * sit_ease * (1.0 - active_social)
     head := channels.x
     bow := channels.y
     shut := channels.z
@@ -251,6 +334,17 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
     p.chest.rotation.x += 0.68 * bow
     p.chest.position.y -= 0.20 * bow
     p.chest.position.z += 0.13 * bow
+    if emote_kind == 0 && emote_w > 0.0 && cozy.emote_age < 0.62 {
+        // Playful fox pounce wiggle during the play-bow dip.
+        wiggle_env := smooth(0.12, 0.26, cozy.emote_age) * (1.0 - smooth(0.46, 0.62, cozy.emote_age)) * (1.0 - 0.6 * sit_ease)
+        p.body.rotation.y += 0.16 * (22.0 * cozy.emote_age).sin() * wiggle_env
+        p.body.rotation.z += 0.11 * (22.0 * cozy.emote_age).cos() * wiggle_env
+    }
+    if pet_w > 0.0 {
+        purr := (6.0 * cozy.pet_age).sin().abs() * pet_w
+        p.body.scale = core.add(p.body.scale, core.vec3(0.016 * purr, 0.020 * purr, 0.014 * purr))
+        p.chest.rotation.z += 0.08 * pet_roll
+    }
     if s.won && emote_w > 0.0 {
         // Bouncy chest pride when celebrating all collected flowers.
         bounce := (10.5 * cozy.emote_age).sin().abs() * emote_w
@@ -266,60 +360,92 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
     p.head.z += 0.12 * look + 0.10 * max2(joy, butterfly_joy) + pet_roll + emote_roll + curious_w * curious.roll
     p.eye_open *= 1.0 - shut
     if sit > 0.0 {
-        p.body.position.y -= 0.062 * sit
-        p.body.position.z -= 0.055 * sit
-        p.body.rotation.x -= 0.24 * sit
-        p.chest.rotation.x -= 0.07 * sit
-        p.chest.position.y += 0.010 * sit
-        p.head.x += 0.26 * sit
-        p.head.z += 0.055 * sit * (1.0 - snooze)
-        p.eye_open *= 1.0 - 0.26 * sit
+        p.body.position.y -= 0.060 * sit_ease
+        p.body.position.z -= 0.055 * sit_ease + 0.010 * loaf
+        p.body.rotation.x -= 0.24 * sit_ease
+        p.body.rotation.y += 0.11 * loaf
+        p.body.scale = core.add(p.body.scale, core.vec3(0.028 * loaf, 0.0, 0.020 * loaf))
+        p.chest.rotation.x -= 0.07 * sit_ease - 0.04 * loaf
+        p.chest.rotation.y -= 0.07 * loaf
+        p.chest.position.y += 0.010 * sit_ease
+        p.head.x += 0.26 * sit_ease
+        p.head.z += 0.055 * sit_ease * (1.0 - snooze) + 0.045 * loaf * (1.0 - snooze)
+        p.eye_open *= 1.0 - 0.26 * sit_ease
+    }
+    if drowsy > 0.0 {
+        // Gentle sleepy head-bob and heavy fluttering lids just before drifting off.
+        nod_wave := (sit_clock * 2.15).sin()
+        droop := 0.14 + 0.11 * nod_wave + 0.04 * (sit_clock * 4.3).sin()
+        p.head.x += droop * drowsy
+        p.head.z += 0.055 * drowsy * (sit_clock * 1.4).cos()
+        p.eye_open *= 1.0 - 0.54 * drowsy * (0.55 + 0.45 * (0.5 + 0.5 * nod_wave))
     }
     if snooze > 0.0 {
         p.eye_open *= 1.0 - snooze
-        tuck := snooze * (1.0 - 0.85 * max2(pet_w, emote_w))
-        dream := (m.seconds * 1.3).sin() * snooze
-        p.head.x += 0.32 * tuck + 0.022 * dream
-        p.head.y -= 0.14 * tuck
-        p.head.z += 0.10 * tuck
-        p.chest.position.y += 0.012 * dream
-        p.chest.rotation.x += 0.032 * dream
-        p.body.scale = core.add(p.body.scale, core.vec3(0.018 * dream, 0.026 * dream, 0.015 * dream))
+        tuck := snooze * (1.0 - 0.85 * active_social)
+        dream := (m.seconds * 1.15).sin() * snooze
+        p.head.x += 0.32 * tuck + 0.026 * dream
+        p.head.y -= 0.15 * tuck
+        p.head.z += 0.11 * tuck
+        p.chest.position.y += 0.014 * dream
+        p.chest.rotation.x += 0.036 * dream
+        p.body.scale = core.add(p.body.scale, core.vec3(0.020 * dream, 0.028 * dream, 0.016 * dream))
     }
-    sleep_ears := snooze * (1.0 - 0.85 * max2(pet_w, emote_w))
+    sleep_ears := snooze * (1.0 - 0.85 * active_social)
+    dream_twitch := smooth(0.86, 1.0, (m.seconds * 0.95).sin()) * sleep_ears
     for i in 0..2 {
         mirror: f32 = if i == 0 { 1.0 } else { -1.0 }
-        wiggle := if emote_w > 0.0 { 0.22 * (14.0 * cozy.emote_age + f32(i) * 1.4).sin() * emote_w } else { f32(0.0) }
-        wiggle_z := if emote_w > 0.0 { 0.20 * (11.0 * cozy.emote_age).cos() * emote_w } else { f32(0.0) }
-        p.ears[i].x -= 0.36 * bow + 0.23 * max2(joy, butterfly_joy) + 0.40 * pet_w + 0.12 * sit + 0.34 * sleep_ears
-        p.ears[i].x += wiggle + 0.24 * curious_w + (if s.won { 0.14 * emote_w } else { f32(0.0) })
-        p.ears[i].y += 0.22 * look + 0.20 * curious_w * curious.yaw
-        p.ears[i].z += mirror * (0.24 * bow + 0.15 * max2(joy, butterfly_joy) - 0.28 * pet_w - 0.10 * sit - 0.24 * sleep_ears + wiggle_z + 0.08 * curious_w)
+        wiggle := if emote_w > 0.0 {
+            if emote_kind == 2 { (0.28 + 0.10 * (12.0 * cozy.emote_age + f32(i) * 0.9).sin()) * emote_w }
+            else if emote_kind == 1 { -0.18 * emote_w + 0.16 * (16.0 * cozy.emote_age + f32(i) * 1.6).sin() * emote_w }
+            else { 0.24 * (14.0 * cozy.emote_age + f32(i) * 1.4).sin() * emote_w }
+        } else { f32(0.0) }
+        wiggle_z := if emote_w > 0.0 { 0.22 * (11.0 * cozy.emote_age).cos() * emote_w } else { f32(0.0) }
+        sniff_perk := flower.weight * idle * (1.0 - sit_ease) * 0.16
+        twitch := if i == 0 { 0.14 * dream_twitch } else { f32(0.0) }
+        p.ears[i].x -= 0.36 * bow + 0.24 * max2(joy, butterfly_joy) + 0.46 * pet_w + 0.12 * sit_ease + 0.18 * drowsy + 0.36 * sleep_ears
+        p.ears[i].x += wiggle + 0.26 * curious_w + sniff_perk + twitch + (if s.won { 0.14 * emote_w } else { f32(0.0) })
+        p.ears[i].y += 0.22 * look + 0.22 * curious_w * curious.yaw
+        p.ears[i].z += mirror * (0.24 * bow + 0.16 * max2(joy, butterfly_joy) - 0.34 * pet_w - 0.10 * sit_ease
+            -0.14 * drowsy - 0.26 * sleep_ears + wiggle_z + 0.10 * curious_w + 0.10 * twitch)
     }
     wrap_yaw: [f32; 3] = [0.48, 0.56, 0.54]
+    loaf_yaw: [f32; 3] = [0.16, 0.22, 0.24]
     wrap_pitch: [f32; 3] = [0.14, 0.14, 0.10]
     for i in 0..3 {
         f := f32(i)
         if sit > 0.0 {
-            p.tail[i].y *= 1.0 - 0.72 * sit
-            p.tail[i].z *= 1.0 - 0.72 * sit
-            p.tail[i].x += wrap_pitch[i] * sit
-            p.tail[i].y += wrap_yaw[i] * sit
+            p.tail[i].y *= 1.0 - 0.72 * sit_ease
+            p.tail[i].z *= 1.0 - 0.72 * sit_ease
+            p.tail[i].x += (wrap_pitch[i] + 0.04 * loaf) * sit_ease
+            p.tail[i].y += wrap_yaw[i] * sit_ease + loaf_yaw[i] * loaf
         }
-        p.tail[i].x += (0.35 - 0.08 * f) * bow + (0.22 - 0.03 * f) * pet_w + 0.26 * emote_w
-        p.tail[i].y += max2(joy, butterfly_joy) * (9.0 * picked - f * 0.60).sin() * (0.19 + 0.05 * f)
+        p.tail[i].x += (0.38 - 0.08 * f) * bow + (0.24 - 0.03 * f) * pet_w + 0.28 * emote_w
+        p.tail[i].y += max2(joy, butterfly_joy) * (9.5 * picked - f * 0.60).sin() * (0.21 + 0.06 * f)
+        if flower.weight > 0.0 && idle > 0.0 && sit < 0.2 {
+            p.tail[i].y += flower.weight * idle * (5.2 * m.seconds - f * 0.60).sin() * (0.10 + 0.03 * f)
+        }
         if pet_w > 0.0 {
-            p.tail[i].y += pet_w * (13.5 * cozy.pet_age - f * 0.55).sin() * (0.26 + 0.07 * f)
+            p.tail[i].y += pet_w * (15.0 * cozy.pet_age - f * 0.52).sin() * (0.28 + 0.08 * f)
+            p.tail[i].z += pet_w * (7.5 * cozy.pet_age - f * 0.52).cos() * (0.08 + 0.03 * f)
         }
         if emote_w > 0.0 {
-            p.tail[i].y += emote_w * (11.0 * cozy.emote_age - f * 0.50).sin() * (0.22 + 0.06 * f)
+            if emote_kind == 1 {
+                // Fluffy streaming swirl following the joyful spin.
+                p.tail[i].y -= emote_w * (0.34 + 0.11 * f)
+                p.tail[i].z += emote_w * (0.14 + 0.04 * f) * (9.0 * cozy.emote_age - f * 0.50).sin()
+            } else {
+                p.tail[i].y += emote_w * (12.0 * cozy.emote_age - f * 0.50).sin() * (0.25 + 0.07 * f)
+            }
         }
     }
     if sit > 0.0 {
-        p.tail[2].y += sit * (1.0 - 0.65 * snooze) * 0.11 * (2.1 * m.seconds).sin()
+        tip_sway := sit_ease * (1.0 - 0.65 * snooze) * 0.12 * (2.1 * m.seconds).sin()
+        dream_tip := snooze * 0.045 * (1.15 * m.seconds).sin()
+        p.tail[2].y += tip_sway + dream_tip
     }
-    pet_blush := if cozy.pet_age >= 0.0 && cozy.pet_age < 2.2 {
-        (0.88 + 0.12 * smooth(0.0, 0.10, cozy.pet_age)) * (1.0 - smooth(1.30, 2.20, cozy.pet_age))
+    pet_blush := if cozy.pet_age >= 0.0 && cozy.pet_age < 2.25 {
+        (0.90 + 0.10 * smooth(0.0, 0.10, cozy.pet_age)) * (1.0 - smooth(1.35, 2.25, cozy.pet_age))
     } else { f32(0.0) }
     butterfly_blush := if s.last_butterfly >= 0 && cozy.butterfly_age >= 0.0 && cozy.butterfly_age < 2.2 {
         0.95 * (0.85 + 0.15 * smooth(0.0, 0.12, cozy.butterfly_age)) * (1.0 - smooth(1.20, 2.20, cozy.butterfly_age))
@@ -327,13 +453,17 @@ pub fn apply(p: &mut fox.Pose, clips: &Gestures, s: &play.Session, m: &play.Play
     flower_blush := if s.last_flower >= 0 && cozy.flower_age >= 0.0 && cozy.flower_age < 1.85 {
         0.85 * (0.85 + 0.15 * smooth(0.0, 0.12, cozy.flower_age)) * (1.0 - smooth(0.95, 1.85, cozy.flower_age))
     } else { f32(0.0) }
-    emote_blush := if cozy.emote_age >= 0.0 && cozy.emote_age < 1.65 {
-        0.80 * (0.85 + 0.15 * smooth(0.0, 0.10, cozy.emote_age)) * (1.0 - smooth(0.95, 1.65, cozy.emote_age))
+    emote_blush := if cozy.emote_age >= 0.0 && cozy.emote_age < 1.70 {
+        0.82 * (0.85 + 0.15 * smooth(0.0, 0.10, cozy.emote_age)) * (1.0 - smooth(0.98, 1.70, cozy.emote_age))
     } else { f32(0.0) }
     snooze_blush := 0.45 * snooze
     blush := clamp_f(max2(max2(pet_blush, butterfly_blush), max2(flower_blush, max2(emote_blush, snooze_blush))), 0.0, 1.0)
     happy := clamp_f(max2(max2(joy, butterfly_joy), max2(max2(pet_w, emote_w), max2(0.35 * sit, 0.50 * snooze))), 0.0, 1.0)
-    Acting { focus: focus, blush: blush, sit: sit, snooze: snooze, happy: happy }
+    Acting {
+        focus: focus, blush: blush, sit: sit, snooze: snooze, happy: happy,
+        loaf: loaf, spin_yaw: spin_yaw, hop_y: hop_y, paw_tap: paw_tap, wink_right: wink_right,
+        bouquet_wiggle: bouquet_wiggle, bouquet_pop: bouquet_pop, emote_kind: emote_kind,
+    }
 }
 
 // Solve the muzzle height after the shoulders and the planted legs have set the actual neck position.

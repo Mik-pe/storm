@@ -351,7 +351,7 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     assert(samples >= 4 && lifted)
 }
 
-@test fn cozy_stroll_warms_up_mid_speed_without_touching_stand_or_full_trot() {
+@test fn gait_bands_distinguish_stand_stroll_trot_and_brisk_run() {
     clips := fox.clips().unwrap()
     mut m := still()
     m.seconds = 0.72
@@ -364,29 +364,76 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     low := fox.pose(&clips, &m)
     m.run_weight = 0.46
     stroll := fox.pose(&clips, &m)
-    m.run_weight = 0.80
-    high := fox.pose(&clips, &m)
-    m.run_weight = 0.90
-    late := fox.pose(&clips, &m)
-    m.run_weight = 1.0
+    m.run_weight = 0.72
     trot := fox.pose(&clips, &m)
-    // Pose stays strictly linear (zero stroll layer) on [0.0, 0.12] and [0.80, 1.0].
+    m.run_weight = 1.0
+    brisk := fox.pose(&clips, &m)
+    // Standing transitions stay strictly linear (zero stroll/trot/brisk layer) on [0.0, 0.12].
     assert((early.tail[2].y - 0.5 * (stand.tail[2].y + low.tail[2].y)).abs() < 0.0001)
-    assert((late.tail[2].y - 0.5 * (high.tail[2].y + trot.tail[2].y)).abs() < 0.0001)
     assert((early.head.z - 0.5 * (stand.head.z + low.head.z)).abs() < 0.0001)
-    assert((late.head.z - 0.5 * (high.head.z + trot.head.z)).abs() < 0.0001)
-    // At peak stroll (0.46), tail wag/pitch, head tilt, and ear bounce layer cleanly above linear blend.
-    assert((stroll.tail[2].x - 0.5 * (low.tail[2].x + high.tail[2].x)).abs() > 0.08)
-    assert((stroll.tail[2].y - 0.5 * (low.tail[2].y + high.tail[2].y)).abs() > 0.08)
-    assert((stroll.head.z - 0.5 * (low.head.z + high.head.z)).abs() > 0.04)
+    // Peak stroll (0.46) layers buoyant lift, relaxed head tilt, and cheerful sweeping tail wag.
+    assert((stroll.tail[2].x - 0.5 * (low.tail[2].x + trot.tail[2].x)).abs() > 0.08)
+    assert((stroll.tail[2].y - 0.5 * (low.tail[2].y + trot.tail[2].y)).abs() > 0.08)
+    assert((stroll.head.z - 0.5 * (low.head.z + trot.head.z)).abs() > 0.04)
+    // Springy trot (0.72) drives strong counter-flexing spine yaw between Body and Chest.
+    m.walk_phase = 0.12
+    m.run_weight = 0.72
+    trot_reach := fox.pose(&clips, &m)
+    assert(trot_reach.body.rotation.y < -0.09 && trot_reach.chest.rotation.y > 0.18)
+    // Brisk run (1.0) adds eager forward lean, plush ear bounce, and trailing 3-link tail wave.
+    assert(brisk.chest.position.z > trot.chest.position.z + 0.01)
     m.walk_phase = 2.65
     m.run_weight = 0.12
     low_b := fox.pose(&clips, &m)
     m.run_weight = 0.46
     stroll_b := fox.pose(&clips, &m)
-    m.run_weight = 0.80
+    m.run_weight = 0.76
     high_b := fox.pose(&clips, &m)
     assert((stroll_b.ears[0].x - 0.5 * (low_b.ears[0].x + high_b.ears[0].x)).abs() > 0.03)
+    // Verify progressive tail-tip amplitude across the 3-link trailing wave at full brisk run.
+    mut tip_span: f32 = 0.0
+    mut root_span: f32 = 0.0
+    m.run_weight = 1.0
+    m.seconds = 0.0
+    for k in 0..16 {
+        m.walk_phase = f32(k) * 6.2831853 / 16.0
+        p := fox.pose(&clips, &m)
+        if p.tail[0].y.abs() > root_span { root_span = p.tail[0].y.abs() }
+        if p.tail[2].y.abs() > tip_span { tip_span = p.tail[2].y.abs() }
+    }
+    assert(tip_span > root_span + 0.08)
+}
+
+@test fn boost_cloud_soar_arches_joyfully_and_landing_cushions_softly() {
+    clips := fox.clips().unwrap()
+    mut m := still()
+    m.grounded = false
+    m.takeoff_age = 0.08
+    m.vertical_velocity = 6.2
+    normal := fox.pose(&clips, &m)
+    m.boost_age = m.takeoff_age
+    boosted := fox.pose(&clips, &m)
+    assert(boosted.chest.rotation.x < normal.chest.rotation.x - 0.12)
+    normal_gaze := normal.body.rotation.x + normal.chest.rotation.x + normal.head.x
+    boosted_gaze := boosted.body.rotation.x + boosted.chest.rotation.x + boosted.head.x
+    assert(boosted_gaze < normal_gaze - 0.18)
+    assert(boosted.ears[0].x < normal.ears[0].x - 0.15)
+    // Cushioned landing compresses, rebounds, has a soft secondary cushion dip, then settles cleanly.
+    m.grounded = true
+    m.vertical_velocity = 0.0
+    m.takeoff_age = -1.0
+    m.boost_age = -1.0
+    m.landing_strength = 1.0
+    m.landing_age = 0.055
+    squash := fox.pose(&clips, &m)
+    m.landing_age = 0.16
+    rebound := fox.pose(&clips, &m)
+    m.landing_age = 0.265
+    secondary := fox.pose(&clips, &m)
+    m.landing_age = 0.40
+    settled := fox.pose(&clips, &m)
+    assert(squash.body.scale.y < 0.78 && rebound.body.scale.y > 1.06)
+    assert(secondary.body.scale.y < 0.985 && settled.body.scale.y == 1.0)
 }
 
 @test fn cozy_sit_lowers_pelvis_folds_hind_knees_and_clears_meadow_and_cloud_surfaces() {
@@ -474,7 +521,10 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     }
     // Sit on a high cloud platform and verify all 4 boots and tail clear the cloud surface.
     mut cloud_s := play.start(&level)
-    cloud_s.bodies[cloud_s.player].position = core.vec3(-1.85, 0.88 + 0.4, 0.48)
+    pad_idx := world.course.pads[0].index
+    pad_pos := play.position(&cloud_s, pad_idx)
+    pad_top := pad_pos.y + level.entities[pad_idx].size.y * 0.5
+    cloud_s.bodies[cloud_s.player].position = core.vec3(pad_pos.x, pad_top + 0.4, pad_pos.z)
     cloud_s.bodies[cloud_s.player].velocity = core.vec3(0.0, 0.0, 0.0)
     for _ in 0..5 { play.step(&mut cloud_s, play.Input { x: 0.0, z: 0.0, jump: false }) }
     assert(cloud_s.bodies[cloud_s.player].grounded)

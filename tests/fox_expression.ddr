@@ -66,7 +66,8 @@ fn expression_at(s: &play.Session, c: &fox.Clips, g: &expression.Gestures) -> fo
 }
 
 @test fn nose_tracks_the_pollen_height_on_both_sniffs_after_the_legs_are_solved() {
-    level := play.demo()
+    mut level := play.demo()
+    level.entities[2].position = core.add(level.entities[1].position, core.vec3(-2.15, 0.05, 0.55))
     mut s := play.start(&level)
     mut v := play_view.build(&s).unwrap()
     nose := expression.nose_tip(&art_asset.load("fox").unwrap()).unwrap()
@@ -239,19 +240,178 @@ fn find_node(v: &play_view.View, name: string) -> Option<ecs.Entity> {
     mut v := play_view.build(&s).unwrap()
     step(&mut s, 0.0, 20)
     play_view.sync(&mut v, &s, true)
-    assert(v.cast.flowers.len == 5 && v.cast.insects.len == 4)
+    assert(v.cast.flowers.len == s.total_flowers && v.cast.flowers.len >= 5)
+    assert(v.cast.insects.len >= 4 && v.cast.petals.len == 48)
     for fl in v.cast.flowers {
         local := v.graph.local(fl.root)
         assert(local.rotation_x.abs() <= 0.045 && local.rotation_z.abs() <= 0.045)
     }
     player_pos := play.position(&s, v.player_node)
+    mut bee_idx := -1
+    for i in 0..v.cast.insects.len {
+        if v.cast.insects[i].bee { bee_idx = i; break }
+    }
+    assert(bee_idx >= 0)
     home_dist := core.length(core.sub(v.graph.local(v.cast.insects[0].root).position, player_pos))
-    bee_home := core.length(core.sub(v.graph.local(v.cast.insects[2].root).position, player_pos))
+    bee_home := core.length(core.sub(v.graph.local(v.cast.insects[bee_idx].root).position, player_pos))
     play.pet(&mut s)
     step(&mut s, 0.0, 20)
     play_view.sync(&mut v, &s, true)
     pet_dist := core.length(core.sub(v.graph.local(v.cast.insects[0].root).position, player_pos))
-    bee_pet := core.length(core.sub(v.graph.local(v.cast.insects[2].root).position, player_pos))
+    bee_pet := core.length(core.sub(v.graph.local(v.cast.insects[bee_idx].root).position, player_pos))
     assert(pet_dist < home_dist - 0.25 && pet_dist < 1.25)
     assert(bee_pet < bee_home - 0.25 && bee_pet < 1.05)
+
+    // Expanded 27x23m Blomsterskogen populates companion butterflies and bees across all outer zones.
+    mut big := play.demo()
+    big.bounds = .Some(play.Bounds { min_x: -13.5, min_z: -11.5, max_x: 13.5, max_z: 11.5 })
+    big_s := play.start(&big)
+    mut big_v := play_view.build(&big_s).unwrap()
+    play_view.sync(&mut big_v, &big_s, true)
+    assert(big_v.cast.insects.len >= 18)
+    mut outer_count := 0
+    for flyer in big_v.cast.insects {
+        p := big_v.graph.local(flyer.root).position
+        if p.x.abs() > 6.0 || p.z.abs() > 6.0 { outer_count += 1 }
+    }
+    assert(outer_count >= 10)
+}
+
+@test fn three_distinct_emotes_cycle_play_bow_twirl_hop_and_greeting_wink() {
+    assert(expression.emote_variant(0) == 0)
+    assert(expression.emote_variant(90) == 1)
+    assert(expression.emote_variant(180) == 2)
+    assert(expression.emote_variant(270) == 0)
+
+    level := play.demo()
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+
+    // Variant 0 (tick 0): Playful play-bow + haunch pounce wiggle.
+    mut s0 := play.start(&level)
+    play.emote(&mut s0)
+    step(&mut s0, 0.0, 20)
+    bow := acting_at(&s0, &c, &g)
+    assert(bow.acting.emote_kind == 0 && bow.pose.chest.rotation.x > 0.25)
+    assert(bow.acting.spin_yaw == 0.0 && bow.acting.wink_right == 0.0)
+
+    // Variant 1 (tick 90): Joyful 360-degree twirl spin-hop off the meadow.
+    mut s1 := play.start(&level)
+    step(&mut s1, 0.0, 90)
+    play.emote(&mut s1)
+    step(&mut s1, 0.0, 34)
+    twirl := acting_at(&s1, &c, &g)
+    assert(twirl.acting.emote_kind == 1)
+    assert(twirl.acting.hop_y > 0.18 && twirl.acting.spin_yaw > 2.5 && twirl.acting.spin_yaw < 4.2)
+
+    // Variant 2 (tick 180): Happy greeting bounce with sweet head tilt, perked ears, and right-eye wink only.
+    mut s2 := play.start(&level)
+    mut v2 := play_view.build(&s2).unwrap()
+    step(&mut s2, 0.0, 180)
+    play.emote(&mut s2)
+    step(&mut s2, 0.0, 38)
+    greet := acting_at(&s2, &c, &g)
+    assert(greet.acting.emote_kind == 2)
+    assert(greet.acting.hop_y > 0.05 && greet.acting.wink_right > 0.9 && greet.pose.eye_open > 0.8)
+    assert(greet.pose.head.z > 0.20)
+    play_view.sync(&mut v2, &s2, true)
+    lid_l := find_node(&v2, "LidL_Smile").unwrap()
+    lid_r := find_node(&v2, "LidR_Smile").unwrap()
+    eye_l := find_node(&v2, "EyeL_Dew").unwrap()
+    eye_r := find_node(&v2, "EyeR_Iris").unwrap()
+    assert(!v2.graph.world(lid_l).visible && v2.graph.world(eye_l).visible)
+    assert(v2.graph.world(lid_r).visible && !v2.graph.world(eye_r).visible)
+}
+
+@test fn petting_nuzzles_blushes_and_does_alternating_front_paw_tippy_taps() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut v := play_view.build(&s).unwrap()
+    rigged := art_asset.load_rigged("fox").unwrap()
+    sole_fl := rigged.rig.get("FootFL").unwrap().sole.unwrap()
+    sole_fr := rigged.rig.get("FootFR").unwrap().sole.unwrap()
+    boot_fl := find_node(&v, "FootFL_Boots").unwrap()
+    boot_fr := find_node(&v, "FootFR_Boots").unwrap()
+    step(&mut s, 0.0, 5)
+    play_view.sync(&mut v, &s, true)
+    base_fl_y := core.transform_point(&v.graph.world(boot_fl).matrix, sole_fl).y
+    base_fr_y := core.transform_point(&v.graph.world(boot_fr).matrix, sole_fr).y
+
+    play.pet(&mut s)
+    mut max_fl_lift: f32 = 0.0
+    mut max_fr_lift: f32 = 0.0
+    mut saw_alternate := false
+    for _ in 0..45 {
+        step(&mut s, 0.0, 1)
+        play_view.sync(&mut v, &s, true)
+        fl_y := core.transform_point(&v.graph.world(boot_fl).matrix, sole_fl).y
+        fr_y := core.transform_point(&v.graph.world(boot_fr).matrix, sole_fr).y
+        assert(fl_y >= base_fl_y - 0.01 && fr_y >= base_fr_y - 0.01)
+        if fl_y - base_fl_y > max_fl_lift { max_fl_lift = fl_y - base_fl_y }
+        if fr_y - base_fr_y > max_fr_lift { max_fr_lift = fr_y - base_fr_y }
+        if (fl_y - fr_y).abs() > 0.04 { saw_alternate = true }
+    }
+    assert(max_fl_lift > 0.05 && max_fr_lift > 0.05 && saw_alternate)
+}
+
+@test fn sit_progresses_through_loaf_sleepy_bob_and_deep_snooze() {
+    level := play.demo()
+    mut s := play.start(&level)
+    c := fox.clips().unwrap()
+    g := expression.gestures().unwrap()
+    step(&mut s, 0.0, 5)
+    play.toggle_sit(&mut s)
+    // Early sit (0.6s): seated cleanly, not yet loafed or snoozing.
+    step(&mut s, 0.0, 36)
+    early_sit := acting_at(&s, &c, &g)
+    assert(early_sit.acting.sit > 0.95 && early_sit.acting.loaf == 0.0 && early_sit.acting.snooze == 0.0)
+    // Mid sit (3.2s): curled into a cozy fox loaf with drowsy sleepy head nod.
+    step(&mut s, 0.0, 156)
+    loaf_drowsy := acting_at(&s, &c, &g)
+    assert(loaf_drowsy.acting.loaf > 0.9 && loaf_drowsy.acting.snooze == 0.0)
+    assert(loaf_drowsy.pose.head.x > early_sit.pose.head.x + 0.05)
+    assert(loaf_drowsy.pose.eye_open < early_sit.pose.eye_open)
+    // Deep snooze (6.5s): eyes peacefully closed, dreamy slow breathing.
+    step(&mut s, 0.0, 198)
+    deep := acting_at(&s, &c, &g)
+    assert(deep.acting.snooze == 1.0 && deep.pose.eye_open == 0.0)
+}
+
+@test fn growing_bouquet_supports_ten_flowers_and_wiggles_on_pickup() {
+    mut level := play.demo()
+    mut extra := 0
+    while level.entities.len < 60 && extra < 5 {
+        fl := level.entities[2].clone()
+        mut copy := fl
+        copy.name = "ExtraBlomma " + extra.str()
+        copy.position = core.vec3(3.0 + f32(extra) * 1.1, 0.45, -2.5)
+        level.entities.push(move copy)
+        extra += 1
+    }
+    mut s := play.start(&level)
+    assert(s.total_flowers >= 10)
+    mut v := play_view.build(&s).unwrap()
+    assert(v.cast.foxes[0].stems.len == s.total_flowers)
+    // Every single stem up to the 10th exists and toggles independently.
+    stem0 := find_node(&v, "BouquetStem_0").unwrap()
+    stem9 := find_node(&v, "BouquetStem_9").unwrap()
+    bouquet := find_node(&v, "Bouquet").unwrap()
+    play_view.sync(&mut v, &s, true)
+    assert(!v.graph.world(bouquet).visible && !v.graph.world(stem9).visible)
+
+    // Collect all flowers and trigger a fresh pickup wiggle.
+    mut last_idx := -1
+    for i in 0..s.scene.entities.len {
+        if s.scene.entities[i].role == .Flower {
+            s.collected[i] = true
+            last_idx = i
+        }
+    }
+    s.flowers = s.total_flowers
+    s.last_flower = last_idx
+    s.picked_tick = s.tick
+    step(&mut s, 0.0, 8)
+    play_view.sync(&mut v, &s, true)
+    assert(v.graph.world(bouquet).visible && v.graph.world(stem0).visible && v.graph.world(stem9).visible)
+    assert(v.graph.local(bouquet).scale.x > 1.05)
 }

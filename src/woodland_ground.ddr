@@ -7,7 +7,12 @@ import play
 pub struct Ground { meadow: walk_surface.Surface }
 pub fn empty() -> Ground { Ground { meadow: walk_surface.empty() } }
 pub fn build(glade: &gltf.Asset) -> Ground {
-    Ground { meadow: walk_surface.build(glade, &["Meadow | seafoam", "Meadow | dapple", "Path | apricot"]) }
+    Ground {
+        meadow: walk_surface.build(glade, &[
+            "Meadow | seafoam", "Meadow | dapple", "Path | apricot",
+            "Quilt | buttercream", "Quilt | blush", "Quilt | lavender",
+            ])
+    }
 }
 
 enum Kind { Plain, Meadow, Cloud, Boost }
@@ -20,16 +25,20 @@ pub fn probe(ground: &Ground, course: &canopy.Course, s: &play.Session, support:
         .Some(p) => {
             high := if p.boost { course.boost_top.ceiling } else { course.cloud_top.ceiling }
             offset := p.center.y - support.y
-            return Probe { kind: if p.boost { Kind.Boost } else { Kind.Cloud }, x: p.center.x, z: p.center.z,
+            return Probe {
+                kind: if p.boost { Kind.Boost } else { Kind.Cloud }, x: p.center.x, z: p.center.z,
                 inv_x: 1.0 / p.scale.x, inv_z: 1.0 / p.scale.z, offset: offset, scale: p.scale.y, fallback: 0.5,
-                ceiling: offset + (if high > 0.5 { high } else { f32(0.5) }) * p.scale.y }
+                ceiling: offset + (if high > 0.5 { high } else { f32(0.5) }) * p.scale.y
+            }
         },
         .None => {},
     }
     meadow := support.y.abs() <= 0.05
     ceiling := ground.meadow.ceiling - support.y
-    Probe { kind: if meadow { Kind.Meadow } else { Kind.Plain }, x: 0.0, z: 0.0, inv_x: 1.0, inv_z: 1.0,
-        offset: -support.y, scale: 1.0, fallback: support.y, ceiling: if meadow && ceiling > 0.0 { ceiling } else { f32(0.0) } }
+    Probe {
+        kind: if meadow { Kind.Meadow } else { Kind.Plain }, x: 0.0, z: 0.0, inv_x: 1.0, inv_z: 1.0,
+        offset: -support.y, scale: 1.0, fallback: support.y, ceiling: if meadow && ceiling > 0.0 { ceiling } else { f32(0.0) }
+    }
 }
 
 pub fn sample(ground: &Ground, course: &canopy.Course, p: &Probe, x: f32, z: f32) -> f32 {
