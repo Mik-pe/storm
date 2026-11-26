@@ -45,6 +45,10 @@ unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
 const SHADOW_SIZE: u32 = 1024
 const CLEAR_FAR: f32 = 1000.0
+// The frame's uniform block (set 0, binding 1): light_vp(64) light_dir_c(16)
+// sun(16) sun_color(16) zenith(16) horizon(16). The mesh shaders read the
+// sun and the sky from here, once per frame, not once per draw.
+pub const LIGHT_BYTES: u64 = 144
 
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // --- image ---
@@ -91,9 +95,9 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    // --- light uniform buffer: mat4 light_vp + vec4 light_dir_c = 80 bytes ---
+    // --- light uniform buffer: LIGHT_BYTES, the frame's values ---
     mut buffer_info: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
-    buffer_info.size = 80
+    buffer_info.size = LIGHT_BYTES
     buffer_info.usage = enums.buffer_usage(.UniformBuffer)
     buffer_info.sharingMode = enums.sharing_mode(.Exclusive)
     mut light_buffer := ptr(0)
@@ -107,7 +111,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.BindBufferMemory(r.device, light_buffer, light_memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     mut light_mapped := ptr(0)
-    code = r.api.MapMemory(r.device, light_memory, 0, 80, 0, addr(&mut light_mapped))
+    code = r.api.MapMemory(r.device, light_memory, 0, LIGHT_BYTES, 0, addr(&mut light_mapped))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- descriptor set: binding 0 shadow sampler, 1 light UBO, 2 prefiltered
@@ -159,7 +163,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut buffer_info2: vk.DescriptorBufferInfo = zeroed()
     buffer_info2.buffer = light_buffer
     buffer_info2.offset = 0
-    buffer_info2.range = 80
+    buffer_info2.range = LIGHT_BYTES
     // Two vkWriteDescriptorSet records (14 words each) laid out contiguously.
     mut write_image: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write_image.dstSet = set
@@ -292,19 +296,30 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     .Ready
 }
 
-// Writes the light matrix into the mapped uniform buffer.
-unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
+// Writes the frame's values into the mapped uniform buffer: the light
+// matrix, then the sun and the sky the mesh shaders shade with. Called from
+// the mesh pass, the one place that has the sky on every frame (the shadow
+// pass is optional); until the contract has a per-frame hook this is once
+// per draw, the price the push block paid before.
+pub unsafe fn set_light(r: &state.Renderer, sky: &gfx.Sky) -> bool {
     if r.shadow.lightMapped == ptr(0) { return false }
-    _ := copy_bytes(r.shadow.lightMapped, addr(&light_vp[0]), 64)
-    _ := copy_bytes(ptr(usize(r.shadow.lightMapped) + 64), addr(&light_dir_c[0]), 16)
+    base := r.shadow.lightMapped
+    _ := copy_bytes(base, addr(&sky.light_vp[0]), 64)
+    _ := copy_bytes(ptr(usize(base) + 64), addr(&sky.light_dir_c[0]), 16)
+    _ := copy_bytes(ptr(usize(base) + 80), addr(&sky.sun[0]), 16)
+    _ := copy_bytes(ptr(usize(base) + 96), addr(&sky.sun_color[0]), 12)
+    fill := sky.diffuse_fill
+    _ := copy_bytes(ptr(usize(base) + 108), addr(&fill), 4)
+    _ := copy_bytes(ptr(usize(base) + 112), addr(&sky.zenith[0]), 16)
+    _ := copy_bytes(ptr(usize(base) + 128), addr(&sky.horizon[0]), 16)
     true
 }
 
 // --- recording ---
 
-pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
+pub unsafe fn begin(r: &mut state.Renderer, sky: &gfx.Sky) -> bool {
     if r.pass != state.PASS_WAITING || r.shadow.shadowPass == ptr(0) { return false }
-    if !set_light(&r, light_vp, light_dir_c) { return false }
+    if !set_light(&r, sky) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
     // ClearValue is a union; the shadow pass has only a colour attachment, so
@@ -326,8 +341,8 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadow.shadowPipeline)
     // light_vp(64) + model(64, filled per draw) + light_dir_c(16) = 144 bytes.
     mut push: [f32; 36] = [0.0; 36]
-    for i in 0..16 { push[i] = light_vp[i] }
-    for i in 0..4 { push[32 + i] = light_dir_c[i] }
+    for i in 0..16 { push[i] = sky.light_vp[i] }
+    for i in 0..4 { push[32 + i] = sky.light_dir_c[i] }
     r.api.CmdPushConstants(r.commands[r.current], r.shadow.shadowPipelineLayout, enums.shader_stage(.Vertex), 0, 144, addr(&push[0]))
     true
 }
@@ -369,8 +384,10 @@ pub unsafe fn bind(r: &state.Renderer) -> bool {
 pub unsafe fn ensure_readable(r: &mut state.Renderer) -> bool {
     if r.shadow.shadowInitialized != 0 { return true }
     id := core.identity()
-    light: [f32; 4] = [0.0, 1.0, 0.0, 1.0]
-    begin(&mut r, &id.m, &light) && end(&mut r)
+    // A neutral sky: the pass opens and closes with nothing drawn, so the
+    // sun and the colours are never read; only the matrix has to be finite.
+    neutral := gfx.sky_params([0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4], id.m, [0.0, 1.0, 0.0, 1.0])
+    begin(&mut r, &neutral) && end(&mut r)
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {

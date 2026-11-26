@@ -84,10 +84,16 @@ pub fn build(g: &mut scene.Graph) -> Effects {
     fx.trail.push(star)
     fx.burst.push(heart)
     for _ in 1..6 { fx.puffs.push(copy_node(&mut g, puff, &mist)) }
-    for i in 1..8 { fx.trail.push(copy_node(&mut g, star, &if i % 2 == 1 { pink } else { gold })) }
+    // An `if` cannot be a borrowing expression (E4003), so the choice is a
+    // statement and the borrow is a local, cloned once by make_node.
+    for i in 1..8 {
+        if i % 2 == 1 { fx.trail.push(copy_node(&mut g, star, &pink)) }
+        else { fx.trail.push(copy_node(&mut g, star, &gold)) }
+    }
     for i in 1..12 {
         if i % 3 == 0 { fx.burst.push(copy_node(&mut g, heart, &pink)) }
-        else { fx.burst.push(copy_node(&mut g, star, &if i % 3 == 1 { pearl } else { lilac })) }
+        else if i % 3 == 1 { fx.burst.push(copy_node(&mut g, star, &pearl)) }
+        else { fx.burst.push(copy_node(&mut g, star, &lilac)) }
     }
     for _ in 0..3 { fx.aura.push(copy_node(&mut g, star, &pearl)) }
     fx

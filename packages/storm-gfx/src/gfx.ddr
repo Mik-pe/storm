@@ -246,9 +246,12 @@ pub trait Backend {
     // multiplies the base colour where the surface has uv, and the linear
     // maps scale `params` as glTF says: metallic = params.x * mr.b,
     // roughness = params.y * mr.g. NO_TEXTURE in a slot is that map's
-    // identity.
+    // identity. `emissive` is glTF's emissive term: rgb scales the emissive
+    // map's texel and w is its strength, so a surface with no emissive map
+    // (white) and the zero factor adds nothing; `params.z` is the surface's
+    // own glow in its base colour, and the two are added.
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, textures: &Textures, surface: Surface) -> Result<(), string>
+        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, textures: &Textures, emissive: &[f32; 4], surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
     fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>

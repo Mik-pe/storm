@@ -23,6 +23,8 @@ struct MeshCall {
     camera: [f32; 3],
     // The five map handles in binding order.
     textures: [i64; 5],
+    // glTF's emissiveFactor (rgb) and emissive strength (w).
+    emissive: [f32; 4],
     blended: bool,
 }
 
@@ -82,13 +84,13 @@ impl gfx.Backend for Recorder {
         .Ok
     }
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], surface: gfx.Surface) -> Result<(), string> {
         _ := sky.sun[0]
         self.meshes.push(MeshCall {
             stream: vertices.len, mvp: mvp.clone(), model: model.clone(), color: base_color.clone(),
             params: params.clone(), camera: camera.clone(),
             textures: [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id],
-            blended: surface == gfx.Surface.Blended
+            emissive: emissive.clone(), blended: surface == gfx.Surface.Blended
         })
         self.gate()
     }
@@ -172,6 +174,31 @@ const PLANE_STREAM: i32 = 48
     // What every draw is told about the light and the eye.
     assert(recorder.meshes[0].camera[0] == 0.0 && recorder.meshes[0].camera[1] == 5.0 && recorder.meshes[0].camera[2] == 10.0)
     assert(recorder.meshes[0].params[3] == 1.0)
+}
+
+// A surface with an emissive map hands the backend its map handle and
+// glTF's factor, through the same draw every other surface takes: the
+// scene carries them on the material, record_list passes them on.
+@test fn an_emissive_surface_hands_the_backend_its_map_and_factor() {
+    mut world := scenegraph.Graph::new()
+    lamp := shape(&mut world, .Mesh, core.vec3(0.0, 1.0, 0.0), 1.0)
+    _ := world.set_mesh(lamp, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    maps := gfx.Textures { base: gfx.Texture { id: 3 }, metallic_roughness: gfx.no_texture(), normal: gfx.no_texture(), occlusion: gfx.no_texture(), emissive: gfx.Texture { id: 7 } }
+    assert(world.set_material(lamp, scenegraph.emissive_mapped(scenegraph.mapped(scenegraph.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5), maps), [1.0, 0.9, 0.5, 3.5])))
+    world.propagate()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut recorder := Recorder::new()
+    sphere := sphere_stream()
+    cube := cube_stream()
+    plane := plane_stream()
+    drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        core.identity(), core.vec3(0.0, 5.0, 10.0), &sky(), true, render.PassKind.Opaque)
+    assert(drawn.is_ok())
+    assert(recorder.meshes.len == 1)
+    lit := &recorder.meshes[0]
+    assert(lit.textures[4] == 7 && lit.textures[0] == 3)
+    assert(lit.emissive[0] == 1.0 && lit.emissive[1] == 0.9 && lit.emissive[2] == 0.5 && lit.emissive[3] == 3.5)
 }
 
 @test fn glass_is_blended_without_shadows_and_the_shadow_pass_draws_only_solids() {
@@ -320,7 +347,8 @@ fn part(move name: string, image: i32, move sampler: gfx.Sampler) -> gltf.Part {
     gltf.Part {
         name: name, material_name: "", color: [1.0, 1.0, 1.0, 1.0], metallic: 0.0, roughness: 0.5,
         vertices: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], texture: image, sampler: sampler,
-        metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler()
+        metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
+        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0, 0.0, 0.0, 1.0]
     }
 }
 

@@ -261,6 +261,68 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(asset.images[0].data.len == 73 && asset.images[1].data.len == 72)
 }
 
+// Khronos's Box.glb has no emissive term either: the spec's default, a factor
+// of zero (off) with the strength at one, so nothing a file without the term
+// draws changes.
+@test fn an_untextured_model_has_no_emissive_term() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    part := &asset.parts[0]
+    assert(part.emissive == -1)
+    assert(part.emissive_factor[0] == 0.0 && part.emissive_factor[1] == 0.0 && part.emissive_factor[2] == 0.0)
+    assert(part.emissive_factor[3] == 1.0)
+}
+
+// emissive_triangle.glb (make_emissive_fixture.py beside it) has one material
+// with an emissiveTexture (texture 0 -> image 0, a 2x2 (249, 255, 175) PNG),
+// emissiveFactor [0.5, 0.25, 1.0] and KHR_materials_emissive_strength 3.5,
+// listed in extensionsUsed and not in extensionsRequired. Every number was
+// read back from the file with Python, not from the script.
+@test fn reads_the_emissive_map_factor_and_strength() {
+    doc := gltf.load("tests/fixtures/emissive_triangle.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.parts.len == 1 && asset.images.len == 1)
+    part := &asset.parts[0]
+    assert(part.emissive == 0 && part.texture == -1 && part.metallic_roughness == -1)
+    // The emissive map names no sampler: the spec's default.
+    assert(part.emissive_sampler.mag == gfx.Filter.Linear && part.emissive_sampler.wrap == gfx.Wrap.Repeat)
+    // The factor scales the map's own colour; the strength scales the factor.
+    assert(part.emissive_factor[0] == 0.5 && part.emissive_factor[1] == 0.25 && part.emissive_factor[2] == 1.0)
+    assert(part.emissive_factor[3] == 3.5)
+    // The image bytes are the PNG the script wrote.
+    assert(asset.images[0].data.len == 73)
+    assert(asset.images[0].data[1] == 80 && asset.images[0].data[2] == 78 && asset.images[0].data[3] == 71)
+}
+
+// glTF 2.0 §3.9.2: emissiveFactor has three components. A fourth is refused
+// by name, never read as a guess (the refused file was read back with
+// Python: [0.5, 0.25, 1.0, 1.0]).
+@test fn an_emissive_factor_with_four_components_is_refused() {
+    doc := gltf.load("tests/fixtures/refused_emissive.glb")
+    assert(doc.ok)
+    refusal := match gltf.asset(&doc) { .Ok(_) => "loaded", .Err(s) => s.clone() }
+    assert(text.contains(refusal, "emissiveFactor must have three components"))
+}
+
+// factor_without_map.glb has an emissiveFactor and a strength but no
+// emissiveTexture: the factor is kept (it is what the file says) and the map
+// is absent, so a surface with a factor of zero is off whether or not the
+// exporter wrote a map.
+@test fn a_factor_without_a_map_is_kept_and_the_map_is_absent() {
+    doc := gltf.load("tests/fixtures/factor_without_map.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    part := &asset.parts[0]
+    assert(part.emissive == -1)
+    assert(part.emissive_factor[0] == 0.5 && part.emissive_factor[1] == 0.25 && part.emissive_factor[2] == 1.0)
+    assert(part.emissive_factor[3] == 3.5)
+}
+
 // Khronos's Box.glb has no textures: the surface is a colour only.
 @test fn an_untextured_model_has_no_texture() {
     doc := gltf.load("tests/fixtures/Box.glb")

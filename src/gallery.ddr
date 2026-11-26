@@ -65,11 +65,11 @@ fn disc(radius: f32, height: f32) -> []f32 {
 }
 
 fn piece(graph: &mut scene.Graph, parent: ecs.Entity, name: string, at: core.Vec3,
-    move vertices: []f32, material: scene.Material) -> ecs.Entity {
+    move vertices: []f32, move material: scene.Material) -> ecs.Entity {
     node := graph.create_child(parent, at)
     _ := graph.set_name(node, name.clone())
     _ := graph.set_mesh(node, move vertices)
-    _ := graph.set_material(node, material)
+    _ := graph.set_material(node, move material)
     node
 }
 

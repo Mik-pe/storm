@@ -38,8 +38,8 @@ const SHADOW_SIZE: u64 = 1024
 // The constants of each draw, in f32. One number each, and every array and
 // byte count below is derived from it.
 const SKY_FLOATS: i32 = 28   // inv_view_proj(16) sun(4) zenith(4) horizon(4)
-const MESH_FLOATS: i32 = 60  // mvp(16) model(16) base_color(4) params(4) camera(4) sun(4) sun_color(4) zenith(4) horizon(4)
-const LIGHT_FLOATS: i32 = 16 // the sun's view-projection
+const MESH_FLOATS: i32 = 48  // mvp(16) model(16) base_color(4) params(4) camera(4) emissive_factor(4)
+const LIGHT_FLOATS: i32 = 36 // light_vp(16) light_dir_c(4) sun(4) sun_color(4) zenith(4) horizon(4)
 const SHADOW_FLOATS: i32 = 32 // light_vp(16) model(16)
 
 const NOT_A_MESH: string = "invalid position-normal-UV stream or exhausted frame vertex buffer"
@@ -90,7 +90,7 @@ pub struct Renderer {
     submitted: ptr,
     encoder: ptr,
     pass: Pass,
-    light_vp: [f32; LIGHT_FLOATS],
+    light_vp: [f32; 16], // the sun's view-projection, the shadow pass's push block
     // The drawable's size in pixels.
     width: u64,
     height: u64,
@@ -127,7 +127,7 @@ unsafe fn empty() -> Renderer {
         vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
         pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), submitted: ptr(0), encoder: ptr(0),
         pass: .None,
-        light_vp: [0.0; LIGHT_FLOATS],
+        light_vp: [0.0; 16],
         width: 0, height: 0, vertex_cursor: 0, frames: 0, capturing: 0, trace: 0,
         captured: [],
     }
@@ -406,7 +406,7 @@ unsafe fn record_sky(r: &mut Renderer, inv_view_projection: &[f32; 16], sun: &[f
 }
 
 unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, blended: bool) -> Result<(), string> {
+    params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], blended: bool) -> Result<(), string> {
     require_main(&r)?
     if blended {
         use_pipeline(r, &r.glass_pipeline, r.depth_test)
@@ -414,22 +414,25 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
         use_pipeline(r, &r.mesh_pipeline, r.depth_write)
     }
     if !append_vertices(&mut r, &vertices) { return .Err(NOT_A_MESH) }
+    // The draw's own values in the push block; the frame's (the light
+    // matrix, the sun, the sky) in buffer 2, the same on every draw.
     mut push: [f32; MESH_FLOATS] = [0.0; MESH_FLOATS]
     for i in 0..16 { push[i] = mvp[i] }
     for i in 0..16 { push[16 + i] = model[i] }
     for i in 0..4 { push[32 + i] = base_color[i] }
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
-    for i in 0..4 { push[44 + i] = sky.sun[i] }
-    for i in 0..3 { push[48 + i] = sky.sun_color[i] }
-    push[51] = sky.diffuse_fill
-    for i in 0..4 { push[52 + i] = sky.zenith[i] }
-    for i in 0..4 { push[56 + i] = sky.horizon[i] }
-    // Both stages read the one block; the fragment stage also reads the
-    // sun's view-projection, for the shadow lookup.
+    for i in 0..4 { push[44 + i] = emissive[i] }
     pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), u64(MESH_FLOATS * 4), 1)
     pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), u64(MESH_FLOATS * 4), 1)
-    light := sky.light_vp.clone()
+    mut light: [f32; LIGHT_FLOATS] = [0.0; LIGHT_FLOATS]
+    for i in 0..16 { light[i] = sky.light_vp[i] }
+    for i in 0..4 { light[16 + i] = sky.light_dir_c[i] }
+    for i in 0..4 { light[20 + i] = sky.sun[i] }
+    for i in 0..3 { light[24 + i] = sky.sun_color[i] }
+    light[27] = sky.diffuse_fill
+    for i in 0..4 { light[28 + i] = sky.zenith[i] }
+    for i in 0..4 { light[32 + i] = sky.horizon[i] }
     pass.fragment_bytes(&r.objc, r.encoder, addr(&light[0]), u64(LIGHT_FLOATS * 4), 2)
     pass.fragment_texture(&r.objc, r.encoder, r.shadow_map, 0)
     pass.fragment_texture(&r.objc, r.encoder, r.environment.cube, 1)
@@ -643,8 +646,8 @@ impl gfx.Backend for Renderer {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, surface: gfx.Surface) -> Result<(), string> {
-        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, textures, surface == gfx.Surface.Blended) }
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], surface: gfx.Surface) -> Result<(), string> {
+        unsafe { record_mesh(&mut self, &vertices, &mvp, &model, &base_color, &params, &camera, sky, textures, emissive, surface == gfx.Surface.Blended) }
     }
 
     fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {

@@ -58,11 +58,14 @@ pub struct Material {
     metallic: f32,
     roughness: f32,
     emissive: f32,
+    // glTF's emissive term: rgb scales the emissive map's texel, w is its
+    // strength (1.0). Zero adds nothing, which is every hand-made surface.
+    emissive_factor: [f32; 4],
     textures: gfx.Textures,
 }
 
 pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, textures: gfx.no_textures() }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, emissive_factor: [0.0, 0.0, 0.0, 1.0], textures: gfx.no_textures() }
 }
 
 // The same surface with a base colour image. The image replaces nothing
@@ -86,7 +89,17 @@ pub fn mapped(move surface: Material, move textures: gfx.Textures) -> Material {
 // The same surface with an emissive term: what the shader adds on its own,
 // for orbs, lamps and anything that should glow rather than reflect.
 pub fn emissive_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, textures: gfx.no_textures() }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, emissive_factor: [0.0, 0.0, 0.0, 1.0], textures: gfx.no_textures() }
+}
+
+// A surface with glTF's emissive factor: rgb scales the emissive map's texel
+// and w is KHR_materials_emissive_strength (1.0 when the file has neither).
+// The map is `mapped`'s to give; a surface without one is off whatever the
+// factor says, since the white fallback times zero adds nothing.
+pub fn emissive_mapped(move surface: Material, move factor: [f32; 4]) -> Material {
+    mut m := move surface
+    m.emissive_factor = factor
+    m
 }
 
 pub struct Drawable {
@@ -299,15 +312,9 @@ impl Graph {
 
     pub fn set_material(&mut self, entity: ecs.Entity, move value: Material) -> bool {
         if !self.allocator.is_alive(entity) { return false }
-        if self.materials.contains(entity) {
-            self.materials.get_mut(entity).base = value.base.clone()
-            self.materials.get_mut(entity).metallic = value.metallic
-            self.materials.get_mut(entity).roughness = value.roughness
-            self.materials.get_mut(entity).emissive = value.emissive
-            self.materials.get_mut(entity).textures = value.textures
-            return true
-        }
-        self.materials.insert(entity, value) >= 0
+        // Pool.insert replaces an existing row whole, so every field of the
+        // material arrives; a per-field copy here once left a new one behind.
+        self.materials.insert(entity, move value) >= 0
     }
 
     pub fn material_at(&self, entity: ecs.Entity) -> &Material from self { self.materials.get(entity) }

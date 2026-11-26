@@ -44,7 +44,8 @@ pub struct MemoryProperties {
 }
 
 pub const FRAME_COUNT: i32 = 2
-pub const MESH_PUSH_BYTES: u32 = 240
+// mvp(64) model(64) base_color(16) params(16) camera(16) emissive_factor(16).
+pub const MESH_PUSH_BYTES: u32 = 192
 
 // Which setup step failed. It is the return value of every setup function,
 // so a step cannot exist without a name: `name` matches exhaustively and the

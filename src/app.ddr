@@ -86,6 +86,7 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: strin
         _ := graph.set_name(node, part.name.clone())
         c := part.color.clone()
         mut material := scenegraph.material(c[0],c[1],c[2],c[3],part.metallic,part.roughness)
+        material = scenegraph.emissive_mapped(move material, part.emissive_factor.clone())
         if i < textures.len { material = scenegraph.mapped(move material, textures[i].clone()) }
         _ := graph.set_material(node, move material)
         _ := graph.set_mesh(node, part.vertices.clone())
@@ -115,6 +116,8 @@ pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset)
     for part in &asset.parts {
         base := upload_or_refused(&uploads, asset, part.name, "base colour", part.texture, &part.sampler, .Srgb)?
         rough := upload_or_refused(&uploads, asset, part.name, "metallic-roughness map", part.metallic_roughness, &part.metallic_roughness_sampler, .Linear)?
+        // The emissive map is a colour the surface gives off: sRGB, like the base.
+        glow := upload_or_refused(&uploads, asset, part.name, "emissive map", part.emissive, &part.emissive_sampler, .Srgb)?
         mut base_handle := base.handle
         if base.decoded.pixels.len > 0 {
             base_handle = window.upload_texture(base.decoded.pixels, base.decoded.width, base.decoded.height, base.encoding, &base.sampler)?
@@ -125,8 +128,13 @@ pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset)
             rough_handle = window.upload_texture(rough.decoded.pixels, rough.decoded.width, rough.decoded.height, rough.encoding, &rough.sampler)?
             remember(&mut uploads, &rough, rough_handle)
         }
+        mut glow_handle := glow.handle
+        if glow.decoded.pixels.len > 0 {
+            glow_handle = window.upload_texture(glow.decoded.pixels, glow.decoded.width, glow.decoded.height, glow.encoding, &glow.sampler)?
+            remember(&mut uploads, &glow, glow_handle)
+        }
         textures.push(gfx.Textures { base: base_handle, metallic_roughness: rough_handle, normal: gfx.no_texture(),
-            occlusion: gfx.no_texture(), emissive: gfx.no_texture() })
+            occlusion: gfx.no_texture(), emissive: glow_handle })
     }
     .Ok(textures)
 }
@@ -190,7 +198,7 @@ pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scen
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
     mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
     surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, &item.material.textures, surface)
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, &item.material.textures, &item.material.emissive_factor, surface)
 }
 
 pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
