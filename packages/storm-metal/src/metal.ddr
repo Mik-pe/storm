@@ -4,9 +4,8 @@
 // Metal, AppKit or Objective-C exist, and nothing has to be installed for it.
 //
 // A frame records its shadow map, scene and optional fullscreen color pass
-// in one command buffer. The UI shares the final target. What Vulkan passes
-// as push constants is a struct in the constant address space, handed to a
-// stage as bytes with the draw.
+// in one command buffer. Two frames may be in flight at once (`IN_FLIGHT`),
+// each with its own shared vertex stream so CPU encoding overlaps GPU work.
 //
 // Storm's clip space has y pointing down and Metal's points up. Every pass
 // uses the mirrored viewport of records.viewport, and nothing else here or
@@ -19,6 +18,7 @@
 capability unsafe, filesystem, stdio
 
 import gfx
+import std.bytes as bytes
 import std.dl as dl
 import std.sys as sys
 import .appkit as appkit
@@ -34,11 +34,12 @@ import .shader as shader
 import .ui as ui
 
 const SHADOW_SIZE: u64 = 1024
+const IN_FLIGHT: i32 = 2
 
 // The constants of each draw, in f32. One number each, and every array and
 // byte count below is derived from it.
-const SKY_FLOATS: i32 = 28   // inv_view_proj(16) sun(4) zenith(4) horizon(4)
-const MESH_FLOATS: i32 = 48  // mvp(16) model(16) base_color(4) params(4) camera(4) emissive_factor(4)
+const SKY_FLOATS: i32 = 28 // inv_view_proj(16) sun(4) zenith(4) horizon(4)
+const MESH_FLOATS: i32 = 48 // mvp(16) model(16) base_color(4) params(4) camera(4) emissive_factor(4)
 const LIGHT_FLOATS: i32 = 36 // light_vp(16) light_dir_c(4) sun(4) sun_color(4) zenith(4) horizon(4)
 const SHADOW_FLOATS: i32 = 32 // light_vp(16) model(16)
 
@@ -48,6 +49,7 @@ const NOT_A_MESH: string = "invalid position-normal-UV stream or exhausted frame
 // backend, so a frame that draws nothing is unmistakable. (A const cannot
 // hold a struct, dogfood finding 43.)
 fn clear() -> records.ClearColor { records.ClearColor { red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0 } }
+unsafe fn no_buffer() -> device.Buffer { device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 } }
 
 // Which pass is open, if any. A draw meant for one pass is refused in the
 // other instead of landing in it.
@@ -80,16 +82,26 @@ pub struct Renderer {
     // The flat normal a missing normal map binds.
     flat: texture.Flat,
     atlas: ui.Atlas,
-    vertices: device.Buffer,
+    vertices: [device.Buffer; 2],
     // The frame being recorded: its autorelease pool, its drawable, and
     // what has been opened in it.
     pool: ptr,
     drawable: ptr,
     target: ptr,
     command_buffer: ptr,
-    submitted: ptr,
+    submitted: [ptr; 2],
+    frame_slot: i32,
     encoder: ptr,
     pass: Pass,
+    // Per-pass encoder state cache to suppress redundant state changes.
+    bound_pipeline: ptr,
+    bound_cull: i32,
+    bound_winding_set: bool,
+    bound_depth: ptr,
+    scene_globals_bound: bool,
+    last_light: [f32; 36],
+    bound_mat_tex: [ptr; 5],
+    bound_mat_samp: [ptr; 5],
     light_vp: [f32; 16], // the sun's view-projection, the shadow pass's push block
     // The drawable's size in pixels.
     width: u64,
@@ -124,9 +136,13 @@ unsafe fn empty() -> Renderer {
         textures: [],
         flat: texture.Flat { image: ptr(0), sampler: ptr(0) },
         atlas: ui.empty(),
-        vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 },
-        pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0), submitted: ptr(0), encoder: ptr(0),
+        vertices: [no_buffer(), no_buffer()],
+        pool: ptr(0), drawable: ptr(0), target: ptr(0), command_buffer: ptr(0),
+        submitted: [ptr(0), ptr(0)], frame_slot: 0, encoder: ptr(0),
         pass: .None,
+        bound_pipeline: ptr(0), bound_cull: -1, bound_winding_set: false, bound_depth: ptr(0),
+        scene_globals_bound: false, last_light: [0.0; 36],
+        bound_mat_tex: [ptr(0); 5], bound_mat_samp: [ptr(0); 5],
         light_vp: [0.0; 16],
         width: 0, height: 0, vertex_cursor: 0, frames: 0, capturing: 0, trace: 0,
         captured: [],
@@ -170,7 +186,7 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
     } else {
         r.window = appkit.open(&r.objc, title, width, height, r.device)?
     }
-    r.queue = objc.send(&r.objc, r.device, cstr("newCommandQueue"))
+    r.queue = objc.send(&r.objc, r.device, r.objc.sel.new_command_queue)
     if r.queue == ptr(0) { return .Err("the device could not make a command queue") }
     r.library = library(r)?
     r.mesh_pipeline = mesh_pipeline(r, false)?
@@ -196,12 +212,10 @@ unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, prev
 // (shader.ddr, generated from shaders/storm.metal): the build needs no shader
 // compiler.
 unsafe fn library(r: &Renderer) -> Result<ptr, string> {
-    options := objc.make(&r.objc, objc.class(&r.objc, cstr("MTLCompileOptions")))
-    // newLibraryWithSource:options:error:
+    options := objc.make(&r.objc, r.objc.cls.mtl_compile_options)
     compile: extern fn(ptr, ptr, ptr, ptr, ptr) -> ptr = ffi_fn(r.objc.msgSend)
     mut error: ptr = ptr(0)
-    made := compile(r.device, objc.selector(&r.objc, cstr("newLibraryWithSource:options:error:")),
-        objc.nsstring(&r.objc, shader.SOURCE), options, addr(&mut error))
+    made := compile(r.device, r.objc.sel.new_library, objc.nsstring(&r.objc, shader.SOURCE), options, addr(&mut error))
     r.objc.release(options)
     if made == ptr(0) { return .Err("the shaders did not compile: " + device.reason(&r.objc, error)) }
     .Ok(made)
@@ -227,26 +241,36 @@ fn trace(r: &Renderer, message: string) {
 
 // ---- recording a frame ----
 
-// The mesh stream and the editor stream are shared with the GPU. Retire their
-// last submission before either cursor can be reused on the CPU.
-unsafe fn retire(r: &mut Renderer) -> Result<(), string> {
-    if r.submitted == ptr(0) { return .Ok }
-    command := r.submitted
-    r.submitted = ptr(0)
-    objc.tell(&r.objc, command, cstr("waitUntilCompleted"))
+unsafe fn retire_slot(r: &mut Renderer, slot: i32) -> Result<(), string> {
+    command := r.submitted[slot]
+    if command == ptr(0) { return .Ok }
+    r.submitted[slot] = ptr(0)
+    objc.tell(&r.objc, command, r.objc.sel.wait_until_completed)
     mut error := ""
-    if objc.number(&r.objc, command, cstr("status")) != enums.command_status(.Completed) {
-        error = "frame submission failed: " + device.reason(&r.objc, objc.send(&r.objc, command, cstr("error")))
+    if objc.number(&r.objc, command, r.objc.sel.status) != enums.command_status(.Completed) {
+        error = "frame submission failed: " + device.reason(&r.objc, objc.send(&r.objc, command, r.objc.sel.error))
     }
     r.objc.release(command)
     if error.len > 0 { return .Err(error) }
     .Ok
 }
 
-unsafe fn reserve_vertices(r: &mut Renderer, required: u64) -> Result<(), string> {
-    capacity := gfx.frame_vertex_capacity(r.vertices.capacity, required)
-    if capacity == r.vertices.capacity { return .Ok }
-    limit := objc.number(&r.objc, r.device, cstr("maxBufferLength"))
+// Drain every in-flight frame before releasing or overwriting GPU-shared
+// attachments, textures, or environment maps.
+unsafe fn retire_all(r: &mut Renderer) -> Result<(), string> {
+    mut first_err := ""
+    for i in 0..IN_FLIGHT {
+        outcome := retire_slot(&mut r, i)
+        if outcome.is_err() && first_err.len == 0 { first_err = outcome.unwrap_err() }
+    }
+    if first_err.len > 0 { return .Err(first_err) }
+    .Ok
+}
+
+unsafe fn reserve_vertices(r: &mut Renderer, slot: i32, required: u64) -> Result<(), string> {
+    capacity := gfx.frame_vertex_capacity(r.vertices[slot].capacity, required)
+    if capacity == r.vertices[slot].capacity { return .Ok }
+    limit := objc.number(&r.objc, r.device, r.objc.sel.max_buffer_length)
     if required > limit { return .Err("frame vertex stream exceeds the device's maximum buffer length") }
     wanted := if capacity > limit { limit } else { capacity }
     fresh := match device.buffer(&r.objc, r.device, wanted) {
@@ -256,29 +280,46 @@ unsafe fn reserve_vertices(r: &mut Renderer, required: u64) -> Result<(), string
             device.buffer(&r.objc, r.device, required)?
         },
     }
-    device.release_buffer(&r.objc, &mut r.vertices)
-    r.vertices = fresh
-    trace(&r, "reserved " + r.vertices.capacity.str() + " vertex bytes for " + required.str())
+    device.release_buffer(&r.objc, &mut r.vertices[slot])
+    r.vertices[slot] = fresh
+    if r.trace != 0 {
+        trace(&r, "reserved " + r.vertices[slot].capacity.str() + " vertex bytes for " + required.str())
+    }
     .Ok
+}
+
+unsafe fn reset_pass_state(r: &mut Renderer) {
+    r.bound_pipeline = ptr(0)
+    r.bound_cull = -1
+    r.bound_winding_set = false
+    r.bound_depth = ptr(0)
+    r.scene_globals_bound = false
+    for i in 0..5 {
+        r.bound_mat_tex[i] = ptr(0)
+        r.bound_mat_samp[i] = ptr(0)
+    }
 }
 
 unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string> {
     if r.pool != ptr(0) { return .Err("a frame is already being recorded") }
-    retire(&mut r)?
-    reserve_vertices(&mut r, vertex_bytes)?
+    slot := r.frame_slot
+    retire_slot(&mut r, slot)?
+    reserve_vertices(&mut r, slot, vertex_bytes)?
     r.pool = r.objc.poolPush()
     if r.preview_target != ptr(0) {
         r.target = r.preview_target
     } else {
         appkit.sync(&r.objc, &r.window)
-        r.drawable = objc.send(&r.objc, r.window.layer, cstr("nextDrawable"))
+        r.drawable = objc.send(&r.objc, r.window.layer, r.objc.sel.next_drawable)
         if r.drawable == ptr(0) { return refuse(&mut r, "the window offered no drawable to render into") }
-        r.target = objc.send(&r.objc, r.drawable, cstr("texture"))
+        r.target = objc.send(&r.objc, r.drawable, r.objc.sel.texture)
     }
-    width := objc.number(&r.objc, r.target, cstr("width"))
-    height := objc.number(&r.objc, r.target, cstr("height"))
+    width := objc.number(&r.objc, r.target, r.objc.sel.width)
+    height := objc.number(&r.objc, r.target, r.objc.sel.height)
     if r.depth_buffer == ptr(0) || width != r.width || height != r.height {
-        // Recreate size-dependent attachments only after the previous GPU reads retire.
+        // Retire the other in-flight slot before releasing shared size-dependent attachments.
+        drained := retire_all(&mut r)
+        if drained.is_err() { return refuse(&mut r, drained.unwrap_err()) }
         made := device.texture(&r.objc, r.device, .Type2D, .Depth32Float, width, height, 1, .RenderTarget, .Private)
         if made.is_err() { return refuse(&mut r, made.unwrap_err()) }
         if r.depth_buffer != ptr(0) { r.objc.release(r.depth_buffer) }
@@ -286,16 +327,17 @@ unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string
         r.depth_buffer = made.unwrap()
         r.width = width
         r.height = height
-        trace(r, "depth buffer " + width.str() + "x" + height.str())
+        if r.trace != 0 { trace(r, "depth buffer " + width.str() + "x" + height.str()) }
     }
-    r.command_buffer = objc.send(&r.objc, r.queue, cstr("commandBuffer"))
+    r.command_buffer = objc.send(&r.objc, r.queue, r.objc.sel.command_buffer)
     if r.command_buffer == ptr(0) { return refuse(&mut r, "the queue offered no command buffer") }
     r.encoder = ptr(0)
     r.pass = .None
-    // Every stream is appended anew: the frame owns its cursors.
+    reset_pass_state(&mut r)
+    // Every stream is appended anew: this frame slot owns its cursors.
     r.vertex_cursor = 0
-    ui.begin_frame(&mut r.atlas)
-    trace(r, "frame " + r.frames.str() + ": " + width.str() + "x" + height.str())
+    ui.begin_frame(&mut r.atlas, slot)
+    if r.trace != 0 { trace(r, "frame " + r.frames.str() + ": " + width.str() + "x" + height.str()) }
     .Ok
 }
 
@@ -308,6 +350,7 @@ unsafe fn refuse(r: &mut Renderer, move message: string) -> Result<(), string> {
     r.command_buffer = ptr(0)
     r.encoder = ptr(0)
     r.pass = .None
+    reset_pass_state(&mut r)
     .Err(message)
 }
 
@@ -319,6 +362,8 @@ unsafe fn open_pass(r: &mut Renderer, descriptor: ptr, size_wide: u64, size_high
     if encoder == ptr(0) { return .Err("the pass could not begin") }
     r.encoder = encoder
     r.pass = which
+    reset_pass_state(&mut r)
+    r.bound_depth = depth_state
     .Ok
 }
 
@@ -327,19 +372,19 @@ unsafe fn open_pass(r: &mut Renderer, descriptor: ptr, size_wide: u64, size_high
 // vertex list or the frame's vertex space has run out.
 unsafe fn append_vertices(r: &mut Renderer, vertices: &[]f32) -> bool {
     if vertices.len == 0 || vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
-    for i in 0..vertices.len { if !vertices[i].is_finite() { return false } }
     offset := r.vertex_cursor
-    if !device.append(&r.vertices, &mut r.vertex_cursor, u64(vertices.len) * 4, addr(&vertices[0])) { return false }
-    pass.vertex_buffer(&r.objc, r.encoder, r.vertices.handle, offset, 0)
+    slot := r.frame_slot
+    if !device.append(&r.vertices[slot], &mut r.vertex_cursor, u64(vertices.len) * 4, addr(&vertices[0])) { return false }
+    pass.vertex_buffer(&r.objc, r.encoder, r.vertices[slot].handle, offset, 0)
     true
 }
 
 unsafe fn record_shadow(r: &mut Renderer, sky: &gfx.Sky) -> Result<(), string> {
     descriptor := pass.descriptor(&r.objc, ptr(0), 0, 0, r.shadow_map, true, clear())
     open_pass(&mut r, descriptor, SHADOW_SIZE, SHADOW_SIZE, r.depth_write, .Shadow)?
-    pass.bind(&r.objc, r.encoder, &r.shadow_pipeline)
+    use_pipeline(&mut r, r.shadow_pipeline.state, r.shadow_pipeline.cull, r.depth_write)
     r.light_vp = sky.light_vp.clone()
-    trace(r, "shadow pass")
+    if r.trace != 0 { trace(r, "shadow pass") }
     .Ok
 }
 
@@ -360,6 +405,7 @@ unsafe fn record_end_pass(r: &mut Renderer) -> Result<(), string> {
     pass.end(&r.objc, r.encoder)
     r.encoder = ptr(0)
     r.pass = .None
+    reset_pass_state(&mut r)
     .Ok
 }
 
@@ -384,15 +430,29 @@ unsafe fn require_main(r: &Renderer) -> Result<(), string> {
     .Ok
 }
 
-// The depth state a pipeline's draws go with.
-unsafe fn use_pipeline(r: &Renderer, pipeline: &device.Pipeline, depth: ptr) {
-    pass.bind(&r.objc, r.encoder, pipeline)
-    objc.tell_to(&r.objc, r.encoder, cstr("setDepthStencilState:"), depth)
+// Bind a pipeline and depth state only when they differ from what the encoder holds.
+unsafe fn use_pipeline(r: &mut Renderer, state: ptr, cull: enums.CullMode, depth: ptr) {
+    if r.bound_pipeline != state {
+        objc.tell_to(&r.objc, r.encoder, r.objc.sel.set_pipeline, state)
+        r.bound_pipeline = state
+        if r.bound_cull != i32(cull) {
+            objc.tell_number(&r.objc, r.encoder, r.objc.sel.set_cull_mode, enums.cull_mode(cull))
+            r.bound_cull = i32(cull)
+        }
+        if !r.bound_winding_set {
+            objc.tell_number(&r.objc, r.encoder, r.objc.sel.set_winding, enums.winding(.CounterClockwise))
+            r.bound_winding_set = true
+        }
+    }
+    if r.bound_depth != depth {
+        objc.tell_to(&r.objc, r.encoder, r.objc.sel.set_depth_state, depth)
+        r.bound_depth = depth
+    }
 }
 
 unsafe fn record_sky(r: &mut Renderer, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> {
     require_main(&r)?
-    use_pipeline(r, &r.sky_pipeline, r.depth_off)
+    use_pipeline(&mut r, r.sky_pipeline.state, r.sky_pipeline.cull, r.depth_off)
     mut push: [f32; SKY_FLOATS] = [0.0; SKY_FLOATS]
     for i in 0..16 { push[i] = inv_view_projection[i] }
     for i in 0..4 { push[16 + i] = sun[i] }
@@ -405,17 +465,71 @@ unsafe fn record_sky(r: &mut Renderer, inv_view_projection: &[f32; 16], sun: &[f
     .Ok
 }
 
+unsafe fn bind_scene_light_and_env(r: &mut Renderer, sky: &gfx.Sky) {
+    mut light: [f32; LIGHT_FLOATS] = [0.0; LIGHT_FLOATS]
+    for i in 0..16 { light[i] = sky.light_vp[i] }
+    for i in 0..4 { light[16 + i] = sky.light_dir_c[i] }
+    for i in 0..4 { light[20 + i] = sky.sun[i] }
+    for i in 0..3 { light[24 + i] = sky.sun_color[i] }
+    light[27] = sky.diffuse_fill
+    for i in 0..4 { light[28 + i] = sky.zenith[i] }
+    for i in 0..4 { light[32 + i] = sky.horizon[i] }
+
+    mut upload_light := !r.scene_globals_bound
+    if !upload_light {
+        for i in 0..LIGHT_FLOATS {
+            if light[i] != r.last_light[i] { upload_light = true; break }
+        }
+    }
+    if upload_light {
+        pass.fragment_bytes(&r.objc, r.encoder, addr(&light[0]), u64(LIGHT_FLOATS * 4), 2)
+        for i in 0..LIGHT_FLOATS { r.last_light[i] = light[i] }
+    }
+    if !r.scene_globals_bound {
+        pass.fragment_texture(&r.objc, r.encoder, r.shadow_map, 0)
+        pass.fragment_texture(&r.objc, r.encoder, r.environment.cube, 1)
+        pass.fragment_texture(&r.objc, r.encoder, r.environment.irradiance, 2)
+        pass.fragment_texture(&r.objc, r.encoder, r.environment.brdf, 3)
+        pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
+        pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
+        r.scene_globals_bound = true
+    }
+}
+
+unsafe fn bind_material_textures(r: &mut Renderer, textures: &gfx.Textures) {
+    ids := [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id]
+    mut mat_tex: [ptr; 5] = [ptr(0); 5]
+    mut mat_samp: [ptr; 5] = [ptr(0); 5]
+    mut tex_changed := false
+    mut samp_changed := false
+    for b in 0..5 {
+        id := ids[b]
+        t := if b == 2 && !texture.live(&r.textures, id) { r.flat.image } else { texture.image_of(&r.textures, id) }
+        s := if b == 2 && !texture.live(&r.textures, id) { r.flat.sampler } else { texture.sampler_of(&r.textures, id) }
+        mat_tex[b] = t
+        mat_samp[b] = s
+        if t != r.bound_mat_tex[b] { tex_changed = true }
+        if s != r.bound_mat_samp[b] { samp_changed = true }
+    }
+    if tex_changed {
+        pass.fragment_textures(&r.objc, r.encoder, &mat_tex, 4)
+        for b in 0..5 { r.bound_mat_tex[b] = mat_tex[b] }
+    }
+    if samp_changed {
+        pass.fragment_samplers(&r.objc, r.encoder, &mat_samp, 2)
+        for b in 0..5 { r.bound_mat_samp[b] = mat_samp[b] }
+    }
+}
+
 unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
     params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], blended: bool) -> Result<(), string> {
     require_main(&r)?
     if blended {
-        use_pipeline(r, &r.glass_pipeline, r.depth_test)
+        use_pipeline(&mut r, r.glass_pipeline.state, r.glass_pipeline.cull, r.depth_test)
     } else {
-        use_pipeline(r, &r.mesh_pipeline, r.depth_write)
+        use_pipeline(&mut r, r.mesh_pipeline.state, r.mesh_pipeline.cull, r.depth_write)
     }
     if !append_vertices(&mut r, &vertices) { return .Err(NOT_A_MESH) }
-    // The draw's own values in the push block; the frame's (the light
-    // matrix, the sun, the sky) in buffer 2, the same on every draw.
     mut push: [f32; MESH_FLOATS] = [0.0; MESH_FLOATS]
     for i in 0..16 { push[i] = mvp[i] }
     for i in 0..16 { push[16 + i] = model[i] }
@@ -425,33 +539,8 @@ unsafe fn record_mesh(r: &mut Renderer, vertices: &[]f32, mvp: &[f32; 16], model
     for i in 0..4 { push[44 + i] = emissive[i] }
     pass.vertex_bytes(&r.objc, r.encoder, addr(&push[0]), u64(MESH_FLOATS * 4), 1)
     pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), u64(MESH_FLOATS * 4), 1)
-    mut light: [f32; LIGHT_FLOATS] = [0.0; LIGHT_FLOATS]
-    for i in 0..16 { light[i] = sky.light_vp[i] }
-    for i in 0..4 { light[16 + i] = sky.light_dir_c[i] }
-    for i in 0..4 { light[20 + i] = sky.sun[i] }
-    for i in 0..3 { light[24 + i] = sky.sun_color[i] }
-    light[27] = sky.diffuse_fill
-    for i in 0..4 { light[28 + i] = sky.zenith[i] }
-    for i in 0..4 { light[32 + i] = sky.horizon[i] }
-    pass.fragment_bytes(&r.objc, r.encoder, addr(&light[0]), u64(LIGHT_FLOATS * 4), 2)
-    pass.fragment_texture(&r.objc, r.encoder, r.shadow_map, 0)
-    pass.fragment_texture(&r.objc, r.encoder, r.environment.cube, 1)
-    pass.fragment_texture(&r.objc, r.encoder, r.environment.irradiance, 2)
-    pass.fragment_texture(&r.objc, r.encoder, r.environment.brdf, 3)
-    // The material's five maps, one index each; the normal binding's "none"
-    // is the flat normal, every other "none" the white fallback.
-    ids := [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id]
-    for b in 0..5 {
-        if b == 2 && !texture.live(&r.textures, ids[i32(b)]) {
-            pass.fragment_texture(&r.objc, r.encoder, r.flat.image, u64(4 + b))
-            pass.fragment_sampler(&r.objc, r.encoder, r.flat.sampler, u64(2 + b))
-        } else {
-            pass.fragment_texture(&r.objc, r.encoder, texture.image_of(&r.textures, ids[i32(b)]), u64(4 + b))
-            pass.fragment_sampler(&r.objc, r.encoder, texture.sampler_of(&r.textures, ids[i32(b)]), u64(2 + b))
-        }
-    }
-    pass.fragment_sampler(&r.objc, r.encoder, r.shadow_sampler, 0)
-    pass.fragment_sampler(&r.objc, r.encoder, r.environment.sampler, 1)
+    bind_scene_light_and_env(&mut r, sky)
+    bind_material_textures(&mut r, textures)
     pass.triangles(&r.objc, r.encoder, u64(vertices.len / gfx.VERTEX_FLOATS))
     .Ok
 }
@@ -464,7 +553,7 @@ unsafe fn record_post(r: &mut Renderer, settings: &gfx.PostProcess) -> Result<()
     record_end_pass(&mut r)?
     opened := color_pass(&mut r, r.target, .Composite)
     if opened.is_err() { return refuse(&mut r, opened.unwrap_err()) }
-    use_pipeline(r, &r.post_pipeline, r.depth_off)
+    use_pipeline(&mut r, r.post_pipeline.state, r.post_pipeline.cull, r.depth_off)
     push: [f32; 4] = [1.0 / f32(r.width), 1.0 / f32(r.height), if settings.antialias { 1.0 } else { 0.0 }, settings.strength]
     pass.fragment_bytes(&r.objc, r.encoder, addr(&push[0]), 16, 0)
     pass.fragment_texture(&r.objc, r.encoder, r.scene_color, 0)
@@ -474,34 +563,34 @@ unsafe fn record_post(r: &mut Renderer, settings: &gfx.PostProcess) -> Result<()
 
 unsafe fn record_ui(r: &mut Renderer, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
     if r.pass != .Main && r.pass != .FilteredScene && r.pass != .Composite { return .Err("the UI was drawn outside a color pass") }
+    // ui.draw overwrites pipeline, depth state, and fragment texture/sampler 0.
+    reset_pass_state(&mut r)
     ui.draw(&r.objc, &mut r.atlas, r.encoder, r.depth_off, &vertices, screen)
 }
 
 // The frame's pixels, BGRA8, read back from its drawable.
 unsafe fn read_pixels(r: &mut Renderer) -> Result<(), string> {
     count := i32(r.width * r.height * 4)
-    mut pixels: []u8 = []
-    pixels.reserve(count)
-    for _ in 0..count { pixels.push(0) }
-    // getBytes:bytesPerRow:fromRegion:mipmapLevel:
-    read: extern fn(ptr, ptr, ptr, u64, ptr, u64) = ffi_fn(r.objc.msgSend)
-    mut area := records.region(0, 0, r.width, r.height)
-    read(r.target, objc.selector(&r.objc, cstr("getBytes:bytesPerRow:fromRegion:mipmapLevel:")),
-        addr(&pixels[0]), r.width * 4, addr(&mut area), 0)
+    pixels := bytes.zeroed(count)
+    if target_is("macos") {
+        read := r.objc.get_bytes
+        read(r.target, r.objc.sel.get_bytes, addr(&pixels[0]), r.width * 4, records.region(0, 0, r.width, r.height), 0)
+    }
     r.captured = pixels
     .Ok
 }
 
 // Show the frame, or keep its pixels when it is a capture.
 unsafe fn finish(r: &mut Renderer) -> Result<(), string> {
-    if r.capturing == 0 && r.drawable != ptr(0) { objc.tell_to(&r.objc, r.command_buffer, cstr("presentDrawable:"), r.drawable) }
-    r.submitted = objc.send(&r.objc, r.command_buffer, cstr("retain"))
-    objc.tell(&r.objc, r.command_buffer, cstr("commit"))
+    if r.capturing == 0 && r.drawable != ptr(0) { objc.tell_to(&r.objc, r.command_buffer, r.objc.sel.present_drawable, r.drawable) }
+    slot := r.frame_slot
+    r.submitted[slot] = objc.send(&r.objc, r.command_buffer, r.objc.sel.retain)
+    objc.tell(&r.objc, r.command_buffer, r.objc.sel.commit)
     if r.capturing == 1 {
-        retire(&mut r)?
+        retire_slot(&mut r, slot)?
         return read_pixels(&mut r)
     }
-    trace(r, "presented")
+    if r.trace != 0 { trace(r, "presented") }
     .Ok
 }
 
@@ -516,6 +605,7 @@ unsafe fn record_end(r: &mut Renderer) -> Result<i64, string> {
     r.drawable = ptr(0)
     r.target = ptr(0)
     r.command_buffer = ptr(0)
+    r.frame_slot = (r.frame_slot + 1) % IN_FLIGHT
     if outcome.is_err() { return .Err(outcome.unwrap_err()) }
     r.frames = r.frames + 1
     .Ok(r.frames)
@@ -525,12 +615,12 @@ unsafe fn record_end(r: &mut Renderer) -> Result<i64, string> {
 // made, each exactly once.
 unsafe fn destroy(r: &mut Renderer) {
     if r.encoder != ptr(0) { _ := record_end_pass(&mut r) }
-    _ := retire(&mut r)
+    _ := retire_all(&mut r)
     if r.pool != ptr(0) {
         r.objc.poolPop(r.pool)
         r.pool = ptr(0)
     }
-    device.release_buffer(&r.objc, &mut r.vertices)
+    for i in 0..IN_FLIGHT { device.release_buffer(&r.objc, &mut r.vertices[i]) }
     texture.destroy(&r.objc, &mut r.textures)
     texture.destroy_flat(&r.objc, &mut r.flat)
     ui.destroy(&r.objc, &mut r.atlas)
@@ -586,7 +676,7 @@ impl gfx.Backend for Renderer {
     }
 
     fn device_name(&self) -> string {
-        unsafe { objc.text(&self.objc, objc.send(&self.objc, self.device, cstr("name"))) }
+        unsafe { objc.text(&self.objc, objc.send(&self.objc, self.device, self.objc.sel.name)) }
     }
 
     fn set_trace(&mut self, enabled: bool) {
@@ -611,6 +701,7 @@ impl gfx.Backend for Renderer {
 
     fn build_environment(&mut self, sky: &gfx.Sky) -> Result<(), string> {
         unsafe {
+            retire_all(&mut self)?
             // Built again means built anew: the previous maps go first.
             ibl.destroy(&self.objc, &mut self.environment)
             built := ibl.build(&self.objc, self.device, self.queue, self.library, sky)
@@ -660,7 +751,10 @@ impl gfx.Backend for Renderer {
     }
 
     fn free_texture(&mut self, handle: gfx.Texture) {
-        unsafe { texture.free(&self.objc, &mut self.textures, handle.id) }
+        unsafe {
+            _ := retire_all(&mut self)
+            texture.free(&self.objc, &mut self.textures, handle.id)
+        }
     }
 
     fn post_process(&mut self, settings: &gfx.PostProcess) -> Result<(), string> {
@@ -669,7 +763,7 @@ impl gfx.Backend for Renderer {
 
     fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> {
         unsafe {
-            retire(&mut self)?
+            retire_all(&mut self)?
             return ui.upload(&self.objc, &self.atlas, &pixels, width, height)
         }
     }

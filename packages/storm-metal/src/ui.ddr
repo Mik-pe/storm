@@ -1,6 +1,7 @@
 // The text atlas and the quads the editor draws: a one-byte coverage atlas
-// uploaded once, a pipeline for quads in points, and a shared buffer of
-// vertices that every frame appends to from its own start.
+// uploaded once, a pipeline for quads in points, and a double-buffered pair
+// of shared vertex buffers so the CPU records frame N into one slot while the
+// GPU finishes frame N - 1 in the other.
 
 capability unsafe
 
@@ -13,18 +14,24 @@ pub const ATLAS_SIZE: i32 = 1024
 pub const FLOATS_PER_VERTEX: i32 = 8
 const VERTEX_CAPACITY: u64 = 1048576
 
-// The atlas texture, its sampler and pipeline, and the vertex buffer: owned.
+unsafe fn no_buffer() -> device.Buffer { device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 } }
+
+// The atlas texture, its sampler and pipeline, and the two vertex buffers: owned.
 pub struct Atlas {
     texture: ptr,
     sampler: ptr,
     pipeline: device.Pipeline,
-    vertices: device.Buffer,
-    // Where the frame's UI vertices end; reset by the frame.
+    vertices: [device.Buffer; 2],
+    // Active slot and where the frame's UI vertices end; reset by begin_frame.
+    slot: i32,
     cursor: u64,
 }
 
 pub unsafe fn empty() -> Atlas {
-    Atlas { texture: ptr(0), sampler: ptr(0), pipeline: device.no_pipeline(), vertices: device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 }, cursor: 0 }
+    Atlas {
+        texture: ptr(0), sampler: ptr(0), pipeline: device.no_pipeline(),
+        vertices: [no_buffer(), no_buffer()], slot: 0, cursor: 0,
+    }
 }
 
 pub unsafe fn create(rt: &objc.Runtime, gpu: ptr, library: ptr) -> Result<Atlas, string> {
@@ -45,7 +52,7 @@ unsafe fn fill(rt: &objc.Runtime, gpu: ptr, library: ptr, made: &mut Atlas) -> R
     made.sampler = device.sampler(rt, gpu, &smooth)?
     quads := device.Style { vertices: .Ui, blend: true }
     made.pipeline = device.pipeline(rt, gpu, library, "ui_vertex", "ui_fragment", .BGRA8Unorm, .Depth32Float, &quads)?
-    made.vertices = device.buffer(rt, gpu, VERTEX_CAPACITY)?
+    for i in 0..2 { made.vertices[i] = device.buffer(rt, gpu, VERTEX_CAPACITY)? }
     .Ok
 }
 
@@ -64,12 +71,13 @@ pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_sta
     if vertices.len == 0 { return .Ok }
     if vertices.len % FLOATS_PER_VERTEX != 0 { return .Err("UI vertices must be [x, y, u, v, r, g, b, a] tuples") }
     offset := atlas.cursor
-    if !device.append(&atlas.vertices, &mut atlas.cursor, u64(vertices.len * 4), addr(&vertices[0])) {
+    slot := atlas.slot
+    if !device.append(&atlas.vertices[slot], &mut atlas.cursor, u64(vertices.len * 4), addr(&vertices[0])) {
         return .Err("the frame's UI needs more than the UI vertex buffer holds")
     }
     pass.bind(rt, encoder, &atlas.pipeline)
-    objc.tell_to(rt, encoder, cstr("setDepthStencilState:"), depth_state)
-    pass.vertex_buffer(rt, encoder, atlas.vertices.handle, offset, 0)
+    objc.tell_to(rt, encoder, rt.sel.set_depth_state, depth_state)
+    pass.vertex_buffer(rt, encoder, atlas.vertices[slot].handle, offset, 0)
     mut push := [screen[0], screen[1], 0.0, 0.0]
     pass.vertex_bytes(rt, encoder, addr(&push[0]), 16, 1)
     pass.fragment_texture(rt, encoder, atlas.texture, 0)
@@ -78,8 +86,11 @@ pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_sta
     .Ok
 }
 
-// The frame starts here: its quads overwrite the last frame's.
-pub unsafe fn begin_frame(atlas: &mut Atlas) { atlas.cursor = 0 }
+// The frame starts here: its quads overwrite only this slot's buffer.
+pub unsafe fn begin_frame(atlas: &mut Atlas, slot: i32) {
+    atlas.slot = slot
+    atlas.cursor = 0
+}
 
 pub unsafe fn destroy(rt: &objc.Runtime, atlas: &mut Atlas) {
     for owned in [atlas.pipeline.state, atlas.sampler, atlas.texture] {
@@ -88,5 +99,5 @@ pub unsafe fn destroy(rt: &objc.Runtime, atlas: &mut Atlas) {
     atlas.pipeline = device.no_pipeline()
     atlas.sampler = ptr(0)
     atlas.texture = ptr(0)
-    device.release_buffer(rt, &mut atlas.vertices)
+    for i in 0..2 { device.release_buffer(rt, &mut atlas.vertices[i]) }
 }

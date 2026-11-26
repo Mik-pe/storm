@@ -1,12 +1,9 @@
 // Records Metal and AppKit take and return by value, in their C layout.
 //
-// The float records (a pair, a point, a rectangle, a clear colour) travel in
-// floating-point registers and Dunder passes them by value. The larger
-// integer records (a region, a size, a viewport) travel on Apple's arm64 as
-// a pointer to a copy the caller makes, so a method taking one is declared
-// with a `ptr` and given `addr(&mut record)`: verified against a C oracle
-// before any of this was written on it. Their sizes are pinned against the
-// SDK in tests/suite.ddr.
+// Both the floating-point records (Size, Point, Rect, ClearColor) and the
+// non-HFA integer/large C records (Range, Extent, Origin, Region, ScissorRect,
+// Viewport) are passed by value according to Apple's ARM64 AAPCS64 ABI.
+// Their sizes are pinned against the SDK in tests/suite.ddr.
 
 // CGSize and NSSize: width and height in points, or in pixels.
 @c_layout
@@ -41,11 +38,21 @@ pub struct Origin { x: u64, y: u64, z: u64 }
 @c_layout
 pub struct Region { origin: Origin, size: Extent }
 
+// MTLScissorRect: four NSUInteger.
+@c_layout
+pub struct ScissorRect { x: u64, y: u64, width: u64, height: u64 }
+
+// NSRange: location and length.
+@c_layout
+pub struct Range { location: u64, length: u64 }
+
 pub fn extent(width: u64, height: u64) -> Extent { Extent { width: width, height: height, depth: 1 } }
 pub fn origin(x: u64, y: u64) -> Origin { Origin { x: x, y: y, z: 0 } }
 pub fn region(x: u64, y: u64, width: u64, height: u64) -> Region {
     Region { origin: origin(x, y), size: extent(width, height) }
 }
+pub fn scissor(width: u64, height: u64) -> ScissorRect { ScissorRect { x: 0, y: 0, width: width, height: height } }
+pub fn range(location: u64, length: u64) -> Range { Range { location: location, length: length } }
 pub fn size(width: f64, height: f64) -> Size { Size { width: width, height: height } }
 
 // The viewport of every pass. Storm's clip space has y pointing down and

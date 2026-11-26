@@ -1,13 +1,14 @@
-// The Objective-C runtime, as far as Storm needs it: messaging, selectors,
-// strings, and classes built at run time. Metal and AppKit are Objective-C
-// frameworks, and this is the whole of what Storm knows about that.
+// The Objective-C runtime, as far as Storm needs it: messaging, pre-registered
+// selectors and classes, cached Foundation constants, strings, and classes built
+// at run time. Metal and AppKit are Objective-C frameworks, and this is the
+// whole of what Storm knows about that.
 //
 // Every message is objc_msgSend cast to the method's own signature, which is
 // the only correct way to call it: its variadic declaration is a lie that
 // Apple's arm64 ABI does not honour (variadic words go on the stack, message
-// words go in registers). So a sender is typed by what it passes and returns.
-// The shapes Storm uses more than once are the functions below; a method with
-// another shape declares its own typed function pointer where it is called.
+// words go in registers). Common shapes are pre-cast once at startup on
+// `Runtime`; callers pass pre-registered `rt.sel.*` selectors directly, with
+// zero per-call hash lookups or selector string allocations.
 //
 // Ownership follows the names. alloc, init, new and copy return an object the
 // caller owns and must release; everything else is autoreleased and lives
@@ -27,6 +28,190 @@ import std.dl as dl
 import .records as records
 
 @c_layout
+pub struct Classes {
+    ns_string: ptr,
+    ns_date: ptr,
+    mtl_render_pass_descriptor: ptr,
+    mtl_texture_descriptor: ptr,
+    mtl_sampler_descriptor: ptr,
+    mtl_depth_stencil_descriptor: ptr,
+    mtl_render_pipeline_descriptor: ptr,
+    mtl_vertex_descriptor: ptr,
+    mtl_compile_options: ptr,
+    ca_metal_layer: ptr,
+    ns_application: ptr,
+    ns_menu: ptr,
+    ns_menu_item: ptr,
+    ns_view: ptr,
+    ns_window: ptr,
+    ns_event: ptr,
+    ns_workspace: ptr,
+}
+
+@c_layout
+pub struct Selectors {
+    alloc: ptr,
+    init: ptr,
+    retain: ptr,
+    responds_to_selector: ptr,
+    init_with_bytes: ptr,
+    utf8_string: ptr,
+    localized_description: ptr,
+    distant_past: ptr,
+    object_at: ptr,
+    // Metal device, queue, commands, buffers, textures, samplers, pipelines, passes.
+    name: ptr,
+    new_command_queue: ptr,
+    command_buffer: ptr,
+    commit: ptr,
+    wait_until_completed: ptr,
+    status: ptr,
+    error: ptr,
+    present_drawable: ptr,
+    max_buffer_length: ptr,
+    new_buffer: ptr,
+    contents: ptr,
+    new_texture: ptr,
+    set_texture_type: ptr,
+    set_pixel_format: ptr,
+    set_width: ptr,
+    set_height: ptr,
+    set_mipmap_level_count: ptr,
+    set_usage: ptr,
+    set_storage_mode: ptr,
+    replace_region: ptr,
+    get_bytes: ptr,
+    width: ptr,
+    height: ptr,
+    new_sampler: ptr,
+    set_min_filter: ptr,
+    set_mag_filter: ptr,
+    set_mip_filter: ptr,
+    set_s_address_mode: ptr,
+    set_t_address_mode: ptr,
+    set_r_address_mode: ptr,
+    new_depth_state: ptr,
+    set_depth_compare: ptr,
+    set_depth_write: ptr,
+    new_library: ptr,
+    new_function: ptr,
+    new_pipeline: ptr,
+    set_vertex_function: ptr,
+    set_fragment_function: ptr,
+    color_attachments: ptr,
+    depth_attachment: ptr,
+    set_depth_format: ptr,
+    set_blending_enabled: ptr,
+    set_src_rgb_blend: ptr,
+    set_dst_rgb_blend: ptr,
+    set_rgb_blend_op: ptr,
+    set_src_alpha_blend: ptr,
+    set_dst_alpha_blend: ptr,
+    set_alpha_blend_op: ptr,
+    attributes: ptr,
+    layouts: ptr,
+    set_format: ptr,
+    set_offset: ptr,
+    set_buffer_index: ptr,
+    set_stride: ptr,
+    set_step_function: ptr,
+    set_vertex_descriptor: ptr,
+    render_pass_descriptor: ptr,
+    set_texture: ptr,
+    set_level: ptr,
+    set_slice: ptr,
+    set_load_action: ptr,
+    set_store_action: ptr,
+    set_clear_color: ptr,
+    render_encoder: ptr,
+    end_encoding: ptr,
+    set_viewport: ptr,
+    set_scissor_rect: ptr,
+    set_depth_state: ptr,
+    set_pipeline: ptr,
+    set_cull_mode: ptr,
+    set_winding: ptr,
+    set_vertex_bytes: ptr,
+    set_fragment_bytes: ptr,
+    set_vertex_buffer: ptr,
+    set_fragment_texture: ptr,
+    set_fragment_textures: ptr,
+    set_fragment_sampler: ptr,
+    set_fragment_samplers: ptr,
+    draw_primitives: ptr,
+    // QuartzCore & AppKit windowing / events.
+    next_drawable: ptr,
+    texture: ptr,
+    drawable_size: ptr,
+    set_drawable_size: ptr,
+    set_framebuffer_only: ptr,
+    set_device: ptr,
+    set_colorspace: ptr,
+    set_contents_scale: ptr,
+    shared_application: ptr,
+    set_activation_policy: ptr,
+    finish_launching: ptr,
+    set_main_menu: ptr,
+    set_autoenables_items: ptr,
+    add_item: ptr,
+    add_item_with_title: ptr,
+    set_submenu: ptr,
+    terminate: ptr,
+    activate: ptr,
+    activate_ignoring_other_apps: ptr,
+    is_active: ptr,
+    next_event: ptr,
+    send_event: ptr,
+    init_window: ptr,
+    set_released_when_closed: ptr,
+    set_content_view: ptr,
+    set_title: ptr,
+    set_accepts_mouse_moved: ptr,
+    center: ptr,
+    make_key_and_order_front: ptr,
+    make_first_responder: ptr,
+    is_visible: ptr,
+    is_key_window: ptr,
+    backing_scale_factor: ptr,
+    set_content_size: ptr,
+    window_number: ptr,
+    close: ptr,
+    set_autoresizing_mask: ptr,
+    set_wants_layer: ptr,
+    set_layer: ptr,
+    bounds: ptr,
+    key_code: ptr,
+    modifier_flags: ptr,
+    location_in_window: ptr,
+    convert_point_from_view: ptr,
+    event_type: ptr,
+    button_number: ptr,
+    delta_x: ptr,
+    delta_y: ptr,
+    scrolling_delta_y: ptr,
+    key_down: ptr,
+    key_up: ptr,
+    flags_changed: ptr,
+    mouse_down: ptr,
+    mouse_up: ptr,
+    right_mouse_down: ptr,
+    right_mouse_up: ptr,
+    other_mouse_down: ptr,
+    other_mouse_up: ptr,
+    mouse_moved: ptr,
+    mouse_dragged: ptr,
+    right_mouse_dragged: ptr,
+    other_mouse_dragged: ptr,
+    scroll_wheel: ptr,
+    accepts_first_mouse: ptr,
+    key_event: ptr,
+    mouse_event: ptr,
+    shared_workspace: ptr,
+    frontmost_application: ptr,
+    localized_name: ptr,
+}
+
+@c_layout
 pub struct Runtime {
     getClass: extern fn(ptr) -> ptr,
     registerName: extern fn(ptr) -> ptr,
@@ -38,17 +223,46 @@ pub struct Runtime {
     allocateClassPair: extern fn(ptr, ptr, u64) -> ptr,
     addMethod: ptr,
     registerClassPair: extern fn(ptr),
-    // The Metal framework's handle, for the one C function Storm needs from it.
+    foundation: ptr,
+    // The Metal framework's handle, for MTLCreateSystemDefaultDevice.
     metal: ptr,
+    // Cached process-lifetime Foundation objects used every frame in event polling.
+    distant_past: ptr,
+    default_run_loop_mode: ptr,
+    // Pre-cast objc_msgSend shapes to avoid ffi_fn casts on hot paths.
+    send0: extern fn(ptr, ptr) -> ptr,
+    send1_ptr: extern fn(ptr, ptr, ptr) -> ptr,
+    send1_u64: extern fn(ptr, ptr, u64) -> ptr,
+    send2_u64: extern fn(ptr, ptr, u64, u64) -> ptr,
+    tell0: extern fn(ptr, ptr),
+    tell1_ptr: extern fn(ptr, ptr, ptr),
+    tell1_u64: extern fn(ptr, ptr, u64),
+    tell1_f64: extern fn(ptr, ptr, f64),
+    tell1_size: extern fn(ptr, ptr, records.Size),
+    read_u64: extern fn(ptr, ptr) -> u64,
+    read_f64: extern fn(ptr, ptr) -> f64,
+    read_u8: extern fn(ptr, ptr) -> u8,
+    read_u16: extern fn(ptr, ptr) -> u16,
+    read_rect: extern fn(ptr, ptr) -> records.Rect,
+    read_size: extern fn(ptr, ptr) -> records.Size,
+    read_point: extern fn(ptr, ptr) -> records.Point,
+    set_ptr_u64_u64: extern fn(ptr, ptr, ptr, u64, u64),
+    set_ptr_u64: extern fn(ptr, ptr, ptr, u64),
+    set_ptr_range: extern fn(ptr, ptr, ptr, records.Range),
+    set_viewport: extern fn(ptr, ptr, records.Viewport),
+    set_scissor: extern fn(ptr, ptr, records.ScissorRect),
+    set_clear_color: extern fn(ptr, ptr, records.ClearColor),
+    draw_primitives: extern fn(ptr, ptr, u64, u64, u64),
+    replace_region: extern fn(ptr, ptr, records.Region, u64, ptr, u64),
+    get_bytes: extern fn(ptr, ptr, ptr, u64, records.Region, u64),
+    next_event: extern fn(ptr, ptr, u64, ptr, ptr, u8) -> ptr,
+    cls: Classes,
+    sel: Selectors,
 }
 
 // The runtime record lives in static storage: the event methods, which C
-// calls with nothing but the object, find it here. The selectors are cached
-// by the address of their literal, so each is registered once per call site.
-pub unsafe fn runtime_address() -> ptr { static_bytes("native", 256) }
-unsafe fn cache_address() -> ptr { static_bytes("native", 8192) }
-
-const CACHE_SLOTS: i32 = 512
+// calls with nothing but the object, find it here.
+pub unsafe fn runtime_address() -> ptr { static_bytes("native", 2048) }
 
 unsafe fn install(into: &mut Runtime, from: &Runtime) {
     into.getClass = from.getClass
@@ -61,7 +275,38 @@ unsafe fn install(into: &mut Runtime, from: &Runtime) {
     into.allocateClassPair = from.allocateClassPair
     into.addMethod = from.addMethod
     into.registerClassPair = from.registerClassPair
+    into.foundation = from.foundation
     into.metal = from.metal
+    into.distant_past = from.distant_past
+    into.default_run_loop_mode = from.default_run_loop_mode
+    into.send0 = from.send0
+    into.send1_ptr = from.send1_ptr
+    into.send1_u64 = from.send1_u64
+    into.send2_u64 = from.send2_u64
+    into.tell0 = from.tell0
+    into.tell1_ptr = from.tell1_ptr
+    into.tell1_u64 = from.tell1_u64
+    into.tell1_f64 = from.tell1_f64
+    into.tell1_size = from.tell1_size
+    into.read_u64 = from.read_u64
+    into.read_f64 = from.read_f64
+    into.read_u8 = from.read_u8
+    into.read_u16 = from.read_u16
+    into.read_rect = from.read_rect
+    into.read_size = from.read_size
+    into.read_point = from.read_point
+    into.set_ptr_u64_u64 = from.set_ptr_u64_u64
+    into.set_ptr_u64 = from.set_ptr_u64
+    into.set_ptr_range = from.set_ptr_range
+    into.set_viewport = from.set_viewport
+    into.set_scissor = from.set_scissor
+    into.set_clear_color = from.set_clear_color
+    into.draw_primitives = from.draw_primitives
+    into.replace_region = from.replace_region
+    into.get_bytes = from.get_bytes
+    into.next_event = from.next_event
+    into.cls = from.cls
+    into.sel = from.sel
 }
 
 unsafe fn symbol(library: ptr, name: ptr) -> Result<ptr, string> {
@@ -75,6 +320,205 @@ unsafe fn framework(path: ptr, name: string) -> Result<ptr, string> {
     handle := dl.open(path, 2)
     if handle == ptr(0) { return .Err("the " + name + " framework could not be loaded") }
     .Ok(handle)
+}
+
+unsafe fn init_senders(rt: &mut Runtime) {
+    rt.send0 = ffi_fn(rt.msgSend)
+    rt.send1_ptr = ffi_fn(rt.msgSend)
+    rt.send1_u64 = ffi_fn(rt.msgSend)
+    rt.send2_u64 = ffi_fn(rt.msgSend)
+    rt.tell0 = ffi_fn(rt.msgSend)
+    rt.tell1_ptr = ffi_fn(rt.msgSend)
+    rt.tell1_u64 = ffi_fn(rt.msgSend)
+    rt.tell1_f64 = ffi_fn(rt.msgSend)
+    rt.tell1_size = ffi_fn(rt.msgSend)
+    rt.read_u64 = ffi_fn(rt.msgSend)
+    rt.read_f64 = ffi_fn(rt.msgSend)
+    rt.read_u8 = ffi_fn(rt.msgSend)
+    rt.read_u16 = ffi_fn(rt.msgSend)
+    rt.read_rect = ffi_fn(rt.msgSend)
+    rt.read_size = ffi_fn(rt.msgSend)
+    rt.read_point = ffi_fn(rt.msgSend)
+    rt.set_ptr_u64_u64 = ffi_fn(rt.msgSend)
+    rt.set_ptr_u64 = ffi_fn(rt.msgSend)
+    rt.set_ptr_range = ffi_fn(rt.msgSend)
+    rt.set_viewport = ffi_fn(rt.msgSend)
+    rt.set_scissor = ffi_fn(rt.msgSend)
+    rt.set_clear_color = ffi_fn(rt.msgSend)
+    rt.draw_primitives = ffi_fn(rt.msgSend)
+    rt.replace_region = ffi_fn(rt.msgSend)
+    rt.get_bytes = ffi_fn(rt.msgSend)
+    rt.next_event = ffi_fn(rt.msgSend)
+}
+
+unsafe fn register_selectors(rt: &mut Runtime) {
+    reg := rt.registerName
+    rt.sel = Selectors {
+        alloc: reg(cstr("alloc")),
+        init: reg(cstr("init")),
+        retain: reg(cstr("retain")),
+        responds_to_selector: reg(cstr("respondsToSelector:")),
+        init_with_bytes: reg(cstr("initWithBytes:length:encoding:")),
+        utf8_string: reg(cstr("UTF8String")),
+        localized_description: reg(cstr("localizedDescription")),
+        distant_past: reg(cstr("distantPast")),
+        object_at: reg(cstr("objectAtIndexedSubscript:")),
+        name: reg(cstr("name")),
+        new_command_queue: reg(cstr("newCommandQueue")),
+        command_buffer: reg(cstr("commandBuffer")),
+        commit: reg(cstr("commit")),
+        wait_until_completed: reg(cstr("waitUntilCompleted")),
+        status: reg(cstr("status")),
+        error: reg(cstr("error")),
+        present_drawable: reg(cstr("presentDrawable:")),
+        max_buffer_length: reg(cstr("maxBufferLength")),
+        new_buffer: reg(cstr("newBufferWithLength:options:")),
+        contents: reg(cstr("contents")),
+        new_texture: reg(cstr("newTextureWithDescriptor:")),
+        set_texture_type: reg(cstr("setTextureType:")),
+        set_pixel_format: reg(cstr("setPixelFormat:")),
+        set_width: reg(cstr("setWidth:")),
+        set_height: reg(cstr("setHeight:")),
+        set_mipmap_level_count: reg(cstr("setMipmapLevelCount:")),
+        set_usage: reg(cstr("setUsage:")),
+        set_storage_mode: reg(cstr("setStorageMode:")),
+        replace_region: reg(cstr("replaceRegion:mipmapLevel:withBytes:bytesPerRow:")),
+        get_bytes: reg(cstr("getBytes:bytesPerRow:fromRegion:mipmapLevel:")),
+        width: reg(cstr("width")),
+        height: reg(cstr("height")),
+        new_sampler: reg(cstr("newSamplerStateWithDescriptor:")),
+        set_min_filter: reg(cstr("setMinFilter:")),
+        set_mag_filter: reg(cstr("setMagFilter:")),
+        set_mip_filter: reg(cstr("setMipFilter:")),
+        set_s_address_mode: reg(cstr("setSAddressMode:")),
+        set_t_address_mode: reg(cstr("setTAddressMode:")),
+        set_r_address_mode: reg(cstr("setRAddressMode:")),
+        new_depth_state: reg(cstr("newDepthStencilStateWithDescriptor:")),
+        set_depth_compare: reg(cstr("setDepthCompareFunction:")),
+        set_depth_write: reg(cstr("setDepthWriteEnabled:")),
+        new_library: reg(cstr("newLibraryWithSource:options:error:")),
+        new_function: reg(cstr("newFunctionWithName:")),
+        new_pipeline: reg(cstr("newRenderPipelineStateWithDescriptor:error:")),
+        set_vertex_function: reg(cstr("setVertexFunction:")),
+        set_fragment_function: reg(cstr("setFragmentFunction:")),
+        color_attachments: reg(cstr("colorAttachments")),
+        depth_attachment: reg(cstr("depthAttachment")),
+        set_depth_format: reg(cstr("setDepthAttachmentPixelFormat:")),
+        set_blending_enabled: reg(cstr("setBlendingEnabled:")),
+        set_src_rgb_blend: reg(cstr("setSourceRGBBlendFactor:")),
+        set_dst_rgb_blend: reg(cstr("setDestinationRGBBlendFactor:")),
+        set_rgb_blend_op: reg(cstr("setRgbBlendOperation:")),
+        set_src_alpha_blend: reg(cstr("setSourceAlphaBlendFactor:")),
+        set_dst_alpha_blend: reg(cstr("setDestinationAlphaBlendFactor:")),
+        set_alpha_blend_op: reg(cstr("setAlphaBlendOperation:")),
+        attributes: reg(cstr("attributes")),
+        layouts: reg(cstr("layouts")),
+        set_format: reg(cstr("setFormat:")),
+        set_offset: reg(cstr("setOffset:")),
+        set_buffer_index: reg(cstr("setBufferIndex:")),
+        set_stride: reg(cstr("setStride:")),
+        set_step_function: reg(cstr("setStepFunction:")),
+        set_vertex_descriptor: reg(cstr("setVertexDescriptor:")),
+        render_pass_descriptor: reg(cstr("renderPassDescriptor")),
+        set_texture: reg(cstr("setTexture:")),
+        set_level: reg(cstr("setLevel:")),
+        set_slice: reg(cstr("setSlice:")),
+        set_load_action: reg(cstr("setLoadAction:")),
+        set_store_action: reg(cstr("setStoreAction:")),
+        set_clear_color: reg(cstr("setClearColor:")),
+        render_encoder: reg(cstr("renderCommandEncoderWithDescriptor:")),
+        end_encoding: reg(cstr("endEncoding")),
+        set_viewport: reg(cstr("setViewport:")),
+        set_scissor_rect: reg(cstr("setScissorRect:")),
+        set_depth_state: reg(cstr("setDepthStencilState:")),
+        set_pipeline: reg(cstr("setRenderPipelineState:")),
+        set_cull_mode: reg(cstr("setCullMode:")),
+        set_winding: reg(cstr("setFrontFacingWinding:")),
+        set_vertex_bytes: reg(cstr("setVertexBytes:length:atIndex:")),
+        set_fragment_bytes: reg(cstr("setFragmentBytes:length:atIndex:")),
+        set_vertex_buffer: reg(cstr("setVertexBuffer:offset:atIndex:")),
+        set_fragment_texture: reg(cstr("setFragmentTexture:atIndex:")),
+        set_fragment_textures: reg(cstr("setFragmentTextures:withRange:")),
+        set_fragment_sampler: reg(cstr("setFragmentSamplerState:atIndex:")),
+        set_fragment_samplers: reg(cstr("setFragmentSamplerStates:withRange:")),
+        draw_primitives: reg(cstr("drawPrimitives:vertexStart:vertexCount:")),
+        next_drawable: reg(cstr("nextDrawable")),
+        texture: reg(cstr("texture")),
+        drawable_size: reg(cstr("drawableSize")),
+        set_drawable_size: reg(cstr("setDrawableSize:")),
+        set_framebuffer_only: reg(cstr("setFramebufferOnly:")),
+        set_device: reg(cstr("setDevice:")),
+        set_colorspace: reg(cstr("setColorspace:")),
+        set_contents_scale: reg(cstr("setContentsScale:")),
+        shared_application: reg(cstr("sharedApplication")),
+        set_activation_policy: reg(cstr("setActivationPolicy:")),
+        finish_launching: reg(cstr("finishLaunching")),
+        set_main_menu: reg(cstr("setMainMenu:")),
+        set_autoenables_items: reg(cstr("setAutoenablesItems:")),
+        add_item: reg(cstr("addItem:")),
+        add_item_with_title: reg(cstr("addItemWithTitle:action:keyEquivalent:")),
+        set_submenu: reg(cstr("setSubmenu:forItem:")),
+        terminate: reg(cstr("terminate:")),
+        activate: reg(cstr("activate")),
+        activate_ignoring_other_apps: reg(cstr("activateIgnoringOtherApps:")),
+        is_active: reg(cstr("isActive")),
+        next_event: reg(cstr("nextEventMatchingMask:untilDate:inMode:dequeue:")),
+        send_event: reg(cstr("sendEvent:")),
+        init_window: reg(cstr("initWithContentRect:styleMask:backing:defer:")),
+        set_released_when_closed: reg(cstr("setReleasedWhenClosed:")),
+        set_content_view: reg(cstr("setContentView:")),
+        set_title: reg(cstr("setTitle:")),
+        set_accepts_mouse_moved: reg(cstr("setAcceptsMouseMovedEvents:")),
+        center: reg(cstr("center")),
+        make_key_and_order_front: reg(cstr("makeKeyAndOrderFront:")),
+        make_first_responder: reg(cstr("makeFirstResponder:")),
+        is_visible: reg(cstr("isVisible")),
+        is_key_window: reg(cstr("isKeyWindow")),
+        backing_scale_factor: reg(cstr("backingScaleFactor")),
+        set_content_size: reg(cstr("setContentSize:")),
+        window_number: reg(cstr("windowNumber")),
+        close: reg(cstr("close")),
+        set_autoresizing_mask: reg(cstr("setAutoresizingMask:")),
+        set_wants_layer: reg(cstr("setWantsLayer:")),
+        set_layer: reg(cstr("setLayer:")),
+        bounds: reg(cstr("bounds")),
+        key_code: reg(cstr("keyCode")),
+        modifier_flags: reg(cstr("modifierFlags")),
+        location_in_window: reg(cstr("locationInWindow")),
+        convert_point_from_view: reg(cstr("convertPoint:fromView:")),
+        event_type: reg(cstr("type")),
+        button_number: reg(cstr("buttonNumber")),
+        delta_x: reg(cstr("deltaX")),
+        delta_y: reg(cstr("deltaY")),
+        scrolling_delta_y: reg(cstr("scrollingDeltaY")),
+        key_down: reg(cstr("keyDown:")),
+        key_up: reg(cstr("keyUp:")),
+        flags_changed: reg(cstr("flagsChanged:")),
+        mouse_down: reg(cstr("mouseDown:")),
+        mouse_up: reg(cstr("mouseUp:")),
+        right_mouse_down: reg(cstr("rightMouseDown:")),
+        right_mouse_up: reg(cstr("rightMouseUp:")),
+        other_mouse_down: reg(cstr("otherMouseDown:")),
+        other_mouse_up: reg(cstr("otherMouseUp:")),
+        mouse_moved: reg(cstr("mouseMoved:")),
+        mouse_dragged: reg(cstr("mouseDragged:")),
+        right_mouse_dragged: reg(cstr("rightMouseDragged:")),
+        other_mouse_dragged: reg(cstr("otherMouseDragged:")),
+        scroll_wheel: reg(cstr("scrollWheel:")),
+        accepts_first_mouse: reg(cstr("acceptsFirstMouse:")),
+        key_event: reg(cstr("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:")),
+        mouse_event: reg(cstr("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:")),
+        shared_workspace: reg(cstr("sharedWorkspace")),
+        frontmost_application: reg(cstr("frontmostApplication")),
+        localized_name: reg(cstr("localizedName")),
+    }
+}
+
+unsafe fn nsstring_retained(rt: &Runtime, value: string) -> ptr {
+    init_bytes: extern fn(ptr, ptr, ptr, u64, u64) -> ptr = ffi_fn(rt.msgSend)
+    view := value.as_bytes()
+    first := if value.len == 0 { ptr(0) } else { addr(&view[0]) }
+    init_bytes(send(rt, rt.cls.ns_string, rt.sel.alloc), rt.sel.init_with_bytes, first, u64(value.len), 4)
 }
 
 // A preview needs Foundation and Metal. Cache the process-lifetime handles
@@ -95,41 +539,54 @@ pub unsafe fn load_metal() -> Result<Runtime, string> {
     rt.allocateClassPair = ffi_fn(symbol(objc, cstr("objc_allocateClassPair"))?)
     rt.addMethod = symbol(objc, cstr("class_addMethod"))?
     rt.registerClassPair = ffi_fn(symbol(objc, cstr("objc_registerClassPair"))?)
-    _ := framework(cstr("/System/Library/Frameworks/Foundation.framework/Foundation"), "Foundation")?
+    init_senders(&mut rt)
+    register_selectors(&mut rt)
+    rt.foundation = framework(cstr("/System/Library/Frameworks/Foundation.framework/Foundation"), "Foundation")?
     rt.metal = framework(cstr("/System/Library/Frameworks/Metal.framework/Metal"), "Metal")?
+    cls := rt.getClass
+    rt.cls.ns_string = cls(cstr("NSString"))
+    rt.cls.ns_date = cls(cstr("NSDate"))
+    rt.cls.mtl_render_pass_descriptor = cls(cstr("MTLRenderPassDescriptor"))
+    rt.cls.mtl_texture_descriptor = cls(cstr("MTLTextureDescriptor"))
+    rt.cls.mtl_sampler_descriptor = cls(cstr("MTLSamplerDescriptor"))
+    rt.cls.mtl_depth_stencil_descriptor = cls(cstr("MTLDepthStencilDescriptor"))
+    rt.cls.mtl_render_pipeline_descriptor = cls(cstr("MTLRenderPipelineDescriptor"))
+    rt.cls.mtl_vertex_descriptor = cls(cstr("MTLVertexDescriptor"))
+    rt.cls.mtl_compile_options = cls(cstr("MTLCompileOptions"))
+    pool := rt.poolPush()
+    rt.distant_past = send(&rt, send(&rt, rt.cls.ns_date, rt.sel.distant_past), rt.sel.retain)
+    mode_sym := dl.symbol(rt.foundation, cstr("NSDefaultRunLoopMode"))
+    if mode_sym != ptr(0) && load_ptr(mode_sym) != ptr(0) {
+        rt.default_run_loop_mode = send(&rt, load_ptr(mode_sym), rt.sel.retain)
+    } else {
+        rt.default_run_loop_mode = nsstring_retained(&rt, "kCFRunLoopDefaultMode")
+    }
+    rt.poolPop(pool)
     install(ref_at(runtime_address()), &rt)
     .Ok(rt)
 }
 
 // Window and layer classes are only needed by a visible application.
 pub unsafe fn load() -> Result<Runtime, string> {
-    rt := load_metal()?
+    mut rt := load_metal()?
+    if rt.cls.ns_application != ptr(0) { return .Ok(rt) }
     if rt.getClass(cstr("CAMetalLayer")) == ptr(0) {
         _ := framework(cstr("/System/Library/Frameworks/QuartzCore.framework/QuartzCore"), "QuartzCore")?
     }
     if rt.getClass(cstr("NSApplication")) == ptr(0) {
         _ := framework(cstr("/System/Library/Frameworks/AppKit.framework/AppKit"), "AppKit")?
     }
+    cls := rt.getClass
+    rt.cls.ca_metal_layer = cls(cstr("CAMetalLayer"))
+    rt.cls.ns_application = cls(cstr("NSApplication"))
+    rt.cls.ns_menu = cls(cstr("NSMenu"))
+    rt.cls.ns_menu_item = cls(cstr("NSMenuItem"))
+    rt.cls.ns_view = cls(cstr("NSView"))
+    rt.cls.ns_window = cls(cstr("NSWindow"))
+    rt.cls.ns_event = cls(cstr("NSEvent"))
+    rt.cls.ns_workspace = cls(cstr("NSWorkspace"))
+    install(ref_at(runtime_address()), &rt)
     .Ok(rt)
-}
-
-// ---- selectors ----
-
-pub unsafe fn selector(rt: &Runtime, name: ptr) -> ptr {
-    mut slot := i32(usize(name).bit_and(usize(CACHE_SLOTS - 1)))
-    for _ in 0..CACHE_SLOTS {
-        entry := ptr(usize(cache_address()) + usize(slot * 16))
-        key := load_ptr(entry)
-        if key == name { return load_ptr(ptr(usize(entry) + 8)) }
-        if key == ptr(0) {
-            chosen := rt.registerName(name)
-            store_ptr(ptr(usize(entry) + 8), chosen)
-            store_ptr(entry, name)
-            return chosen
-        }
-        slot = (slot + 1) % CACHE_SLOTS
-    }
-    rt.registerName(name)
 }
 
 // ---- messages, by shape ----
@@ -138,88 +595,83 @@ pub unsafe fn selector(rt: &Runtime, name: ptr) -> ptr {
 // for what they read. A method that returns nothing must be sent as `tell`:
 // its return register holds whatever the callee last left there.
 
-pub unsafe fn send(rt: &Runtime, to: ptr, name: ptr) -> ptr {
-    call: extern fn(ptr, ptr) -> ptr = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name))
+pub unsafe fn send(rt: &Runtime, to: ptr, sel: ptr) -> ptr {
+    call := rt.send0
+    call(to, sel)
 }
 
-pub unsafe fn send_to(rt: &Runtime, to: ptr, name: ptr, argument: ptr) -> ptr {
-    call: extern fn(ptr, ptr, ptr) -> ptr = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name), argument)
+pub unsafe fn send_to(rt: &Runtime, to: ptr, sel: ptr, argument: ptr) -> ptr {
+    call := rt.send1_ptr
+    call(to, sel, argument)
 }
 
-pub unsafe fn send_pair(rt: &Runtime, to: ptr, name: ptr, first: u64, second: u64) -> ptr {
-    call: extern fn(ptr, ptr, u64, u64) -> ptr = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name), first, second)
+pub unsafe fn send_pair(rt: &Runtime, to: ptr, sel: ptr, first: u64, second: u64) -> ptr {
+    call := rt.send2_u64
+    call(to, sel, first, second)
 }
 
-pub unsafe fn tell(rt: &Runtime, to: ptr, name: ptr) {
-    call: extern fn(ptr, ptr) = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name))
+pub unsafe fn tell(rt: &Runtime, to: ptr, sel: ptr) {
+    call := rt.tell0
+    call(to, sel)
 }
 
-pub unsafe fn tell_to(rt: &Runtime, to: ptr, name: ptr, argument: ptr) {
-    call: extern fn(ptr, ptr, ptr) = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name), argument)
+pub unsafe fn tell_to(rt: &Runtime, to: ptr, sel: ptr, argument: ptr) {
+    call := rt.tell1_ptr
+    call(to, sel, argument)
 }
 
-pub unsafe fn tell_number(rt: &Runtime, to: ptr, name: ptr, value: u64) {
-    call: extern fn(ptr, ptr, u64) = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name), value)
+pub unsafe fn tell_number(rt: &Runtime, to: ptr, sel: ptr, value: u64) {
+    call := rt.tell1_u64
+    call(to, sel, value)
 }
 
-pub unsafe fn tell_decimal(rt: &Runtime, to: ptr, name: ptr, value: f64) {
-    call: extern fn(ptr, ptr, f64) = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name), value)
+pub unsafe fn tell_decimal(rt: &Runtime, to: ptr, sel: ptr, value: f64) {
+    call := rt.tell1_f64
+    call(to, sel, value)
 }
 
-pub unsafe fn tell_size(rt: &Runtime, to: ptr, name: ptr, value: records.Size) {
-    call: extern fn(ptr, ptr, records.Size) = ffi_fn(rt.msgSend)
-    call(to, selector(rt, name), value)
+pub unsafe fn tell_size(rt: &Runtime, to: ptr, sel: ptr, value: records.Size) {
+    call := rt.tell1_size
+    call(to, sel, value)
 }
 
-pub unsafe fn number(rt: &Runtime, from: ptr, name: ptr) -> u64 {
-    call: extern fn(ptr, ptr) -> u64 = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name))
+pub unsafe fn number(rt: &Runtime, from: ptr, sel: ptr) -> u64 {
+    call := rt.read_u64
+    call(from, sel)
 }
 
-pub unsafe fn decimal(rt: &Runtime, from: ptr, name: ptr) -> f64 {
-    call: extern fn(ptr, ptr) -> f64 = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name))
+pub unsafe fn decimal(rt: &Runtime, from: ptr, sel: ptr) -> f64 {
+    call := rt.read_f64
+    call(from, sel)
 }
 
 // A BOOL, which is one byte in the low byte of the result register.
-pub unsafe fn flag(rt: &Runtime, from: ptr, name: ptr) -> bool {
-    call: extern fn(ptr, ptr) -> u8 = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name)) != 0
+pub unsafe fn flag(rt: &Runtime, from: ptr, sel: ptr) -> bool {
+    call := rt.read_u8
+    call(from, sel) != 0
 }
 
 // An unsigned short: NSEvent's keyCode.
-pub unsafe fn code(rt: &Runtime, from: ptr, name: ptr) -> u16 {
-    call: extern fn(ptr, ptr) -> u16 = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name))
+pub unsafe fn code(rt: &Runtime, from: ptr, sel: ptr) -> u16 {
+    call := rt.read_u16
+    call(from, sel)
 }
 
-pub unsafe fn bounds(rt: &Runtime, from: ptr, name: ptr) -> records.Rect {
-    call: extern fn(ptr, ptr) -> records.Rect = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name))
+pub unsafe fn bounds(rt: &Runtime, from: ptr, sel: ptr) -> records.Rect {
+    call := rt.read_rect
+    call(from, sel)
 }
 
-pub unsafe fn measure(rt: &Runtime, from: ptr, name: ptr) -> records.Size {
-    call: extern fn(ptr, ptr) -> records.Size = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name))
-}
-
-pub unsafe fn position(rt: &Runtime, from: ptr, name: ptr) -> records.Point {
-    call: extern fn(ptr, ptr) -> records.Point = ffi_fn(rt.msgSend)
-    call(from, selector(rt, name))
+pub unsafe fn measure(rt: &Runtime, from: ptr, sel: ptr) -> records.Size {
+    call := rt.read_size
+    call(from, sel)
 }
 
 // ---- objects ----
 
 // An owned instance: alloc, then init. Release it once, when it is done with.
-pub unsafe fn make(rt: &Runtime, class: ptr) -> ptr {
-    send(rt, send(rt, class, cstr("alloc")), cstr("init"))
+pub unsafe fn make(rt: &Runtime, cls: ptr) -> ptr {
+    send(rt, send(rt, cls, rt.sel.alloc), rt.sel.init)
 }
 
 pub unsafe fn class(rt: &Runtime, name: ptr) -> ptr { rt.getClass(name) }
@@ -234,10 +686,10 @@ pub unsafe fn subclass(rt: &Runtime, base: ptr, name: ptr) -> Result<ptr, string
 // Give a class a method whose body is a Dunder function with the shape every
 // event method has: the object, the selector, one object argument, nothing
 // returned. True when the method was added.
-pub unsafe fn add_method(rt: &Runtime, owner: ptr, name: ptr, implementation: extern fn(ptr, ptr, ptr)) -> bool {
+pub unsafe fn add_method(rt: &Runtime, owner: ptr, sel: ptr, implementation: extern fn(ptr, ptr, ptr)) -> bool {
     add: extern fn(ptr, ptr, extern fn(ptr, ptr, ptr), ptr) -> u8 = ffi_fn(rt.addMethod)
     // "v@:@": nothing returned, an object, a selector, an object.
-    add(owner, selector(rt, name), implementation, cstr("v@:@")) != 0
+    add(owner, sel, implementation, cstr("v@:@")) != 0
 }
 
 pub unsafe fn register_class(rt: &Runtime, owner: ptr) { rt.registerClassPair(owner) }
@@ -264,11 +716,7 @@ pub unsafe fn from_cstring(raw: ptr) -> string {
 // surrounding pool is popped. The bytes are read during the call only. (Not
 // `string`: a function of that name would shadow the type in this module.)
 pub unsafe fn nsstring(rt: &Runtime, value: string) -> ptr {
-    init_bytes: extern fn(ptr, ptr, ptr, u64, u64) -> ptr = ffi_fn(rt.msgSend)
-    view := value.as_bytes()
-    first := if value.len == 0 { ptr(0) } else { addr(&view[0]) }
-    made := init_bytes(send(rt, class(rt, cstr("NSString")), cstr("alloc")), selector(rt, cstr("initWithBytes:length:encoding:")),
-        first, u64(value.len), 4) // NSUTF8StringEncoding
+    made := nsstring_retained(rt, value)
     _ := rt.autorelease(made)
     made
 }
@@ -276,5 +724,5 @@ pub unsafe fn nsstring(rt: &Runtime, value: string) -> ptr {
 // The Dunder string an NSString holds.
 pub unsafe fn text(rt: &Runtime, value: ptr) -> string {
     if value == ptr(0) { return "" }
-    from_cstring(send(rt, value, cstr("UTF8String")))
+    from_cstring(send(rt, value, rt.sel.utf8_string))
 }

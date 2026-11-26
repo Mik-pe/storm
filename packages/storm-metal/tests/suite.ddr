@@ -6,6 +6,7 @@ import gfx
 import ..src.appkit as appkit
 import ..src.capture as capture
 import ..src.enums as enums
+import ..src.objc as objc
 import ..src.records as records
 
 // The values as the macOS SDK's own compiler prints them: a C program that
@@ -108,6 +109,9 @@ import ..src.records as records
     assert(size_of(records.Extent) == 24) // MTLSize
     assert(size_of(records.Origin) == 24) // MTLOrigin
     assert(size_of(records.Region) == 48) // MTLRegion
+    assert(size_of(records.ScissorRect) == 32) // MTLScissorRect
+    assert(size_of(records.Range) == 16) // NSRange
+    assert(size_of(objc.Runtime) <= 2048)
     area := records.region(3, 4, 640, 400)
     assert(area.origin.x == 3 && area.origin.y == 4 && area.origin.z == 0)
     assert(area.size.width == 640 && area.size.height == 400 && area.size.depth == 1)

@@ -30,9 +30,9 @@ pub struct Buffer {
 
 pub unsafe fn buffer(rt: &objc.Runtime, device: ptr, capacity: u64) -> Result<Buffer, string> {
     // newBufferWithLength:options:, in shared storage.
-    made := objc.send_pair(rt, device, cstr("newBufferWithLength:options:"), capacity, enums.buffer_storage(.Shared))
+    made := objc.send_pair(rt, device, rt.sel.new_buffer, capacity, enums.buffer_storage(.Shared))
     if made == ptr(0) { return .Err("the device could not make a buffer") }
-    address := objc.send(rt, made, cstr("contents"))
+    address := objc.send(rt, made, rt.sel.contents)
     if address == ptr(0) {
         rt.release(made)
         return .Err("the buffer the device made cannot be written from the CPU")
@@ -62,15 +62,15 @@ pub unsafe fn append(buffer: &Buffer, cursor: &mut u64, bytes: u64, source: ptr)
 // A texture `width` x `height`, with `mips` mip levels (1 for none).
 pub unsafe fn texture(rt: &objc.Runtime, device: ptr, kind: enums.TextureType, format: enums.PixelFormat,
     width: u64, height: u64, mips: u64, usage: enums.TextureUsage, storage: enums.StorageMode) -> Result<ptr, string> {
-    descriptor := objc.make(rt, objc.class(rt, cstr("MTLTextureDescriptor")))
-    objc.tell_number(rt, descriptor, cstr("setTextureType:"), enums.texture_type(kind))
-    objc.tell_number(rt, descriptor, cstr("setPixelFormat:"), enums.pixel_format(format))
-    objc.tell_number(rt, descriptor, cstr("setWidth:"), width)
-    objc.tell_number(rt, descriptor, cstr("setHeight:"), height)
-    objc.tell_number(rt, descriptor, cstr("setMipmapLevelCount:"), mips)
-    objc.tell_number(rt, descriptor, cstr("setUsage:"), enums.texture_usage(usage))
-    objc.tell_number(rt, descriptor, cstr("setStorageMode:"), enums.storage_mode(storage))
-    made := objc.send_to(rt, device, cstr("newTextureWithDescriptor:"), descriptor)
+    descriptor := objc.make(rt, rt.cls.mtl_texture_descriptor)
+    objc.tell_number(rt, descriptor, rt.sel.set_texture_type, enums.texture_type(kind))
+    objc.tell_number(rt, descriptor, rt.sel.set_pixel_format, enums.pixel_format(format))
+    objc.tell_number(rt, descriptor, rt.sel.set_width, width)
+    objc.tell_number(rt, descriptor, rt.sel.set_height, height)
+    objc.tell_number(rt, descriptor, rt.sel.set_mipmap_level_count, mips)
+    objc.tell_number(rt, descriptor, rt.sel.set_usage, enums.texture_usage(usage))
+    objc.tell_number(rt, descriptor, rt.sel.set_storage_mode, enums.storage_mode(storage))
+    made := objc.send_to(rt, device, rt.sel.new_texture, descriptor)
     rt.release(descriptor)
     if made == ptr(0) { return .Err("the device could not make a " + width.str() + "x" + height.str() + " texture") }
     .Ok(made)
@@ -79,25 +79,25 @@ pub unsafe fn texture(rt: &objc.Runtime, device: ptr, kind: enums.TextureType, f
 // Fill a whole 2D texture from bytes, row after row with no padding between
 // rows. The texture must be in shared storage.
 pub unsafe fn upload(rt: &objc.Runtime, target: ptr, width: u64, height: u64, bytes_per_row: u64, source: ptr) {
-    // replaceRegion:mipmapLevel:withBytes:bytesPerRow:
-    replace: extern fn(ptr, ptr, ptr, u64, ptr, u64) = ffi_fn(rt.msgSend)
-    mut area := records.region(0, 0, width, height)
-    replace(target, objc.selector(rt, cstr("replaceRegion:mipmapLevel:withBytes:bytesPerRow:")), addr(&mut area), 0, source, bytes_per_row)
+    if target_is("macos") {
+        replace := rt.replace_region
+        replace(target, rt.sel.replace_region, records.region(0, 0, width, height), 0, source, bytes_per_row)
+    }
 }
 
 // ---- samplers ----
 
-// The Metal sampler for a gfx.Sampler, the same on every axis. The one
-// place outside enums.ddr that names a selector of MTLSamplerDescriptor.
+// The Metal sampler for a gfx.Sampler, the same on every axis.
 pub unsafe fn sampler(rt: &objc.Runtime, device: ptr, spec: &gfx.Sampler) -> Result<ptr, string> {
-    descriptor := objc.make(rt, objc.class(rt, cstr("MTLSamplerDescriptor")))
-    objc.tell_number(rt, descriptor, cstr("setMinFilter:"), enums.sampler_filter(spec.min))
-    objc.tell_number(rt, descriptor, cstr("setMagFilter:"), enums.sampler_filter(spec.mag))
-    objc.tell_number(rt, descriptor, cstr("setMipFilter:"), enums.sampler_mip_filter(spec.mips))
-    for axis in [cstr("setSAddressMode:"), cstr("setTAddressMode:"), cstr("setRAddressMode:")] {
-        objc.tell_number(rt, descriptor, axis, enums.sampler_address_mode(spec.wrap))
+    descriptor := objc.make(rt, rt.cls.mtl_sampler_descriptor)
+    objc.tell_number(rt, descriptor, rt.sel.set_min_filter, enums.sampler_filter(spec.min))
+    objc.tell_number(rt, descriptor, rt.sel.set_mag_filter, enums.sampler_filter(spec.mag))
+    objc.tell_number(rt, descriptor, rt.sel.set_mip_filter, enums.sampler_mip_filter(spec.mips))
+    mode := enums.sampler_address_mode(spec.wrap)
+    for axis in [rt.sel.set_s_address_mode, rt.sel.set_t_address_mode, rt.sel.set_r_address_mode] {
+        objc.tell_number(rt, descriptor, axis, mode)
     }
-    made := objc.send_to(rt, device, cstr("newSamplerStateWithDescriptor:"), descriptor)
+    made := objc.send_to(rt, device, rt.sel.new_sampler, descriptor)
     rt.release(descriptor)
     if made == ptr(0) { return .Err("the device could not make a sampler") }
     .Ok(made)
@@ -123,10 +123,10 @@ pub fn trilinear() -> gfx.Sampler {
 
 // Whether fragments are dropped by depth and whether they write it.
 pub unsafe fn depth_state(rt: &objc.Runtime, device: ptr, compare: enums.CompareFunction, writes: bool) -> Result<ptr, string> {
-    descriptor := objc.make(rt, objc.class(rt, cstr("MTLDepthStencilDescriptor")))
-    objc.tell_number(rt, descriptor, cstr("setDepthCompareFunction:"), enums.compare_function(compare))
-    objc.tell_number(rt, descriptor, cstr("setDepthWriteEnabled:"), u64(if writes { 1 } else { 0 }))
-    made := objc.send_to(rt, device, cstr("newDepthStencilStateWithDescriptor:"), descriptor)
+    descriptor := objc.make(rt, rt.cls.mtl_depth_stencil_descriptor)
+    objc.tell_number(rt, descriptor, rt.sel.set_depth_compare, enums.compare_function(compare))
+    objc.tell_number(rt, descriptor, rt.sel.set_depth_write, u64(if writes { 1 } else { 0 }))
+    made := objc.send_to(rt, device, rt.sel.new_depth_state, descriptor)
     rt.release(descriptor)
     if made == ptr(0) { return .Err("the device could not make a depth state") }
     .Ok(made)
@@ -161,50 +161,50 @@ pub unsafe fn no_pipeline() -> Pipeline { Pipeline { state: ptr(0), cull: .None 
 
 // The `index`th attachment of a descriptor's array of them.
 pub unsafe fn attachment(rt: &objc.Runtime, array: ptr, index: u64) -> ptr {
-    object: extern fn(ptr, ptr, u64) -> ptr = ffi_fn(rt.msgSend)
-    object(array, objc.selector(rt, cstr("objectAtIndexedSubscript:")), index)
+    object := rt.send1_u64
+    object(array, rt.sel.object_at, index)
 }
 
 // Alpha-over blending for glass and the UI.
 unsafe fn alpha_over(rt: &objc.Runtime, colour: ptr) {
-    objc.tell_number(rt, colour, cstr("setBlendingEnabled:"), 1)
-    objc.tell_number(rt, colour, cstr("setSourceRGBBlendFactor:"), enums.blend_factor(.SourceAlpha))
-    objc.tell_number(rt, colour, cstr("setDestinationRGBBlendFactor:"), enums.blend_factor(.OneMinusSourceAlpha))
-    objc.tell_number(rt, colour, cstr("setRgbBlendOperation:"), enums.blend_operation(.Add))
-    objc.tell_number(rt, colour, cstr("setSourceAlphaBlendFactor:"), enums.blend_factor(.One))
-    objc.tell_number(rt, colour, cstr("setDestinationAlphaBlendFactor:"), enums.blend_factor(.OneMinusSourceAlpha))
-    objc.tell_number(rt, colour, cstr("setAlphaBlendOperation:"), enums.blend_operation(.Add))
+    objc.tell_number(rt, colour, rt.sel.set_blending_enabled, 1)
+    objc.tell_number(rt, colour, rt.sel.set_src_rgb_blend, enums.blend_factor(.SourceAlpha))
+    objc.tell_number(rt, colour, rt.sel.set_dst_rgb_blend, enums.blend_factor(.OneMinusSourceAlpha))
+    objc.tell_number(rt, colour, rt.sel.set_rgb_blend_op, enums.blend_operation(.Add))
+    objc.tell_number(rt, colour, rt.sel.set_src_alpha_blend, enums.blend_factor(.One))
+    objc.tell_number(rt, colour, rt.sel.set_dst_alpha_blend, enums.blend_factor(.OneMinusSourceAlpha))
+    objc.tell_number(rt, colour, rt.sel.set_alpha_blend_op, enums.blend_operation(.Add))
 }
 
 // Describe the vertex layout to the pipeline: attributes interleaved
 // in buffer 0.
 unsafe fn vertex_layout(rt: &objc.Runtime, descriptor: ptr, vertices: Vertices) {
-    layout := objc.make(rt, objc.class(rt, cstr("MTLVertexDescriptor")))
-    attributes := objc.send(rt, layout, cstr("attributes"))
+    layout := objc.make(rt, rt.cls.mtl_vertex_descriptor)
+    attributes := objc.send(rt, layout, rt.sel.attributes)
     first := attachment(rt, attributes, 0)
     second := attachment(rt, attributes, 1)
     mut stride := u64(gfx.VERTEX_BYTES)
     if vertices == .Ui {
         // [x, y, u, v] then [r, g, b, a]: two float4, 32 bytes a vertex.
-        objc.tell_number(rt, first, cstr("setFormat:"), enums.vertex_format(.Float4))
-        objc.tell_number(rt, second, cstr("setFormat:"), enums.vertex_format(.Float4))
-        objc.tell_number(rt, second, cstr("setOffset:"), 16)
+        objc.tell_number(rt, first, rt.sel.set_format, enums.vertex_format(.Float4))
+        objc.tell_number(rt, second, rt.sel.set_format, enums.vertex_format(.Float4))
+        objc.tell_number(rt, second, rt.sel.set_offset, 16)
         stride = 32
     } else {
         uv := attachment(rt, attributes, 2)
-        objc.tell_number(rt, uv, cstr("setFormat:"), enums.vertex_format(.Float2))
-        objc.tell_number(rt, uv, cstr("setOffset:"), u64(gfx.UV_OFFSET))
-        objc.tell_number(rt, uv, cstr("setBufferIndex:"), 0)
-        objc.tell_number(rt, first, cstr("setFormat:"), enums.vertex_format(.Float3))
-        objc.tell_number(rt, second, cstr("setFormat:"), enums.vertex_format(.Float3))
-        objc.tell_number(rt, second, cstr("setOffset:"), u64(gfx.NORMAL_OFFSET))
+        objc.tell_number(rt, uv, rt.sel.set_format, enums.vertex_format(.Float2))
+        objc.tell_number(rt, uv, rt.sel.set_offset, u64(gfx.UV_OFFSET))
+        objc.tell_number(rt, uv, rt.sel.set_buffer_index, 0)
+        objc.tell_number(rt, first, rt.sel.set_format, enums.vertex_format(.Float3))
+        objc.tell_number(rt, second, rt.sel.set_format, enums.vertex_format(.Float3))
+        objc.tell_number(rt, second, rt.sel.set_offset, u64(gfx.NORMAL_OFFSET))
     }
-    objc.tell_number(rt, first, cstr("setOffset:"), 0)
-    for attribute in [first, second] { objc.tell_number(rt, attribute, cstr("setBufferIndex:"), 0) }
-    rows := attachment(rt, objc.send(rt, layout, cstr("layouts")), 0)
-    objc.tell_number(rt, rows, cstr("setStride:"), stride)
-    objc.tell_number(rt, rows, cstr("setStepFunction:"), enums.vertex_step_function(.PerVertex))
-    objc.tell_to(rt, descriptor, cstr("setVertexDescriptor:"), layout)
+    objc.tell_number(rt, first, rt.sel.set_offset, 0)
+    for attribute in [first, second] { objc.tell_number(rt, attribute, rt.sel.set_buffer_index, 0) }
+    rows := attachment(rt, objc.send(rt, layout, rt.sel.layouts), 0)
+    objc.tell_number(rt, rows, rt.sel.set_stride, stride)
+    objc.tell_number(rt, rows, rt.sel.set_step_function, enums.vertex_step_function(.PerVertex))
+    objc.tell_to(rt, descriptor, rt.sel.set_vertex_descriptor, layout)
     // The pipeline descriptor keeps its own copy.
     rt.release(layout)
 }
@@ -214,7 +214,7 @@ unsafe fn vertex_layout(rt: &objc.Runtime, descriptor: ptr, vertices: Vertices) 
 // function and, when `fragment` is not empty, the named fragment function.
 pub unsafe fn pipeline(rt: &objc.Runtime, device: ptr, library: ptr, vertex: string, fragment: string,
     colour: enums.PixelFormat, depth: enums.PixelFormat, style: &Style) -> Result<Pipeline, string> {
-    descriptor := objc.make(rt, objc.class(rt, cstr("MTLRenderPipelineDescriptor")))
+    descriptor := objc.make(rt, rt.cls.mtl_render_pipeline_descriptor)
     outcome := fill_pipeline(rt, device, library, vertex, fragment, colour, depth, style, descriptor)
     rt.release(descriptor)
     outcome
@@ -222,22 +222,24 @@ pub unsafe fn pipeline(rt: &objc.Runtime, device: ptr, library: ptr, vertex: str
 
 unsafe fn fill_pipeline(rt: &objc.Runtime, device: ptr, library: ptr, vertex: string, fragment: string,
     colour: enums.PixelFormat, depth: enums.PixelFormat, style: &Style, descriptor: ptr) -> Result<Pipeline, string> {
-    vertex_function := objc.send_to(rt, library, cstr("newFunctionWithName:"), objc.nsstring(rt, vertex))
+    vertex_function := objc.send_to(rt, library, rt.sel.new_function, objc.nsstring(rt, vertex))
     if vertex_function == ptr(0) { return .Err("the shaders have no function " + vertex) }
-    objc.tell_to(rt, descriptor, cstr("setVertexFunction:"), vertex_function)
+    objc.tell_to(rt, descriptor, rt.sel.set_vertex_function, vertex_function)
+    rt.release(vertex_function)
     if fragment.len > 0 {
-        fragment_function := objc.send_to(rt, library, cstr("newFunctionWithName:"), objc.nsstring(rt, fragment))
+        fragment_function := objc.send_to(rt, library, rt.sel.new_function, objc.nsstring(rt, fragment))
         if fragment_function == ptr(0) { return .Err("the shaders have no function " + fragment) }
-        objc.tell_to(rt, descriptor, cstr("setFragmentFunction:"), fragment_function)
+        objc.tell_to(rt, descriptor, rt.sel.set_fragment_function, fragment_function)
+        rt.release(fragment_function)
     }
-    objc.tell_number(rt, attachment(rt, objc.send(rt, descriptor, cstr("colorAttachments")), 0), cstr("setPixelFormat:"), enums.pixel_format(colour))
-    objc.tell_number(rt, descriptor, cstr("setDepthAttachmentPixelFormat:"), enums.pixel_format(depth))
-    if style.blend { alpha_over(rt, attachment(rt, objc.send(rt, descriptor, cstr("colorAttachments")), 0)) }
+    colour_zero := attachment(rt, objc.send(rt, descriptor, rt.sel.color_attachments), 0)
+    objc.tell_number(rt, colour_zero, rt.sel.set_pixel_format, enums.pixel_format(colour))
+    objc.tell_number(rt, descriptor, rt.sel.set_depth_format, enums.pixel_format(depth))
+    if style.blend { alpha_over(rt, colour_zero) }
     if style.vertices != .None { vertex_layout(rt, descriptor, style.vertices) }
-    // newRenderPipelineStateWithDescriptor:error:
     create: extern fn(ptr, ptr, ptr, ptr) -> ptr = ffi_fn(rt.msgSend)
     mut error: ptr = ptr(0)
-    made := create(device, objc.selector(rt, cstr("newRenderPipelineStateWithDescriptor:error:")), descriptor, addr(&mut error))
+    made := create(device, rt.sel.new_pipeline, descriptor, addr(&mut error))
     if made == ptr(0) { return .Err("the " + vertex + " pipeline was refused: " + reason(rt, error)) }
     cull := if style.vertices == .Mesh { enums.CullMode.Back } else { enums.CullMode.None }
     .Ok(Pipeline { state: made, cull: cull })
@@ -246,5 +248,5 @@ unsafe fn fill_pipeline(rt: &objc.Runtime, device: ptr, library: ptr, vertex: st
 // Why Metal said no: the error's own description.
 pub unsafe fn reason(rt: &objc.Runtime, error: ptr) -> string {
     if error == ptr(0) { return "no reason was given" }
-    objc.text(rt, objc.send(rt, error, cstr("localizedDescription")))
+    objc.text(rt, objc.send(rt, error, rt.sel.localized_description))
 }

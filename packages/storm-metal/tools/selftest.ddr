@@ -593,16 +593,20 @@ fn frame_checks(failures: &mut i32) {
     total_bytes := u64(large.len) * 4 * 2
     expect(&mut failures, "a reservation beyond the device limit is refused",
         window.begin_with_vertices(18446744073709551615).is_err())
+    grown_slot := window.frame_slot
     drawn = window.begin_with_vertices(total_bytes).is_ok() && window.shadow_begin(&sky).is_ok() &&
-        window.shadow_mesh(&large, &near_mvp).is_ok() && window.shadow_end().is_ok() && window.begin_pass().is_ok() &&
-        window.mesh(&large, &near_mvp, &near_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, .Opaque).is_ok() && window.end().is_ok()
+    window.shadow_mesh(&large, &near_mvp).is_ok() && window.shadow_end().is_ok() && window.begin_pass().is_ok() &&
+    window.mesh(&large, &near_mvp, &near_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, .Opaque).is_ok() && window.end().is_ok()
     expect(&mut failures, "the shadow and color draws share more than four MiB", drawn && window.vertex_cursor == total_bytes)
     worked(&mut failures, "the grown stream capture is saved", window.save_capture(capture_path()))
     large_capture := read_capture()
     expect(&mut failures, "the last geometry in the grown stream is visible", large_capture.ok && is_green(under(&large_capture, centre, middle, scale)))
-    capacity := window.vertices.capacity
+    capacity := window.vertices[grown_slot].capacity
+    // Advance one frame on the other slot so the next frame lands back on grown_slot.
+    _ := window.begin_with_vertices(32).is_ok() && window.begin_pass().is_ok() && window.end().is_ok()
     expect(&mut failures, "smaller frames retain the allocated vertex space",
-        window.begin_with_vertices(32).is_ok() && window.vertices.capacity == capacity && window.begin_pass().is_ok() && window.end().is_ok())
+        window.frame_slot == grown_slot && window.begin_with_vertices(32).is_ok() &&
+        window.vertices[grown_slot].capacity == capacity && window.begin_pass().is_ok() && window.end().is_ok())
 
     junk: []f32 = [1.0, 2.0]
     worked(&mut failures, "a frame for the invalid-stream probe opens", window.begin())
@@ -636,8 +640,8 @@ fn preview_checks(failures: &mut i32) {
         expect(&mut failures, "an offscreen frame can finish without a presentation drawable",
             preview.begin().is_ok() && preview.begin_pass().is_ok() && preview.end().is_ok())
         drawn := preview.capture_next().is_ok() && preview.begin().is_ok() && preview.begin_pass().is_ok() &&
-            preview.ui_atlas([255], 1, 1).is_ok() &&
-            preview.ui_draw(corners(f32(width), f32(height)), [f32(width), f32(height)]).is_ok() && preview.end().is_ok()
+        preview.ui_atlas([255], 1, 1).is_ok() &&
+        preview.ui_draw(corners(f32(width), f32(height)), [f32(width), f32(height)]).is_ok() && preview.end().is_ok()
         expect(&mut failures, "the preview renders and saves its own color texture", drawn && preview.save_capture(capture_path()).is_ok())
         captured := read_capture()
         expect(&mut failures, "preview pixels have the right dimensions, channels and orientation",

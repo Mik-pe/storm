@@ -87,7 +87,7 @@ unsafe fn render(rt: &objc.Runtime, gpu: ptr, queue: ptr, library: ptr, sky: &gf
     made.sampler = device.sampler(rt, gpu, &trilinear)?
 
     // One command buffer for the whole build.
-    commands := objc.send(rt, queue, cstr("commandBuffer"))
+    commands := objc.send(rt, queue, rt.sel.command_buffer)
     if commands == ptr(0) { return .Err("the queue offered no command buffer for the environment maps") }
 
     // Mip 0 of every face: the sky, from the face's own basis.
@@ -109,11 +109,11 @@ unsafe fn render(rt: &objc.Runtime, gpu: ptr, queue: ptr, library: ptr, sky: &gf
         draw_face(rt, commands, &made.diffuse_pipeline, ptr(0), made.irradiance, 0, u64(face), IRRADIANCE_SIZE, &push, made.cube, made.sampler)
     }
 
-    objc.tell(rt, commands, cstr("commit"))
-    objc.tell(rt, commands, cstr("waitUntilCompleted"))
-    status := objc.number(rt, commands, cstr("status"))
+    objc.tell(rt, commands, rt.sel.commit)
+    objc.tell(rt, commands, rt.sel.wait_until_completed)
+    status := objc.number(rt, commands, rt.sel.status)
     if status != u64(enums.command_status(.Completed)) {
-        return .Err("building the environment maps failed: " + device.reason(rt, objc.send(rt, commands, cstr("error"))))
+        return .Err("building the environment maps failed: " + device.reason(rt, objc.send(rt, commands, rt.sel.error)))
     }
     .Ok
 }

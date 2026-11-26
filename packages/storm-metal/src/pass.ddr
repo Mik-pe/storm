@@ -17,24 +17,23 @@ import .records as records
 // `keep_depth` says so (the shadow map is read by the next pass; the main
 // depth buffer is read by no one).
 pub unsafe fn descriptor(rt: &objc.Runtime, colour: ptr, level: u64, slice: u64, depth: ptr, keep_depth: bool, clear: records.ClearColor) -> ptr {
-    pass := objc.send(rt, objc.class(rt, cstr("MTLRenderPassDescriptor")), cstr("renderPassDescriptor"))
+    pass := objc.send(rt, rt.cls.mtl_render_pass_descriptor, rt.sel.render_pass_descriptor)
     if colour != ptr(0) {
-        target := device.attachment(rt, objc.send(rt, pass, cstr("colorAttachments")), 0)
-        objc.tell_to(rt, target, cstr("setTexture:"), colour)
-        objc.tell_number(rt, target, cstr("setLevel:"), level)
-        objc.tell_number(rt, target, cstr("setSlice:"), slice)
-        objc.tell_number(rt, target, cstr("setLoadAction:"), enums.load_action(.Clear))
-        objc.tell_number(rt, target, cstr("setStoreAction:"), enums.store_action(.Store))
-        // setClearColor: takes MTLClearColor, four doubles, by value.
-        set_clear: extern fn(ptr, ptr, records.ClearColor) = ffi_fn(rt.msgSend)
-        set_clear(target, objc.selector(rt, cstr("setClearColor:")), clear)
+        target := device.attachment(rt, objc.send(rt, pass, rt.sel.color_attachments), 0)
+        objc.tell_to(rt, target, rt.sel.set_texture, colour)
+        objc.tell_number(rt, target, rt.sel.set_level, level)
+        objc.tell_number(rt, target, rt.sel.set_slice, slice)
+        objc.tell_number(rt, target, rt.sel.set_load_action, enums.load_action(.Clear))
+        objc.tell_number(rt, target, rt.sel.set_store_action, enums.store_action(.Store))
+        set_clear := rt.set_clear_color
+        set_clear(target, rt.sel.set_clear_color, clear)
     }
     if depth != ptr(0) {
-        target := objc.send(rt, pass, cstr("depthAttachment"))
-        objc.tell_to(rt, target, cstr("setTexture:"), depth)
-        objc.tell_number(rt, target, cstr("setLoadAction:"), enums.load_action(.Clear))
+        target := objc.send(rt, pass, rt.sel.depth_attachment)
+        objc.tell_to(rt, target, rt.sel.set_texture, depth)
+        objc.tell_number(rt, target, rt.sel.set_load_action, enums.load_action(.Clear))
         after := if keep_depth { enums.store_action(.Store) } else { enums.store_action(.DontCare) }
-        objc.tell_number(rt, target, cstr("setStoreAction:"), after)
+        objc.tell_number(rt, target, rt.sel.set_store_action, after)
     }
     pass
 }
@@ -46,67 +45,73 @@ pub unsafe fn descriptor(rt: &objc.Runtime, colour: ptr, level: u64, slice: u64,
 // the depth state (null for a pass with no depth attachment). The encoder,
 // or null if the pass could not begin.
 pub unsafe fn begin(rt: &objc.Runtime, command_buffer: ptr, descriptor: ptr, width: u64, height: u64, depth_state: ptr) -> ptr {
-    encoder := objc.send_to(rt, command_buffer, cstr("renderCommandEncoderWithDescriptor:"), descriptor)
+    encoder := objc.send_to(rt, command_buffer, rt.sel.render_encoder, descriptor)
     if encoder == ptr(0) { return ptr(0) }
-    // MTLViewport travels by value, which on arm64 is a pointer to a copy.
-    mut view := records.viewport(width, height)
-    set_viewport: extern fn(ptr, ptr, ptr) = ffi_fn(rt.msgSend)
-    set_viewport(encoder, objc.selector(rt, cstr("setViewport:")), addr(&mut view))
-    // MTLScissorRect: x, y, width, height, four NSUInteger, the same way.
-    mut scissor: [u64; 4] = [0, 0, width, height]
-    set_scissor: extern fn(ptr, ptr, ptr) = ffi_fn(rt.msgSend)
-    set_scissor(encoder, objc.selector(rt, cstr("setScissorRect:")), addr(&mut scissor[0]))
+    if target_is("macos") {
+        set_view := rt.set_viewport
+        set_view(encoder, rt.sel.set_viewport, records.viewport(width, height))
+        set_clip := rt.set_scissor
+        set_clip(encoder, rt.sel.set_scissor_rect, records.scissor(width, height))
+    }
     // A pass without a depth attachment is given none: a nil state is refused.
-    if depth_state != ptr(0) { objc.tell_to(rt, encoder, cstr("setDepthStencilState:"), depth_state) }
+    if depth_state != ptr(0) { objc.tell_to(rt, encoder, rt.sel.set_depth_state, depth_state) }
     encoder
 }
 
-pub unsafe fn end(rt: &objc.Runtime, encoder: ptr) { objc.tell(rt, encoder, cstr("endEncoding")) }
+pub unsafe fn end(rt: &objc.Runtime, encoder: ptr) { objc.tell(rt, encoder, rt.sel.end_encoding) }
 
 // Bind a pipeline and tell the encoder what goes with it: which faces are
 // culled, and that a front face winds counter-clockwise on the screen,
 // where y points down (the same front face as on the Vulkan backend).
 pub unsafe fn bind(rt: &objc.Runtime, encoder: ptr, pipeline: &device.Pipeline) {
-    objc.tell_to(rt, encoder, cstr("setRenderPipelineState:"), pipeline.state)
-    objc.tell_number(rt, encoder, cstr("setCullMode:"), enums.cull_mode(pipeline.cull))
-    objc.tell_number(rt, encoder, cstr("setFrontFacingWinding:"), enums.winding(.CounterClockwise))
+    objc.tell_to(rt, encoder, rt.sel.set_pipeline, pipeline.state)
+    objc.tell_number(rt, encoder, rt.sel.set_cull_mode, enums.cull_mode(pipeline.cull))
+    objc.tell_number(rt, encoder, rt.sel.set_winding, enums.winding(.CounterClockwise))
 }
 
 // The pass's constants: `bytes` copied from `words` when the call is made.
 pub unsafe fn vertex_bytes(rt: &objc.Runtime, encoder: ptr, words: ptr, bytes: u64, index: u64) {
-    // setVertexBytes:length:atIndex:
-    set: extern fn(ptr, ptr, ptr, u64, u64) = ffi_fn(rt.msgSend)
-    set(encoder, objc.selector(rt, cstr("setVertexBytes:length:atIndex:")), words, bytes, index)
+    call := rt.set_ptr_u64_u64
+    call(encoder, rt.sel.set_vertex_bytes, words, bytes, index)
 }
 
 pub unsafe fn fragment_bytes(rt: &objc.Runtime, encoder: ptr, words: ptr, bytes: u64, index: u64) {
-    // setFragmentBytes:length:atIndex:
-    set: extern fn(ptr, ptr, ptr, u64, u64) = ffi_fn(rt.msgSend)
-    set(encoder, objc.selector(rt, cstr("setFragmentBytes:length:atIndex:")), words, bytes, index)
+    call := rt.set_ptr_u64_u64
+    call(encoder, rt.sel.set_fragment_bytes, words, bytes, index)
 }
 
 // A buffer for the vertex stage at an index, read from `offset` into it.
 pub unsafe fn vertex_buffer(rt: &objc.Runtime, encoder: ptr, buffer: ptr, offset: u64, index: u64) {
-    // setVertexBuffer:offset:atIndex:
-    set: extern fn(ptr, ptr, ptr, u64, u64) = ffi_fn(rt.msgSend)
-    set(encoder, objc.selector(rt, cstr("setVertexBuffer:offset:atIndex:")), buffer, offset, index)
+    call := rt.set_ptr_u64_u64
+    call(encoder, rt.sel.set_vertex_buffer, buffer, offset, index)
 }
 
 pub unsafe fn fragment_texture(rt: &objc.Runtime, encoder: ptr, texture: ptr, index: u64) {
-    // setFragmentTexture:atIndex:
-    set: extern fn(ptr, ptr, ptr, u64) = ffi_fn(rt.msgSend)
-    set(encoder, objc.selector(rt, cstr("setFragmentTexture:atIndex:")), texture, index)
+    call := rt.set_ptr_u64
+    call(encoder, rt.sel.set_fragment_texture, texture, index)
 }
 
 pub unsafe fn fragment_sampler(rt: &objc.Runtime, encoder: ptr, sampler: ptr, index: u64) {
-    // setFragmentSamplerState:atIndex:
-    set: extern fn(ptr, ptr, ptr, u64) = ffi_fn(rt.msgSend)
-    set(encoder, objc.selector(rt, cstr("setFragmentSamplerState:atIndex:")), sampler, index)
+    call := rt.set_ptr_u64
+    call(encoder, rt.sel.set_fragment_sampler, sampler, index)
+}
+
+pub unsafe fn fragment_textures(rt: &objc.Runtime, encoder: ptr, textures: &[ptr; 5], first: u64) {
+    if target_is("macos") {
+        call := rt.set_ptr_range
+        call(encoder, rt.sel.set_fragment_textures, addr(&textures[0]), records.range(first, 5))
+    }
+}
+
+pub unsafe fn fragment_samplers(rt: &objc.Runtime, encoder: ptr, samplers: &[ptr; 5], first: u64) {
+    if target_is("macos") {
+        call := rt.set_ptr_range
+        call(encoder, rt.sel.set_fragment_samplers, addr(&samplers[0]), records.range(first, 5))
+    }
 }
 
 // `count` vertices as a list of triangles.
 pub unsafe fn triangles(rt: &objc.Runtime, encoder: ptr, count: u64) {
-    // drawPrimitives:vertexStart:vertexCount:
-    draw: extern fn(ptr, ptr, u64, u64, u64) = ffi_fn(rt.msgSend)
-    draw(encoder, objc.selector(rt, cstr("drawPrimitives:vertexStart:vertexCount:")), enums.primitive_type(.Triangle), 0, count)
+    call := rt.draw_primitives
+    call(encoder, rt.sel.draw_primitives, enums.primitive_type(.Triangle), 0, count)
 }
