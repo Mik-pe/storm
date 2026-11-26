@@ -1075,3 +1075,34 @@ det finns inget enskilt hett loop att peka på, och `--profile-compiler` är nä
 innan något förenklas. Skillnaden 21,7 − 19,8 = 1,9 s är *inte mätt* som länktid — det är
 `build-time.ddr`:s väggklocka minus `compiler=` och innehåller allt utöver
 kompilatorn; nästa steg är att mäta den delen för sig, inte att anta vad den är.
+*Rättat samma dag efter en bisektion per commit (28 first-parent-committer `ea1e7c2..HEAD`,
+var och en byggd i en worktree med samma kompilator; `compiler=`/emitted ur `--timings`):*
+bilden ovan av två andelar är fel, och den sista meningen är nu mätt. (1) Merge-effekten
+är **noll**: `5a2edf3` (Mickes spets) 1 432 fn = basen 1 306 + hans 126; merge `4578263`
+1 593 = 1 432 + **161**, exakt cron-linjens eget antal (`ea1e7c2` 1 467 = 1 306 + 161). De
++2,9 s är cron-linjens 161 funktioner som följde med i merge:en, inte något sammanfogningen
+tillför — två grenar som var för sig är under budget landar över den därför att deras
+*funktionsantal* adderas (14,3 ms/fn i genomsnitt över hela serien, linjärt). (2) Den
+omätta 1,9 s är `module_load_lex_resolve`: **1 700–1 705 ms** (`--timings=json`), alltså
+modulladdning av 111 moduler, inte länk — `build-time.ddr` mäter processens väggklocka och
+`compiler=` börjar först efter att modulerna är lästa; rekommendation (1) är nu infriad:
+verktyget kör `dunder build --timings=json` och skriver `storm: compiler … ms, module load
+… ms, N functions emitted` efter sin domsrad, så nästa överbudget-träd säger vilken halva
+som växte. (3) Kostnaden per funktion är **inte** jämn över trädet: bildavkodarna som
+kostade 1 100 ms (PNG, fynd 82) och 220 ms (JPEG) när de landade kostar nu **42 ms** respektive
+**27 ms** (stubbad en i taget i en worktree, `compiler=` 19 626 → 19 584 / 19 599; båda 203 ms) —
+MIR-operationerna sjönk 3 703 respektive 9 266, så ms/op skiljer sig 10× mellan löv. Det som
+driver `mir_pipeline` (45 % av profilen) är analysen: `--timings=json` rapporterar
+`ssa_analysis_units` 216,8 M och `value_analysis_units` 294,8 M för 512 017 MIR-op, ~1 000
+analysenheter per op, och 18 + 4 `budget_refusals` — kompilatorn har en budget per funktion
+och vägrar 22 gånger. `run_session<B>` i `src/app.ddr` (450 rader, 109 lokaler, 138 anropade
+funktioner) når 961 av de 1 593 (stubbad: 11 728 ms, 632 fn, 199 823 op) — men det är
+*spelloopen*, dvs. hela appen, ingen anomali. En generisk nästlingskedja kostar kvadratiskt
+i djupet (fynd 100), men att stubba `record_mesh` (−22 fn) eller `record_list` (−24 fn)
+kostar under 40 ms vardera: appens nio `<B>`-funktioner är inte boven. Kvarstår som
+rekommendation till kompilatorn: analysenheterna per op, mätta per funktion — inget
+verktyg namnger en funktion i `--profile-compiler` (fynd 70–71).
+
+**99. `target_is("macos")` hoppar över den onåbara grenens typkontroll och `@extern`-symboler — men en generisk instansiering i grenen kompileras ändå, så hela andra backenden emitteras på varje plattform och inget säger det.** Symptom (0.12.0, Storm): `src/main.ddr` väljer backend med `if target_is("macos") { app.run<metal.Renderer>(…) } else { app.run<vulkan.Window>(…) }` — den form `docs/ffi.md` och `docs/targets.md` beskriver som compile-time-predikat där "onåbara grenar hoppas över före typkontroll och importregistrering". Mätt i en worktree: samma tre instantieringar omskrivna till `vulkan.Window` ger **1 377 emitterade funktioner mot 1 593** och `compiler=` 19 307 mot 19 662 ms — alltså **216 Metal-funktioner kompilerade på ett Linux-bygge**, 355 ms (1,7 ms/fn, FFI-records är små), och i binären som död kod som AGENTS.md:s "noll död kod" inte kan se (`--unused-functions` är privat-fn och tyst). Minimal repro (en fil, Linux): `trait Backend`, två implarer `Linux`/`Other`, `fn run<B: Backend>(s: &B) -> i32 { s.name().len }`, `mut n := if target_is("macos") { run(Other { }) } else { run(Linux { }) }` → `functions 0 reused, 5 emitted`; enbart `run(Linux { })` → 3; `run(Linux { }) + run(Other { })` (båda nås) → 5. Grenen kostar exakt som en nådd. Workaround här: ingen ändrad — kompositionsroten är skriven i den form språket erbjuder, och att byta ut `metal.Renderer` mot något annat på Linux vore att lappa för kompilatorn och bryta macOS; 355 ms är inte budgetens problem (fynd 98). Rekommendation: `target_is` i ett `if`/`else if`-villkor ska vara känd *före* instansiering på funktionsnivå, inte bara före typkontroll av grenens kropp — den mekanism som redan hoppar över `@extern`-registreringen ska även utesluta grenens anrop från `main`:s reach, så `app.run<metal.Renderer>` aldrig instansieras på Linux. Tills dess bör `--timings=json` räkna funktioner per gren eller `dunder check` säga "instantierade N funktioner i en `target_is`-gren som är falsk för målet".
+
+**100. En nästlad kedja av generiska funktioner över samma typparameter kostar kvadratiskt i kedjedjupet — varje nivå kompilerar hela sitt reach igen — medan samma lokaler i en funktion kostar linjärt.** Symptom (0.12.0, mätt i en ren probe utan paket, Mikparchy, `dunder build` två gånger per punkt, minsta väggklocka): `fn top<B: Shape>` anropar `level1<B>` anropar … anropar `leaf<B>`, varje nivå med K = 10 lokaler av `[f32; 4]` som alla läses i slutet (samma arbete, ingen logik): djup 1 → 383 ms, 2 → 416, 4 → 486, 8 → 659, **16 → 1 132 ms**; samma antal lokaler i **en** generisk funktion: 384, 393, 417, 513, 589 ms. Skillnaden 0 / 23 / 69 / 146 / **543 ms** växer ≈ 2 ms × djup², den platta linjärt ≈ 1,3 ms per lokal. Fynd 89 mätte *två* nivåer (+270 ms) och gav rådet "en generisk funktion per kedja"; det här är kurvan bakom det rådet. (Antalet lokaler *ensamt* är också superlinjärt, men knappt: 1,4 ms per lokal upp till 100, 3,5–3,9 ms vid 150–200 — 200 lokaler kostar 500 ms, så lokaler förklarar inte ett stort träd.) I Storm mätt: appens nio `<B: gfx.Backend>`-funktioner är **inte** boven — `record_mesh` (anropas 7 gånger, av `record_list` som är generisk) stubbad: −22 fn, −35 ms; `record_list` stubbad: −24 fn, −46 ms — för deras reach är liten. Workaround här: inget ändrat; rådet i fynd 89 står och är nu mätt i djupled. Rekommendation: när en generisk funktion instansieras ska dess anrop på *samma* typargument inte kompilera om callee whole-reach —memoisera instansieringen per (funktion, typargument) i pipeline, eller vyd ned `B` genom kedjan så att `level1<B>` som bara vidarebefordrar `B` delar `top<B>`:s instansieringskostnad. `--timings` visar inget av detta (`functions N emitted` är lika för kedja och platt).
