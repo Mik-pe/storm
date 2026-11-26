@@ -40,13 +40,16 @@ Kvar i storm-vk: `state.ddr`:s `MemoryProperties`
 (Storms poster med egna fält, därför handskrivna i `records.ddr`). Sedan **Renderer-uppdelningen**,
 kluster för kluster (design.md §3b): `depth.Depth`, `ui.Atlas`,
 `ibl.Environment` och `shadow.Shadow` är gjorda (2026-11-25, `Renderer`
-121 → 72 fält), nästa är `post.Stage` (10 fält; `scenePass`,
-`compositePass`, `sceneFramebuffer` lämnas ut) och `headless.Capture`.
+121 → 72 fält), och 2026-11-26 följde `post.Stage` (12 fält mätta; `scenePass`,
+`compositePass`, `sceneFramebuffer` lämnas) och `headless.Capture` (5;
+`captureFramebuffer` lämnas) — `Renderer` 61 fält, sju poster och 54 platta.
+Tabellens kluster är slut; pipelines (10 handtag som `vulkan.ddr` binder i
+varje draw) är orchestringens, inte ett kluster, och stannar (design.md §3b).
 Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy
 
-Senaste mätning: **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen (två `tools/build-time.ddr` samma kväll, Dunder 0.12.0, Mikparchy; 18 200 och 18 244 ms på `9f879c9`, 18 996 ms samma kväll under belastning). Det är 16,4 s → 18,4 s sedan `decode_png` + zlib nås från `main` (avsnitt 3c, fynd 82). Före det: **16 249 ms** på trädet med `depth.Depth` och 16 197–16 523 ms på `1a7f0e2`. Budgeten är 20 s.
+Senaste mätning: **18 509 och 18 513 ms** på `460c428` (post- och capture-flyttarna) och **18 540 ms** på `6a4e683` (`gfx.Button`) — tre `tools/build-time.ddr` på morgonen 2026-11-26, Dunder 0.12.0, Mikparchy. Innan det: **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen (två mätningar samma kväll; 18 200 och 18 244 ms på `9f879c9`, 18 996 ms samma kväll under belastning). Det är 16,4 s → 18,4 s sedan `decode_png` + zlib nås från `main` (avsnitt 3c, fynd 82). Före det: **16 249 ms** på trädet med `depth.Depth` och 16 197–16 523 ms på `1a7f0e2`. Budgeten är 20 s.
 
 Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Trädet på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 
@@ -611,6 +614,18 @@ och `mouse.scroll` (inspektorn rullar med hjulet). `storm-input` har
 scancodes och en fly-kamera. Kvar: tangenthändelser som händelsekomponent i
 ECS (idag läses `hit` direkt i `app.ddr`), textinmatning
 (`SDL_TextInputEvent`) och gamepad via `SDL_GameController`.
+
+**Att verifiera i ett olåst fönster (QA, steg 6): vänster- och högerklick
+på Linux.** Tills `6a4e683` (2026-11-26) skiftade `sdl.ddr`:s `poll` SDL:s
+knappnummer rakt (`1 << button`), och SDL numrerar vänster 1, mitten 2, höger
+3 medan kontraktet äger bitarna 1, 2, 4: vänsterklick satte `MOUSE_RIGHT` och
+högerklick en bit ingen läste. Nu parar `sdl_button` nummer med `gfx.Button`
+och testet pinnar de tre numren ur `SDL_mouse.h`. Buggen satt i `poll`, som
+inte går att testa utan SDL (dogfood 93), så det som återstår är det som
+alltid återstår för input: att klicka. Vänsterklick ska träffa widgets i
+studion (`app.ddr:694`), högerklick hålls för muslook (`:589`), och
+`--frames` kan inte visa det. Från AppKit-sidan var översättningen rätt från
+början (`button_of`).
 
 ## 9. Klart – fast speltick
 

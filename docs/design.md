@@ -52,10 +52,11 @@
   `storm-vulkan/records.ddr`. Inga namngivna `u32`-konstanter lever kvar i
   `layout.ddr`; allt är enums, och registret äger talen
   (`tools/vk.ddr --check`).
-- `state.ddr` `Renderer`: **72 fält** (121 före Renderer-uppdelningen; ~60 när
-  steget skrevs). Fem kluster ligger i en post hos sin ägare
+- `state.ddr` `Renderer`: **61 fält** (121 före Renderer-uppdelningen; 72
+  efter steg 3). Sex kluster ligger i en post hos sin ägare
   (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
-  `texture.Material`); 67 fält ligger platt, de flesta frame-state och
+  `texture.Material`, `post.Stage`, `headless.Capture`); 54 fält ligger platt
+  i fyra sorter (§3b), de flesta frame-state och
   swapchain-handtag. Varje modul tar `&mut Renderer`. Ägarskapet är redan
   modulvis (varje modul har sin `create`/`destroy`) — §3b.
 - **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
@@ -193,8 +194,8 @@ Det här står. Kvar till målbilden:
 ```
 storm-vk                Vulkan-registret som eget paket: prototyper, poster,
     ▲                   ENUMS — allt genererat ur vk.xml, inget Storm i sig.
-storm-vulkan           Renderer uppdelad i ägda strukturer (steg 3), ui/post ur
-                        backenden (steg 5).
+storm-vulkan           Renderer uppdelad i ägda strukturer (steg 3 — klart,
+                        §3b). ui/post ur backenden är avskrivet som mål (steg 5).
 ```
 
 Regler:
@@ -229,7 +230,8 @@ Men: **enums får inte vara fält i `@c_layout`** (E5003, verifierat).
 Modellen är därför: enums utanför structarna, konverterade vid gränsen.
 
 ```dunder
-// storm-vulkan: den enda platsen ett VkBlendFactor-heltal finns.
+// storm-vk/enums.ddr: genererad ur vk.xml av tools/vk.ddr — den enda
+// platsen ett VkBlendFactor-heltal finns. Storm-vulkan har ingen enums.ddr.
 pub enum BlendFactor {
     Zero = 0, One = 1, SrcColor = 2, OneMinusSrcColor = 3,
     DstColor = 4, OneMinusDstColor = 5, SrcAlpha = 6, OneMinusSrcAlpha = 7,
@@ -248,7 +250,10 @@ pub fn blend_factor(v: BlendFactor) -> u64 { u64(i32(v)) }
 
 Endast konverterarna (`enums.blend_factor(.SrcAlpha)`) rör heltalen. Finns
 det ingen konverterare kan fältet inte fyllas i — kompilatorn säger ifrån.
-**Genomfört** i storm-vulkan (steg 2) och i storm-metal från början; där
+**Genomfört** i storm-vulkan (steg 2, sedan flyttat till `storm-vk` 2026-11-25:
+varje värde slås upp i registret efter den konstant verktygets urvalstabell
+namnger, och `--check enums` fallerar när filen skiljer sig från `vk.xml`) och
+i storm-metal från början; där
 skrivs vart och ett värde ut av en liten C-program som inkluderar SDK:s
 rubriker, och `storm-metal/tests` låser dem mot den tabellen.
 
@@ -316,8 +321,9 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    klustret som flyttade in i en post hos sin ägare (`r.depth.image`
    i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett
    test. 2026-11-25: `ui.Atlas`, `ibl.Environment` och `shadow.Shadow`
-   följde, var och en med AE = 0 — `Renderer` har **72 fält** (121 före), och
-   post och capture är kvar (§3b).*
+   följde, var och en med AE = 0 — `Renderer` har **72 fält** (121 före) —
+   och 2026-11-26 `post.Stage` och `headless.Capture`: **61 fält**, sju
+   poster och 54 platta (§3b). Tabellens kluster är slut.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
