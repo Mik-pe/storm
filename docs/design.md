@@ -85,18 +85,20 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`e6fc71b`, Dunder
-  0.12.0, låst session) omfattade **254 egna `@test`** — 66 i roten
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`da45ac1`, Dunder
+  0.12.0, låst session) omfattade **260 egna `@test`** — 72 i roten
   och 188 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
   sträng räknas inte) — alla gröna, varje
   svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
   i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
-  `N passed` blir 260). 17 sviter
+  `N passed` blir 262). 17 sviter
   kördes med `dunder test` i roten och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
   `load_model`) är testbar utan fönster: vad ett pass får, när
   mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
-  per instans (`tests/app_frame.ddr`).
+  per instans (`tests/app_frame.ddr`). Spelets transport (`app.Transport`)
+  är det med: paus, steg, omstart, studio och färgkorrigering besvaras med
+  den enda `play`-anropet ramen ska göra (`tests/transport.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
   mätte **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen, Dunder 0.12.0 (två
   mätningar samma kväll, efter femtexturkedjan), 18 996 ms på `9f879c9` — 16,4 s innan `decode_png` + zlib nås från `main`
