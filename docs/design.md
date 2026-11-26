@@ -53,7 +53,7 @@
   `layout.ddr`; allt är enums, och registret äger talen
   (`tools/vk.ddr --check`).
 - `state.ddr` `Renderer`: **61 fält** (121 före Renderer-uppdelningen; 72
-  efter steg 3). Sex kluster ligger i en post hos sin ägare
+  efter steg 3). Sju kluster ligger i en post hos sin ägare
   (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
   `texture.Material`, `post.Stage`, `headless.Capture`); 54 fält ligger platt
   i fyra sorter (§3b), de flesta frame-state och
@@ -86,13 +86,13 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`da45ac1`, Dunder
-  0.12.0, låst session) omfattade **260 egna `@test`** — 72 i roten
-  och 188 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`9e487b5`, Dunder
+  0.12.0, låst session) omfattade **318 egna `@test`** — 112 i roten
+  och 206 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
   sträng räknas inte) — alla gröna, varje
   svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
   i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
-  `N passed` blir 262). 17 sviter
+  `N passed` blir 324). 17 sviter
   kördes med `dunder test` i roten och i varje `packages/*`. **En rot som
   inget av dem når är ett program under `tools/`, `examples/` eller
   `packages/*/tools/`** (mätt: `dunder check` utan argument = `src/main.ddr`,
@@ -137,14 +137,14 @@ val står i storm-vulkan `records.ddr` (158): vertexformaterna, `Blend` och
 `apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
 vad ett swapchain-tal betyder Storm.
 
-Lagren i storm-vulkan (4 456 rader + 4 243 genererade i `shader.ddr`), räknade 2026-11-26:
+Lagren i storm-vulkan (4 529 rader + 4 554 genererade i `shader.ddr`), räknade 2026-11-26:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 222 |
+| FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 235 |
 | Storms värden ovanpå registret | `records.ddr` | 158 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 215 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 861 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 263 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 873 |
 
 `ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
 var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,
@@ -154,7 +154,7 @@ och storm-metal har samma två moduler som backend-tjänster (`ui.ddr`,
 kontraktet, som anropar `ui_atlas`/`ui_draw`/`post_process` och inte vet att
 modulerna finns.
 
-Lagren i storm-metal (2 453 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-26:
+Lagren i storm-metal (2 455 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-26:
 
 | Lager | Moduler | Rader |
 |---|---|---|
@@ -163,7 +163,7 @@ Lagren i storm-metal (2 453 rader + inbäddad `shaders/storm.metal` via `@embed_
 | Fönstret och input | `appkit.ddr` | 508 |
 | Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 362 |
 | Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 416 |
-| Orkestrering | `metal.ddr` | 685 |
+| Orkestrering | `metal.ddr` | 688 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
@@ -559,8 +559,9 @@ utan skuggor).
   registrets block, varje variant med registrets konstant och Storms kommentar),
   kombinerade flaggor är summan av namngivna bitar, och ett namn registret inte
   känner är exit 2 med namnet. För Metal behövs det inte på samma sätt: det
-  som hålls för hand är 109 selektorer och 53 deklarerade meddelandetyper
-  (34 unika signaturer), och det
+  som hålls för hand är 195 `cstr`-literaler — 155 selektorer, 18 klassnamn,
+  14 C-symboler, 6 frameworksökvägar och 2 type-encodings — och 54
+  `extern fn`-fält i 34 unika signaturer, och det
   som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin
   tur vore naturlig som ett Dunder-verktyg i `tools/`, när den ska köras av
   fler än den som skrev den.

@@ -110,22 +110,24 @@ match window.begin() {
 }
 _ := window.begin_pass()
 _ := window.sky(&inv_view_projection.m, &sun, &zenith, &horizon)
-_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, &gfx.no_textures(), .Opaque)
+_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, &textures, &emissive_factor, .Opaque)
 _ := window.end()
 ```
 
 Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar åtta
 `f32` per vertex för position, normal och UV, en `Sky` (solen, himlen och
-ljusmatrisen, samlade i `gfx.sky_params`), kamerans position, materialets fem
-texturer som **ett** värde `gfx.Textures` (`base`, `metallic_roughness`,
-`normal`, `occlusion`, `emissive`; `gfx.no_textures()` är fem gånger
-`no_texture()` och låter faktorerna stå) och ytan: `.Opaque` eller `.Blended`.
+ljusmatrisen, samlade i `gfx.sky_params`), kamerans position som `[f32; 3]`,
+materialets fem texturer som **ett** värde `gfx.Textures` (`base`,
+`metallic_roughness`, `normal`, `occlusion`, `emissive`; `gfx.no_textures()`
+är fem gånger `no_texture()` och låter faktorerna stå), glTF:s
+`emissive_factor` (`[f32; 4]`: rgb skalar emissivkartans texel, w är dess
+styrka) och ytan: `.Opaque` eller `.Blended`.
 `upload_texture(pixels, width, height, encoding, &sampler)` ger en `gfx.Texture`
 från RGBA8-pixlar: `encoding` säger om texeln är sRGB (en basfärg) eller
 linjär (en Metallic/Roughness-, normal- eller occlusion-karta), och mipkedjan
 byggs av backenden.
 
-- **På Vulkan** går konstanterna med push constants: 240 byte i meshpasset
+- **På Vulkan** går konstanterna med push constants: 192 byte i meshpasset
   (två matriser, material, kamera och himmelsljus), och ljusmatrisen ligger i
   en uniform buffer. Storm kontrollerar enhetens `maxPushConstantsSize` när
   den väljer GPU.

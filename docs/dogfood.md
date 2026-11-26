@@ -644,6 +644,8 @@ Workaround här: elementvis helper i testet (`fn same_maps(a: [i64; 5], b: [i64;
 
 **96. Ett import-alias och en funktion kan inte heta samma sak i en modul — och `E2005 duplicate declaration` säger inte vilken av dem som är importen.** Symptom (0.12.0, Storm `packages/storm-image/src/image.ddr`): modulen `import .decode as decode` (sibling-modulen för PNG) och en ny `pub fn decode(data) -> Result<Image, string>` som känner igen formatet ger `error[E2005]: duplicate declaration 'decode'` med markören på `fn decode`. Samma sak igen med aliaset `png` (mot den befintliga `pub fn png` som skriver en PNG-fil). Diagnostiken är korrekt och regeln är rimlig (ett namn, en sak), men läsaren står med två kandidater och en markör på den *nya*, så det läses som att modulen redan hade en `decode`-funktion. Workaround här: aliaset heter `png_file` (`import .decode as png_file`), vilket också säger vad det är — modulen heter `decode.ddr` men dess innehåll är PNG. Rekommendation: låt diagnosticen räkna upp båda — `duplicate declaration 'decode': imported from .decode at line 3, declared as fn at line 40` — så det är ett val av namn och inte en sökning.
 
+**97. En generisk funktions kropp typkontrolleras inte där den berör typargumentet — trait-metodernas *existens och signatur* kontrolleras först vid instansiering, så en generisk funktion som `main` inte når kan anropa trait-metoder hur fel som helst under en grön `dunder check`.** Symptom (0.12.0): README:s fönsterexempel (`window.mesh(…)` med åtta argument mot kontraktets tio, kameran som `[f32; 4]` mot `[f32; 3]`) kompilerade grönt i en probe med `fn snippet<B: gfx.Backend>(mut window: B)` — probefunktionen var aldrig anropad. Samma rad med en *konkret* backend (`window: &mut vulkan.Window`) gav direkt `E3001: type mismatch: expected &[f32; 3], got &__dunder_module_117` — `sky` i kamerans position, en typ utan namn (fynd 84) — och när kameran rättades nästa fel (`&Textures` där `&Sky` väntades): ett fel per körning, ett argument i taget. Mätt i isolering (en fil per fel, varje med en generisk `g<S: Shape>` och en `main` som inte når den; sedan samma fil med ett anrop): fel som inte berör `S` fångas oinstansierat — fel argumentantal till en *vanlig* funktion (E3003), typfel på ett värde (E3001), okänd lokal (E2002), saknat `return` (E3002), oanvänt värde (E2006) — men **fel argumentantal till en trait-metod** (`s.area()` mot `fn area(&self, scale: f32)`) och **en metod som inte finns på traiten** (`s.volume()`) är gröna tills `g` instansieras, och då E3003/E2003 på samma rad. En `pub` generisk funktion i en *importerad* modul är lika osynlig, och `--unused-functions` (fynd 64) ser den inte heller eftersom den är `pub`. Så hålet är inte detsamma som fynd 64 (döda funktioner varnar inte) utan bredare: en generisk kropp som *nås* av modulsystemet men inte *instansieras* bär fel. I Storm just nu: de fyra generiska funktionerna i `src/app.ddr` med en `B`-parameter (`stop`, `upload_model_textures`, `load_model_into`, `load_ground`) är alla skyddade — ett injicerat `window.method_that_does_not_exist()` i en scratchkopia gjorde rotens `dunder check` röd på var och en — men varje `<B: gfx.Backend>`-funktion i `examples/`, i ett pakets `pub` yta eller i dokumentationens form är oskyddad tills något anropar den, och det är precis den form nästa backend börjar i. Workaround här: gränssnittets anrop skrivs mot en *konkret* backend när de ska bevisas (en probe med `window: &mut vulkan.Window`, 32 moduler, 0 fel), och README:s exempel är nu en kopia av `src/app.ddr` `record_mesh`, inte av minnet. Rekommendation: typkontrollera varje generisk kropp mot traiten *deklarerat* — trait-metodens namn och signatur är kända utan typargumentet, så "metoden finns inte" och "fel argumentantal" kan kontrolleras vid deklarationen som för en vanlig funktion; det som verkligen kräver en instans (traitens *impl* uppfyller den, returtypens förening med andra `S`-uttryck) kan vänta. Tills dess bör `dunder check` i en modul med generiska funktioner som inget anropar säga det, av samma skäl som fynd 94: den gröna raden ska tala om vad den inte såg.
+
 
 ## Grafikobservationer på macOS (Metal)
 
@@ -1053,3 +1055,23 @@ Metal-backenden mättes så här:
   är definierad på Mikparchy och har inte mätts där efter detta arbete.
 
 **Om att räkna tester.** Skrifts två tester följer med när Storms svit importerar textpaketet. Räkna Storms egna `@test` i roten och i varje pakets testsvit och jämför med vilka testnamn som faktiskt kördes.
+
+**98. Byggbudgeten är ett träds egenskap, inte en grens: två grenar som var för sig är under
+20 s landar över budget när de mergeas, och inget verktyg säger det förrän pushen stannar.
+Mätt 2026-11-26 på Mikparchy, kompilator 0.12.0 (oförändrad sedan 24 nov), load 1,2:
+`ea1e7c2` (origin/main, cron-linjen) 17 148 ms, 1 467 emitterade funktioner; `9067ef3`
+(Mickes gren, första commit) 14 517 ms, 1 306; `5a2edf3` (samma gren, 26 commiter senare)
+16 781 ms, 1 432; merge `4578263` 19 666–19 753 ms, **1 593**; `9e487b5` ( HEAD på origin)
+19 761–19 791 ms `compiler=` och **21 721–21 780 ms** enligt `tools/build-time.ddr`, som
+mäter hela `dunder build`-processen (kompilator + länk + uppstart), inte bara `compiler=`.
+Skillnaden mot 17 s är alltså +2,3 s från Mickes 26 commiter och +2,9 s från den sammanslagna
+titeln, enbart därför att 126 funktioner till nås av `main`. Minimal repro: bygg de fyra
+commits i varsin worktree med samma kompilator och jämför `compiler=` och emitted (skriptet
+`build_shas.py`-formen: `git worktree add`, `dunder build --timings`, läs `functions N reused,
+M emitted`). Workaround: ingen — pushen stannar. Rekommendation: (1) `build-time.ddr` ska
+rapportera `compiler=` vid sidan av väggklockan, så att en långsam länk inte läses som en
+langsam kompilator; (2) kompilatorn: 512 017 MIR-op för 1 593 funktioner är 0.039 ms/op —
+det finns inget enskilt hett loop att peka på, och `--profile-compiler` är nästa mätning
+innan något förenklas. Skillnaden 21,7 − 19,8 = 1,9 s är *inte mätt* som länktid — det är
+`build-time.ddr`:s väggklocka minus `compiler=` och innehåller allt utöver
+kompilatorn; nästa steg är att mäta den delen för sig, inte att anta vad den är.
