@@ -45,6 +45,25 @@ fn find(args: &[]string, name: string) -> i32 {
 // A flag that stands alone: present or absent.
 pub fn flag(args: &[]string, name: string) -> bool { find(args, &name) >= 0 }
 
+// The first word on the command line that looks like a flag and is not one
+// the program reads, or "" when every flag is known. `--help`/`-h` are the
+// one pair that is accepted without a row of their own (the help line names
+// both). Without this an unknown flag (`--bogus`) was skipped in silence and
+// the program rendered its default picture (QA 2026-11-26): the table is the
+// truth about what is read, so a word the table does not know is refused by
+// name. Values never begin with "--" (see value), so every such word is a flag.
+pub fn unknown(args: &[]string) -> string {
+    known := flags()
+    for i in 0..args.len {
+        if args[i].len < 3 || args[i][0..2] != "--" { continue }
+        if args[i] == "--help" || args[i] == "-h" { continue }
+        mut found := false
+        for f in &known { if f.name == args[i] { found = true; break } }
+        if !found { return args[i].clone() }
+    }
+    ""
+}
+
 // The value after a flag, or "" when the flag is absent, the last word, or
 // followed by another flag: a word that starts with "--" is never a value.
 // A flag that needs one then reads as "not given" and names itself, instead

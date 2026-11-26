@@ -97,3 +97,24 @@ fn contains(xs: &[]string, needle: &string) -> bool {
     assert(column > "  --capture FILE.ppm".len)
     assert(text.contains(usage, "options:\n"))
 }
+
+// A flag nobody reads is refused by name, so a typo cannot pass as a default.
+// Every known flag with a value, and -h, read as "nothing unknown".
+@test fn an_unknown_flag_is_named_and_every_known_one_is_not() {
+    mut good: []string = ["--glb", "Fox.glb", "--frames", "5", "--capture", "a.ppm", "--eye", "1", "2", "3", "-h"]
+    assert(args.unknown(&good) == "")
+    assert(args.unknown(&[]) == "")
+    for f in &args.flags() {
+        mut one: []string = [f.name.clone()]
+        assert(args.unknown(&one) == "")
+    }
+    mut typo: []string = ["--glb", "Fox.glb", "--bogus", "--frames", "5"]
+    assert(args.unknown(&typo) == "--bogus")
+    // The first unknown word is the one named: fix one, see the next.
+    mut two: []string = ["--zzz", "--aaa"]
+    assert(args.unknown(&two) == "--zzz")
+    // A short dash-word is a value or a mistake for something else, not a
+    // flag this test speaks about; only "--x" is judged.
+    mut short: []string = ["--", "-x", "a--b"]
+    assert(args.unknown(&short) == "")
+}
