@@ -1,0 +1,259 @@
+import core
+import ecs
+import gfx
+import gltf
+import play
+import scene
+import ..src.fox_animation as fox
+import ..src.model
+import ..src.paw_contact
+import ..src.play_view
+import ..src.woodland_ground
+
+// The leg chain as woodland.fox builds it: plane at the hip, then model.joint per link with its
+// inverse mount, the first hinge moved to the origin so the leg follows its animated shoulder.
+struct LegNodes { plane: ecs.Entity, upper: ecs.Entity, shin: ecs.Entity, foot: ecs.Entity, shoe: ecs.Entity }
+
+fn build_leg(g: &mut scene.Graph, b: &fox.Leg) -> LegNodes {
+    root := g.create_root(core.vec3(0.0, 0.0, 0.0))
+    plane := g.create_child(root, b.hip)
+    upper := model.joint(&mut g, plane, "Paw_", b.hip)
+    g.set_position(upper.hinge, core.vec3(0.0, 0.0, 0.0))
+    shin := model.joint(&mut g, upper.mount, "Shin_", b.knee)
+    foot := model.joint(&mut g, shin.mount, "Foot_", b.ankle)
+    LegNodes { plane: plane, upper: upper.hinge, shin: shin.hinge, foot: foot.hinge, shoe: foot.mount }
+}
+
+// The four calls animate_fox makes per leg.
+fn pose(g: &mut scene.Graph, n: &LegNodes, b: &fox.Leg, ang: fox.LegAngles) {
+    g.set_angles(n.plane, 0.0, 0.0, ang.roll)
+    g.set_angles(n.upper, ang.hip, 0.0, 0.0)
+    g.set_angles(n.shin, ang.knee, 0.0, 0.0)
+    g.set_angles(n.foot, ang.ankle, 0.0, -ang.roll)
+    g.propagate()
+}
+
+// A model-space point carried by the shoe (the foot's mount restores model space).
+fn shoe_point(g: &scene.Graph, n: &LegNodes, p: core.Vec3) -> core.Vec3 {
+    m := g.world(n.shoe).matrix.clone()
+    core.transform_point(&m, p)
+}
+
+// The heel: the sole's mirror behind the pivot edge the toe spans ahead of it.
+fn heel(b: &fox.Leg) -> core.Vec3 { core.vec3(b.sole.x, b.sole.y, b.sole.z - (b.toe.z - b.sole.z)) }
+
+// foot() lifts and slides the sole so it pivots about its toe or heel; fit assumes exactly this.
+fn planted(b: &fox.Leg, pitch: f32) -> core.Vec3 {
+    edge := b.toe.z - b.sole.z
+    core.vec3(b.sole.x, b.sole.y + edge * pitch.sin().abs(),
+        b.sole.z + (if pitch > 0.0 { edge } else { -edge }) * (1.0 - pitch.cos()))
+}
+
+fn distance(a: core.Vec3, b: core.Vec3) -> f32 { core.length(core.sub(a, b)) }
+
+fn meadow(vertices: &[]f32) -> woodland_ground.Ground {
+    art := gltf.Asset {
+        parts: [gltf.Part {
+            name: "Meadow", material_name: "Meadow | seafoam", color: [1.0; 4],
+            metallic: 0.0, roughness: 0.8, vertices: vertices.clone(), texture: -1, sampler: gfx.sampler(),
+            metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
+            emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4]
+        }], images: []
+    }
+    woodland_ground.build(&art)
+}
+
+fn plate(vertices: &mut []f32, ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32, cx: f32, cy: f32, cz: f32) {
+    gfx.push_triangle(&mut vertices, gfx.vertex(ax, ay, az, 0.0, -1.0, 0.0, 0.0, 0.0),
+        gfx.vertex(bx, by, bz, 0.0, -1.0, 0.0, 0.0, 0.0), gfx.vertex(cx, cy, cz, 0.0, -1.0, 0.0, 0.0, 0.0))
+}
+
+fn flat_meadow() -> woodland_ground.Ground {
+    mut vertices: []f32 = []
+    plate(&mut vertices, -20.0, 0.0, -20.0, 20.0, 0.0, -20.0, -20.0, 0.0, 20.0)
+    plate(&mut vertices, 20.0, 0.0, -20.0, 20.0, 0.0, 20.0, -20.0, 0.0, 20.0)
+    meadow(&vertices)
+}
+
+// Pitch within reach for every leg (measured: below -0.7 the hind legs' target leaves thigh + shin).
+fn pitches() -> []f32 { [0.0, 0.35, 0.7, -0.35, -0.6] }
+
+@test fn solve_places_the_rendered_ankle_exactly_where_it_was_asked_to_go() {
+    level := play.demo()
+    mut s := play.start(&level)
+    w := play_view.build(&s).unwrap()
+    for i in 0..4 {
+        b := w.cast.foxes[0].limbs[i].bind.clone()
+        for pitch in pitches() {
+            foot := fox.Foot { sole: planted(&b, pitch), pitch: pitch }
+            target := fox.ankle_target(&b, &foot)
+            ang := fox.solve(&b, b.hip, target, pitch)
+            mut g := scene.Graph::new()
+            n := build_leg(&mut g, &b)
+            pose(&mut g, &n, &b, ang)
+            assert(distance(shoe_point(&g, &n, b.ankle), target) < 0.0001)
+        }
+    }
+}
+
+@test fn the_rest_pose_costs_no_angles_and_the_sole_pivots_about_toe_or_heel() {
+    level := play.demo()
+    mut s := play.start(&level)
+    w := play_view.build(&s).unwrap()
+    for i in 0..4 {
+        b := w.cast.foxes[0].limbs[i].bind.clone()
+        flat := fox.Foot { sole: b.sole, pitch: 0.0 }
+        rest := fox.solve(&b, b.hip, fox.ankle_target(&b, &flat), 0.0)
+        assert(rest.roll.abs() < 0.0001 && rest.hip.abs() < 0.0001 && rest.knee.abs() < 0.0001 && rest.ankle.abs() < 0.0001)
+        for pitch in pitches() {
+            foot := fox.Foot { sole: planted(&b, pitch), pitch: pitch }
+            ang := fox.solve(&b, b.hip, fox.ankle_target(&b, &foot), pitch)
+            mut g := scene.Graph::new()
+            n := build_leg(&mut g, &b)
+            pose(&mut g, &n, &b, ang)
+            // The contact patch stays on the floor: the toe for a toe-down pitch, the heel otherwise.
+            contact := if pitch >= 0.0 { b.toe } else { heel(&b) }
+            assert(shoe_point(&g, &n, contact).y.abs() < 0.0001)
+            // The other end rises by the pivot edge times the sine of the pitch.
+            other := if pitch >= 0.0 { heel(&b) } else { b.toe }
+            edge := b.toe.z - b.sole.z
+            assert((shoe_point(&g, &n, other).y - 2.0 * edge * pitch.sin().abs()).abs() < 0.0001)
+        }
+    }
+}
+
+@test fn fit_lifts_exactly_what_the_rendered_shoe_sinks_below_the_meadow() {
+    level := play.demo()
+    mut s := play.start(&level)
+    w := play_view.build(&s).unwrap()
+    ground := flat_meadow()
+    center := core.vec3(0.0, 0.0, 0.0)
+    probe := woodland_ground.probe(&ground, &w.course, &s, center, false, true)
+    for i in 0..4 {
+        b := w.cast.foxes[0].limbs[i].bind.clone()
+        points := &w.cast.foxes[0].limbs[i].sole_points
+        for pitch in pitches() {
+            foot := fox.Foot { sole: planted(&b, pitch), pitch: pitch }
+            ang := fox.solve(&b, b.hip, fox.ankle_target(&b, &foot), pitch)
+            mut g := scene.Graph::new()
+            n := build_leg(&mut g, &b)
+            pose(&mut g, &n, &b, ang)
+            mut lowest: f32 = 1.0e20
+            for p in points {
+                y := shoe_point(&g, &n, core.vec3(p.x + b.ankle.x, p.y + b.ankle.y, p.z + b.ankle.z)).y
+                if y < lowest { lowest = y }
+            }
+            c := paw_contact.fit(&ground, &w.course, &probe, points, &b, &foot, b.hip, center, 1.0, 0.0, 1.0)
+            assert(c.surface == 0.0)
+            assert((c.lift + lowest).abs() < 0.0001)
+            // Applying the lift puts the lowest shoe point on the meadow.
+            lifted := fox.Foot { sole: core.vec3(foot.sole.x, foot.sole.y + c.lift, foot.sole.z), pitch: pitch }
+            ang2 := fox.solve(&b, b.hip, fox.ankle_target(&b, &lifted), pitch)
+            mut g2 := scene.Graph::new()
+            n2 := build_leg(&mut g2, &b)
+            pose(&mut g2, &n2, &b, ang2)
+            mut lowest2: f32 = 1.0e20
+            for p in points {
+                y := shoe_point(&g2, &n2, core.vec3(p.x + b.ankle.x, p.y + b.ankle.y, p.z + b.ankle.z)).y
+                if y < lowest2 { lowest2 = y }
+            }
+            assert(lowest2.abs() < 0.0001)
+        }
+    }
+}
+
+@test fn fit_clears_a_plate_under_the_shoe_by_exactly_its_height() {
+    level := play.demo()
+    mut s := play.start(&level)
+    w := play_view.build(&s).unwrap()
+    b := w.cast.foxes[0].limbs[0].bind.clone()
+    points := &w.cast.foxes[0].limbs[0].sole_points
+    center := core.vec3(0.0, 0.0, 0.0)
+    foot := fox.Foot { sole: planted(&b, 0.0), pitch: 0.0 }
+    // A 3 cm plate spanning the shoe's own footprint (measured from its sole points).
+    mut lo_x: f32 = 1.0e20
+    mut hi_x: f32 = -1.0e20
+    mut lo_z: f32 = 1.0e20
+    mut hi_z: f32 = -1.0e20
+    for p in points {
+        x := p.x + b.ankle.x
+        z := p.z + b.ankle.z
+        if x < lo_x { lo_x = x }
+        if x > hi_x { hi_x = x }
+        if z < lo_z { lo_z = z }
+        if z > hi_z { hi_z = z }
+    }
+    mut raised: []f32 = []
+    plate(&mut raised, -20.0, 0.0, -20.0, 20.0, 0.0, -20.0, -20.0, 0.0, 20.0)
+    plate(&mut raised, 20.0, 0.0, -20.0, 20.0, 0.0, 20.0, -20.0, 0.0, 20.0)
+    plate(&mut raised, lo_x - 0.01, 0.03, lo_z - 0.01, hi_x + 0.01, 0.03, lo_z - 0.01, lo_x - 0.01, 0.03, hi_z + 0.01)
+    plate(&mut raised, hi_x + 0.01, 0.03, lo_z - 0.01, hi_x + 0.01, 0.03, hi_z + 0.01, lo_x - 0.01, 0.03, hi_z + 0.01)
+    ground := meadow(&raised)
+    probe := woodland_ground.probe(&ground, &w.course, &s, center, false, true)
+    c := paw_contact.fit(&ground, &w.course, &probe, points, &b, &foot, b.hip, center, 1.0, 0.0, 1.0)
+    assert((c.lift - 0.03).abs() < 0.0001 && (c.surface - 0.03).abs() < 0.0001)
+}
+
+@test fn a_target_out_of_reach_stretches_straight_down_to_thigh_plus_shin() {
+    level := play.demo()
+    mut s := play.start(&level)
+    w := play_view.build(&s).unwrap()
+    for i in 0..4 {
+        b := w.cast.foxes[0].limbs[i].bind.clone()
+        far := core.vec3(b.hip.x, b.hip.y - 2.0, b.hip.z)
+        ang := fox.solve(&b, b.hip, far, 0.0)
+        mut g := scene.Graph::new()
+        n := build_leg(&mut g, &b)
+        pose(&mut g, &n, &b, ang)
+        // The rest bend is undone: knee and ankle hang straight below the hip, at thigh and thigh + shin.
+        m_shin := g.world(n.shin).matrix.clone()
+        knee := core.transform_point(&m_shin, core.vec3(0.0, 0.0, 0.0))
+        assert((knee.x - b.hip.x).abs() < 0.0001 && (knee.z - b.hip.z).abs() < 0.0001)
+        assert((b.hip.y - knee.y - b.thigh).abs() < 0.0001)
+        ankle := shoe_point(&g, &n, b.ankle)
+        assert((ankle.x - b.hip.x).abs() < 0.0001 && (ankle.z - b.hip.z).abs() < 0.0001)
+        assert((b.hip.y - ankle.y - (b.thigh + b.shin)).abs() < 0.0001)
+        assert(ang.roll.abs() < 0.0001)
+        assert((ang.hip + b.thigh_rest).abs() < 0.0001)
+    }
+}
+
+fn part(move name: string, move vertices: []f32) -> gltf.Part {
+    gltf.Part {
+        name: move name, material_name: "fox", color: [1.0; 4], metallic: 0.0, roughness: 0.8, vertices: move vertices,
+        texture: -1, sampler: gfx.sampler(), metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
+        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4]
+    }
+}
+
+fn v(x: f32, y: f32, z: f32) -> gfx.Vertex { gfx.vertex(x, y, z, 0.0, -1.0, 0.0, 0.0, 0.0) }
+
+fn asset(move parts: []gltf.Part) -> gltf.Asset { gltf.Asset { parts: move parts, images: [] } }
+
+fn contains(points: &[]core.Vec3, x: f32, y: f32, z: f32) -> bool {
+    for p in points { if (p.x - x).abs() < 0.00001 && (p.y - y).abs() < 0.00001 && (p.z - z).abs() < 0.00001 { return true } }
+    false
+}
+
+@test fn underside_keeps_the_faces_that_point_down_relative_to_the_ankle_once_each() {
+    // A sole: two triangles sharing an edge, wound counter-clockwise seen from below, so their
+    // normals point down (-y) ...
+    mut shoe: []f32 = []
+    gfx.push_triangle(&mut shoe, v(0.0, 0.0, 0.0), v(1.0, 0.0, 0.0), v(0.0, 0.0, 1.0))
+    gfx.push_triangle(&mut shoe, v(1.0, 0.0, 0.0), v(1.0, 0.0, 1.0), v(0.0, 0.0, 1.0))
+    // ... and a lip above them whose normals point up, plus a vertical wall (normal along x).
+    gfx.push_triangle(&mut shoe, v(0.0, 0.5, 0.0), v(0.0, 0.5, 1.0), v(1.0, 0.5, 0.0))
+    gfx.push_triangle(&mut shoe, v(0.0, 0.0, 0.0), v(0.0, 0.0, 1.0), v(0.0, 1.0, 0.0))
+    // The same downward face on a part the prefix does not select.
+    mut other: []f32 = []
+    gfx.push_triangle(&mut other, v(5.0, 0.0, 0.0), v(6.0, 0.0, 0.0), v(5.0, 0.0, 1.0))
+    mut parts: []gltf.Part = [part("Shin_L", move other), part("Foot_L", move shoe)]
+    art := asset(move parts)
+    ankle := core.vec3(0.0, 0.115, -0.2)
+    points := paw_contact.underside(&art, "Foot_", ankle)
+    assert(points.len == 4)
+    assert(contains(&points, 0.0, -0.115, 0.2) && contains(&points, 0.0, -0.115, 1.2))
+    assert(contains(&points, 1.0, -0.115, 0.2) && contains(&points, 1.0, -0.115, 1.2))
+    assert(!contains(&points, 0.0, 0.385, 0.2) && !contains(&points, 0.0, 0.885, 0.2))
+    assert(!contains(&points, 5.0, -0.115, 0.2))
+}
