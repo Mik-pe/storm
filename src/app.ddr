@@ -174,9 +174,13 @@ fn upload_or_refused(uploads: &[]Upload, asset: &gltf.Asset, part_name: string, 
         }
     }
     part_image := &asset.images[image_index]
-    if part_image.mime != "image/png" { return .Err("part " + part_name + ": " + map + ": image " + image_index.str() + " is " + part_image.mime + ", Storm reads PNG") }
-    decoded := image.decode_png(&part_image.data)?
-    .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: decoded, handle: gfx.no_texture() })
+    // The bytes say what the image is; a glTF's mime type is only a claim
+    // about them, so the format is read from the file signature.
+    decoded := image.decode(&part_image.data)
+    match decoded {
+        .Err(message) => return .Err("part " + part_name + ": " + map + ": image " + image_index.str() + " is not a readable image: " + message),
+        .Ok(im) => .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: im, handle: gfx.no_texture() }),
+    }
 }
 
 // After the backend took the pixels: the upload is known by its image,

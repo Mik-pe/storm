@@ -371,8 +371,8 @@ fn nearest() -> gfx.Sampler { gfx.Sampler { mag: gfx.Filter.Nearest, min: gfx.Fi
 
 fn asset(move parts: []gltf.Part, move images: []textures.Image) -> gltf.Asset { gltf.Asset { parts: parts, images: images } }
 
-// Image 0 is a JPEG (never decoded: refused by its mime type), image 1 the
-// 2x2 PNG. Built fresh for each asset that needs it.
+// Image 0 has a JPEG signature and nothing else (so it is refused as an
+// unreadable file), image 1 the 2x2 PNG. Built fresh for each asset that needs it.
 fn jpeg_and_png() -> []textures.Image {
     jpeg: []u8 = [0xFF, 0xD8, 0xFF, 0xE0]
     [textures.Image { mime: "image/jpeg", data: jpeg }, textures.Image { mime: "image/png", data: png() }]
@@ -433,7 +433,7 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     mut jpeg_recorder := Recorder::new()
     helmet := asset([rough_part("helmet", -1, 0)], jpeg_and_png())
     unreadable := app.upload_model_textures(&mut jpeg_recorder, &helmet)
-    assert(reason(&unreadable) == "part helmet: metallic-roughness map: image 0 is image/jpeg, Storm reads PNG")
+    assert(reason(&unreadable) == "part helmet: metallic-roughness map: image 0 is not a readable image: JPEG has no scan")
     assert(jpeg_recorder.uploads.len == 0)
 }
 
@@ -449,7 +449,7 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     mut jpeg_recorder := Recorder::new()
     helmet := asset([part("helmet", 0, gfx.sampler())], jpeg_and_png())
     unreadable := app.upload_model_textures(&mut jpeg_recorder, &helmet)
-    assert(reason(&unreadable) == "part helmet: base colour: image 0 is image/jpeg, Storm reads PNG")
+    assert(reason(&unreadable) == "part helmet: base colour: image 0 is not a readable image: JPEG has no scan")
     assert(jpeg_recorder.uploads.len == 0)
 
     // The same asset with the JPEG part after a good one: the good one is
@@ -457,7 +457,17 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     mut later := Recorder::new()
     visor := asset([part("skin", 1, gfx.sampler()), part("visor", 0, gfx.sampler())], jpeg_and_png())
     mixed := app.upload_model_textures(&mut later, &visor)
-    assert(reason(&mixed) == "part visor: base colour: image 0 is image/jpeg, Storm reads PNG" && later.uploads.len == 1)
+    assert(reason(&mixed) == "part visor: base colour: image 0 is not a readable image: JPEG has no scan" && later.uploads.len == 1)
+}
+
+// An image whose bytes are neither a PNG nor a JPEG file is refused by what
+// the bytes are, whatever the glTF says the mime type is.
+@test fn an_image_that_is_no_known_file_is_refused_by_name() {
+    mut recorder := Recorder::new()
+    wing := asset([part("wing", 0, gfx.sampler())], [textures.Image { mime: "image/png", data: [1, 2, 3, 4, 5, 6, 7, 8] }])
+    unreadable := app.upload_model_textures(&mut recorder, &wing)
+    assert(reason(&unreadable) == "part wing: base colour: image 0 is not a readable image: neither a PNG nor a JPEG file")
+    assert(recorder.uploads.len == 0)
 }
 
 // The handles the uploader hands back are what the placed parts carry: the

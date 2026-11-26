@@ -232,8 +232,9 @@ Tre committer: `2c0c33c` (PNG-avkodare), `496d59b` (`gfx.Sampler`), `05a0250`
 ger de pixlar Pillow läser (tre prober: (67,63,30) vid (0,0), (219,135,41)
 vid (512,512), (255,250,242) vid (541,694)). Box.glb, som inte har några
 texturer, ger AE = 0 mot 3b-capturen, liksom spelscenen och `--texture`.
-DamagedHelmet avbrytes med status 1 och `image 0 is image/jpeg, Storm reads
-PNG`.
+DamagedHelmet avbrytes med status 1 och `progressive JPEG (SOF2) is not
+supported` (2026-11-26: baseline-JPEG avkodas nu, se "Kvar i 3c" — Helmet
+har en progressiv bild av fem).
 
 **Vad filerna innehåller** (uppmätt med en chunk-läsare över de elva
 Khronos-/Katla-filerna, 2026-11-25): färgtyp 2 (RGB) och 6 (RGBA) dominerar,
@@ -260,7 +261,12 @@ alltså det vanliga fallet, inte undantaget.
   (avkodaren kostar 1,1 s kompilering, dogfood 82, och avkodning hör hemma
   där en backend finns); en MCP-förhandsvisning dekodar `asset.images[i].data`
   själv. Appens `load_model_into` dekodar varje bild och laddar upp den.
-  `mimeType` != `image/png` → `Err("image N is image/jpeg, Storm reads PNG")`.
+  Formatet väljs på **filens signatur** (`image.decode(data)`: `89 50 4E 47`
+  är PNG, `FF D8` är JPEG), inte på mime-typen — *ändrat 2026-11-26*: en
+  glTF:s mime-typ är ett påstående om bytena, bytena är fakta, och med
+  signaturen som vägledning finns det ingen "kom ihåg vilken avkodare mime
+  kräver" att glömma. En oläsbar bild vägras med vad som är sant om den:
+  `image N is not a readable image: JPEG has no scan`.
 - **Samplern följer texturen vid uppladdning, inte ritposten** — *ändrat
   mot planen* (`Material.sampler: gfx.Sampler`). `gfx.Sampler { mag, min,
   mips, wrap }` med `Filter { Nearest, Linear }`, `MipFilter { None, Nearest,
@@ -287,12 +293,36 @@ alltså det vanliga fallet, inte undantaget.
 
 **Kvar i 3c:**
 
-- **JPEG.** DamagedHelmet har fem JPEG-bilder; ingen annan av de elva. En
-  baslinje-JPEG (utan progression, med chroma-upsampling och IDCT i heltal)
-  är ~400 rader Dunder i `storm-image`, samma form som PNG: `decode_jpeg(data)
-  -> Result<Image, string>`, och `load_model_into` väljer på mime-typen.
-  Mät inflate-kostnaden först (dogfood 80:s recept): 2048² JPEG är 4–8×
-  mindre data än PNG men IDCT är per block, inte per bit.
+- **JPEG: baseline är landat (2026-11-26), progressivt kvar.**
+  `packages/storm-image/src/jpeg.ddr` (506 rader) avkodar SOF0 med varje
+  sampling upp till 2×2 (4:4:4, 4:2:2, 4:2:0, grå), med och utan
+  restart-markörer, till samma `Image` som PNG. Formen är PNG:s: markörgång,
+  vägran med namn, Pillow/libjpeg-turbo 3.2.0:s pixlar som referens i
+  elva tester (sju handgjorda fixturer + DamagedHelmet 512²). Tre beslut,
+  alla mätta mot Pillow i stället för gissade: (1) **IDCT är den exakta
+  separabla DCT:en i `f64`** (T.81 A.3.3, ingen AAN-tabell att komma ihåg;
+  resultatet skiljer sig från libjpegs heltals-IDCT med ≤ 1 per kanal);
+  (2) **chroma hålls flytande genom upsamplingen in i färgmatrisen** — att
+  avrunda chroma till 8 bitar före matrisen (libjpegs ordning) är *sämre*
+  på varje fixtur (444: 256 kanaler över 1 mot 0; Helmet: 98 026 mot 2 384);
+  (3) **triangel-upsampling** (h2v1/h2v2 "fancy", 3/4 : 1/4 i 2·step-delar),
+  bevisad mot Pillow på 4:2:0, 4:2:2 och udda 9×9. Tolerans ±1 på de små
+  fixturerna; Helmet 512² har worst 3 / 2 384 av 786 432 kanaler / medel
+  0,14, så dess tolerans är 3 med kravet medel < 0,5 (ett logikfel ger
+  medel ≥ 5: mätt 37 för fel upsamlingsmodell). Huffman är den kanoniska
+  formen (första kod per längd + startindex, T.81 F.2.2.3), vilket gav
+  7,5 → 5,9 s på 2048² mot en linjärsökning per bit. **Kostnad: 220 ms
+  byggtid** (18 557 → 18 776 ms; PNG kostade 1 100, dogfood 82) och 5,9 s
+  för 2048² (varav IDCT 2,0 s, Huffman 2,7 s, pixlar 2,8 s). **Kvar:**
+  (a) **progressivt JPEG** (SOF2) — DamagedHelmet har en progressiv bild av
+  fem och vägras därför fortfarande; T.81 G: samma Huffman och IDCT, men
+  koefficienter ackumuleras över flera scans i en koefficientbuffer per
+  komponent (spectral selection `Ss/Se`, successive approximation `Ah/Al`
+  med DC-refinement och EOB-run), IDCT först efter sista scan; ~150 rader;
+  (b) hastighet: 5,9 s för 2048² är en laddningsskärm — nästa mätpunkt är
+  bit-läsaren (ett `receive`-anrop per bit, ~10 M anrop per 2048²-bild; en
+  32-bitarsackumulator med korrekt invariant är den uppenbara formen, men
+  det första försöket var fel och togs bort: mät, antag inte).
 - **Metal:s mipkedja.** `storm-metal/src/texture.ddr` fyller nivå 0 med
   `replaceRegion` och har ingen blit-kodare: en textur på Metal har **en**
   nivå, och `mips != None` mappas idag till `NotMipmapped`. Vulkan bygger
@@ -316,10 +346,12 @@ alltså det vanliga fallet, inte undantaget.
   2021), och three.js tog bort sitt stöd 2022 till förmån för
   `gltf-transform metalrough`. Beslut: Storm läser den inte.
 - **Byggtiden:** 16,4 s → 18,2 s när `decode_png` + zlib nås från `main`
-  (dogfood 82) — 91 % av budgeten. Nästa paket som lägga på den här vägen
-  (JPEG) mäts med `tools/build-time.ddr` före och efter, och om det hamnar
-  över 19 s hör det till Dunder-repot att mäta vad som är dyrt, inte till
-  Storm att hoppa över funktionen.
+  (dogfood 82), → **18,8 s** med JPEG-avkodaren nådd från `main`
+  (2026-11-26, mätt före och efter med `tools/build-time.ddr`: 18 557 →
+  18 776 ms, alltså 220 ms för 506 rader) — 94 % av budgeten. Ett nästa
+  paket på den här vägen mäts på samma sätt före och efter, och om det
+  hamnar över 19 s hör det till Dunder-repot att mäta vad som är dyrt,
+  inte till Storm att hoppa över funktionen.
 
 ### 3d. De linjära texturerna — researchat och beslutat (2026-11-25)
 
