@@ -1,11 +1,16 @@
-capability filesystem, unsafe
+capability filesystem, stdio, unsafe
 
 import ..src.image as image
 import std.base64 as base64
 import std.bytes as bytes
 import std.dl as dl
+import std.fs as fs
 import std.path as path
+import std.text as text
 import sys
+
+import .jpeg as jpeg
+import .png as png
 
 fn sample() -> []u8 {
     mut data := bytes.from_text("P6\n2 1\n255\n")
@@ -17,6 +22,21 @@ fn sample() -> []u8 {
 fn draw(pixels: &[]u8, path: string) -> Result<(), string> {
     if !sys.write_bytes(path, pixels).is_ok() { return .Err("test capture failed") }
     .Ok
+}
+
+// rgba(): the two P6 pixels become two RGBA pixels with alpha 255, in order.
+@test fn rgba_widens_p6_pixels() {
+    decoded := image.rgba(&sample()).unwrap()
+    assert(decoded.width == 2)
+    assert(decoded.height == 1)
+    assert(decoded.pixels.len == 8)
+    expected: []u8 = [10, 35, 32, 255, 255, 0, 42, 255]
+    for i in 0..8 { assert(decoded.pixels[i] == expected[i]) }
+}
+
+// rgba(): a truncated file is refused, never read past its end.
+@test fn rgba_refuses_a_broken_file() {
+    assert(image.rgba(&[80, 54, 10, 50, 32, 49, 10, 50, 53, 53, 10, 1, 2]).is_err())
 }
 
 fn fail(value: &i32, path: string) -> Result<(), string> {
@@ -85,4 +105,36 @@ unsafe fn decoded_first_row(png: &[]u8, width: i32) -> []u8 {
         row := decoded_first_row(&png, 768)
         for x in 0..768 { assert(row[x*3] == 128 && row[x*3+1] == 15 && row[x*3+2] == 20) }
     }
+}
+
+// `dunder test` collects tests from the modules the test root imports, and
+// `test_root` names one file: a test module that is not imported here never
+// runs, and nothing says so. This test makes that omission a failure instead
+// of a silent gap, so adding a module to `tests/` cannot forget its import.
+@test fn every_test_module_beside_the_suite_is_imported_by_it() {
+    names := match fs.list_dir("tests") {
+        .Ok(items) => items,
+        .Err(e) => { _ := sys.eprint("could not list tests/: errno " + e.code().str()); assert(false); return },
+    }
+    suite := sys.read_text("tests/suite.ddr")
+    if !suite.ok { _ := sys.eprint("could not read tests/suite.ddr: errno " + suite.error.str()); assert(false); return }
+    mut missing: []string = []
+    for name in &names {
+        if !text.ends_with(name, ".ddr") || name == "suite.ddr" { continue }
+        module := sys.read_text("tests/" + name)
+        if !module.ok { _ := sys.eprint("could not read tests/" + name + ": errno " + module.error.str()); assert(false); return }
+        if !text.contains(module.value, "@test") { continue }
+        // `import .stem` opens a line and ends at whitespace: `.png` must not
+        // pass for `.png_util`, and `..src.stem` is not a test-module import.
+        needle := "import ." + name[0..name.len - 4]
+        mut found := false
+        mut cursor := text.lines(suite.value.as_str())
+        while cursor.advance() {
+            line := cursor.current().clone()
+            if text.starts_with(line, needle) && (line.len == needle.len || line[needle.len] == u8(32) || line[needle.len] == u8(9)) { found = true }
+        }
+        if !found { missing.push("`import ." + name[0..name.len - 4] + " as _` (tests/" + name + " has tests)") }
+    }
+    for m in &missing { _ := sys.eprint("tests/suite.ddr never imports a test module: " + m) }
+    assert(missing.len == 0)
 }

@@ -8,11 +8,13 @@ mcp = { path = "packages/storm-mcp", capabilities = ["stdio", "filesystem", "uns
 play = { path = "packages/storm-play", capabilities = ["filesystem"] }
 core = { path = "packages/storm-core" }
 gfx = { path = "packages/storm-gfx" }
+image = { path = "packages/storm-image", capabilities = ["filesystem", "unsafe"] }
 ecs = { path = "packages/storm-ecs" }
 scene = { path = "packages/storm-scene" }
 render = { path = "packages/storm-render" }
 input = { path = "packages/storm-input" }
 vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
+vk = { path = "packages/storm-vk", capabilities = ["unsafe"] }
 gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }
 metal = { path = "packages/storm-metal", capabilities = ["unsafe", "stdio", "filesystem"] }
 ui = { path = "packages/storm-ui", capabilities = ["filesystem"] }

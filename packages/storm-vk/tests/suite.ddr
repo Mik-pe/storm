@@ -1,0 +1,170 @@
+capability unsafe, stdio
+
+import ..src.api as api
+import ..src.layout as vk
+import ..src.layout as vkl
+import ..src.enums as enums
+import std.dl as dl
+import sys
+
+// The registry's facts, pinned where the registry lives: every number the
+// generated files hold comes from vk.xml, and these assert it against the
+// Khronos tables as they are printed, not against the generated file itself.
+// A recited table once came out in the wrong order and shipped two pipelines
+// blending with the inverse factors.
+
+@test fn barrier_struct_matches_the_c_abi() {
+    assert(size_of(vk.ImageMemoryBarrier) == 72)
+}
+
+// VkImageBlit: two 16-byte subresource layers, each followed by two
+// 12-byte offsets. A wrong size here would hand vkCmdBlitImage a region
+// list it reads past.
+@test fn blit_regions_match_the_c_abi() {
+    assert(size_of(vkl.ImageBlit) == 80)
+    assert(size_of(vkl.Offset3D) == 12)
+    assert(size_of(vkl.ImageSubresourceLayers) == 16)
+}
+
+@test fn render_pass_structs_match_the_c_abi() {
+    // Two attachments side by side must read as one contiguous array.
+    assert(size_of(vk.AttachmentDescription) == 36)
+    assert(size_of(vk.AttachmentReference) == 8)
+    assert(size_of(vk.SubpassDescription) == 72)
+    // pDepthStencilAttachment sits after two u32+padding pairs and the two
+    // colour pointers: 48 bytes in. C puts it there too.
+    unsafe {
+        mut subpass: vk.SubpassDescription = zeroed()
+        assert(usize(addr(&subpass.pDepthStencilAttachment)) - usize(addr(&subpass)) == 48)
+        assert(usize(addr(&subpass.pColorAttachments)) - usize(addr(&subpass)) == 32)
+    }
+}
+
+@test fn c_record_pairs_and_arrays_are_contiguous() {
+    // The pairs handed to Vulkan (vk.Dependencies, Attachments, ShaderStages,
+    // References) are records of records; this pins that the
+    // second element starts right after the first and that a named stage /
+    // external subpass value lands where C puts it. A plain [T; N] of the
+    // same record is contiguous too (measured: size 56, stride 28); the
+    // pairs exist so every module shares one declaration.
+    assert(size_of(vk.SubpassDependency) == 28)
+    assert(size_of(vk.PipelineShaderStageCreateInfo) == 48)
+    assert(size_of(vk.VertexInputAttributeDescription) == 16)
+    assert(size_of(vk.Dependencies) == 56)
+    assert(size_of(vk.Attachments) == 72)
+    assert(size_of(vk.ShaderStages) == 96)
+    assert(size_of(vk.References) == 16)
+    assert(size_of([vk.SubpassDependency; 2]) == 56)
+    unsafe {
+        mut before: vk.SubpassDependency = zeroed()
+        before.srcSubpass = enums.SUBPASS_EXTERNAL
+        before.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
+        mut after: vk.SubpassDependency = zeroed()
+        after.dstSubpass = enums.SUBPASS_EXTERNAL
+        after.dstStageMask = enums.pipeline_stage(.FragmentShader)
+        after.dstAccessMask = enums.access(.ShaderRead)
+        deps := vk.Dependencies { before: before, after: after }
+        base := usize(addr(&deps))
+        assert(usize(addr(&deps.after)) - base == 28)
+        // after = { srcSubpass@28, dstSubpass@32, srcStageMask@36, dstStageMask@40,
+        //            srcAccessMask@44, dstAccessMask@48, flags@52 } exactly as C.
+        assert(load_u32(ptr(base)) == 4294967295)
+        assert(load_u32(ptr(base + 8)) == 1024)
+        assert(load_u32(ptr(base + 28)) == 0)
+        assert(load_u32(ptr(base + 32)) == 4294967295)
+        assert(load_u32(ptr(base + 40)) == 128)
+        assert(load_u32(ptr(base + 48)) == 32)
+        array := [before, after]
+        assert(usize(addr(&array[1])) - usize(addr(&array[0])) == 28)
+        assert(load_u32(ptr(usize(addr(&array[0])) + 40)) == 128)
+    }
+}
+
+@test fn vk_enum_values_match_the_khronos_tables() {
+    // The tables as Khronos prints them. A recited table once came out in the
+    // wrong order and shipped two pipelines blending with the inverse factors;
+    // this pins every value Storm converts to a C integer.
+    assert(enums.blend_factor(.SrcAlpha) == 6)
+    assert(enums.blend_factor(.OneMinusSrcAlpha) == 7)
+    assert(enums.blend_factor(.OneMinusDstColor) == 5)
+    assert(enums.blend_factor(.One) == 1)
+    assert(enums.blend_op(.Add) == 0 && enums.blend_op(.Max) == 4)
+    assert(enums.filter(.Nearest) == 0 && enums.filter(.Linear) == 1)
+    assert(enums.sampler_mipmap_mode(.Nearest) == 0 && enums.sampler_mipmap_mode(.Linear) == 1)
+    assert(enums.sampler_address_mode(.ClampToEdge) == 2)
+    assert(enums.primitive_topology(.TriangleList) == 3)
+    assert(enums.polygon_mode(.Fill) == 0)
+    assert(enums.cull_mode(.None) == 0 && enums.cull_mode(.Back) == 2)
+    assert(enums.front_face(.CounterClockwise) == 0 && enums.front_face(.Clockwise) == 1)
+    assert(enums.compare_op(.Less) == 1 && enums.compare_op(.LessOrEqual) == 3)
+    assert(enums.image_view_type(.Type2D) == 1 && enums.image_view_type(.Cube) == 3)
+    assert(enums.image_aspect(.Color) == 1 && enums.image_aspect(.Depth) == 2)
+    assert(enums.image_layout(.Undefined) == 0)
+    assert(enums.image_layout(.ColorAttachmentOptimal) == 2)
+    assert(enums.image_layout(.DepthStencilAttachmentOptimal) == 3)
+    assert(enums.image_layout(.ShaderReadOnlyOptimal) == 5)
+    assert(enums.attachment_load_op(.Load) == 0 && enums.attachment_load_op(.Clear) == 1)
+    assert(enums.attachment_store_op(.Store) == 0 && enums.attachment_store_op(.DontCare) == 1)
+    assert(enums.pipeline_bind_point(.Graphics) == 0)
+    assert(enums.descriptor_type(.CombinedImageSampler) == 1 && enums.descriptor_type(.UniformBuffer) == 6)
+    assert(enums.sharing_mode(.Exclusive) == 0)
+    assert(enums.image_tiling(.Optimal) == 0 && enums.image_tiling(.Linear) == 1)
+    assert(enums.command_buffer_usage(.OneTimeSubmit) == 1)
+    assert(enums.shader_stage(.Vertex) == 1 && enums.shader_stage(.Fragment) == 16)
+    assert(enums.shader_stage(.VertexFragment) == 17)
+    assert(enums.image_usage(.TransferSrc) == 1 && enums.image_usage(.Sampled) == 4)
+    assert(enums.image_usage(.ColorAttachment) == 16 && enums.image_usage(.DepthStencilAttachment) == 32)
+    assert(enums.buffer_usage(.TransferSrc) == 1 && enums.buffer_usage(.UniformBuffer) == 16)
+    assert(enums.buffer_usage(.VertexBuffer) == 128)
+    assert(enums.image_create(.CubeCompatible) == 16)
+    assert(enums.command_pool_flag(.ResetCommandBuffer) == 2)
+    assert(enums.pipeline_stage(.Host) == 16384)
+    assert(enums.fence(.Signaled) == 1)
+    assert(enums.color_component(.RGBA) == 15)
+    assert(enums.samples(.Type1) == 1)
+}
+
+// The codes Storm acts on, against the Khronos VkResult reference page. The
+// old constant ERROR_OUT_OF_DATE_KHR was -1000001003, which is no VkResult at
+// all, so the out-of-date branch could never fire.
+@test fn vk_result_codes_match_the_khronos_table() {
+    assert(i32(enums.VkResult.Success) == 0)
+    assert(i32(enums.VkResult.ErrorOutOfHostMemory) == -1)
+    assert(i32(enums.VkResult.ErrorOutOfDeviceMemory) == -2)
+    assert(i32(enums.VkResult.ErrorDeviceLost) == -4)
+    assert(i32(enums.VkResult.ErrorExtensionNotPresent) == -7)
+    assert(i32(enums.VkResult.ErrorFeatureNotPresent) == -8)
+    assert(i32(enums.VkResult.ErrorIncompatibleDriver) == -9)
+    assert(i32(enums.VkResult.SuboptimalKHR) == 1000001003)
+    assert(i32(enums.VkResult.ErrorOutOfDateKHR) == -1000001004)
+    assert(i32(enums.VkResult.ErrorSurfaceLostKHR) == -1000000000)
+    assert(i32(enums.VkResult.ErrorNativeWindowInUseKHR) == -1000000001)
+    assert(enums.result_name(-1000001004) == "VK_ERROR_OUT_OF_DATE_KHR")
+    assert(enums.result_name(1000001003) == "VK_SUBOPTIMAL_KHR")
+    assert(enums.result_name(0) == "VK_SUCCESS")
+    assert(enums.result_name(12345) == "VK_ERROR_?")
+}
+
+// load() fills the entry points from a shared library. A library that opens
+// but is not a Vulkan loader is refused as false at the first missing symbol,
+// never by a call through a null field; the real loader resolves every name
+// the registry gave the Api table, windowed or not, which is what makes the
+// generated prototypes callable. (The fields cannot be compared to null:
+// `extern fn` has no Eq, so the refusal is asserted as the return value.)
+@test fn load_refuses_a_non_loader_and_fills_from_the_real_one() {
+    unsafe {
+        libc := dl.open(cstr("/usr/lib/libc.so.6"), 2)
+        assert(libc != ptr(0))
+        mut table: api.Api = zeroed()
+        assert(!api.load(&mut table, libc, false))
+
+        loader := dl.open(cstr("/usr/lib/libvulkan.so.1"), 2)
+        if loader == ptr(0) {
+            _ := sys.eprint("no libvulkan on this machine; the loader half is skipped")
+        } else {
+            mut windowed_table: api.Api = zeroed()
+            assert(api.load(&mut table, loader, false))
+            assert(api.load(&mut windowed_table, loader, true))
+        }
+    }
+}

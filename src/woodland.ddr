@@ -358,7 +358,7 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
         else if i % 4 == 1 { scene.material(1.0, 0.72, 0.79, 1.0, 0.0, 0.78) }
         else if i % 4 == 2 { scene.material(1.0, 0.84, 0.78, 1.0, 0.0, 0.78) }
         else { scene.material(1.0, 0.91, 0.94, 1.0, 0.0, 0.78) }
-        _ := g.set_material(node, mat)
+        _ := g.set_material(node, move mat)
         radius := 0.042 + 0.015 * f32(i % 4)
         g.set_scale(node, core.vec3(radius, radius, radius))
         cast.petals.push(node)

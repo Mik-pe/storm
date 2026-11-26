@@ -1,0 +1,98 @@
+// Images and samplers of a glTF asset: what a `baseColorTexture` points at.
+//
+// A texture object joins an image and a sampler. The image is a PNG (or a
+// JPEG, which Storm refuses by name) in a bufferView of the GLB; the
+// decoder belongs to storm-image and the upload to the backend, so this
+// module only hands the bytes out. The sampler is the glTF spec's object
+// translated into the contract's `gfx.Sampler`, default by default: a file
+// that says nothing gets LINEAR / LINEAR_MIPMAP_LINEAR / REPEAT, which is
+// what the spec says a viewer should assume.
+import gfx
+import std.json as json
+
+import .gltf as gltf
+
+pub struct Image { mime: string, data: []u8 }
+
+// The spec's numbers for `magFilter` and `minFilter`.
+pub const NEAREST: i64 = 9728
+pub const LINEAR: i64 = 9729
+pub const NEAREST_MIPMAP_NEAREST: i64 = 9984
+pub const LINEAR_MIPMAP_NEAREST: i64 = 9985
+pub const NEAREST_MIPMAP_LINEAR: i64 = 9986
+pub const LINEAR_MIPMAP_LINEAR: i64 = 9987
+
+// The spec's numbers for `wrapS` / `wrapT`.
+pub const CLAMP_TO_EDGE: i64 = 33071
+pub const MIRRORED_REPEAT: i64 = 33648
+pub const REPEAT: i64 = 10497
+
+// glTF -> contract. A missing field is the spec's default (LINEAR,
+// LINEAR_MIPMAP_LINEAR, REPEAT). An unknown number is an error, as in
+// Filament and the glTF SDK: a file that says 97 is not a file to show
+// with a guess.
+pub fn sampler(doc: &json.Doc, index: i32) -> Result<gfx.Sampler, string> {
+    if index < 0 { return .Ok(gfx.sampler()) }
+    node := doc.at(doc.field(doc.root, "samplers"), index)
+    mag := doc.get_i64(node, "magFilter").unwrap_or(LINEAR)
+    min := doc.get_i64(node, "minFilter").unwrap_or(LINEAR_MIPMAP_LINEAR)
+    wrap := doc.get_i64(node, "wrapS").unwrap_or(REPEAT)
+    // A glTF number is not an enum variant here but a pattern trap (dogfood
+    // 83): a named constant as a `match` pattern binds. The filters are
+    // six numbers, so the table is an if-chain.
+    if mag != NEAREST && mag != LINEAR {
+        return .Err("sampler " + index.str() + ": magFilter " + mag.str() + " is not a glTF filter")
+    }
+    known_min := min == NEAREST || min == LINEAR || min == NEAREST_MIPMAP_NEAREST ||
+    min == LINEAR_MIPMAP_NEAREST || min == NEAREST_MIPMAP_LINEAR || min == LINEAR_MIPMAP_LINEAR
+    if !known_min {
+        return .Err("sampler " + index.str() + ": minFilter " + min.str() + " is not a glTF filter")
+    }
+    if wrap != CLAMP_TO_EDGE && wrap != MIRRORED_REPEAT && wrap != REPEAT {
+        return .Err("sampler " + index.str() + ": wrapS " + wrap.str() + " is not a glTF wrap mode")
+    }
+    mag_filter := if mag == NEAREST { gfx.Filter.Nearest } else { gfx.Filter.Linear }
+    min_nearest := min == NEAREST || min == NEAREST_MIPMAP_NEAREST || min == NEAREST_MIPMAP_LINEAR
+    min_filter := if min_nearest { gfx.Filter.Nearest } else { gfx.Filter.Linear }
+    no_mips := min == NEAREST || min == LINEAR
+    nearest_mips := min == NEAREST_MIPMAP_NEAREST || min == LINEAR_MIPMAP_NEAREST
+    mips := if no_mips { gfx.MipFilter.None } else if nearest_mips { gfx.MipFilter.Nearest } else { gfx.MipFilter.Linear }
+    wrap_mode := if wrap == CLAMP_TO_EDGE { gfx.Wrap.ClampToEdge }
+    else if wrap == MIRRORED_REPEAT { gfx.Wrap.MirroredRepeat }
+    else { gfx.Wrap.Repeat }
+    .Ok(gfx.Sampler { mag: mag_filter, min: min_filter, mips: mips, wrap: wrap_mode })
+}
+
+// Every image the asset declares, in the file's order: mime type and the
+// bytes of its bufferView. An image by `uri` is refused by name, since a
+// GLB is one file and Storm loads one file.
+pub fn images(doc: &gltf.Document, j: &json.Doc) -> Result<[]Image, string> {
+    list := j.field(j.root, "images")
+    mut out: []Image = []
+    if list < 0 { return .Ok(out) }
+    if j.kind(list) != .Array { return .Err("images must be an array") }
+    views := j.field(j.root, "bufferViews")
+    for i in 0..j.count(list) {
+        node := j.at(list, i)
+        view_id := j.get_i64(node, "bufferView").unwrap_or(-1)
+        if view_id < 0 {
+            uri := j.get_str(node, "uri").unwrap_or_default()
+            if uri.len > 0 { return .Err("image " + i.str() + " is a uri (" + uri + "), not embedded") }
+            return .Err("image " + i.str() + " has no bufferView")
+        }
+        if view_id >= i64(j.count(views)) { return .Err("image " + i.str() + " names bufferView " + view_id.str() + " which does not exist") }
+        view := j.at(views, i32(view_id))
+        if j.get_i64(view, "buffer").unwrap_or(-1) != 0 { return .Err("image " + i.str() + " uses buffer " + j.get_i64(view, "buffer").unwrap_or(-1).str() + ", not the GLB's") }
+        start := j.get_i64(view, "byteOffset").unwrap_or(0)
+        length := j.get_i64(view, "byteLength").unwrap_or(0)
+        if start < 0 || start > i64(doc.bin.len) || length < 0 || length > i64(doc.bin.len) - start {
+            return .Err("image " + i.str() + " lies outside the GLB")
+        }
+        mime := j.get_str(node, "mimeType").unwrap_or_default()
+        mut data: []u8 = []
+        data.reserve(i32(length))
+        for b in 0..i32(length) { data.push(doc.bin[i32(start) + b]) }
+        out.push(Image { mime: mime, data: data })
+    }
+    .Ok(out)
+}

@@ -15,22 +15,36 @@ layout(push_constant, std430) uniform Push {
     mat4 mvp;
     mat4 model;
     vec4 base_color;
-    vec4 params;
-    vec4 camera_pos;
-    vec4 sun_direction;
-    vec4 sun_color;
-    vec4 zenith;
-    vec4 horizon;
+    vec4 params;          // metallic, roughness, emissive, shadows enabled
+    vec4 camera_pos;      // xyz = eye position in world space
+    vec4 emissive_factor; // rgb scales the emissive map, w = its strength
 } push;
 
 layout(set = 0, binding = 0) uniform sampler2D shadow_map;
+// The frame's values, the same block the vertex stage reads: written once
+// per frame, not once per draw.
 layout(set = 0, binding = 1) uniform Light {
     mat4 light_vp;       // sun view-projection
     vec4 light_dir_c;    // xyz towards the sun, w = dot(light_origin, dir)
+    vec4 sun_direction;  // xyz towards the sun, w = intensity
+    vec4 sun_color;      // rgb, w = diffuse_fill
+    vec4 zenith;
+    vec4 horizon;
 } light;
 layout(set = 0, binding = 2) uniform samplerCube prefiltered_env;
 layout(set = 0, binding = 3) uniform samplerCube irradiance_map;
 layout(set = 0, binding = 4) uniform sampler2D brdf_lut;
+// The material's base texture, set 1: a white 1x1 texture when it has none,
+// so the multiply below is the identity for untextured surfaces.
+layout(set = 1, binding = 0) uniform sampler2D base_texture;
+// The material's metallic-roughness map (G = roughness, B = metallic), read
+// as written: a linear texture. White (the fallback) leaves the factors as
+// they are, so a material without a map is unchanged.
+layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
+// The material's emissive map: what the surface gives off as light, in its
+// own colour (glTF 2.0 3.9.3). sRGB, like the base. White (the fallback)
+// times the zero factor of a surface without one is nothing.
+layout(set = 1, binding = 4) uniform sampler2D emissive_texture;
 
 const float ENV_MIPS = 6.0;   // prefiltered_env mip count
 
@@ -44,6 +58,7 @@ layout(location = 6) in vec4 sky_sun_color;
 layout(location = 7) in vec4 sky_zenith;
 layout(location = 8) in vec4 sky_horizon;
 layout(location = 9) in vec2 vertex_uv;
+layout(location = 10) in vec4 vertex_emissive_factor;
 
 layout(location = 0) out vec4 out_color;
 
@@ -140,10 +155,16 @@ void main() {
     vec3 l = normalize(sky_sun.xyz);
     vec3 h = normalize(v + l);
 
-    vec3 albedo = vertex_base_color.rgb;
-    float metallic = clamp(vertex_params.x, 0.0, 1.0);
-    float roughness = clamp(vertex_params.y, 0.045, 1.0);
+    vec3 albedo = vertex_base_color.rgb * texture(base_texture, vertex_uv).rgb;
+    // The factors multiply the map (glTF 2.0 3.9.2): a map that is white
+    // leaves them as they are, and a factor of 1 is the map alone.
+    vec2 mr = texture(metallic_roughness_texture, vertex_uv).gb;
+    float metallic = clamp(vertex_params.x * mr.y, 0.0, 1.0);
+    float roughness = clamp(vertex_params.y * mr.x, 0.045, 1.0);
     float emissive = max(vertex_params.z, 0.0);
+    // The emissive map's texel, scaled by the factor and the strength: what
+    // the surface emits in its own colour, apart from its base colour.
+    vec3 emitted = texture(emissive_texture, vertex_uv).rgb * vertex_emissive_factor.rgb * vertex_emissive_factor.w;
     float shadows_on = vertex_params.w;
 
     vec3 f0 = mix(vec3(0.04), albedo, metallic);
@@ -185,7 +206,7 @@ void main() {
     float ambient_occlusion = mix(0.55, 1.0, shadow_lit);
 
     vec3 fill = mix(sky_horizon.rgb * 0.75, sky_zenith.rgb, n.y * 0.5 + 0.5) * sky_sun_color.w;
-    vec3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
+    vec3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive + emitted;
     color = aces(color * 1.35);
     out_color = display_color(pow(color, vec3(1.0 / 2.2)), vertex_base_color.a);
 }

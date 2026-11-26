@@ -50,11 +50,17 @@ import ..src.records as records
     assert(enums.blend_factor(.SourceAlpha) == 4)
     assert(enums.blend_factor(.OneMinusSourceAlpha) == 5)
     assert(enums.blend_operation(.Add) == 0)
+    // MTLSampler.hpp: MinMagFilter Nearest 0 / Linear 1, MipFilter
+    // NotMipmapped 0 / Nearest 1 / Linear 2, AddressMode ClampToEdge 0 /
+    // Repeat 2 / MirrorRepeat 3. A gfx.Sampler reaches the device as these.
     assert(enums.sampler_filter(.Nearest) == 0)
     assert(enums.sampler_filter(.Linear) == 1)
-    assert(enums.sampler_mip_filter(.NotMipmapped) == 0)
+    assert(enums.sampler_mip_filter(.None) == 0)
+    assert(enums.sampler_mip_filter(.Nearest) == 1)
     assert(enums.sampler_mip_filter(.Linear) == 2)
     assert(enums.sampler_address_mode(.ClampToEdge) == 0)
+    assert(enums.sampler_address_mode(.Repeat) == 2)
+    assert(enums.sampler_address_mode(.MirroredRepeat) == 3)
     assert(enums.vertex_step_function(.PerVertex) == 1)
     assert(enums.vertex_format(.Float3) == 30)
     assert(enums.vertex_format(.Float4) == 31)
@@ -150,10 +156,10 @@ import ..src.records as records
 
 // Which mouse button an event means, and whether it went down.
 @test fn mouse_events_mean_the_right_buttons() {
-    assert(appkit.button_of(enums.event_type(.LeftMouseDown), 0) == gfx.MOUSE_LEFT)
-    assert(appkit.button_of(enums.event_type(.RightMouseUp), 1) == gfx.MOUSE_RIGHT)
+    assert(appkit.button_of(enums.event_type(.LeftMouseDown), 0) == gfx.button_bit(gfx.Button.Left))
+    assert(appkit.button_of(enums.event_type(.RightMouseUp), 1) == gfx.button_bit(gfx.Button.Right))
     // The middle button is the second of the "other" buttons.
-    assert(appkit.button_of(enums.event_type(.OtherMouseDown), 2) == gfx.MOUSE_MIDDLE)
+    assert(appkit.button_of(enums.event_type(.OtherMouseDown), 2) == gfx.button_bit(gfx.Button.Middle))
     assert(appkit.button_of(enums.event_type(.OtherMouseDown), 3) == 0)
     assert(appkit.button_went_down(enums.event_type(.LeftMouseDown)))
     assert(appkit.button_went_down(enums.event_type(.RightMouseDown)))

@@ -1,0 +1,123 @@
+// Every flag the program reads has a line in --help, and every line names a
+// flag the program reads. The source of truth on both sides is a measurement:
+// the "--x" string literals in src/*.ddr against the rows of args.flags().
+// Without this, --help listed 12 of the program's 20 flags and nothing was red.
+capability filesystem, stdio
+
+import std.fs as fs
+import std.text as text
+import sys
+
+import ..src.args as args
+
+// Does `line` start with `word` once its indentation is skipped?
+fn opens_with(line: string, word: string) -> bool {
+    mut i := 0
+    while i < line.len && (line[i] == 32 || line[i] == 9) { i = i + 1 }
+    if i + word.len > line.len { return false }
+    for k in 0..word.len {
+        if line[i + k] != word[k] { return false }
+    }
+    true
+}
+
+// The "--x" literals of one source file. A line comment is skipped (a flag
+// quoted in prose is not a flag the program reads) and so is a row of the
+// table (`Flag { name: "--x"`): the table must not vouch for itself. "--"
+// alone is the sentinel that says "the next word is a flag", not a flag.
+fn literals(source: string) -> []string {
+    mut out: []string = []
+    mut cursor := text.lines(source.as_str())
+    while cursor.advance() {
+        line := cursor.current().clone()
+        if opens_with(line, "//") || opens_with(line, "Flag {") { continue }
+        mut i := 0
+        while i + 3 < line.len {
+            if line[i] == 34 && line[i + 1] == 45 && line[i + 2] == 45 {
+                mut j := i + 3
+                while j < line.len && line[j] != 34 && line[j] != 32 { j = j + 1 }
+                if j < line.len && line[j] == 34 && j > i + 3 { out.push(line[i + 1..j]) }
+                i = j
+            }
+            i = i + 1
+        }
+    }
+    out
+}
+
+fn contains(xs: &[]string, needle: &string) -> bool {
+    for x in &xs { if x == needle { return true } }
+    false
+}
+
+@test fn every_flag_in_the_source_has_its_help_line_and_every_line_a_flag() {
+    names := match fs.list_dir("src") {
+        .Ok(items) => items,
+        .Err(e) => { _ := sys.eprint("could not list src/: errno " + e.code().str()); assert(false); return },
+    }
+    mut read: []string = []
+    for name in &names {
+        if !text.ends_with(name, ".ddr") { continue }
+        source := sys.read_text("src/" + name)
+        if !source.ok { _ := sys.eprint("could not read src/" + name + ": errno " + source.error.str()); assert(false); return }
+        for flag in &literals(source.value) { read.push(flag.clone()) }
+    }
+    // The reader sees the program's flags at all (a scanner that finds nothing
+    // would pass every comparison below against an empty table).
+    assert(contains(&read, "--eye") && contains(&read, "--frames") && contains(&read, "--mcp"))
+    assert(!contains(&read, "--"))
+    table := args.flags()
+    mut documented: []string = []
+    for f in &table { documented.push(f.name.clone()) }
+    // Every flag read somewhere in src/ is a row.
+    for flag in &read {
+        if !contains(&documented, flag) { _ := sys.eprint("flag without a help line: " + flag + " (args.flags())") }
+        assert(contains(&documented, flag))
+    }
+    // Every row is a flag read somewhere in src/: a line about a flag nobody
+    // reads is a lie in the other direction.
+    for name in &documented {
+        if !contains(&read, name) { _ := sys.eprint("help line for a flag nothing reads: " + name) }
+        assert(contains(&read, name))
+    }
+}
+
+@test fn help_shows_every_flag_with_its_arguments_in_one_column() {
+    usage := args.usage()
+    // The column every description starts in: measured on the first row, and
+    // every other row must start there too (never a number written by hand).
+    mut column := -1
+    for f in &args.flags() {
+        assert(text.contains(usage, f.name) && text.contains(usage, f.text + "\n"))
+        at := text.find(usage, f.text).unwrap_or(-1)
+        assert(at > 0)
+        mut line_start := at
+        while usage[line_start - 1] != 10 { line_start = line_start - 1 }
+        if column < 0 { column = at - line_start } else { assert(at - line_start == column) }
+        // At least two spaces between the arguments and the description.
+        assert(usage[at - 1] == 32 && usage[at - 2] == 32)
+    }
+    assert(column > "  --capture FILE.ppm".len)
+    assert(text.contains(usage, "options:\n"))
+}
+
+// A flag nobody reads is refused by name, so a typo cannot pass as a default.
+// Every known flag with a value, and -h, read as "nothing unknown".
+@test fn an_unknown_flag_is_named_and_every_known_one_is_not() {
+    mut good: []string = ["--glb", "Fox.glb", "--frames", "5", "--capture", "a.ppm", "--eye", "1", "2", "3", "-h"]
+    assert(args.unknown(&good) == "")
+    assert(args.unknown(&[]) == "")
+    for f in &args.flags() {
+        mut one: []string = [f.name.clone()]
+        assert(args.unknown(&one) == "")
+    }
+    mut typo: []string = ["--glb", "Fox.glb", "--bogus", "--frames", "5"]
+    assert(args.unknown(&typo) == "--bogus")
+    // The first unknown word is the one named: fix one, see the next.
+    mut two: []string = ["--zzz", "--aaa"]
+    assert(args.unknown(&two) == "--zzz")
+    // A short dash-word is a value or a mistake for something else, not a
+    // flag this test speaks about; only "--x" is judged.
+    mut short: []string = ["--", "-x", "a--b"]
+    assert(args.unknown(&short) == "")
+}

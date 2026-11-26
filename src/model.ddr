@@ -31,7 +31,7 @@ pub fn attach(g: &mut scene.Graph, root: ecs.Entity, art: &gltf.Asset, joints: &
             first.push(mesh)
         }
         c := part.color.clone()
-        mut mat := scene.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness)
+        mut mat := scene.emissive_mapped(scene.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness), part.emissive_factor.clone())
         for coat in paint {
             if part.material_name == coat.material {
                 mat.base.r += (coat.color.x - mat.base.r) * coat.mix

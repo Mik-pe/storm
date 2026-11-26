@@ -8,6 +8,7 @@
 //   dunder run -- --frames 60      render 60 frames and exit
 //   dunder run -- --capture a.ppm  one headless frame to disk
 //   dunder run -- --font f.ttf     draw the editor with that font
+//   dunder run -- --texture f.ppm  the studio floor carries that P6 image
 capability stdio
 
 import .args
@@ -24,6 +25,7 @@ import core
 import ecs
 import gfx
 import gltf
+import image
 import input
 import render
 import scene as scenegraph
@@ -101,14 +103,38 @@ fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
 // Loads a .glb into the scene as a node with its own vertex stream, scaled to
 // MODEL_SIZE units on its longest side and resting on y = 0, so any model
 // lands in view whatever units it was authored in.
-const MODEL_SIZE: f32 = 2.4
-fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
+//
+// The size is the largest a model can be and still fit the studio's fixed
+// camera whole (eye (0, 4, 10.8), fov 0.85, pitched 16 degrees down at the
+// turntable; viewport rows 55..755). A cube -- the worst case, as deep as
+// it is tall -- of 2.4 standing at MODEL_EDGE_Z lands on rows 360..756,
+// its last row under the status bar; at 2.0 it lands on 401..719 (measured
+// with the camera's own projection, QA 2026-11-26). A tall, thin model
+// such as the lantern fits at either.
+pub const MODEL_SIZE: f32 = 2.0
+// Where a loaded model stands in the studio: centred on x, on the floor, and
+// with its *nearest* side this far in front of the turntable. The plinth
+// reaches 3.2 out (gallery.ddr), so this is its edge plus the margin; the
+// model spreads away from the table, whatever its depth. A fixed centre
+// instead put a cube's back 0.2 into the plinth (QA 2026-11-26).
+pub const MODEL_EDGE_Z: f32 = 3.7
+// Place a GLB in the graph, scaled to MODEL_SIZE, centred on `at.x`, resting
+// on `at.y`, and with its nearest side at `at.z` -- it spreads towards +z,
+// away from whatever stands behind it. A model of any depth then clears the
+// same edge, instead of a depth its caller had to know in advance.
+// `textures[i]` is the uploaded base colour image of part i, or
+// `gfx.no_texture()` for a part that is only a colour.
+pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
     doc := gltf.load(path)
     model := gltf.asset(&doc)?
+    place_model(&mut graph, &model, path, at, textures)
+}
+
+pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
     mut lo := core.vec3(0.0, 0.0, 0.0)
     mut hi := lo
     mut first := true
-    for part in model.parts {
+    for part in &model.parts {
         for v in 0..part.vertices.len / gfx.VERTEX_FLOATS {
             i := v * gfx.VERTEX_FLOATS
             p := core.vec3(part.vertices[i], part.vertices[i + 1], part.vertices[i + 2])
@@ -126,20 +152,125 @@ fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Resu
     if span.y > extent { extent = span.y }
     if span.z > extent { extent = span.z }
     scale := if extent > 0.0 { MODEL_SIZE / extent } else { f32(1.0) }
-    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x) * 0.5 * scale, at.y - lo.y * scale, at.z - (lo.z + hi.z) * 0.5 * scale))
+    // The root sits at the model's origin; its vertices reach from lo.z to
+    // hi.z around it. Putting the nearest side (lo.z * scale) on at.z means
+    // the root moves to at.z - lo.z * scale.
+    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x) * 0.5 * scale, at.y - lo.y * scale, at.z - lo.z * scale))
     _ := graph.set_name(base, path.clone())
     graph.set_scale(base, core.vec3(scale, scale, scale))
-    for part in model.parts {
+    for i in 0..model.parts.len {
+        part := &model.parts[i]
         node := graph.create_child(base, core.vec3(0.0, 0.0, 0.0))
         _ := graph.set_name(node, part.name.clone())
         c := part.color.clone()
-        _ := graph.set_material(node, scenegraph.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness))
+        mut material := scenegraph.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness)
+        material = scenegraph.emissive_mapped(move material, part.emissive_factor.clone())
+        if i < textures.len { material = scenegraph.mapped(move material, textures[i].clone()) }
+        _ := graph.set_material(node, move material)
         _ := graph.set_mesh(node, part.vertices.clone())
     }
     .Ok
 }
 
-fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
+// One uploaded image of a model: which image it is, the sampler and the
+// encoding it was taken with. A texture is those three, so two parts that
+// use one image as base colour and as metallic-roughness map are two
+// uploads, and two parts that use it the same way share one.
+struct Upload { image: i32, sampler: gfx.Sampler, encoding: gfx.Encoding, texture: gfx.Texture }
+
+// The same, with the asset's images decoded and uploaded through `window`:
+// one Textures per part, in the order of the parts. A map a part does not
+// have is no_texture(). A JPEG is refused by name: one unsupported format is
+// a message, not a guess.
+//
+// Only this function is generic over the backend. Everything it reaches is
+// compiled once per generic function that reaches it (Storm dogfood 89), so
+// the deciding -- which image, which sampler, already uploaded or not, is it
+// a PNG -- lives in plain functions, and the one call that needs the backend
+// is written here.
+pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Textures, string> {
+    mut uploads: []Upload = []
+    mut textures: []gfx.Textures = []
+    for part in &asset.parts {
+        base := upload_or_refused(&uploads, asset, part.name, "base colour", part.texture, &part.sampler, .Srgb)?
+        rough := upload_or_refused(&uploads, asset, part.name, "metallic-roughness map", part.metallic_roughness, &part.metallic_roughness_sampler, .Linear)?
+        // The emissive map is a colour the surface gives off: sRGB, like the base.
+        glow := upload_or_refused(&uploads, asset, part.name, "emissive map", part.emissive, &part.emissive_sampler, .Srgb)?
+        mut base_handle := base.handle
+        if base.decoded.pixels.len > 0 {
+            base_handle = window.upload_texture(base.decoded.pixels, base.decoded.width, base.decoded.height, base.encoding, &base.sampler)?
+            remember(&mut uploads, &base, base_handle)
+        }
+        mut rough_handle := rough.handle
+        if rough.decoded.pixels.len > 0 {
+            rough_handle = window.upload_texture(rough.decoded.pixels, rough.decoded.width, rough.decoded.height, rough.encoding, &rough.sampler)?
+            remember(&mut uploads, &rough, rough_handle)
+        }
+        mut glow_handle := glow.handle
+        if glow.decoded.pixels.len > 0 {
+            glow_handle = window.upload_texture(glow.decoded.pixels, glow.decoded.width, glow.decoded.height, glow.encoding, &glow.sampler)?
+            remember(&mut uploads, &glow, glow_handle)
+        }
+        textures.push(gfx.Textures { base: base_handle, metallic_roughness: rough_handle, normal: gfx.no_texture(),
+            occlusion: gfx.no_texture(), emissive: glow_handle })
+    }
+    .Ok(textures)
+}
+
+// What a map asks for: the handle it already has, or the decoded pixels
+// waiting for the backend. `map` names the slot the image is read in ("base
+// colour", "metallic-roughness map"), so a refusal says what was looked for.
+struct Pending { image: i32, sampler: gfx.Sampler, encoding: gfx.Encoding, decoded: image.Image, handle: gfx.Texture }
+
+fn upload_or_refused(uploads: &[]Upload, asset: &gltf.Asset, part_name: string, map: string, image_index: i32,
+    sampler: &gfx.Sampler, encoding: gfx.Encoding) -> Result<Pending, string> {
+    if image_index < 0 { return .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: image.empty(), handle: gfx.no_texture() }) }
+    if image_index >= asset.images.len { return .Err("part " + part_name + ": " + map + " names image " + image_index.str() + " which does not exist") }
+    for u in uploads {
+        if u.image == image_index && u.encoding == encoding && same_sampler(&u.sampler, sampler) {
+            return .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: image.empty(), handle: u.texture })
+        }
+    }
+    part_image := &asset.images[image_index]
+    // The bytes say what the image is; a glTF's mime type is only a claim
+    // about them, so the format is read from the file signature.
+    decoded := image.decode(&part_image.data)
+    match decoded {
+        .Err(message) => return .Err("part " + part_name + ": " + map + ": image " + image_index.str() + " is not a readable image: " + message),
+        .Ok(im) => .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: im, handle: gfx.no_texture() }),
+    }
+}
+
+// After the backend took the pixels: the upload is known by its image,
+// sampler and encoding from now on.
+fn remember(uploads: &mut []Upload, pending: &Pending, handle: gfx.Texture) {
+    uploads.push(Upload { image: pending.image, sampler: copy_sampler(&pending.sampler), encoding: pending.encoding, texture: handle })
+}
+
+fn copy_sampler(s: &gfx.Sampler) -> gfx.Sampler { gfx.Sampler { mag: s.mag, min: s.min, mips: s.mips, wrap: s.wrap } }
+
+// Whether two samplers would sample the same way.
+fn same_sampler(a: &gfx.Sampler, b: &gfx.Sampler) -> bool {
+    a.mag == b.mag && a.min == b.min && a.mips == b.mips && a.wrap == b.wrap
+}
+
+// load_model for the running app: reads, decodes, uploads, places.
+pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
+    doc := gltf.load(path)
+    asset := gltf.asset(&doc)?
+    textures := upload_model_textures(&mut window, &asset)?
+    place_model(&mut graph, &asset, path, at, &textures)
+}
+
+// A P6 capture as the ground texture, uploaded once; the backend owns the
+// pixels from here on. A ground is a colour, so it is sRGB.
+fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Texture, string> {
+    decoded := image.read_rgba(path)?
+    sampler := gfx.sampler()
+    window.upload_texture(decoded.pixels, decoded.width, decoded.height, .Srgb, &sampler)
+}
+
+pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
     camera_position: core.Vec3, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
     if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
     mvp := core.multiply(view_projection, item.model)
@@ -149,10 +280,10 @@ fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegra
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
     mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
     surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, surface)
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, &item.material.textures, &item.material.emissive_factor, surface)
 }
 
-fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
+pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
     cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
     for index in 0..items.len {
         item := &items[index]
@@ -167,7 +298,10 @@ fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items
     .Ok
 }
 
-fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube: i32, plane: i32, sphere: i32) -> u64 {
+// Bytes of f32 vertices the frame's draws read: what `begin_with_vertices`
+// is asked for. Each shape reads its own stream, so a shared mesh counts once
+// per instance that draws it.
+pub fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube: i32, plane: i32, sphere: i32) -> u64 {
     mut total: u64 = 0
     for item in items {
         count := match item.shape { .Mesh => meshes[item.mesh_index].vertices.len, .Cube => cube, .Plane => plane, .Sphere => sphere }
@@ -176,14 +310,27 @@ fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube:
     total
 }
 
-struct FrameGeometry {
+// The scene as the frame's passes read it: a mesh copy taken when the geometry
+// last changed, and this frame's draws split into what casts shadows (and is
+// drawn opaque) and what is blended, sorted far to near.
+pub struct FrameGeometry {
     revision: i64,
     meshes: []scenegraph.Mesh,
     solids: []scenegraph.Drawable,
     glass: []scenegraph.Drawable,
 }
 
-fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
+impl FrameGeometry {
+    pub fn new() -> Self { Self { revision: -1, meshes: [], solids: [], glass: [] } }
+    pub fn meshes(&self) -> &[]scenegraph.Mesh { &self.meshes }
+    pub fn solids(&self) -> &[]scenegraph.Drawable { &self.solids }
+    pub fn glass(&self) -> &[]scenegraph.Drawable { &self.glass }
+    // Forget the mesh copy so the next gather takes a fresh one: a different
+    // world can have counted its revision to the same number as this one.
+    pub fn invalidate(&mut self) { self.revision = -1 }
+}
+
+pub fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
     if frame.revision != world.geometry_revision() {
         frame.meshes = world.mesh_snapshot()
         frame.revision = world.geometry_revision()
@@ -196,7 +343,7 @@ fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
     game.sort_back_to_front(&mut frame.glass)
 }
 
-fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
+pub fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
     eye := core.add(center, core.scale(sun, radius * 1.6))
     view := core.look_at(eye, center, core.vec3(0.0, 1.0, 0.0))
     projection := core.orthographic(-radius, radius, -radius, radius, 1.0, radius * 4.0)
@@ -219,9 +366,67 @@ pub fn frame_plan(shadows: bool, glass: bool, filtered: bool) -> render.Compiled
 
 enum Launch { Studio, Game, Preview }
 
+// The game's transport: whether the level is being edited, run, or run one
+// tick at a time. One value, so "paused in the studio" cannot be written.
+pub enum Mode { Studio, Running, Paused }
+
+// What one frame does to the level, decided by the transport.
+pub enum Tick {
+    // Nothing: the studio is up, or the frame is a capture.
+    None,
+    // One simulation tick with these controls (paused, Step).
+    Step(play.Input),
+    // The elapsed seconds with these controls (running).
+    Advance(f64, play.Input),
+}
+
+pub struct Transport {
+    mode: Mode,
+    // The frame grading: `None` follows the level's theme until E is pressed.
+    grade: Option<bool>,
+}
+
+impl Transport {
+    pub fn new(mode: Mode, grade: Option<bool>) -> Transport { Transport { mode: mode, grade: grade } }
+
+    pub fn mode(&self) -> Mode { self.mode }
+    pub fn playing(&self) -> bool { self.mode != .Studio }
+    pub fn paused(&self) -> bool { self.mode == .Paused }
+    // What the frame is graded with: a choice, else the theme's.
+    pub fn graded(&self, theme_grade: bool) -> bool { self.grade.unwrap_or(theme_grade) }
+
+    // Leave the studio for the game, at the level's start.
+    pub fn play(&mut self) { self.mode = .Running }
+
+    // The transport's answer to this frame's keys, HUD action and elapsed
+    // seconds. `session` is restarted here when asked, so the keyboard and
+    // the button share the one path. `capturing` freezes the level: a capture
+    // is one frame of it.
+    pub fn apply(&mut self, keys: &gfx.Input, action: play_ui.Action, session: &mut play.Session, dt: f64, capturing: bool) -> Tick {
+        if action == .Studio { self.mode = .Studio }
+        if self.mode == .Studio { return .None }
+        if keys.hit(.E) { self.grade = .Some(!self.graded(session.scene.theme == .Blossom)) }
+        if action == .Restart || keys.hit(.R) {
+            session = play.start(&session.scene)
+            self.mode = .Running
+        }
+        if action == .TogglePause || keys.hit(.Q) {
+            self.mode = if self.mode == .Paused { .Running } else { .Paused }
+        }
+        if capturing { return .None }
+        controls := play_view.controls(keys)
+        if self.mode == .Paused {
+            // One step per press: the Step button's action, not a held key.
+            if action == .Step { return .Step(controls) }
+            return .None
+        }
+        .Advance(dt, controls)
+    }
+}
+
 pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, argv: &[]string) -> Result<(), string> {
     path := args.value(argv, "--scene")
-    if args.flag(argv, "--scene") && (path.len == 0 || (path.len >= 2 && path[0..2] == "--")) { return .Err("--scene requires a scene file") }
+    if args.flag(argv, "--scene") && path.len == 0 { return .Err("--scene requires a scene file") }
     if args.flag(argv, "--capture") && args.value(argv, "--capture").len == 0 { return .Err("--capture requires an output file") }
     watch := args.flag(argv, "--watch")
     if watch && path.len == 0 { return .Err("--watch requires --scene FILE") }
@@ -242,7 +447,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     move initial: play.Session, launch: Launch, shot: string, move file: scene_file.Watch) -> Result<(), string> {
     mut watcher := move file
     mut session := move initial
-    mut playing := launch != .Studio
+    playing := launch != .Studio
     exporting := launch == .Preview
     limit := args.frame_limit(argv)
     mut window := open(TITLE, if exporting { 720 } else { 1280 }, if exporting { 450 } else { 800 })?
@@ -264,7 +469,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
 
     mut graph := scenegraph.Graph::new()
     missing := ecs.Entity { index: -1, generation: 0 }
-    mut study := gallery.Study { hub: missing, ring: missing, left: missing, right: missing }
+    mut study := gallery.Study { hub: missing, floor: missing, ring: missing, left: missing, right: missing }
     if !exporting && (!playing || !capturing) {
         study = gallery.build(&mut graph)
         game.spawn_orbs(&mut graph)
@@ -278,7 +483,6 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut cozy_hud := widgets.State::new()
     mut action := play_ui.Action.Idle
     mut cozy_action := play_ui.CozyAction.None
-    mut paused := false
     mut cozy := cozy_control.new()
     cozy_control.reset(&mut cozy, &session)
     mood_arg := args.value(argv, "--mood")
@@ -296,11 +500,23 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     if args.flag(argv, "--options") { cozy.options_open = true }
     glb := args.value(argv, "--glb")
     if glb.len > 0 {
-        match load_model(&mut graph, glb, core.vec3(0.0, 0.0, 4.2)) {
+        match load_model_into(&mut window, &mut graph, glb, core.vec3(0.0, 0.0, MODEL_EDGE_Z)) {
             .Ok => {}, .Err(err) => { return stop(move window, glb + ": " + err) },
         }
     }
     graph.propagate()
+
+    // --- --texture FILE.ppm: a Storm capture as the studio floor's texture ---
+    texture_path := args.value(argv, "--texture")
+    if texture_path.len > 0 {
+        if playing { return stop(move window, "--texture needs the studio: " + texture_path) }
+        ground := match load_ground(&mut window, texture_path) {
+            .Ok(handle) => handle,
+            .Err(message) => { return stop(move window, texture_path + ": " + message) },
+        }
+        floor_material := graph.material_at(study.floor).clone()
+        _ := graph.set_material(study.floor, scenegraph.textured(move floor_material, ground))
+    }
 
     // --- camera ---
     start := args.aim(argv)
@@ -329,7 +545,8 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
 
     disable_post := args.flag(argv, "--no-post")
     enable_post := args.flag(argv, "--effects") && !disable_post
-    mut game_grade: Option<bool> = if disable_post { .Some(false) } else if enable_post { .Some(true) } else { .None }
+    grade: Option<bool> = if disable_post { .Some(false) } else if enable_post { .Some(true) } else { .None }
+    mut transport := Transport::new(if playing { .Running } else { .Studio }, grade)
     mut studio := editor.new(study.ring, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), enable_post)
     studio.antialias = !args.flag(argv, "--no-aa")
     mut glass_visible := true
@@ -369,7 +586,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut planned_shadows := false
     mut planned_glass := false
     mut planned_filter := false
-    mut geometry := FrameGeometry { revision: -1, meshes: [], solids: [], glass: [] }
+    mut geometry := FrameGeometry::new()
     mut mesh_world_is_game := false
     mut frames: i64 = 0
     mut previous := 0.0
@@ -411,7 +628,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                                 .Ok(view) => view, .Err(err) => { return stop(move window, err) },
                             }
                             sphere_vertices = play_view.sphere_geometry(&level)
-                            geometry.revision = -1
+                            geometry.invalidate()
                         },
                         .None => {},
                     }
@@ -425,24 +642,20 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             studio.play_requested = false
             session = play.start(&session.scene)
             cozy_control.reset(&mut cozy, &session)
-            playing = true
-            paused = false
+            transport.play()
         }
-        if action == .Studio { playing = false }
+        playing := transport.playing()
         aspect := f32(frame.width) / f32(frame.height)
         mut view_camera := camera
         mut frame_sky := sky.clone()
         if playing {
-            if frame.input.hit(.E) { game_grade = .Some(!game_grade.unwrap_or(session.scene.theme == .Blossom)) }
-            if action == .Restart || frame.input.hit(.R) {
-                session = play.start(&session.scene)
-                cozy_control.reset(&mut cozy, &session)
-                paused = false
-            }
-            if action == .TogglePause || frame.input.hit(.Q) { paused = !paused }
-            frame_sky.horizon = backdrop.clone()
             blossom := session.scene.theme == .Blossom
             mut active_sun := sun
+            frame_sky.horizon = backdrop.clone()
+            restarting := action == .Restart || frame.input.hit(.R)
+            tick := transport.apply(&frame.input, action, &mut session, dt, capturing)
+            if restarting { cozy_control.reset(&mut cozy, &session) }
+            paused := transport.paused()
             if blossom {
                 match cozy_action {
                     .Sit => play.toggle_sit(&mut session),
@@ -459,7 +672,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                     .ToggleStroll => cozy_control.toggle_stroll(&mut cozy),
                     .None => {},
                 }
-                if !capturing {
+                if !capturing && transport.playing() {
                     pre_area := play_view.framing(&game_view, &session, paused || capturing)
                     pre_cam := if !custom_eye { play_view.camera_blend(&pre_area, aspect, cozy.cam_preset_t, cozy.yaw, cozy.zoom) } else { camera }
                     cam_adj := cozy_control.cam_adjusted(&cozy)
@@ -471,22 +684,20 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                     cozy_dt := if dt > 0.1 { f32(0.1) } else if dt < 0.0 { f32(0.0) } else { f32(dt) }
                     controls := cozy_control.update(&mut cozy, &mut session, &pre_cam, aspect, f32(frame.width), f32(frame.height),
                         cozy_dt, &frame.input, support_y, ui_captured)
-                    if paused && action == .Step {
-                        play.step(&mut session, controls)
-                        cozy_control.sync_toasts(&mut cozy, &session)
-                    } else if !paused {
-                        _ := play.advance(&mut session, dt, controls)
-                        cozy_control.sync_toasts(&mut cozy, &session)
+                    match tick {
+                        .Step(_) => { play.step(&mut session, controls); cozy_control.sync_toasts(&mut cozy, &session) },
+                        .Advance(seconds, _) => { _ := play.advance(&mut session, seconds, controls); cozy_control.sync_toasts(&mut cozy, &session) },
+                        .None => {},
                     }
                 }
                 active_sun = apply_blossom_mood(&mut frame_sky, cozy.mood, session.won)
                 guide := cozy_control.guide(&cozy)
                 play_view.sync_guide(&mut game_view, &session, paused || capturing, &guide)
             } else {
-                controls := play_view.controls(&frame.input)
-                if !capturing {
-                    if paused && action == .Step { play.step(&mut session, controls) }
-                    else if !paused { _ := play.advance(&mut session, dt, controls) }
+                match tick {
+                    .Step(controls) => play.step(&mut session, controls),
+                    .Advance(seconds, controls) => { _ := play.advance(&mut session, seconds, controls) },
+                    .None => {},
                 }
                 play_view.sync(&mut game_view, &session, paused || capturing)
             }
@@ -505,7 +716,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             if dt > 0.1 { dt = 0.1 }
             // Mouse look only while the right button is held.
             over_view := editor.in_viewport(&studio, frame.input.mouse.x, frame.input.mouse.y, f32(frame.width), f32(frame.height))
-            camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.MOUSE_RIGHT))
+            camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.Button.Right))
             if frame.input.hit(gfx.Key.R) {
                 baseline := args.aim(argv)
                 camera = input.Camera::new(baseline.position)
@@ -541,12 +752,12 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         inv_view_projection := input.inverse_view_projection(&view_camera, aspect)
 
         // --- scene contents for this frame: everything the scene says is drawable ---
-        if mesh_world_is_game != playing { geometry.revision = -1; mesh_world_is_game = playing }
+        if mesh_world_is_game != playing { geometry.invalidate(); mesh_world_is_game = playing }
         if playing { gather(&mut geometry, &game_view.graph, view_camera.position) }
         else { gather(&mut geometry, &graph, view_camera.position) }
         shadows := studio.shadows && geometry.solids.len > 0
         transparent := geometry.glass.len > 0
-        grade := if playing { game_grade.unwrap_or(session.scene.theme == .Blossom) } else { studio.effects }
+        grade := if playing { transport.graded(session.scene.theme == .Blossom) } else { studio.effects }
         finish := gfx.PostProcess { antialias: studio.antialias, strength: if grade { 1.0 } else { 0.0 } }
         filtered := finish.enabled()
         if plan.steps.len == 0 || shadows != planned_shadows || transparent != planned_glass || filtered != planned_filter {
@@ -611,8 +822,9 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             } else if kind == render.PassKind.Ui {
                 canvas.clear()
                 mouse := frame.input.mouse
-                pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.MOUSE_LEFT), frame.input.button_down(gfx.MOUSE_LEFT))
+                pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.Button.Left), frame.input.button_down(gfx.Button.Left))
                 if playing {
+                    paused := transport.paused()
                     if session.scene.theme == .Blossom {
                         action = play_ui.woodland(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
                             session.scene.name, session.flowers, session.total_flowers, session.butterflies, session.total_butterflies, paused, session.won)

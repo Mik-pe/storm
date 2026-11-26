@@ -4,11 +4,38 @@ import core
 import gfx
 import std.sys as sys
 import .device as device
-import .enums as enums
+import vk.enums as enums
 import .depth as depth
-import .layout as vk
+import vk.layout as vk
+import .pipeline as pipelines
 import .shader as shader
 import .state as state
+import .records as records
+
+// What this module owns: the shadow map image, its memory, view and sampler,
+// the shadow pass with its framebuffer, pipeline and layout, pool and shaders,
+// and the light's mapped buffer. Zeroed with the renderer; `setup` fills it,
+// `destroy` empties it. The two names other modules bind — the set and its
+// layout — stay on `Renderer`; everything else is read here only. The same
+// record and name as storm-metal's `shadow.Shadow`.
+@c_layout
+pub struct Shadow {
+    shadowInitialized: u32,
+    shadowImage: ptr,
+    shadowMemory: ptr,
+    shadowView: ptr,
+    shadowSampler: ptr,
+    shadowPass: ptr,
+    shadowFramebuffer: ptr,
+    shadowPipeline: ptr,
+    shadowPipelineLayout: ptr,
+    shadowPool: ptr,
+    lightBuffer: ptr,
+    lightMemory: ptr,
+    lightMapped: ptr,
+    shadowVertShader: ptr,
+    shadowFragShader: ptr,
+}
 
 // The shadow pass stores light-space distance in R32_SFLOAT with MAX blending.
 
@@ -18,13 +45,14 @@ unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
 const SHADOW_SIZE: u32 = 1024
 const CLEAR_FAR: f32 = 1000.0
-
-@c_layout
-struct StagePair { vertex: vk.PipelineShaderStageCreateInfo, fragment: vk.PipelineShaderStageCreateInfo }
+// The frame's uniform block (set 0, binding 1): light_vp(64) light_dir_c(16)
+// sun(16) sun_color(16) zenith(16) horizon(16). The mesh shaders read the
+// sun and the sky from here, once per frame, not once per draw.
+pub const LIGHT_BYTES: u64 = 144
 
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // --- image ---
-    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.ColorAttachmentSampled))
+    image_create_info := device.image_2d_info(enums.format(.R32_SFLOAT), SHADOW_SIZE, SHADOW_SIZE, enums.ImageTiling.Optimal, enums.ImageUsage.ColorAttachmentSampled)
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&image_create_info), ptr(0), addr(&mut image))
     if code != 0 {
@@ -38,13 +66,12 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    code = device.allocate(&r, &requirements, 1, addr(&mut memory))
+    code = device.allocate(&r, &requirements, .Some(enums.Memory.DeviceLocal), addr(&mut memory))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     code = r.api.BindImageMemory(r.device, image, memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut view_info: vk.ImageViewCreateInfo = zeroed()
-    view_info.sType = 15
+    mut view_info: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
     view_info.image = image
     view_info.viewType = enums.image_view_type(.Type2D)
     view_info.format = enums.format(.R32_SFLOAT)
@@ -56,8 +83,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- sampler ---
-    mut sampler_info: vk.SamplerCreateInfo = zeroed()
-    sampler_info.sType = 31
+    mut sampler_info: vk.SamplerCreateInfo = vk.SamplerCreateInfo::new()
     sampler_info.magFilter = enums.filter(.Nearest)
     sampler_info.minFilter = enums.filter(.Nearest)
     sampler_info.mipmapMode = enums.sampler_mipmap_mode(.Nearest)
@@ -69,10 +95,9 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateSampler(r.device, addr(&sampler_info), ptr(0), addr(&mut sampler))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    // --- light uniform buffer: mat4 light_vp + vec4 light_dir_c = 80 bytes ---
-    mut buffer_info: vk.BufferCreateInfo = zeroed()
-    buffer_info.sType = 12
-    buffer_info.size = 80
+    // --- light uniform buffer: LIGHT_BYTES, the frame's values ---
+    mut buffer_info: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
+    buffer_info.size = LIGHT_BYTES
     buffer_info.usage = enums.buffer_usage(.UniformBuffer)
     buffer_info.sharingMode = enums.sharing_mode(.Exclusive)
     mut light_buffer := ptr(0)
@@ -81,12 +106,12 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut breq: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, light_buffer, addr(&mut breq))
     mut light_memory := ptr(0)
-    code = device.allocate(&r, &breq, 6, addr(&mut light_memory))
+    code = device.allocate(&r, &breq, .Some(enums.Memory.HostVisibleCoherent), addr(&mut light_memory))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     code = r.api.BindBufferMemory(r.device, light_buffer, light_memory, 0)
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     mut light_mapped := ptr(0)
-    code = r.api.MapMemory(r.device, light_memory, 0, 80, 0, addr(&mut light_mapped))
+    code = r.api.MapMemory(r.device, light_memory, 0, LIGHT_BYTES, 0, addr(&mut light_mapped))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     // --- descriptor set: binding 0 shadow sampler, 1 light UBO, 2 prefiltered
@@ -96,18 +121,17 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // word0/3/6/9/12 = binding | type, word1/4/7/10/13 = count | stages,
     // word2/5/8/11/14 = immutable samplers.
     mut bindings: [u64; 15] = [0; 15]
-    bindings[0] = enums.binding_word(0, .CombinedImageSampler)
-    bindings[1] = enums.stages_word(1, .Fragment)
+    bindings[0] = records.binding_word(0, .CombinedImageSampler)
+    bindings[1] = records.stages_word(1, .Fragment)
     bindings[2] = 0
-    bindings[3] = enums.binding_word(1, .UniformBuffer)
-    bindings[4] = enums.stages_word(1, .VertexFragment)
+    bindings[3] = records.binding_word(1, .UniformBuffer)
+    bindings[4] = records.stages_word(1, .VertexFragment)
     bindings[5] = 0
     for binding in 2..5 {
-        bindings[binding * 3] = enums.binding_word(u32(binding), .CombinedImageSampler)
-        bindings[binding * 3 + 1] = enums.stages_word(1, .Fragment)
+        bindings[binding * 3] = records.binding_word(u32(binding), .CombinedImageSampler)
+        bindings[binding * 3 + 1] = records.stages_word(1, .Fragment)
     }
-    mut layout_info: vk.DescriptorSetLayoutCreateInfo = zeroed()
-    layout_info.sType = 32
+    mut layout_info: vk.DescriptorSetLayoutCreateInfo = vk.DescriptorSetLayoutCreateInfo::new()
     layout_info.bindingCount = 5
     layout_info.pBindings = addr(&mut bindings[0])
     mut set_layout := ptr(0)
@@ -116,8 +140,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 
     // Four combined image samplers and one uniform buffer.
     mut pool_sizes: [u32; 4] = [1, 4, 6, 1]
-    mut pool_info: vk.DescriptorPoolCreateInfo = zeroed()
-    pool_info.sType = 33
+    mut pool_info: vk.DescriptorPoolCreateInfo = vk.DescriptorPoolCreateInfo::new()
     pool_info.maxSets = 1
     pool_info.poolSizeCount = 2
     pool_info.pPoolSizes = addr(&mut pool_sizes[0])
@@ -125,8 +148,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     code = r.api.CreateDescriptorPool(r.device, addr(&pool_info), ptr(0), addr(&mut pool))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut allocate_info: vk.DescriptorSetAllocateInfo = zeroed()
-    allocate_info.sType = 34
+    mut allocate_info: vk.DescriptorSetAllocateInfo = vk.DescriptorSetAllocateInfo::new()
     allocate_info.descriptorPool = pool
     allocate_info.descriptorSetCount = 1
     allocate_info.pSetLayouts = addr(&set_layout)
@@ -141,17 +163,15 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut buffer_info2: vk.DescriptorBufferInfo = zeroed()
     buffer_info2.buffer = light_buffer
     buffer_info2.offset = 0
-    buffer_info2.range = 80
+    buffer_info2.range = LIGHT_BYTES
     // Two vkWriteDescriptorSet records (14 words each) laid out contiguously.
-    mut write_image: vk.WriteDescriptorSet = zeroed()
-    write_image.sType = 35
+    mut write_image: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write_image.dstSet = set
     write_image.dstBinding = 0
     write_image.descriptorCount = 1
     write_image.descriptorType = enums.descriptor_type(.CombinedImageSampler)
     write_image.pImageInfo = addr(&image_info)
-    mut write_buffer: vk.WriteDescriptorSet = zeroed()
-    write_buffer.sType = 35
+    mut write_buffer: vk.WriteDescriptorSet = vk.WriteDescriptorSet::new()
     write_buffer.dstSet = set
     write_buffer.dstBinding = 1
     write_buffer.descriptorCount = 1
@@ -194,8 +214,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     after.srcAccessMask = enums.access(.ColorAttachmentWrite)
     after.dstAccessMask = enums.access(.ShaderRead)
     deps := vk.Dependencies { before: before, after: after }
-    mut pass_info: vk.RenderPassCreateInfo = zeroed()
-    pass_info.sType = 38
+    mut pass_info: vk.RenderPassCreateInfo = vk.RenderPassCreateInfo::new()
     pass_info.attachmentCount = 1
     pass_info.pAttachments = addr(&attachment)
     pass_info.subpassCount = 1
@@ -207,8 +226,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
     mut views: [ptr; 1] = [view]
-    mut fbi: vk.FramebufferCreateInfo = zeroed()
-    fbi.sType = 37
+    mut fbi: vk.FramebufferCreateInfo = vk.FramebufferCreateInfo::new()
     fbi.renderPass = pass
     fbi.attachmentCount = 1
     fbi.pAttachments = addr(&views[0])
@@ -222,16 +240,14 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     // --- pipeline ---
     vertex := shader.shadow_vertex()
     mut vshader := ptr(0)
-    mut module_info: vk.ShaderModuleCreateInfo = zeroed()
-    module_info.sType = 16
+    mut module_info: vk.ShaderModuleCreateInfo = vk.ShaderModuleCreateInfo::new()
     module_info.codeSize = usize(vertex.len * 4)
     module_info.pCode = addr(&vertex[0])
     code = r.api.CreateShaderModule(r.device, addr(&module_info), ptr(0), addr(&mut vshader))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
     fragment := shader.shadow_fragment()
     mut fshader := ptr(0)
-    mut module_info2: vk.ShaderModuleCreateInfo = zeroed()
-    module_info2.sType = 16
+    mut module_info2: vk.ShaderModuleCreateInfo = vk.ShaderModuleCreateInfo::new()
     module_info2.codeSize = usize(fragment.len * 4)
     module_info2.pCode = addr(&fragment[0])
     code = r.api.CreateShaderModule(r.device, addr(&module_info2), ptr(0), addr(&mut fshader))
@@ -241,127 +257,69 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     mut push_range: vk.PushConstantRange = zeroed()
     push_range.stageFlags = enums.shader_stage(.Vertex)
     push_range.size = 144
-    mut layout_info2: vk.PipelineLayoutCreateInfo = zeroed()
-    layout_info2.sType = 30
+    mut layout_info2: vk.PipelineLayoutCreateInfo = vk.PipelineLayoutCreateInfo::new()
     layout_info2.pushConstantRangeCount = 1
     layout_info2.pPushConstantRanges = addr(&push_range)
     mut pipeline_layout := ptr(0)
     code = r.api.CreatePipelineLayout(r.device, addr(&layout_info2), ptr(0), addr(&mut pipeline_layout))
     if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    mut stage: vk.PipelineShaderStageCreateInfo = zeroed()
-    stage.sType = 18
-    stage.stage = enums.shader_stage(.Vertex)
-    stage.module = vshader
-    stage.pName = cstr("main")
-    mut stages: StagePair = zeroed()
-    stages.vertex = stage
-    stages.fragment = stage
-    stages.fragment.stage = enums.shader_stage(.Fragment)
-    stages.fragment.module = fshader
-
-    // Same vertex layout as the mesh pipeline, from the same record: the
-    // shadow shader reads only position, but the pipeline must declare the
-    // whole 32-byte stream or the stride is wrong.
-    mut vertex_input := vk.vertex_input()
-    enums.apply_vertex_input(&mut vertex_input)
-    mut input: vk.PipelineVertexInputStateCreateInfo = zeroed()
-    input.sType = 19
-    input.vertexBindingDescriptionCount = 1
-    input.pVertexBindingDescriptions = addr(&vertex_input.binding)
-    input.vertexAttributeDescriptionCount = 3
-    input.pVertexAttributeDescriptions = addr(&vertex_input.attributes)
-
-    mut assembly: vk.PipelineInputAssemblyStateCreateInfo = zeroed()
-    assembly.sType = 20
-    assembly.topology = enums.primitive_topology(.TriangleList)
-
-    mut viewport: vk.Viewport = zeroed()
-    viewport.width = f32(SHADOW_SIZE)
-    viewport.height = f32(SHADOW_SIZE)
-    viewport.maxDepth = 1.0
-    mut scissor: vk.Rect2D = zeroed()
-    scissor.extent.width = SHADOW_SIZE
-    scissor.extent.height = SHADOW_SIZE
-    mut viewport_state: vk.PipelineViewportStateCreateInfo = zeroed()
-    viewport_state.sType = 22
-    viewport_state.viewportCount = 1
-    viewport_state.pViewports = addr(&viewport)
-    viewport_state.scissorCount = 1
-    viewport_state.pScissors = addr(&scissor)
-
-    mut raster: vk.PipelineRasterizationStateCreateInfo = zeroed()
-    raster.sType = 23
-    raster.polygonMode = enums.polygon_mode(.Fill)
-    raster.cullMode = enums.cull_mode(.Back)
-    raster.frontFace = enums.front_face(.CounterClockwise)
-    raster.lineWidth = 1.0
-
-    mut multisample: vk.PipelineMultisampleStateCreateInfo = zeroed()
-    multisample.sType = 24
-    multisample.rasterizationSamples = 1
-
-    mut depth_state: vk.PipelineDepthStencilStateCreateInfo = zeroed()
-    depth_state.sType = 25
-
-    mut blend_attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-    // MAX keeps the surface closest to the sun in every texel.
-    enums.apply_blend(&mut blend_attachment, &enums.shadow_max())
-    mut blend: vk.PipelineColorBlendStateCreateInfo = zeroed()
-    blend.sType = 26
-    blend.attachmentCount = 1
-    blend.pAttachments = addr(&blend_attachment)
-
-    mut info: vk.GraphicsPipelineCreateInfo = zeroed()
-    info.sType = 28
-    info.stageCount = 2
-    info.pStages = addr(&stages)
-    info.pVertexInputState = addr(&input)
-    info.pInputAssemblyState = addr(&assembly)
-    info.pViewportState = addr(&viewport_state)
-    info.pRasterizationState = addr(&raster)
-    info.pMultisampleState = addr(&multisample)
-    info.pDepthStencilState = addr(&depth_state)
-    info.pColorBlendState = addr(&blend)
-    info.layout = pipeline_layout
-    info.renderPass = pass
-    info.basePipelineIndex = -1
+    // The shadow pass draws the scene from the light: the whole mesh stream
+    // declared, back faces culled, no depth buffer — MAX blending keeps the
+    // surface closest to the sun in every texel.
+    mut plan := pipelines.Plan {
+        vertex: vshader, fragment: fshader,
+        layout: pipeline_layout, pass: pass,
+        cull: .Back, depth: pipelines.depth_off(), blend: .Some(records.shadow_max()),
+        vertices: .Mesh, viewport: .Square(SHADOW_SIZE), encoded: false,
+    }
     mut pipeline := ptr(0)
-    code = r.api.CreateGraphicsPipelines(r.device, ptr(0), 1, addr(&info), ptr(0), addr(&mut pipeline))
-    if code != 0 { return device.fail(&mut r, code, .Shadow) }
+    code = pipelines.build(&r, &plan, addr(&mut pipeline))
+        if code != 0 { return device.fail(&mut r, code, .Shadow) }
 
-    r.shadowImage = image
-    r.shadowMemory = memory
-    r.shadowView = view
-    r.shadowSampler = sampler
-    r.shadowPass = pass
-    r.shadowFramebuffer = framebuffer
-    r.shadowPipeline = pipeline
-    r.shadowPipelineLayout = pipeline_layout
+    r.shadow.shadowImage = image
+    r.shadow.shadowMemory = memory
+    r.shadow.shadowView = view
+    r.shadow.shadowSampler = sampler
+    r.shadow.shadowPass = pass
+    r.shadow.shadowFramebuffer = framebuffer
+    r.shadow.shadowPipeline = pipeline
+    r.shadow.shadowPipelineLayout = pipeline_layout
     r.shadowSetLayout = set_layout
-    r.shadowPool = pool
+    r.shadow.shadowPool = pool
     r.shadowSet = set
-    r.lightBuffer = light_buffer
-    r.lightMemory = light_memory
-    r.lightMapped = light_mapped
-    r.shadowVertShader = vshader
-    r.shadowFragShader = fshader
+    r.shadow.lightBuffer = light_buffer
+    r.shadow.lightMemory = light_memory
+    r.shadow.lightMapped = light_mapped
+    r.shadow.shadowVertShader = vshader
+    r.shadow.shadowFragShader = fshader
     .Ready
 }
 
-// Writes the light matrix into the mapped uniform buffer.
-unsafe fn set_light(r: &state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
-    if r.lightMapped == ptr(0) { return false }
-    _ := copy_bytes(r.lightMapped, addr(&light_vp[0]), 64)
-    _ := copy_bytes(ptr(usize(r.lightMapped) + 64), addr(&light_dir_c[0]), 16)
+// Writes the frame's values into the mapped uniform buffer: the light
+// matrix, then the sun and the sky the mesh shaders shade with. Called from
+// the mesh pass, the one place that has the sky on every frame (the shadow
+// pass is optional); until the contract has a per-frame hook this is once
+// per draw, the price the push block paid before.
+pub unsafe fn set_light(r: &state.Renderer, sky: &gfx.Sky) -> bool {
+    if r.shadow.lightMapped == ptr(0) { return false }
+    base := r.shadow.lightMapped
+    _ := copy_bytes(base, addr(&sky.light_vp[0]), 64)
+    _ := copy_bytes(ptr(usize(base) + 64), addr(&sky.light_dir_c[0]), 16)
+    _ := copy_bytes(ptr(usize(base) + 80), addr(&sky.sun[0]), 16)
+    _ := copy_bytes(ptr(usize(base) + 96), addr(&sky.sun_color[0]), 12)
+    fill := sky.diffuse_fill
+    _ := copy_bytes(ptr(usize(base) + 108), addr(&fill), 4)
+    _ := copy_bytes(ptr(usize(base) + 112), addr(&sky.zenith[0]), 16)
+    _ := copy_bytes(ptr(usize(base) + 128), addr(&sky.horizon[0]), 16)
     true
 }
 
 // --- recording ---
 
-pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &[f32; 4]) -> bool {
-    if r.pass != state.PASS_WAITING || r.shadowPass == ptr(0) { return false }
-    if !set_light(&r, light_vp, light_dir_c) { return false }
+pub unsafe fn begin(r: &mut state.Renderer, sky: &gfx.Sky) -> bool {
+    if state.pass(&r) != .Waiting || r.shadow.shadowPass == ptr(0) { return false }
+    if !set_light(&r, sky) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
     // ClearValue is a union; the shadow pass has only a colour attachment, so
@@ -371,27 +329,26 @@ pub unsafe fn begin(r: &mut state.Renderer, light_vp: &[f32; 16], light_dir_c: &
     store_u32(ptr(usize(addr(&mut clear[0])) + 4), depth.float_bits(-CLEAR_FAR))
     store_u32(ptr(usize(addr(&mut clear[0])) + 8), depth.float_bits(-CLEAR_FAR))
     store_u32(ptr(usize(addr(&mut clear[0])) + 12), depth.float_bits(1.0))
-    mut pass: vk.RenderPassBeginInfo = zeroed()
-    pass.sType = 43
-    pass.renderPass = r.shadowPass
-    pass.framebuffer = r.shadowFramebuffer
+    mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
+    pass.renderPass = r.shadow.shadowPass
+    pass.framebuffer = r.shadow.shadowFramebuffer
     pass.renderArea.extent.width = SHADOW_SIZE
     pass.renderArea.extent.height = SHADOW_SIZE
     pass.clearValueCount = 1
     pass.pClearValues = addr(&mut clear[0])
-    r.pass = state.PASS_SHADOW
+    state.set_pass(&mut r, .Shadow)
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
-    r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadowPipeline)
+    r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadow.shadowPipeline)
     // light_vp(64) + model(64, filled per draw) + light_dir_c(16) = 144 bytes.
     mut push: [f32; 36] = [0.0; 36]
-    for i in 0..16 { push[i] = light_vp[i] }
-    for i in 0..4 { push[32 + i] = light_dir_c[i] }
-    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 0, 144, addr(&push[0]))
+    for i in 0..16 { push[i] = sky.light_vp[i] }
+    for i in 0..4 { push[32 + i] = sky.light_dir_c[i] }
+    r.api.CmdPushConstants(r.commands[r.current], r.shadow.shadowPipelineLayout, enums.shader_stage(.Vertex), 0, 144, addr(&push[0]))
     true
 }
 
 pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) -> bool {
-    if r.pass != state.PASS_SHADOW { return false }
+    if state.pass(&r) != .Shadow { return false }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
     bytes := u64(vertices.len) * 4
     offset := r.vertexCursor
@@ -402,17 +359,17 @@ pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) 
     r.vertexCursor = offset + bytes
     mut push: [f32; 36] = [0.0; 36]
     for i in 0..16 { push[i] = model[i] }
-    r.api.CmdPushConstants(r.commands[r.current], r.shadowPipelineLayout, enums.shader_stage(.Vertex), 64, 64, addr(&push[0]))
+    r.api.CmdPushConstants(r.commands[r.current], r.shadow.shadowPipelineLayout, enums.shader_stage(.Vertex), 64, 64, addr(&push[0]))
     r.api.CmdBindVertexBuffers(r.commands[r.current], 0, 1, addr(&r.vertex.handle), addr(&offset))
     r.api.CmdDraw(r.commands[r.current], u32(vertices.len / gfx.VERTEX_FLOATS), 1, 0, 0)
     true
 }
 
 pub unsafe fn end(r: &mut state.Renderer) -> bool {
-    if r.pass != state.PASS_SHADOW { return false }
+    if state.pass(&r) != .Shadow { return false }
     r.api.CmdEndRenderPass(r.commands[r.current])
-    r.pass = state.PASS_WAITING
-    r.shadowInitialized = 1
+    state.set_pass(&mut r, .Waiting)
+    r.shadow.shadowInitialized = 1
     true
 }
 
@@ -425,26 +382,28 @@ pub unsafe fn bind(r: &state.Renderer) -> bool {
 
 // The mesh descriptor also exists when the optional shadow pass is skipped.
 pub unsafe fn ensure_readable(r: &mut state.Renderer) -> bool {
-    if r.shadowInitialized != 0 { return true }
+    if r.shadow.shadowInitialized != 0 { return true }
     id := core.identity()
-    light: [f32; 4] = [0.0, 1.0, 0.0, 1.0]
-    begin(&mut r, &id.m, &light) && end(&mut r)
+    // A neutral sky: the pass opens and closes with nothing drawn, so the
+    // sun and the colours are never read; only the matrix has to be finite.
+    neutral := gfx.sky_params([0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4], id.m, [0.0, 1.0, 0.0, 1.0])
+    begin(&mut r, &neutral) && end(&mut r)
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
-    r.api.DestroyPipeline(r.device, r.shadowPipeline, ptr(0))
-    r.api.DestroyShaderModule(r.device, r.shadowVertShader, ptr(0))
-    r.api.DestroyShaderModule(r.device, r.shadowFragShader, ptr(0))
-    r.api.DestroyPipelineLayout(r.device, r.shadowPipelineLayout, ptr(0))
-    r.api.DestroyDescriptorPool(r.device, r.shadowPool, ptr(0))
+    r.api.DestroyPipeline(r.device, r.shadow.shadowPipeline, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.shadow.shadowVertShader, ptr(0))
+    r.api.DestroyShaderModule(r.device, r.shadow.shadowFragShader, ptr(0))
+    r.api.DestroyPipelineLayout(r.device, r.shadow.shadowPipelineLayout, ptr(0))
+    r.api.DestroyDescriptorPool(r.device, r.shadow.shadowPool, ptr(0))
     r.api.DestroyDescriptorSetLayout(r.device, r.shadowSetLayout, ptr(0))
-    r.api.DestroyFramebuffer(r.device, r.shadowFramebuffer, ptr(0))
-    r.api.DestroyRenderPass(r.device, r.shadowPass, ptr(0))
-    r.api.DestroySampler(r.device, r.shadowSampler, ptr(0))
-    r.api.DestroyImageView(r.device, r.shadowView, ptr(0))
-    r.api.DestroyImage(r.device, r.shadowImage, ptr(0))
-    r.api.FreeMemory(r.device, r.shadowMemory, ptr(0))
-    if r.lightMapped != ptr(0) { r.api.UnmapMemory(r.device, r.lightMemory) }
-    r.api.DestroyBuffer(r.device, r.lightBuffer, ptr(0))
-    r.api.FreeMemory(r.device, r.lightMemory, ptr(0))
+    r.api.DestroyFramebuffer(r.device, r.shadow.shadowFramebuffer, ptr(0))
+    r.api.DestroyRenderPass(r.device, r.shadow.shadowPass, ptr(0))
+    r.api.DestroySampler(r.device, r.shadow.shadowSampler, ptr(0))
+    r.api.DestroyImageView(r.device, r.shadow.shadowView, ptr(0))
+    r.api.DestroyImage(r.device, r.shadow.shadowImage, ptr(0))
+    r.api.FreeMemory(r.device, r.shadow.shadowMemory, ptr(0))
+    if r.shadow.lightMapped != ptr(0) { r.api.UnmapMemory(r.device, r.shadow.lightMemory) }
+    r.api.DestroyBuffer(r.device, r.shadow.lightBuffer, ptr(0))
+    r.api.FreeMemory(r.device, r.shadow.lightMemory, ptr(0))
 }

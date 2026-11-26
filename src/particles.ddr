@@ -146,15 +146,28 @@ pub fn build(g: &mut scene.Graph) -> Effects {
     fx.puffs.push(puff)
     fx.trail.push(star)
     fx.burst.push(heart)
-    for i in 1..8 { fx.puffs.push(copy_node(&mut g, puff, &if i % 3 == 0 { blush_mist } else { mist })) }
-    for i in 1..10 { fx.trail.push(copy_node(&mut g, star, &if i % 2 == 1 { pink } else { gold })) }
+    // An `if` cannot be a borrowing expression (E4003), so the choice is a
+    // statement and the borrow is a local, cloned once by make_node.
+    for i in 1..8 {
+        if i % 3 == 0 { fx.puffs.push(copy_node(&mut g, puff, &blush_mist)) }
+        else { fx.puffs.push(copy_node(&mut g, puff, &mist)) }
+    }
+    for i in 1..10 {
+        if i % 2 == 1 { fx.trail.push(copy_node(&mut g, star, &pink)) }
+        else { fx.trail.push(copy_node(&mut g, star, &gold)) }
+    }
     for i in 1..14 {
         if i % 3 == 0 { fx.burst.push(copy_node(&mut g, heart, &pink)) }
-        else { fx.burst.push(copy_node(&mut g, star, &if i % 3 == 1 { pearl } else { lilac })) }
+        else if i % 3 == 1 { fx.burst.push(copy_node(&mut g, star, &pearl)) }
+        else { fx.burst.push(copy_node(&mut g, star, &lilac)) }
     }
-    for i in 0..4 { fx.aura.push(copy_node(&mut g, star, &if i % 2 == 0 { pearl } else { lilac })) }
+    for i in 0..4 {
+        if i % 2 == 0 { fx.aura.push(copy_node(&mut g, star, &pearl)) }
+        else { fx.aura.push(copy_node(&mut g, star, &lilac)) }
+    }
     for i in 0..9 {
-        fx.boost_sparkles.push(copy_node(&mut g, star, &if i % 3 == 1 { gold } else { pink }))
+        if i % 3 == 1 { fx.boost_sparkles.push(copy_node(&mut g, star, &gold)) }
+        else { fx.boost_sparkles.push(copy_node(&mut g, star, &pink)) }
     }
     fx
 }
@@ -352,44 +365,52 @@ pub fn build_cozy(g: &mut scene.Graph) -> CozyEffects {
     mut fx := empty_cozy()
     fx.fireflies.push(star_owner)
     for i in 1..12 {
-        mat := if i % 4 == 0 { honey_gold } else if i % 4 == 1 { peach_spark }
-        else if i % 4 == 2 { pearl_star } else { lavender_pearl }
-        fx.fireflies.push(copy_node(&mut g, star_owner, &mat))
+        if i % 4 == 0 { fx.fireflies.push(copy_node(&mut g, star_owner, &honey_gold)) }
+        else if i % 4 == 1 { fx.fireflies.push(copy_node(&mut g, star_owner, &peach_spark)) }
+        else if i % 4 == 2 { fx.fireflies.push(copy_node(&mut g, star_owner, &pearl_star)) }
+        else { fx.fireflies.push(copy_node(&mut g, star_owner, &lavender_pearl)) }
     }
     for i in 0..20 {
-        mat := if i % 4 == 0 { honey_gold } else if i % 4 == 1 { peach_spark }
-        else if i % 4 == 2 { pearl_star } else { lavender_pearl }
-        fx.sun_motes.push(copy_node(&mut g, star_owner, &mat))
+        if i % 4 == 0 { fx.sun_motes.push(copy_node(&mut g, star_owner, &honey_gold)) }
+        else if i % 4 == 1 { fx.sun_motes.push(copy_node(&mut g, star_owner, &peach_spark)) }
+        else if i % 4 == 2 { fx.sun_motes.push(copy_node(&mut g, star_owner, &pearl_star)) }
+        else { fx.sun_motes.push(copy_node(&mut g, star_owner, &lavender_pearl)) }
     }
     fx.dandelions.push(fluff_owner)
     for i in 1..24 {
-        fx.dandelions.push(copy_node(&mut g, fluff_owner, &if i % 3 == 0 { fluff_peach } else { fluff_cream }))
+        if i % 3 == 0 { fx.dandelions.push(copy_node(&mut g, fluff_owner, &fluff_peach)) }
+        else { fx.dandelions.push(copy_node(&mut g, fluff_owner, &fluff_cream)) }
     }
     fx.landing_halo = ring_owner
     fx.guide_ring = copy_node(&mut g, ring_owner, &blush_ring)
     fx.guide_heart = heart_owner
     fx.landing_puffs.push(puff_owner)
     for i in 1..7 {
-        mat := if i % 3 == 0 { blush_puff } else if i % 3 == 1 { cream_puff } else { pearl_puff }
-        fx.landing_puffs.push(copy_node(&mut g, puff_owner, &mat))
+        if i % 3 == 0 { fx.landing_puffs.push(copy_node(&mut g, puff_owner, &blush_puff)) }
+        else if i % 3 == 1 { fx.landing_puffs.push(copy_node(&mut g, puff_owner, &cream_puff)) }
+        else { fx.landing_puffs.push(copy_node(&mut g, puff_owner, &pearl_puff)) }
     }
     for i in 0..10 {
         if i % 2 == 0 {
-            fx.hearts.push(copy_node(&mut g, heart_owner, &if i % 4 == 2 { strawberry_gold } else { blush_rose }))
+            if i % 4 == 2 { fx.hearts.push(copy_node(&mut g, heart_owner, &strawberry_gold)) }
+            else { fx.hearts.push(copy_node(&mut g, heart_owner, &blush_rose)) }
         } else {
-            mat := if i % 4 == 1 { honey_gold } else { pearl_star }
-            fx.hearts.push(copy_node(&mut g, star_owner, &mat))
+            if i % 4 == 1 { fx.hearts.push(copy_node(&mut g, star_owner, &honey_gold)) }
+            else { fx.hearts.push(copy_node(&mut g, star_owner, &pearl_star)) }
         }
     }
     for i in 0..4 {
-        fx.snooze.push(copy_node(&mut g, star_owner, &if i % 2 == 0 { lavender_pearl } else { pearl_star }))
+        if i % 2 == 0 { fx.snooze.push(copy_node(&mut g, star_owner, &lavender_pearl)) }
+        else { fx.snooze.push(copy_node(&mut g, star_owner, &pearl_star)) }
     }
     fx.snooze_bubbles.push(bubble_owner)
     for i in 1..4 {
-        fx.snooze_bubbles.push(copy_node(&mut g, bubble_owner, &if i % 2 == 0 { sleep_bubble } else { sleep_rose }))
+        if i % 2 == 0 { fx.snooze_bubbles.push(copy_node(&mut g, bubble_owner, &sleep_bubble)) }
+        else { fx.snooze_bubbles.push(copy_node(&mut g, bubble_owner, &sleep_rose)) }
     }
     for i in 0..3 {
-        fx.boost_shimmer.push(copy_node(&mut g, star_owner, &if i == 1 { honey_gold } else { strawberry_gold }))
+        if i == 1 { fx.boost_shimmer.push(copy_node(&mut g, star_owner, &honey_gold)) }
+        else { fx.boost_shimmer.push(copy_node(&mut g, star_owner, &strawberry_gold)) }
     }
     fx
 }

@@ -68,21 +68,26 @@ fragment float4 sky_fragment(SkyOut in [[stage_in]], constant SkyPush& sky [[buf
 //     lookup table: prefiltered(r, roughness) * (F0 * scale + bias).
 // ACES tonemap, then gamma.
 
+// The draw's own values: its two matrices, its material and the eye it
+// is seen from.
 struct MeshPush {
     float4x4 mvp;
     float4x4 model;
     float4 base_color;
-    float4 params;         // metallic, roughness, emissive, shadows enabled
-    float4 camera_pos;     // xyz = eye position in world space
-    float4 sun_direction;  // xyz towards the sun, w = intensity
-    float4 sun_color;
-    float4 zenith;
-    float4 horizon;
+    float4 params;          // metallic, roughness, emissive, shadows enabled
+    float4 camera_pos;      // xyz = eye position in world space
+    float4 emissive_factor; // rgb scales the emissive map, w = its strength
 };
 
-// The sun's shadow lookup, read by the fragment stage.
+// The frame's values, the same on every draw of a frame: the sun's
+// shadow lookup, the sun and the sky the surfaces are shaded with.
 struct Light {
-    float4x4 light_vp; // sun view-projection
+    float4x4 light_vp;      // sun view-projection
+    float4 light_dir_c;     // xyz towards the sun, w = dot(light_origin, dir)
+    float4 sun_direction;   // xyz towards the sun, w = intensity
+    float4 sun_color;       // rgb, w = diffuse_fill
+    float4 zenith;
+    float4 horizon;
 };
 
 struct MeshVertex {
@@ -95,6 +100,7 @@ struct MeshOut {
     float4 position [[position]];
     float3 world_normal;
     float3 world_position;
+    float2 uv;
 };
 
 vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [[buffer(1)]]) {
@@ -105,6 +111,7 @@ vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [
     out.world_normal = (dot(a, co) < 0.0 ? -1.0 : 1.0) *
         (co * in.normal.x + cross(c, a) * in.normal.y + cross(a, b) * in.normal.z);
     out.world_position = world.xyz;
+    out.uv = in.uv;
     out.position = push.mvp * float4(in.position, 1.0);
     return out;
 }
@@ -209,17 +216,37 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     texturecube<float> prefiltered_env [[texture(1)]],
     texturecube<float> irradiance_map [[texture(2)]],
     texture2d<float> brdf_lut [[texture(3)]],
+    texture2d<float> base_texture [[texture(4)]],
+    // The material's metallic-roughness map (G = roughness, B = metallic),
+    // read as written: a linear texture. White (the fallback) leaves the
+    // factors as they are.
+    texture2d<float> metallic_roughness_texture [[texture(5)]],
+    // The material's emissive map: what the surface gives off as light,
+    // in its own colour (glTF 2.0 3.9.3). sRGB, like the base. White (the
+    // fallback) times the zero factor of a surface without one is nothing.
+    texture2d<float> emissive_texture [[texture(8)]],
     sampler shadow_sampler [[sampler(0)]],
-    sampler env_sampler [[sampler(1)]]) {
+    sampler env_sampler [[sampler(1)]],
+    sampler material_sampler [[sampler(2)]],
+    sampler metallic_roughness_sampler [[sampler(3)]],
+    sampler emissive_sampler [[sampler(6)]]) {
     float3 n = normalize(in.world_normal);
     float3 v = normalize(push.camera_pos.xyz - in.world_position);
-    float3 l = normalize(push.sun_direction.xyz);
+    float3 l = normalize(light.sun_direction.xyz);
     float3 h = normalize(v + l);
 
-    float3 albedo = push.base_color.rgb;
-    float metallic = clamp(push.params.x, 0.0, 1.0);
-    float roughness = clamp(push.params.y, 0.045, 1.0);
+    // The material's base texture; white 1x1 when it has none, so the
+    // multiply is the identity for untextured surfaces.
+    float3 albedo = push.base_color.rgb * base_texture.sample(material_sampler, in.uv).rgb;
+    // The factors multiply the map (glTF 2.0 3.9.2): a map that is white
+    // leaves them as they are, and a factor of 1 is the map alone.
+    float2 mr = metallic_roughness_texture.sample(metallic_roughness_sampler, in.uv).gb;
+    float metallic = clamp(push.params.x * mr.y, 0.0, 1.0);
+    float roughness = clamp(push.params.y * mr.x, 0.045, 1.0);
     float emissive = max(push.params.z, 0.0);
+    // The emissive map's texel, scaled by the factor and the strength:
+    // what the surface emits in its own colour, apart from its base.
+    float3 emitted = emissive_texture.sample(emissive_sampler, in.uv).rgb * push.emissive_factor.rgb * push.emissive_factor.w;
     float shadows_on = push.params.w;
 
     float3 f0 = mix(float3(0.04), albedo, metallic);
@@ -236,7 +263,7 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     float g = geometry_smith(ndv, ndl, roughness);
     float3 specular = (d * g * f) / max(4.0 * ndv * ndl, 0.001);
     float3 kd = (float3(1.0) - f) * (1.0 - metallic);
-    float3 sun = push.sun_color.rgb * push.sun_direction.w * shadow;
+    float3 sun = light.sun_color.rgb * light.sun_direction.w * shadow;
     float3 direct = (kd * albedo / PI + specular) * sun * ndl;
 
     // --- ambient: split-sum image-based lighting ---
@@ -260,8 +287,8 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     float shadow_lit = shadows_on > 0.5 ? shadow * smoothstep(0.0, 0.28, ndl) : 1.0;
     float ambient_occlusion = mix(0.55, 1.0, shadow_lit);
 
-    float3 fill = mix(push.horizon.rgb * 0.75, push.zenith.rgb, n.y * 0.5 + 0.5) * push.sun_color.w;
-    float3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive;
+    float3 fill = mix(light.horizon.rgb * 0.75, light.zenith.rgb, n.y * 0.5 + 0.5) * light.sun_color.w;
+    float3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive + emitted;
     color = aces(color * 1.35);
     return float4(pow(color, float3(1.0 / 2.2)), push.base_color.a);
 }

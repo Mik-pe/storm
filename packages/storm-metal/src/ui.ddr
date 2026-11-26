@@ -41,7 +41,8 @@ unsafe fn fill(rt: &objc.Runtime, gpu: ptr, library: ptr, made: &mut Atlas) -> R
     made.texture = device.texture(rt, gpu, .Type2D, .R8Unorm, u64(ATLAS_SIZE), u64(ATLAS_SIZE), 1, .ShaderRead, .Shared)?
     // Glyph quads are drawn close to the size they were rasterized at, so the
     // lookup lands between texels: linear filtering keeps the strokes smooth.
-    made.sampler = device.sampler(rt, gpu, .Linear, .NotMipmapped)?
+    smooth := device.smooth()
+    made.sampler = device.sampler(rt, gpu, &smooth)?
     quads := device.Style { vertices: .Ui, blend: true }
     made.pipeline = device.pipeline(rt, gpu, library, "ui_vertex", "ui_fragment", .BGRA8Unorm, .Depth32Float, &quads)?
     made.vertices = device.buffer(rt, gpu, VERTEX_CAPACITY)?

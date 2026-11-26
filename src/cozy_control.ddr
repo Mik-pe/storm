@@ -570,13 +570,13 @@ fn clear_walk(c: &mut CozyControl) {
 
 fn damp_camera(c: &mut CozyControl, dt: f32, frame_input: &gfx.Input, ui_captured: bool) {
     if !ui_captured {
-        if frame_input.button_down(gfx.MOUSE_RIGHT) {
+        if frame_input.button_down(gfx.Button.Right) {
             c.target_yaw += frame_input.mouse.dx * ORBIT_SENSITIVITY
         }
         if frame_input.mouse.scroll != 0.0 {
             c.target_zoom = clamp(c.target_zoom - frame_input.mouse.scroll * ZOOM_STEP, MIN_ZOOM, MAX_ZOOM)
         }
-        if frame_input.button_hit(gfx.MOUSE_MIDDLE) {
+        if frame_input.button_hit(gfx.Button.Middle) {
             reset_camera(&mut c)
         }
     }
@@ -678,8 +678,8 @@ pub fn update(c: &mut CozyControl, session: &mut play.Session, cam: &input.Camer
     fox_center := core.add(player_pos, core.vec3(0.0, FOX_PET_OFFSET_Y, 0.0))
     c.hovering_fox = !ui_captured && has_player && ray_sphere(cam.position, ray, fox_center, FOX_PET_RADIUS)
 
-    left_hit := frame_input.button_hit(gfx.MOUSE_LEFT)
-    left_down := frame_input.button_down(gfx.MOUSE_LEFT)
+    left_hit := frame_input.button_hit(gfx.Button.Left)
+    left_down := frame_input.button_down(gfx.Button.Left)
     if !left_down { c.dragging_walk = false }
 
     mut petted := false

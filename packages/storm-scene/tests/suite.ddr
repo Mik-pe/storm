@@ -1,4 +1,11 @@
+capability filesystem, stdio
+
+import std.fs as fs
+import std.text as text
+import sys
+
 import ..src.scene as scene
+import gfx
 
 // Option<enum> has no Eq in Dunder; pattern-match instead.
 fn shape_is(v: Option<scene.Shape>, want: i32) -> bool {
@@ -75,6 +82,28 @@ import core
     assert(g.material_at(cube).base.g == 0.5)
     bare := g.create_root(core.vec3(0.0, 0.0, 0.0))
     assert(!g.set_material_value(bare, .Metallic, 1.0))
+}
+
+// A glTF surface carries an emissive map and its factor; the factor is the
+// material's own and set_material on an existing surface replaces the whole
+// material, the factor included (it used to be copied field by field, and a
+// new field would have been left behind on the old row).
+@test fn an_emissive_material_keeps_its_factor_through_set_material() {
+    mut g := scene.Graph::new()
+    lantern := g.create_root(core.vec3(0.0, 1.0, 0.0))
+    textures := gfx.Textures { base: gfx.Texture { id: 3 }, metallic_roughness: gfx.no_texture(), normal: gfx.no_texture(), occlusion: gfx.no_texture(), emissive: gfx.Texture { id: 7 } }
+    lit := scene.emissive_mapped(scene.mapped(scene.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5), textures), [1.0, 0.9, 0.5, 3.5])
+    assert(lit.emissive_factor[0] == 1.0 && lit.emissive_factor[1] == 0.9 && lit.emissive_factor[2] == 0.5)
+    assert(lit.emissive_factor[3] == 3.5)
+    assert(lit.textures.emissive.id == 7)
+    assert(g.set_material(lantern, move lit))
+    assert(g.material_at(lantern).emissive_factor[1] == 0.9)
+    // A plain material after it: the factor goes back to off, with the whole row.
+    assert(g.set_material(lantern, scene.material(0.2, 0.2, 0.2, 1.0, 0.0, 0.5)))
+    after := g.material_at(lantern)
+    assert(after.emissive_factor[0] == 0.0 && after.emissive_factor[3] == 1.0)
+    assert(after.textures.emissive.id == 0)
+    assert(g.material_value(lantern, .BaseR) == 0.2)
 }
 
 @test fn transform_values_round_trip() {
@@ -288,4 +317,36 @@ import .animation as _
     g.pose_meshes(&mut streams)
     assert(g.geometry_revision() == revision && streams[skin].vertices[0] == 2.0)
     assert(g.vertices(instance)[0] == 1.0)
+}
+
+// `dunder test` collects tests from the modules the test root imports, and
+// `test_root` names one file: a test module that is not imported here never
+// runs, and nothing says so. This test makes that omission a failure instead
+// of a silent gap, so adding a module to `tests/` cannot forget its import.
+@test fn every_test_module_beside_the_suite_is_imported_by_it() {
+    names := match fs.list_dir("tests") {
+        .Ok(items) => items,
+        .Err(e) => { _ := sys.eprint("could not list tests/: errno " + e.code().str()); assert(false); return },
+    }
+    suite := sys.read_text("tests/suite.ddr")
+    if !suite.ok { _ := sys.eprint("could not read tests/suite.ddr: errno " + suite.error.str()); assert(false); return }
+    mut missing: []string = []
+    for name in &names {
+        if !text.ends_with(name, ".ddr") || name == "suite.ddr" { continue }
+        module := sys.read_text("tests/" + name)
+        if !module.ok { _ := sys.eprint("could not read tests/" + name + ": errno " + module.error.str()); assert(false); return }
+        if !text.contains(module.value, "@test") { continue }
+        // `import .stem` opens a line and ends at whitespace: `.png` must not
+        // pass for `.png_util`, and `..src.stem` is not a test-module import.
+        needle := "import ." + name[0..name.len - 4]
+        mut found := false
+        mut cursor := text.lines(suite.value.as_str())
+        while cursor.advance() {
+            line := cursor.current().clone()
+            if text.starts_with(line, needle) && (line.len == needle.len || line[needle.len] == u8(32) || line[needle.len] == u8(9)) { found = true }
+        }
+        if !found { missing.push("`import ." + name[0..name.len - 4] + " as _` (tests/" + name + " has tests)") }
+    }
+    for m in &missing { _ := sys.eprint("tests/suite.ddr never imports a test module: " + m) }
+    assert(missing.len == 0)
 }

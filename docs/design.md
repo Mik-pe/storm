@@ -1,7 +1,8 @@
 # Storm — design från första principer
 
-> Status: **levande dokument** — uppmätt 2026-11-24 mot trädet efter
-> `storm-gfx`, Metal-backenden och Blomsterskogen. Skrevs efter djupbufferten, av en
+> Status: **levande dokument** — uppmätt 2026-11-25 mot trädet efter
+> `storm-gfx`, Metal-backenden, Blomsterskogen, materialtexturerna (3b) och
+> glTF-bilderna med samplare per textur (3c). Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
 > heltalen för hand och läste tabellen baklänges. Det här dokumentet
@@ -29,25 +30,35 @@
    är en self-test som läser pixlar och input och kan köras igen.
 7. **Plattformsvalet görs i `src/main.ddr`.** Där väljs både det interaktiva fönstret och renderaren för bildexport. Spel, editor och agentprotokoll använder samma scen och renderingskontrakt på båda plattformarna.
 
-## 1. Nuläge (mätt i koden, 2026-11-24)
+## 1. Nuläge (mätt i koden, 2026-11-25)
 
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
-  som bitar i en `u32`), `Mouse`, `Sky`, `Surface`, `Vertex` och `PostProcess`.
-  `trait Backend` beskriver pass, ritning och bildexport. Anrop som kan misslyckas
-  returnerar `Result`. Geometrihjälparna äger vertexformatet. Åtta tester, inga med fönster.
+  som bitar i en `u32`), `Mouse` (med `scroll`), `Sky`, `Surface`, `Texture`,
+  `Sampler` och `Vertex`, `PostProcess`.
+  `trait Backend` beskriver pass, ritning, texturer och bildexport i 22 metoder
+  (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
+  returnerar `Result`. Geometrihjälparna äger vertexformatet. Nio tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
-  Vertexlayouten ägs av `layout.vertex_input()` + `enums.apply_vertex_input`
-  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. Fyra
-  `sType: 18` skrivs också för hand (`ui.ddr` ×2, `post.ddr` ×2) — de är
-  strukturtagningsnummer, inte enums, men samma sorts tal-utan-vittne.
-- **Enums är ett eget lager:** `enums.ddr` har 34 `pub enum` och 42
-  `pub fn`: 40 konverterare/namngivna värden och två skrivare av C-poster
-  (`apply_blend`, `apply_vertex_input`). Endast två
-  namngivna `u32`-konstanter lever kvar i `layout.ddr`
-  (`IMAGE_TILING_OPTIMAL`/`_LINEAR`); allt annat är enums.
-- `state.ddr` `Renderer`: **127 fält** (var ~60 när steget skrevs; IBL,
-  djup, skuggor, post, UI och headless har alla lagt till sina). Varje
-  modul tar `&mut Renderer`.
+  Vertexlayouten ägs av `records.vertex_input()` + `records.apply_vertex_input`
+  och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. **0 råa
+  `sType`-tal** (var 135 i nio moduler): `layout.ddr` genereras ur `vk.xml`
+  och varje post har en `new()`-fabrik som skriver strukturtypen, så talet
+  finns på en rad per post i en fil ingen skriver för hand (§6).
+- **Enums är ett eget lager, och lagret är ett eget paket:** `storm-vk/enums.ddr`
+  (genererad, §6) har 35 `pub enum`, 34 konverterare, `result_name` och tre
+  konstanter — inget `unsafe`, ingen import, inget Storm. Storms skrivare av
+  C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`) och de
+  värden de skriver (`Blend`, `alpha_over`, `shadow_max`) står i
+  `storm-vulkan/records.ddr`. Inga namngivna `u32`-konstanter lever kvar i
+  `layout.ddr`; allt är enums, och registret äger talen
+  (`tools/vk.ddr --check`).
+- `state.ddr` `Renderer`: **61 fält** (121 före Renderer-uppdelningen; 72
+  efter steg 3). Sex kluster ligger i en post hos sin ägare
+  (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
+  `texture.Material`, `post.Stage`, `headless.Capture`); 54 fält ligger platt
+  i fyra sorter (§3b), de flesta frame-state och
+  swapchain-handtag. Varje modul tar `&mut Renderer`. Ägarskapet är redan
+  modulvis (varje modul har sin `create`/`destroy`) — §3b.
 - **Setup-fel är ett returvärde, inte ett fält.** Varje setup-funktion
   returnerar `state.SetupStep` (`Ready` eller steget som föll); `device.fail(&mut r, code, step)`
   sätter `r.lastResult` och ger steget tillbaka, så en Vulkan-kod kan inte
@@ -60,8 +71,9 @@
 - **Spelet är fyra paket under kontraktet, inget över det.** `storm-physics`
   (translaterande rigid bodies i meter och sekunder) beror bara på
   `storm-core`; `storm-play` (autorerade scener, `Session` med fast tick
-  60 Hz, `Input`-värde) på `physics` och `core`; `storm-image` (PNG-utdata
-  och `preview<T>`-omslag) på stdlib; `storm-mcp` (JSON-RPC på stdio,
+  60 Hz, `Input`-värde) på `physics` och `core`; `storm-image` (PNG-utdata,
+  PNG-avkodning över Dunder-repots `zlib`, och `preview<T>`-omslag) på stdlib
+  och `zlib`; `storm-mcp` (JSON-RPC på stdio,
   validerat mot sin egen katalog) på `play` och `image` och tar
   renderaren som **funktionspekare** `fn(&play.Session, string) ->
   Result<(), string>` — sammansättningsroten (`src/main.ddr: preview`) är
@@ -74,42 +86,84 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen omfattade **140 egna
-  `@test`** (146 gröna: 27 rot + 113 paket, varje svit lika många som den
-  har `@test`; Skrifts två följer med i roten, `storm-text` och
-  `storm-ui`) och Metal-självtestets kontroller i ett riktigt fönster.
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`da45ac1`, Dunder
+  0.12.0, låst session) omfattade **260 egna `@test`** — 72 i roten
+  och 188 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
+  sträng räknas inte) — alla gröna, varje
+  svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
+  i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
+  `N passed` blir 262). 17 sviter
+  kördes med `dunder test` i roten och i varje `packages/*`. **En rot som
+  inget av dem når är ett program under `tools/`, `examples/` eller
+  `packages/*/tools/`** (mätt: `dunder check` utan argument = `src/main.ddr`,
+  `--tests` = sviten, `--example` = manifestets exempel, i ett paket = dess
+  `root`) — och `storm-metal/tools/selftest.ddr` låg trasigt på main i 26
+  timmar (`496d59b` 11-25 07:28 → rättat 11-26 09:50; första felet
+  `E3099 enum variant needs a type` när `mesh` fick sina texturer, det
+  andra `E2002 unknown local 'plain'` sedan `5361964`) under **45
+  committer** som alla låg inom `dunder check`:s gröna. Sedan 2026-11-26
+  vaktar `tools/check.ddr` dem: den härleder rötterna ur katalogerna (ingen
+  tabell), typkontrollerar varje och sig själv, och fallerar med namnet
+  (utgång 1; 2 när den inte kan lista eller kompilatorn inte startar;
+  kontraktet bevisat i fyra fall). Ramens exektor (`app.gather`,
+  `load_model`) är testbar utan fönster: vad ett pass får, när
+  mesh-kopian tas (bara när geometrin revideras — och aldrig från en
+  främmande värld med samma revisionsnummer) och att en delad mesh räknas
+  per instans (`tests/app_frame.ddr`). Spelets transport (`app.Transport`)
+  är det med: paus, steg, omstart, studio och färgkorrigering besvaras med
+  den enda `play`-anropet ramen ska göra (`tests/transport.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **14 900–15 100 ms** på `a84ade9` med Dunder 0.12.0 (`--timings`:
-  1 238 funktioner, 386 871 MIR-operationer; `--profile-compiler`:
-  `mir_pipeline` 10,4 s av 14,6 s). Dagen innan var trädet `54214f3`
-  6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med 0.11.3, och `77d9b0c`
-  15 100–15 700 ms med 0.11.3 (1 176 funktioner, 346 512 operationer) —
-  skillnaden sedan igår är hälften kompilator, hälften spelet (fynd 70), och
-  0.12.0 tar +62 funktioner och +40 k operationer utan att väggklockan flyttar.
-  En stubb-`main` med hela manifestet bygger på 207 ms och
-  `shader.ddr`s 12 579 inbäddade SPIR-V-ord kostar 70 ms, så nästa
+  mätte **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen, Dunder 0.12.0 (två
+  mätningar samma kväll, efter femtexturkedjan), 18 996 ms på `9f879c9` — 16,4 s innan `decode_png` + zlib nås från `main`
+  (fynd 82), och **16 249 ms** på trädet med `depth.Depth`, **16 241 ms** på
+  `1a7f0e2` (16 197–16 523 ms över
+  tre mätningar samma kväll). Trädet på
+  `a84ade9` gav 14 900–15 100 ms med samma kompilator (`--timings`: 1 238 funktioner,
+  386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av
+  14,6 s), `54214f3` 6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med
+  0.11.3, och `77d9b0c` 15 100–15 700 ms med 0.11.3 (1 176 funktioner,
+  346 512 operationer) — skillnaden sedan igår är hälften kompilator, hälften
+  spelet (fynd 70), och 0.12.0 tar +62 funktioner och +40 k operationer utan
+  att väggklockan flyttar. En stubb-`main` med hela manifestet bygger på
+  207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
 
-Lagren i storm-vulkan (5 071 rader + 3 223 genererad `shader.ddr`):
+Registret är ett eget paket, **`storm-vk`** (2 063 rader, allt genererat ur
+`vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (347:
+82 prototyper + `load()`), `layout.ddr` (1 285: 71 registriposter med
+`new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 34
+konverterare, `result_name` och registrets konstanter). Det som är Storms
+val står i storm-vulkan `records.ddr` (158): vertexformaterna, `Blend` och
+`apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
+vad ett swapchain-tal betyder Storm.
+
+Lagren i storm-vulkan (4 456 rader + 4 243 genererade i `shader.ddr`), räknade 2026-11-26:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `api.ddr`, `layout.ddr`, `sdl.ddr` | 1 239 |
-| Enums vid gränsen | `enums.ddr` | 357 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `headless.ddr`, `ibl.ddr` | 2 070 |
-| App-nära kod | `ui.ddr`, `post.ddr` | 561 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 844 |
+| FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 222 |
+| Storms värden ovanpå registret | `records.ddr` | 158 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 215 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 861 |
 
-Lagren i storm-metal (2 257 rader + inbäddad `shaders/storm.metal` via `@embed_file`):
+`ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
+var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,
+`VkDescriptorSetLayout`, ett render pass med framebuffer) och förstör dem,
+och storm-metal har samma två moduler som backend-tjänster (`ui.ddr`,
+`pass.ddr`). Det app-nära — vad som ritas — står i `storm-ui` ovanför
+kontraktet, som anropar `ui_atlas`/`ui_draw`/`post_process` och inte vet att
+modulerna finns.
+
+Lagren i storm-metal (2 453 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-26:
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | Runtingen | `objc.ddr` | 280 |
-| Ramverkens värden | `enums.ddr`, `records.ddr` | 189 |
+| Ramverkens värden | `enums.ddr`, `records.ddr` | 201 |
 | Fönstret och input | `appkit.ddr` | 508 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 350 |
-| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr` | 295 |
-| Orkestrering | `metal.ddr` | 635 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 362 |
+| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 416 |
+| Orkestrering | `metal.ddr` | 685 |
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
@@ -150,10 +204,10 @@ core`, `storm-play -> physics, core`, `storm-mcp -> play, image`,
 Det här står. Kvar till målbilden:
 
 ```
-storm-vk        (kvar)  Vulkan-bindings som eget paket: funktioner, structar, ENUMS.
-    ▲                   Idag bor de i storm-vulkan (api.ddr, layout.ddr, enums.ddr).
-storm-vulkan           Renderer uppdelad i ägda strukturer (steg 3), ui/post ur
-                        backenden (steg 5).
+storm-vk                Vulkan-registret som eget paket: prototyper, poster,
+    ▲                   ENUMS — allt genererat ur vk.xml, inget Storm i sig.
+storm-vulkan           Renderer uppdelad i ägda strukturer (steg 3 — klart,
+                        §3b). ui/post ur backenden är avskrivet som mål (steg 5).
 ```
 
 Regler:
@@ -178,6 +232,7 @@ Vad som skiljer backends åt, och var det får synas:
 | Cull och frontface: pipeline-state / encoder-state | `storm-metal/device.ddr: Pipeline { state, cull }` + `pass.bind` |
 | Hur en yta skapas: SDL / AppKit + `CAMetalLayer` | `storm-vulkan/sdl.ddr`, `storm-metal/appkit.ddr` |
 | Tangentkoder: SDL-scancodes / macOS key codes | en tabell per backend, parar kod med namngiven `gfx.Key` |
+| Musknappar: SDL:s nummer (vänster 1, mitten 2, höger 3) / AppKits händelser | en tabell per backend (`sdl.ddr: sdl_button`, `appkit.ddr: button_of`), parar med namngiven `gfx.Button` — biten (1, 2, 4) ägs av kontraktet, inte av plattformen |
 
 ## 3. Enums i FFI-lagret
 
@@ -187,7 +242,8 @@ Men: **enums får inte vara fält i `@c_layout`** (E5003, verifierat).
 Modellen är därför: enums utanför structarna, konverterade vid gränsen.
 
 ```dunder
-// storm-vulkan: den enda platsen ett VkBlendFactor-heltal finns.
+// storm-vk/enums.ddr: genererad ur vk.xml av tools/vk.ddr — den enda
+// platsen ett VkBlendFactor-heltal finns. Storm-vulkan har ingen enums.ddr.
 pub enum BlendFactor {
     Zero = 0, One = 1, SrcColor = 2, OneMinusSrcColor = 3,
     DstColor = 4, OneMinusDstColor = 5, SrcAlpha = 6, OneMinusSrcAlpha = 7,
@@ -206,7 +262,10 @@ pub fn blend_factor(v: BlendFactor) -> u64 { u64(i32(v)) }
 
 Endast konverterarna (`enums.blend_factor(.SrcAlpha)`) rör heltalen. Finns
 det ingen konverterare kan fältet inte fyllas i — kompilatorn säger ifrån.
-**Genomfört** i storm-vulkan (steg 2) och i storm-metal från början; där
+**Genomfört** i storm-vulkan (steg 2, sedan flyttat till `storm-vk` 2026-11-25:
+varje värde slås upp i registret efter den konstant verktygets urvalstabell
+namnger, och `--check enums` fallerar när filen skiljer sig från `vk.xml`) och
+i storm-metal från början; där
 skrivs vart och ett värde ut av en liten C-program som inkluderar SDK:s
 rubriker, och `storm-metal/tests` låser dem mot den tabellen.
 
@@ -228,13 +287,18 @@ Två gränser till har samma regel, om än inte enums:
 
 ## 4. Vad som händer med dagens kod
 
-- `api.ddr`, `layout.ddr` → `storm-vk` (kvar).
+- `api.ddr`, `layout.ddr`, `enums.ddr` → `storm-vk` (**genomfört** 2026-11-25;
+  Storms egen del av dem blev `storm-vulkan/records.ddr`).
 - `device.ddr`, `pipeline.ddr` → `Result` och ägda strukturer (kvar i
   storm-vulkan; **genomfört i storm-metal**, som byggdes så från början:
-  `Renderer` med 33 fält, och en skapare och en förstörare per ägd resurs).
+  `Renderer` med 38 fält, och en skapare och en förstörare per ägd resurs).
 - `vulkan.ddr`:s 17 setup-steg → en `Setup`-kedja med `Result` (kvar; på
   kontraktets nivå är det klart: varje anrop är en `Result`).
-- `ui.ddr` + `post.ddr` ur backend-lagret (kvar).
+- `ui.ddr` + `post.ddr` ur backend-lagret: **avskrivet som mål.** De skapar
+  och förstör Vulkan-resurser och är backend-tjänster (se lagertabellen i
+  §1); storm-metal har samma två. Det som steg 5 ville — att appen inte ska
+  veta vad en atlas är för implementering — gäller redan: `storm-ui` talar
+  med `ui_atlas`/`ui_draw`/`post_process` på kontraktet.
 - **`storm-input` slutar bero på backenden: klart.** Handtaget `Window`
   flyttades inte till `storm-core`; i stället är input ett *värde*:
   backenden rapporterar `gfx.Input` per frame, kameran tar det, och
@@ -245,10 +309,13 @@ Två gränser till har samma regel, om än inte enums:
 Varje steg lämnar träd och tester grönt. Capture-filer före/efter måste
 vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
-1. **Skapa `storm-vk` med enums + bindings.** *Status: enums-modulen finns
-    (`packages/storm-vulkan/src/enums.ddr`, 33 enums, 228 anrop);
-    paketdelningen är kvar.*
-2. **Ersätt de 133 heltalen** med enums via `blend_factor()`-stilens
+1. **Skapa `storm-vk` med enums + bindings.** *Status: klart 2026-11-25.
+   `packages/storm-vk` har `api.ddr`, `layout.ddr` och `enums.ddr`, alla tre
+   helgenererade ur `vk.xml` av `tools/vk.ddr` (`--check` jämför hela filen;
+   det finns ingen markör och inget Storm i dem). Urvalet — vilka kommandon,
+   poster och enums — är data i verktyget (`COMMANDS`, `STRUCTS`, `PAIRS`,
+   `selected_enums()`). Storms val blev `storm-vulkan/records.ddr`.*
+2. **Ersätt de 135 heltalen** med enums via `blend_factor()`-stilens
    konverterare, modul för modul. Pixelidentisk capture som bevis.
    *Status: klart 2026-11-23. 135 → **0** råa enum-heltal i structfält: de
    sista tre var vertexlayouten i `shadow.ddr` (`inputRate: 0`,
@@ -260,9 +327,15 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 3. **Dela upp `Renderer`** i ägda strukturer. Pixelidentisk.
    *Status: första halvan klar 2026-11-23 — renderpass-, pipeline- och
    skuggpassens handpackade ord är riktiga C-poster i delade wrappers
-   (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.Attributes`,
-   `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade;
-   `Renderer`-structen (127 fält) är kvar.*
+   (`vk.Dependencies`, `vk.ShaderStages`, `vk.References`, `vk.VertexInput`,
+   `vk.UiVertices`, `vk.AttachmentDescription`), fynd 52 löst, fynd 53–55 dokumenterade.*
+   *Andra halvan påbörjad 2026-11-24 (§3b): `depth.Depth` är det första
+   klustret som flyttade in i en post hos sin ägare (`r.depth.image`
+   i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett
+   test. 2026-11-25: `ui.Atlas`, `ibl.Environment` och `shadow.Shadow`
+   följde, var och en med AE = 0 — `Renderer` har **72 fält** (121 före) —
+   och 2026-11-26 `post.Stage` och `headless.Capture`: **61 fält**, sju
+   poster och 54 platta (§3b). Tabellens kluster är slut.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
@@ -270,8 +343,13 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    exhaustiv match (E3006 när ett steg läggs till utan namn) och
    `describe` sätter ihop `"steg (VK_…)"`. Tester: `fail` ger steget tillbaka
    och sätter koden för varje steg; varje steg har ett namn.*
-5. **Dra `ui.ddr`/`post.ddr` ur backenden.** Kvar.
-6. **Lås skrift-dependency.** Kvar.
+5. **Dra `ui.ddr`/`post.ddr` ur backenden.** *Avskrivet 2026-11-25: de är
+   backend-tjänster (de äger Vulkan-resurser, och Metal har samma två);
+   appen talar redan med dem genom kontraktet. Se §4.*
+6. **Lås skrift-dependency.** *Status: klart — `storm-text` hämtar skrift
+   från Git med full commitidentifierare (`rev = c973a09…`) och incheckad
+   låsfil, som AGENTS.md kräver för externa paket; `path` används bara för
+   Storms egna.*
 7. **`storm-gfx` och Metal.** *Status: klart 2026-11-23 — kontraktet, en
     app generisk över backenden, och den andra implementationen, utan att
     ett paket ovanför backenden rördes utöver att byta namn från
@@ -344,24 +422,153 @@ håller sina resurser vid liv tills den är klar, så inget frigörs under GPU:n
 
 Dunders aliasregel formade koden: `f(&mut r, r.field)` vägras ("mutable
 arguments must not alias another borrow in the same call"), så de funktioner
-som *kontrollerar* tar en delad lån (`require_main(&r)`) och varje draw
+som *kontrollerar* tar ett delat lån (`require_main(&r)`) och varje draw
 binder sitt eget med delade lån, i stället för en hjälpfunktion som tar hela
 renderaren mutabelt vid sidan av en pekare in i den.
 
+## 3b. Renderer-uppdelningen, kluster för kluster
+
+Designens princip 4 ("den som skapar en resurs äger den") är redan *sann*
+i storm-vulkan — varje modul har sin `setup`/`create` och sin `destroy`,
+och tabellen nedan mäter vilka fält de rör. Det som saknas är bara formen: de
+fälten som ligger platt på `Renderer` ska ligga i en post hos den modul som
+äger dem. Det är inte "1–2 dagars arbete" (§6 sa så); det är en mekanisk
+flytt per kluster, och mönstret finns nu fem gånger i trädet:
+`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow` och
+`material: texture.Material` på Vulkan-sidan, `environment: ibl.Environment`
+och `atlas: ui.Atlas` på Metal-sidan — samma namn i båda backends.
+
+Mätt 2026-11-25 med ett skript som räknar `r.<fält>` per modul. Kolumnen
+"utanför" är de *namn* andra moduler läser — det är gränsen, inte antalet
+moduler:
+
+| Kluster | Fält | Ägare | Namn utanför | Post |
+|---|---|---|---|---|
+| depth | 3 | `depth.ddr` | `view` (`device.color_framebuffer`) | `depth.Depth` (24 byte) — **gjord** |
+| ui | 10 | `ui.ddr` | inga | `ui.Atlas` (128 byte) — **gjord** |
+| ibl | 25 | `ibl.ddr` | inga | `ibl.Environment` (960 byte) — **gjord** |
+| shadow | 17 | `shadow.ddr` | `shadowSet` (ibl ×3, vulkan ×1), `shadowSetLayout` (pipeline ×2) | `shadow.Shadow` (120 byte) — **gjord**; de två namnen stannar på `Renderer` |
+| post | 12 | `post.ddr` | `sceneFramebuffer` (vulkan ×1), `scenePass`/`compositePass` (pipeline, device, vulkan) | `post.Stage` (96 byte) — **gjord**; de tre namnen stannar |
+| capture | 5 | `headless.ddr` | `captureFramebuffer` (vulkan ×2) | `headless.Capture` (56 byte) — **gjord**; `captureFramebuffer` stannar |
+
+`Renderer` har **61 fält** efter de sex flyttarna (121 före): sju poster
+(`material`, `depth`, `atlas`, `environment`, `shadow`, `post`, `capture`)
+och 54 platta. De 54 är fyra sorter, mätta 2026-11-26 med samma skript som
+tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 13:
+
+- **25 kärna** (`api` … `renderPass`: instans, yta, enhet, kö, pooler,
+  synkronisering, swapchain och dess bilder): läses av tio moduler —
+  `device` (23 av namnen), `vulkan` (15), `post` (7), `headless` (6), `ui`
+  (6), `pipeline` (5), `texture` (4), `ibl` (3), `shadow` (3), `depth` (1).
+- **10 pipeline-handtag** (`pipelineLayout`, `pipeline`, `skyPipeline`,
+  `transparentPipeline`, deras layouter, shadermoduler och `framebuffers`):
+  `pipeline.ddr` skapar dem, `device.ddr` förstör dem och `vulkan.ddr` binder
+  dem i varje draw. De är *inte* ett ägarkluster — de är orchestringens
+  handtag, samma sort som `shadowSet` — så de stannar.
+- **6 gränsnamn** som klusterflyttarna medvetet lämnade: `sceneFramebuffer`,
+  `scenePass`, `compositePass` (post), `captureFramebuffer` (capture),
+  `shadowSet`, `shadowSetLayout` (shadow).
+- **13 orchesteringens egna**: `window`, `vertex`, `meshSetLayouts` och
+  frame-state (`current` räknas till kärnan; `frameIndex`, `imageIndex`,
+  `pass`, `pendingPass`, `pendingClear`, `lastResult`, `captureOn`,
+  `resizePending`, `trace`, `vertexCursor` hör hit). Nästan alla läses bara
+  av `vulkan.ddr`; undantagen är `vertex` (device, shadow), `window` (device)
+  och `pendingPass` (post).
+
+Regler som gör att flytten inte blir något att "komma ihåg":
+
+- **Posten deklareras av ägaren, inte i `state.ddr`.** `depth.ddr` äger
+  `Depth`, `texture.ddr` äger `Material`; `state.ddr` importerar dem och
+  håller `depth: depth.Depth`. Den cirkulära importen (`state ↔ depth`,
+  `state ↔ texture`) kompilerar (0.12.0, 105 moduler grönt) — ägaren
+  behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
+- **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
+  i `tests/suite.ddr` (`Depth` 24, `Atlas` 128, `Shadow` 120, `Environment`
+  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 6 240 byte — alla mätta, ingen räknad: en
+  storlek gissad i huvudet var fel två gånger av tre, och testet var rött
+  tills den var mätt). Registret allokerar `size_of(state.Renderer) + 8192`,
+  så nästa kluster som flyttar ändrar det talet — medvetet, i testet, inte
+  genom att någon glömmer.
+- **Läsningarna utanför är gränsen, inte skälet.** Ett kluster med noll
+  namn utanför (ui, ibl) flyttas rakt av med en sök-och-ersätt i en fil; ett
+  vars handtag binds av andra moduler (shadow: `shadowSet`,
+  `shadowSetLayout`; post: `scenePass`, `compositePass`, `sceneFramebuffer`)
+  behåller just de namnen på `Renderer` — det är vad de andra modulerna
+  *behöver*, och resten av posten läses bara av ägaren. Dunder har inga
+  privata fält i en `pub struct`; överenskommelsen hålls av mätningen
+  (`r.<namn>` utanför ägaren = 0), inte av kompilatorn.
+- **Varje kluster är en commit med AE = 0** mot capturen före. Ingen
+  klusterflytt ändrar bilden; den ändrar bara var namnen bor.
+
+Ordningen efter depth var **ui** (10 fält), **ibl** (25), **shadow** (17,
+de två set-namnen stannade) — alla 2026-11-25 — och sedan **post** (12
+fält, mätt; `scenePass`, `compositePass` och `sceneFramebuffer` stannar) och
+**capture** (5; `captureFramebuffer` stannar, `captureOn` är frame-state och
+stannar bland de platta fälten) — 2026-11-26. Sex kluster, sex commit:ar,
+AE = 0 på var och en. Tabellens kluster är slut; det som återstår av
+`Renderer` är kärnan och orchestringens handtag, som hör där.
+
+**Ett tillstånd som lever i ett fält var nästa `r.stage`.** `Renderer.pass`
+var `u32` med sex `PASS_*`-konstanter (`IDLE`, `WAITING`, `SHADOW`, `DIRECT`,
+`FILTERED`, `COMPOSITE`), läst av sjutton jämförelser och elva tilldelningar
+i fyra moduler (28 referenser, räknade med `grep -o`), och gav fyra
+felmeddelanden deras text. Det var formen princip 5 förbjuder och steg 4
+ersatte med `SetupStep`. Storm-metal hade redan `pub enum Pass { None, Shadow,
+Main, FilteredScene, Composite }` och jämför med `.Shadow`. Sedan
+2026-11-26 gör Vulkan-sidan detsamma: en enum får inte vara ett
+`@c_layout`-fält (E5003, på nytt mätt på 0.12.0), så fältet är `u32` men
+rörs **bara** genom två funktioner i `state.ddr` — `state.pass(&r)` läser
+det genom den validerande omvandlingen (`Pass(i32(r.pass))` avbryter med
+status 108 på ett tal ingen skrivit, medan en if-kedja bara aldrig matchar)
+och `state.set_pass(&mut r, .X)` skriver det. De sex konstanterna är borta;
+`r.pass` och `PASS_` finns på noll rader utanför `state.ddr` (mätt), och
+`the_pass_state_is_an_enum_behind_its_word` pinner att en nollställd
+renderare är `.Idle` (registret calloc:ar hela posten, så 0 måste vara
+`Idle`) och att varje variant överlever tur och retur. En enum-variant som
+inte finns blir omöjlig att skriva; det är hela skillnaden. En commit,
+AE = 0 på fem captures (game, studio, Fox, direkt utan efterbehandling,
+utan skuggor).
+
 ## 6. Öppna frågor
 
-- **Genererade bindings?** Att hålla 300+ entry points för hand är det som
-  orsakade blend-buggen. För Vulkan: ett litet Dunder-verktyg som läser
-  Khronos `vk.xml` och skriver enums + structar. För Metal behövs det inte
-  på samma sätt: det som hålls för hand är 107 selektorer och 40 typer av
-  meddelanden, och det som håller dem ärliga är kontrollen mot SDK:s
-  rubriker (§3) — vilken i sin tur vore naturlig som ett Dunder-verktyg i
-  `tools/`, när den ska köras av fler än den som skrev den.
+- **Genererade bindings — ja, för prototyperna.** Att hålla entry points för
+  hand är det som orsakade blend-buggen, och det var sant för `api.ddr` också:
+  av 80 prototyper var 79 rätt stavade och en ljög
+  (`vkGetPhysicalDeviceQueueFamilyProperties` deklarerad `-> i32`, registriet
+  säger `void`; fynd 73 visar varför det inte syntes). Nu läser `tools/vk.ddr`
+  Khronos `vk.xml` och skriver hela filen — `Api`-posten och `load()` — med
+  `--check` som `dunder fmt --check`: utgång 1 om filen inte är vad registriet
+  ger. Kommandolistan är Storms (vilka kommandon som laddas), typerna är
+  registriets. De tio WSI-kommandona hamnar i `load()`:s `windowed`-gren
+  därför att `VK_KHR_swapchain` beror på `VK_KHR_surface` i registriet, inte
+  på en handskriven lista. `layout.ddr` är den andra utdatafilen: 71 poster
+  ur registret, varje med `impl X { pub unsafe fn new() -> X }` som
+  nollställer och skriver `sType` (strukturtypen är en `values=` på
+  registriets `sType`-medlem, och en `<enum extends="VkStructureType"
+  offset="N"/>` i en extension räknas fram: 1 000 000 000 + (nummer − 1) ×
+  1 000 + N). Före det stod 135 strukturtal för hand vid anropsplatserna —
+  migreringen verifierade varje tal mot registret innan det togs bort, och
+  alla stämde. En union blir sitt största medlemsslag (`VkClearValue` →
+  `color: ClearColorValue`, 16 byte). De fyra posterna som är två registriposter
+  i rad (`Dependencies`, `Attachments`, `References`, `ShaderStages`) genereras
+  från verktygets `PAIRS`-tabell — en post av poster för kontiguitet (fynd 54)
+  är ett mönster registret kan ge, inte något att skriva för hand. Ingen av de
+  tre filerna har en markör: genererat = genererat, Storms eget står i
+  `storm-vulkan/records.ddr`. `enums.ddr` görs på samma sätt:
+  registret äger talen, Storm äger urvalet (en tabell i verktyget: Dunder-namn,
+  registrets block, varje variant med registrets konstant och Storms kommentar),
+  kombinerade flaggor är summan av namngivna bitar, och ett namn registret inte
+  känner är exit 2 med namnet. För Metal behövs det inte på samma sätt: det
+  som hålls för hand är 109 selektorer och 53 deklarerade meddelandetyper
+  (34 unika signaturer), och det
+  som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin
+  tur vore naturlig som ett Dunder-verktyg i `tools/`, när den ska köras av
+  fler än den som skrev den.
 - **Safe-lager?** Räcker enums + `Result`, eller ska det finnas builders?
   Förslag: enums + `Result` först (klart på kontraktets nivå), builders när
   vi ser vad som är besvärligt att använda.
-- **Tidsram.** Vulkan-paketdelningen (`storm-vk`) och Renderer-uppdelningen
-  är 1–2 dagars arbete.
+- **Tidsram.** Vulkan-paketdelningen (`storm-vk`) är ett eget steg;
+  Renderer-uppdelningen är fem klusterflyttar à en commit (§3b).
 - **Subagent-orthogonalitet.** Arbetspaketen ska kunna köras parallellt i
   varsin worktree utan att krocka. Textur 3a rör vertexformatet, som nu
   ägs av `storm-gfx` men konsumeras av två backends och två shaderuppsätt-

@@ -111,8 +111,9 @@ impl State {
         if hover && p.pressed { self.active = id }
         if self.active == id && (p.down || p.pressed) {
             t := clamp01((p.x - track_x) / track_w)
-            value = min + (max - min) * t
-            changed = true
+            dragged := min + (max - min) * t
+            changed = dragged != value
+            value = dragged
         }
         canvas.text(atlas, label, x, y + 1.0, 0.61, &theme.ink_dim)
         canvas.rounded_rect(track_x, track_y + 2.0, track_w, 3.0, 1.5, &theme.track)

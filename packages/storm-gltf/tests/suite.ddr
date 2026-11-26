@@ -1,9 +1,19 @@
 import ..src.gltf as gltf
+import std.json as json
+import std.text as text
+import gfx
 
-// Build a minimal .glb: one triangle, POSITION (3 x vec3 float), no indices.
-// JSON chunk is padded to a 4-byte boundary with spaces; BIN chunk with zeros.
-fn build_triangle_glb() -> []u8 {
-    json_text := "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],\"buffers\":[{\"byteLength\":36}]}"
+import ..src.textures as textures
+
+// The JSON of a minimal .glb: one triangle, POSITION (3 x vec3 float), no
+// indices. `extra` is inserted before the closing brace of the root object.
+fn triangle_json(extra: string) -> string {
+    "{\"asset\":{\"version\":\"2.0\"},\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],\"buffers\":[{\"byteLength\":36}]" + extra + "}"
+}
+
+// Build a minimal .glb around a JSON chunk: JSON is padded to a 4-byte
+// boundary with spaces; the BIN chunk holds the triangle's vertices.
+fn build_glb(json_text: string) -> []u8 {
     mut json_bytes: []u8 = []
     for ch in json_text.bytes() { json_bytes.push(u8(ch)) }
     while json_bytes.len % 4 != 0 { json_bytes.push(u8(32)) }
@@ -44,7 +54,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn reads_a_binary_glb_triangle() {
-    data := build_triangle_glb()
+    data := build_glb(triangle_json(""))
     doc := gltf.load_bytes(&data)
     assert(doc.ok)
     assert(doc.has_bin)
@@ -59,7 +69,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn interleave_pads_missing_normals() {
-    data := build_triangle_glb()
+    data := build_glb(triangle_json(""))
     doc := gltf.load_bytes(&data)
     mesh := gltf.load_mesh(&doc)
     stream := gltf.interleave(&mesh)
@@ -147,7 +157,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn respects_active_nodes_names_materials_and_every_triangle_primitive() {
-    mut doc := gltf.load_bytes(&build_triangle_glb())
+    mut doc := gltf.load_bytes(&build_glb(triangle_json("")))
     doc.json_text = r#"{
         "asset":{"version":"2.0"},"buffers":[{"byteLength":36}],
         "bufferViews":[{"buffer":0,"byteLength":36}],
@@ -179,7 +189,7 @@ fn append_u32(out: &mut []u8, value: u32) {
 }
 
 @test fn incomplete_buffers_and_invalid_triangle_indices_report_an_error() {
-    data := build_triangle_glb()
+    data := build_glb(triangle_json(""))
     mut short := data.clone()
     short.truncate(short.len - 1)
     assert(!gltf.load_bytes(&short).ok)
@@ -193,4 +203,172 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(gltf.asset(&doc).is_err())
     doc.bin[38] = 2
     assert(gltf.asset(&doc).unwrap().parts[0].vertices.len == 24)
+}
+
+// FoxFixed.glb has one image, a 1024x1024 PNG in a bufferView, and one
+// sampler: magFilter 9729 (LINEAR), wrapS/T 10497 (REPEAT), no minFilter,
+// which the spec reads as LINEAR_MIPMAP_LINEAR. Its material's
+// baseColorTexture is texture 0, whose source is image 0. The numbers were
+// read from the file's JSON chunk with Python, not with the loader.
+@test fn reads_the_images_and_sampler_of_a_textured_model() {
+    doc := gltf.load("tests/fixtures/FoxFixed.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.images.len == 1)
+    image := &asset.images[0]
+    assert(image.mime == "image/png")
+    // The bufferView: byteOffset 0, byteLength 26764, read with Python.s struct.
+    assert(image.data.len == 26764)
+    // PNG signature.
+    assert(image.data[0] == 137 && image.data[1] == 80 && image.data[2] == 78 && image.data[3] == 71)
+    // IHDR: 1024 x 1024, 8-bit RGB.
+    assert(image.data[16] == 0 && image.data[17] == 0 && image.data[18] == 4 && image.data[19] == 0)
+    assert(image.data[20] == 0 && image.data[21] == 0 && image.data[22] == 4 && image.data[23] == 0)
+    assert(image.data[24] == 8 && image.data[25] == 2)
+    part := &asset.parts[0]
+    assert(part.texture == 0)
+    assert(part.sampler.mag == gfx.Filter.Linear)
+    assert(part.sampler.min == gfx.Filter.Linear)
+    assert(part.sampler.mips == gfx.MipFilter.Linear)
+    assert(part.sampler.wrap == gfx.Wrap.Repeat)
+    // No metallic-roughness map: no image, and the spec's default sampler.
+    assert(part.metallic_roughness == -1)
+    assert(part.metallic_roughness_sampler.mag == gfx.Filter.Linear && part.metallic_roughness_sampler.wrap == gfx.Wrap.Repeat)
+}
+
+// mapped_triangle.glb (make_mapped_fixture.py beside it) has one material
+// with a baseColorTexture (texture 0 -> image 0) and a
+// metallicRoughnessTexture (texture 1 -> image 1), and one sampler for
+// texture 0: 9728 (NEAREST) and 33071 (CLAMP_TO_EDGE). Texture 1 names no
+// sampler, so it takes the spec's default. The image bytes are the two
+// PNGs the script wrote: 73 and 72 bytes, a 2x2 (200, 40, 0) and a 2x2
+// (0, 160, 0). All of it was read back from the file, not from this test.
+@test fn reads_the_metallic_roughness_map_and_its_own_sampler() {
+    doc := gltf.load("tests/fixtures/mapped_triangle.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+    assert(asset.parts.len == 1 && asset.images.len == 2)
+    part := &asset.parts[0]
+    assert(part.name == "painted" || part.material_name == "painted")
+    assert(part.metallic == 0.5 && part.roughness == 0.25)
+    assert(part.texture == 0 && part.metallic_roughness == 1)
+    // The base colour goes with texture 0's sampler.
+    assert(part.sampler.mag == gfx.Filter.Nearest && part.sampler.min == gfx.Filter.Nearest)
+    assert(part.sampler.mips == gfx.MipFilter.None && part.sampler.wrap == gfx.Wrap.ClampToEdge)
+    // The map's texture names no sampler: the spec's default.
+    assert(part.metallic_roughness_sampler.mag == gfx.Filter.Linear && part.metallic_roughness_sampler.wrap == gfx.Wrap.Repeat)
+    assert(asset.images[0].data.len == 73 && asset.images[1].data.len == 72)
+}
+
+// Khronos's Box.glb has no emissive term either: the spec's default, a factor
+// of zero (off) with the strength at one, so nothing a file without the term
+// draws changes.
+@test fn an_untextured_model_has_no_emissive_term() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    part := &asset.parts[0]
+    assert(part.emissive == -1)
+    assert(part.emissive_factor[0] == 0.0 && part.emissive_factor[1] == 0.0 && part.emissive_factor[2] == 0.0)
+    assert(part.emissive_factor[3] == 1.0)
+}
+
+// emissive_triangle.glb (make_emissive_fixture.py beside it) has one material
+// with an emissiveTexture (texture 0 -> image 0, a 2x2 (249, 255, 175) PNG),
+// emissiveFactor [0.5, 0.25, 1.0] and KHR_materials_emissive_strength 3.5,
+// listed in extensionsUsed and not in extensionsRequired. Every number was
+// read back from the file with Python, not from the script.
+@test fn reads_the_emissive_map_factor_and_strength() {
+    doc := gltf.load("tests/fixtures/emissive_triangle.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.parts.len == 1 && asset.images.len == 1)
+    part := &asset.parts[0]
+    assert(part.emissive == 0 && part.texture == -1 && part.metallic_roughness == -1)
+    // The emissive map names no sampler: the spec's default.
+    assert(part.emissive_sampler.mag == gfx.Filter.Linear && part.emissive_sampler.wrap == gfx.Wrap.Repeat)
+    // The factor scales the map's own colour; the strength scales the factor.
+    assert(part.emissive_factor[0] == 0.5 && part.emissive_factor[1] == 0.25 && part.emissive_factor[2] == 1.0)
+    assert(part.emissive_factor[3] == 3.5)
+    // The image bytes are the PNG the script wrote.
+    assert(asset.images[0].data.len == 73)
+    assert(asset.images[0].data[1] == 80 && asset.images[0].data[2] == 78 && asset.images[0].data[3] == 71)
+}
+
+// glTF 2.0 §3.9.2: emissiveFactor has three components. A fourth is refused
+// by name, never read as a guess (the refused file was read back with
+// Python: [0.5, 0.25, 1.0, 1.0]).
+@test fn an_emissive_factor_with_four_components_is_refused() {
+    doc := gltf.load("tests/fixtures/refused_emissive.glb")
+    assert(doc.ok)
+    refusal := match gltf.asset(&doc) { .Ok(_) => "loaded", .Err(s) => s.clone() }
+    assert(text.contains(refusal, "emissiveFactor must have three components"))
+}
+
+// factor_without_map.glb has an emissiveFactor and a strength but no
+// emissiveTexture: the factor is kept (it is what the file says) and the map
+// is absent, so a surface with a factor of zero is off whether or not the
+// exporter wrote a map.
+@test fn a_factor_without_a_map_is_kept_and_the_map_is_absent() {
+    doc := gltf.load("tests/fixtures/factor_without_map.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    part := &asset.parts[0]
+    assert(part.emissive == -1)
+    assert(part.emissive_factor[0] == 0.5 && part.emissive_factor[1] == 0.25 && part.emissive_factor[2] == 1.0)
+    assert(part.emissive_factor[3] == 3.5)
+}
+
+// Khronos's Box.glb has no textures: the surface is a colour only.
+@test fn an_untextured_model_has_no_texture() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.images.len == 0)
+    assert(asset.parts[0].texture == -1)
+}
+
+// A sampler with a number outside the glTF table is refused with the
+// sampler's index and the number, never shown with a guess (Filament and
+// the glTF SDK refuse it too). Index -1 is the spec's default.
+fn refusal_of(result: Result<gfx.Sampler, string>) -> string {
+    match result { .Ok(_) => "decoded", .Err(s) => s.clone() }
+}
+
+@test fn sampler_refuses_unknown_numbers() {
+    source := "{\"samplers\":[{\"magFilter\":97},{\"minFilter\":9988},{\"wrapS\":33072}]}"
+    doc := json.Doc::parse_text(source)
+    assert(textures.sampler(&doc, -1).unwrap().mag == gfx.Filter.Linear)
+    assert(text.contains(refusal_of(textures.sampler(&doc, 0)), "sampler 0: magFilter 97"))
+    assert(text.contains(refusal_of(textures.sampler(&doc, 1)), "sampler 1: minFilter 9988"))
+    assert(text.contains(refusal_of(textures.sampler(&doc, 2)), "sampler 2: wrapS 33072"))
+}
+
+fn asset_refusal(data: &[]u8) -> string {
+    match gltf.asset(&gltf.load_bytes(data)) { .Ok(_) => "loaded", .Err(s) => s.clone() }
+}
+
+// glTF 2.0 §4: an extension in extensionsRequired is one the client must
+// support or refuse the whole asset; one in extensionsUsed alone may be
+// ignored (the KHR_materials_pbrSpecularGlossiness table: "render as if no
+// material" / "fail to load"). Storm reads no extension, so every required
+// name is refused with the name, before any buffer is touched — a model
+// that needs what Storm lacks is a message, not a white silhouette.
+@test fn a_required_extension_is_refused_by_name_and_a_used_one_ignored() {
+    used := build_glb(triangle_json(",\"extensionsUsed\":[\"KHR_materials_pbrSpecularGlossiness\"]"))
+    assert(asset_refusal(&used) == "loaded")
+
+    required := build_glb(triangle_json(",\"extensionsUsed\":[\"KHR_materials_pbrSpecularGlossiness\"],\"extensionsRequired\":[\"KHR_materials_pbrSpecularGlossiness\"]"))
+    assert(asset_refusal(&required) == "requires extension KHR_materials_pbrSpecularGlossiness, which Storm does not read")
+
+    both := build_glb(triangle_json(",\"extensionsRequired\":[\"KHR_materials_variants\",\"KHR_texture_transform\"]"))
+    assert(text.contains(asset_refusal(&both), "KHR_materials_variants"))
+
+    empty := build_glb(triangle_json(",\"extensionsRequired\":[]"))
+    assert(asset_refusal(&empty) == "loaded")
 }

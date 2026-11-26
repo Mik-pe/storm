@@ -1,8 +1,8 @@
 capability unsafe
 
 import .device as device
-import .enums as enums
-import .layout as vk
+import vk.enums as enums
+import vk.layout as vk
 import .state as state
 
 // Depth buffer.
@@ -10,6 +10,16 @@ import .state as state
 // One D32_SFLOAT image, OPTIMAL tiled, recreated with the swapchain. It is
 // the second attachment of the main render pass and is cleared to 1.0 every
 // frame together with the colour attachment.
+
+// What this module owns: the image, its memory and its view. Zeroed with
+// the renderer; `create` fills it, `destroy` empties it, and nobody else
+// writes it. The one reader outside is the colour framebuffer (`device.ddr`).
+@c_layout
+pub struct Depth {
+    image: ptr,
+    memory: ptr,
+    view: ptr,
+}
 
 pub fn float_bits(value: f32) -> u32 {
     u32(i64(value.to_bits()).bit_and(0xffffffff))
@@ -21,7 +31,7 @@ pub fn depth_clear(depth: f32) -> u64 {
 
 pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.SetupStep {
     if width == 0 || height == 0 { return .DepthBuffer }
-    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, vk.IMAGE_TILING_OPTIMAL, enums.image_usage(.DepthStencilAttachment))
+    info := device.image_2d_info(enums.format(.D32_SFLOAT), width, height, enums.ImageTiling.Optimal, enums.ImageUsage.DepthStencilAttachment)
     mut image := ptr(0)
     mut code := r.api.CreateImage(r.device, addr(&info), ptr(0), addr(&mut image))
     if code != 0 {
@@ -34,7 +44,7 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.S
     requirements.alignment = req[1]
     requirements.memoryTypeBits = u32(req[2])
     mut memory := ptr(0)
-    if device.allocate(&r, &requirements, 0, addr(&mut memory)) != 0 {
+    if device.allocate(&r, &requirements, .None, addr(&mut memory)) != 0 {
         r.api.DestroyImage(r.device, image, ptr(0))
         return .DepthBuffer
     }
@@ -44,8 +54,7 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.S
         r.api.DestroyImage(r.device, image, ptr(0))
         return device.fail(&mut r, code, .DepthBuffer)
     }
-    mut view_info: vk.ImageViewCreateInfo = zeroed()
-    view_info.sType = 15
+    mut view_info: vk.ImageViewCreateInfo = vk.ImageViewCreateInfo::new()
     view_info.image = image
     view_info.viewType = enums.image_view_type(.Type2D)
     view_info.format = enums.format(.D32_SFLOAT)
@@ -59,17 +68,17 @@ pub unsafe fn create(r: &mut state.Renderer, width: u32, height: u32) -> state.S
         r.api.DestroyImage(r.device, image, ptr(0))
         return device.fail(&mut r, code, .DepthBuffer)
     }
-    r.depthImage = image
-    r.depthMemory = memory
-    r.depthView = view
+    r.depth.image = image
+    r.depth.memory = memory
+    r.depth.view = view
     .Ready
 }
 
 pub unsafe fn destroy(r: &mut state.Renderer) {
-    if r.depthView != ptr(0) { r.api.DestroyImageView(r.device, r.depthView, ptr(0)) }
-    if r.depthImage != ptr(0) { r.api.DestroyImage(r.device, r.depthImage, ptr(0)) }
-    if r.depthMemory != ptr(0) { r.api.FreeMemory(r.device, r.depthMemory, ptr(0)) }
-    r.depthView = ptr(0)
-    r.depthImage = ptr(0)
-    r.depthMemory = ptr(0)
+    if r.depth.view != ptr(0) { r.api.DestroyImageView(r.device, r.depth.view, ptr(0)) }
+    if r.depth.image != ptr(0) { r.api.DestroyImage(r.device, r.depth.image, ptr(0)) }
+    if r.depth.memory != ptr(0) { r.api.FreeMemory(r.device, r.depth.memory, ptr(0)) }
+    r.depth.view = ptr(0)
+    r.depth.image = ptr(0)
+    r.depth.memory = ptr(0)
 }

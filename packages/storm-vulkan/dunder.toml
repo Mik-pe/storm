@@ -6,3 +6,4 @@ test_root = "tests/suite.ddr"
 [dependencies]
 core = { path = "../storm-core" }
 gfx = { path = "../storm-gfx" }
+vk = { path = "../storm-vk", capabilities = ["unsafe"] }

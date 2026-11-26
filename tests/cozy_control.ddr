@@ -70,8 +70,8 @@ fn expanded_woodland_scene() -> play.Scene {
     ground_pt := core.vec3(player_pos.x + 2.2, 0.0, player_pos.z)
     (gx, gy) := project_to_screen(&cam, aspect, w, h, ground_pt)
     mut walk_click := empty_input(gx, gy)
-    walk_click.mouse.buttons = gfx.MOUSE_LEFT
-    walk_click.mouse.pressed = gfx.MOUSE_LEFT
+    walk_click.mouse.buttons = gfx.button_bit(.Left)
+    walk_click.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam, aspect, w, h, 0.016, &walk_click, 0.0, false)
     assert(c.has_target && !c.hovering_fox)
 
@@ -79,8 +79,8 @@ fn expanded_woodland_scene() -> play.Scene {
     fox_pt := core.add(player_pos, core.vec3(0.0, 0.18, 0.0))
     (fx, fy) := project_to_screen(&cam, aspect, w, h, fox_pt)
     mut blocked := empty_input(fx, fy)
-    blocked.mouse.buttons = gfx.MOUSE_LEFT
-    blocked.mouse.pressed = gfx.MOUSE_LEFT
+    blocked.mouse.buttons = gfx.button_bit(.Left)
+    blocked.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam, aspect, w, h, 0.016, &blocked, 0.0, true)
     assert(!c.hovering_fox && s.pet_tick == -1 && c.has_target)
 
@@ -108,8 +108,8 @@ fn expanded_woodland_scene() -> play.Scene {
     far_pt := core.vec3(b.max_x + 5.0, 0.0, b.min_z - 5.0)
     (ox, oy) := project_to_screen(&cam0, aspect, w, h, far_pt)
     mut far_click := empty_input(ox, oy)
-    far_click.mouse.buttons = gfx.MOUSE_LEFT
-    far_click.mouse.pressed = gfx.MOUSE_LEFT
+    far_click.mouse.buttons = gfx.button_bit(.Left)
+    far_click.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &far_click, 0.0, false)
     g := cozy.guide(&c)
     assert(g.active && g.target.x <= b.max_x && g.target.z <= b.max_z && g.target.x >= b.min_x && g.target.z >= b.min_z)
@@ -124,12 +124,12 @@ fn expanded_woodland_scene() -> play.Scene {
     p0 := s.bodies[s.player].position
     (tx1, ty1) := project_to_screen(&cam0, aspect, w, h, core.vec3(p0.x + 1.5, 0.0, p0.z))
     mut hold1 := empty_input(tx1, ty1)
-    hold1.mouse.buttons = gfx.MOUSE_LEFT
-    hold1.mouse.pressed = gfx.MOUSE_LEFT
+    hold1.mouse.buttons = gfx.button_bit(.Left)
+    hold1.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &hold1, 0.0, false)
     (tx2, ty2) := project_to_screen(&cam0, aspect, w, h, core.vec3(p0.x + 2.4, 0.0, p0.z))
     mut hold2 := empty_input(tx2, ty2)
-    hold2.mouse.buttons = gfx.MOUSE_LEFT
+    hold2.mouse.buttons = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &hold2, 0.0, false)
     assert((c.target.x - (p0.x + 2.4)).abs() < 0.08)
 
@@ -168,8 +168,8 @@ fn expanded_woodland_scene() -> play.Scene {
     (fx, fy) := project_to_screen(&cam0, aspect, w, h, flower)
     mut shift_click := empty_input(fx, fy)
     shift_click.held = key_bit(.Shift)
-    shift_click.mouse.buttons = gfx.MOUSE_LEFT
-    shift_click.mouse.pressed = gfx.MOUSE_LEFT
+    shift_click.mouse.buttons = gfx.button_bit(.Left)
+    shift_click.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &shift_click, 0.0, false)
     assert(c.has_target)
 
@@ -230,8 +230,8 @@ fn expanded_woodland_scene() -> play.Scene {
     cloud_top := cloud.position.y + cloud.size.y * 0.5
     (dcx, dcy) := project_to_screen(&cam0, aspect, w, h, core.vec3(cloud.position.x, cloud_top, cloud.position.z))
     mut direct_cloud := empty_input(dcx, dcy)
-    direct_cloud.mouse.buttons = gfx.MOUSE_LEFT
-    direct_cloud.mouse.pressed = gfx.MOUSE_LEFT
+    direct_cloud.mouse.buttons = gfx.button_bit(.Left)
+    direct_cloud.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &direct_cloud, 0.0, false)
     assert(c.has_target && (c.target.y - cloud_top).abs() < 0.001 && (c.target.x - cloud.position.x).abs() < 0.05)
 
@@ -240,8 +240,8 @@ fn expanded_woodland_scene() -> play.Scene {
     plane_pt := core.vec3(p0.x + 0.6, 1.7, p0.z + 1.2)
     (cx, cy) := project_to_screen(&cam0, aspect, w, h, plane_pt)
     mut cloud_click := empty_input(cx, cy)
-    cloud_click.mouse.buttons = gfx.MOUSE_LEFT
-    cloud_click.mouse.pressed = gfx.MOUSE_LEFT
+    cloud_click.mouse.buttons = gfx.button_bit(.Left)
+    cloud_click.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &cloud_click, 1.7, false)
     assert(c.has_target && (c.target.y - 1.7).abs() < 0.0001 && (c.target.x - plane_pt.x).abs() < 0.05)
 
@@ -249,8 +249,8 @@ fn expanded_woodland_scene() -> play.Scene {
     flower := s.scene.entities[2].position
     (fx, fy) := project_to_screen(&cam0, aspect, w, h, core.vec3(flower.x, 0.0, flower.z))
     mut normal_click := empty_input(fx, fy)
-    normal_click.mouse.buttons = gfx.MOUSE_LEFT
-    normal_click.mouse.pressed = gfx.MOUSE_LEFT
+    normal_click.mouse.buttons = gfx.button_bit(.Left)
+    normal_click.mouse.pressed = gfx.button_bit(.Left)
     _ := cozy.update(&mut c, &mut s, &cam0, aspect, w, h, 0.016, &normal_click, 0.0, false)
     for _ in 0..80 {
         area := view.framing(&world, &s, true)
@@ -322,7 +322,7 @@ fn expanded_woodland_scene() -> play.Scene {
 
     // Right-drag and scroll work when !ui_captured, ignored when ui_captured.
     mut rdrag := empty_input(400.0, 300.0)
-    rdrag.mouse.buttons = gfx.MOUSE_RIGHT
+    rdrag.mouse.buttons = gfx.button_bit(.Right)
     rdrag.mouse.dx = 120.0
     rdrag.mouse.scroll = 10.0
     _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.05, &rdrag, 0.0, true)
@@ -340,7 +340,7 @@ fn expanded_woodland_scene() -> play.Scene {
 
     // Middle click resets camera targets cleanly.
     mut mid_hit := empty_input(400.0, 300.0)
-    mid_hit.mouse.pressed = gfx.MOUSE_MIDDLE
+    mid_hit.mouse.pressed = gfx.button_bit(.Middle)
     _ := cozy.update(&mut c, &mut s, &cam, 1.6, 1280.0, 800.0, 0.05, &mid_hit, 0.0, false)
     assert(!cozy.cam_adjusted(&c) && c.target_yaw == 0.0 && c.target_zoom == 1.0)
 

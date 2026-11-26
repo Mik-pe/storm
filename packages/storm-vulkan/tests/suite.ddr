@@ -1,17 +1,65 @@
 capability unsafe
 
-import ..src.layout as vk
+import vk.layout as vk
+import vk.enums as enums
 import ..src.depth as depth
 import ..src.device as device
-import ..src.enums as enums
 import gfx
 import ..src.headless as headless
+import ..src.ibl as ibl
+import ..src.pipeline as pipelines
+import ..src.post as post
+import ..src.records as records
 import ..src.sdl as sdl
+import ..src.shadow as shadow
 import ..src.state as state
+import ..src.texture as texture
+import ..src.ui as ui
 
 // The raw SDL state of a window, as the engine's keys and pointer. Either
 // shift key is Shift; a key held since an earlier frame is down but not
 // newly pressed.
+// Storm's own pair of attribute descriptions is a record of records too, the
+// same way the registry's pairs are (pinned in storm-vk): the second element
+// starts right after the first.
+@test fn ui_vertex_attributes_are_contiguous() {
+    assert(size_of(records.UiVertices) == 44)
+    unsafe {
+        ui := records.ui_vertices(8)
+        assert(usize(addr(&ui.color)) - usize(addr(&ui.position)) == 16)
+    }
+}
+
+// The blend attachment is a value, not five integers: ALPHA_OVER is the one
+// every alpha-over pipeline (UI and glass) writes; the enum numbers it writes
+// are pinned in storm-vk against the Khronos tables.
+@test fn blend_writers_write_the_named_states_into_the_c_record() {
+    unsafe {
+        mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
+        records.apply_blend(&mut attachment, &records.alpha_over())
+        assert(attachment.blendEnable == 1)
+        assert(attachment.srcColorBlendFactor == 6)
+        assert(attachment.dstColorBlendFactor == 7)
+        assert(attachment.srcAlphaBlendFactor == 1)
+        assert(attachment.dstAlphaBlendFactor == 7)
+        assert(attachment.colorBlendOp == 0 && attachment.alphaBlendOp == 0)
+        assert(attachment.colorWriteMask == 15)
+        records.apply_blend(&mut attachment, &records.shadow_max())
+        assert(attachment.srcColorBlendFactor == 1 && attachment.dstColorBlendFactor == 1)
+        assert(attachment.colorBlendOp == 4)
+    }
+}
+
+// What a swapchain code means to Storm is Storm's choice, not the registry's:
+// SUBOPTIMAL still counts as a frame presented, OUT_OF_DATE asks for a rebuild.
+@test fn swapchain_codes_mean_what_storm_decides() {
+    assert(records.is_success(0))
+    assert(records.is_success(1000001003))
+    assert(!records.is_success(-1000001004))
+    assert(records.is_out_of_date(-1000001004))
+    assert(!records.is_out_of_date(-1000001003))
+}
+
 @test fn sdl_key_state_becomes_engine_input() {
     unsafe {
         mut window: sdl.Window = zeroed()
@@ -32,21 +80,35 @@ import ..src.state as state
         assert(input.down(gfx.Key.W) && !input.hit(gfx.Key.W))
         assert(input.down(gfx.Key.Shift) && !input.down(gfx.Key.Ctrl) && !input.down(gfx.Key.S))
         assert(input.mouse.x == 12.0 && input.mouse.y == 34.0 && input.mouse.dx == 3.0 && input.mouse.dy == -2.0)
-        assert(input.button_down(gfx.MOUSE_RIGHT) && !input.button_down(gfx.MOUSE_LEFT) && input.button_hit(gfx.MOUSE_RIGHT))
+        assert(input.button_down(gfx.Button.Right) && !input.button_down(gfx.Button.Left) && input.button_hit(gfx.Button.Right))
         assert(input.mouse.scroll == 1.0)
     }
+}
+
+// SDL numbers its buttons left 1, middle 2, right 3 (SDL_mouse.h) and the
+// contract numbers its bits 1, 2, 4. The pairing is a table, not a shift:
+// until 2026-11-26 `poll` shifted SDL's number, so a left click on Linux set
+// the bit the engine reads as the right button, and the right button set a
+// bit nothing read. Pinned against the header's three numbers.
+@test fn an_sdl_button_number_is_paired_with_the_engine_button_by_name() {
+    assert(sdl.sdl_button(1) == gfx.button_bit(gfx.Button.Left))
+    assert(sdl.sdl_button(2) == gfx.button_bit(gfx.Button.Middle))
+    assert(sdl.sdl_button(3) == gfx.button_bit(gfx.Button.Right))
+    assert(gfx.button_bit(gfx.Button.Left) == 1 && gfx.button_bit(gfx.Button.Right) == 2 && gfx.button_bit(gfx.Button.Middle) == 4)
+    // A button Storm does not report (X1 is 4, X2 is 5) sets no bit at all.
+    assert(sdl.sdl_button(0) == 0 && sdl.sdl_button(4) == 0 && sdl.sdl_button(5) == 0)
 }
 
 @test fn vertex_input_declares_the_whole_stream() {
     // The one layout both mesh pipelines declare: one binding, three
     // attributes, and the binding's stride covers all of them.
     unsafe {
-        mut input := vk.vertex_input()
-        enums.apply_vertex_input(&mut input)
+        mut input := records.vertex_input()
+        records.apply_vertex_input(&mut input)
         assert(input.binding.stride == gfx.VERTEX_BYTES)
         assert(input.binding.inputRate == 0)
-        assert(size_of(vk.VertexAttributes) == 48)
-        assert(size_of(vk.VertexInput) == 60)
+        assert(size_of(records.VertexAttributes) == 48)
+        assert(size_of(records.VertexInput) == 60)
         a := input.attributes.position
         b := input.attributes.normal
         c := input.attributes.uv
@@ -67,8 +129,66 @@ import ..src.state as state
     }
 }
 
-@test fn barrier_struct_matches_the_c_abi() {
-    assert(size_of(vk.ImageMemoryBarrier) == 72)
+// A full mip chain halves the larger side until one texel; a 1x1 fallback
+// has one level, a 1920-wide capture eleven, a non-square image as many as
+// its larger side calls for.
+@test fn mip_chain_covers_every_level_down_to_one_texel() {
+    assert(texture.mip_levels(1, 1) == 1)
+    assert(texture.mip_levels(2, 2) == 2)
+    assert(texture.mip_levels(256, 160) == 9)
+    assert(texture.mip_levels(1920, 1080) == 11)
+    assert(texture.mip_size(256, 0) == 256)
+    assert(texture.mip_size(256, 3) == 32)
+    assert(texture.mip_size(160, 8) == 1)
+    assert(texture.mip_size(160, 20) == 1)
+}
+
+// A handle names a slot and a generation; a freed-and-reused slot must not
+// answer to the old handle, and zero names nothing. A dead handle resolves
+// to the fallback slot, never to the slot it used to name.
+@test fn texture_handles_survive_a_slot_being_reused() {
+    unsafe {
+        mut table: texture.Table = zeroed()
+        assert(!texture.live(&table, 0))
+        assert(!texture.live(&table, texture.handle(1, 1)))
+        assert(texture.first_free(&table) == 1)
+        table.slots[1].image = ptr(1)
+        assert(texture.first_free(&table) == 2)
+        first := texture.claim(&mut table, 1)
+        assert(texture.handle(1, 1) == first)
+        assert(texture.live(&table, first))
+        assert(texture.index_of(first) == 1 && texture.generation_of(first) == 1)
+        table.slots[1].image = ptr(0)
+        assert(!texture.live(&table, first))
+        table.slots[1].image = ptr(1)
+        second := texture.claim(&mut table, 1)
+        assert(second != first && texture.generation_of(second) == 2)
+        assert(!texture.live(&table, first))
+        assert(texture.live(&table, second))
+        // What a draw binds: the fallback for 0, a dead handle and a slot
+        // out of range; the slot's own view and sampler for a live one.
+        table.slots[0].view = ptr(100)
+        table.slots[0].sampler = ptr(101)
+        table.slots[1].view = ptr(200)
+        table.slots[1].sampler = ptr(201)
+        assert(texture.slot_of(&table, 0) == 0)
+        assert(texture.slot_of(&table, second) == 1)
+        assert(texture.slot_of(&table, first) == 0)
+        assert(texture.slot_of(&table, texture.handle(999, 1)) == 0)
+        assert(texture.view_of(&table, second) == ptr(200) && texture.sampler_of(&table, second) == ptr(201))
+        assert(texture.view_of(&table, first) == ptr(100) && texture.sampler_of(&table, 0) == ptr(101))
+        assert(texture.view_of(&table, texture.handle(999, 1)) == ptr(100))
+    }
+}
+
+// The table is allocated by size_of and indexed as C, so a field that
+// silently appears in a slot is a wrong draw with no diagnostic. Slot is
+// four pointers and an i64 (40) plus a u32 padded to 48; the table is 64
+// of them.
+@test fn texture_records_keep_their_size() {
+    assert(size_of(texture.Slot) == 48)
+    assert(size_of(texture.Table) == 3072)
+    assert(texture.CAPACITY == 64 && texture.BINDINGS == 5 && texture.NORMAL_BINDING == 2)
 }
 
 @test fn image_creation_and_device_limits_match_the_vulkan_abi() {
@@ -76,18 +196,18 @@ import ..src.state as state
         mut properties: state.Properties = zeroed()
         assert(usize(addr(&properties.limits.maxPushConstantsSize)) - usize(addr(&properties)) == 328)
         assert(size_of(state.Properties) >= 824)
-        image := device.image_2d_info(126, 512, 128, vk.IMAGE_TILING_OPTIMAL, 32)
+        image := device.image_2d_info(126, 512, 128, enums.ImageTiling.Optimal, enums.ImageUsage.DepthStencilAttachment)
         assert(image.sType == 14 && image.imageType == 1 && image.format == 126)
         assert(image.extent.width == 512 && image.extent.height == 128 && image.extent.depth == 1)
         assert(image.mipLevels == 1 && image.arrayLayers == 1 && image.samples == 1)
-        assert(image.tiling == 0 && vk.IMAGE_TILING_LINEAR == 1 && image.usage == 32)
+        assert(image.tiling == 0 && enums.image_tiling(.Linear) == 1 && image.usage == 32)
         assert(image.sharingMode == 0 && image.pNext == ptr(0))
     }
 }
 
 @test fn frame_pipelines_take_the_viewport_and_scissor_from_the_current_extent() {
     unsafe {
-        mut view: vk.FrameViewport = zeroed()
+        mut view: records.FrameViewport = zeroed()
         device.frame_viewport(&mut view)
         assert(size_of(vk.PipelineDynamicStateCreateInfo) == 32)
         assert(view.viewport.sType == 22 && view.dynamic.sType == 27)
@@ -111,20 +231,6 @@ import ..src.state as state
     assert(depth.depth_clear(1.0).shr(32) == 0)
 }
 
-@test fn render_pass_structs_match_the_c_abi() {
-    // Two attachments side by side must read as one contiguous array.
-    assert(size_of(vk.AttachmentDescription) == 36)
-    assert(size_of(vk.AttachmentReference) == 8)
-    assert(size_of(vk.SubpassDescription) == 72)
-    // pDepthStencilAttachment sits after two u32+padding pairs and the two
-    // colour pointers: 48 bytes in. C puts it there too.
-    unsafe {
-        mut subpass: vk.SubpassDescription = zeroed()
-        assert(usize(addr(&subpass.pDepthStencilAttachment)) - usize(addr(&subpass)) == 48)
-        assert(usize(addr(&subpass.pColorAttachments)) - usize(addr(&subpass)) == 32)
-    }
-}
-
 @test fn float_bits_covers_both_signs() {
     assert(depth.float_bits(1.0) == 0x3F800000)
     assert(depth.float_bits(-1.0) == 0xBF800000)
@@ -135,132 +241,13 @@ import ..src.state as state
     assert(depth.depth_clear(1.0) == 0x3F800000)
 }
 
-@test fn c_record_pairs_and_arrays_are_contiguous() {
-    // The pairs handed to Vulkan (vk.Dependencies, Attachments, ShaderStages,
-    // References, Attributes) are records of records; this pins that the
-    // second element starts right after the first and that a named stage /
-    // external subpass value lands where C puts it. A plain [T; N] of the
-    // same record is contiguous too (measured: size 56, stride 28); the
-    // pairs exist so every module shares one declaration.
-    assert(size_of(vk.SubpassDependency) == 28)
-    assert(size_of(vk.PipelineShaderStageCreateInfo) == 48)
-    assert(size_of(vk.VertexInputAttributeDescription) == 16)
-    assert(size_of(vk.Dependencies) == 56)
-    assert(size_of(vk.Attachments) == 72)
-    assert(size_of(vk.ShaderStages) == 96)
-    assert(size_of(vk.References) == 16)
-    assert(size_of(vk.Attributes) == 32)
-    assert(size_of([vk.SubpassDependency; 2]) == 56)
-    unsafe {
-        mut before: vk.SubpassDependency = zeroed()
-        before.srcSubpass = enums.SUBPASS_EXTERNAL
-        before.srcStageMask = enums.pipeline_stage(.ColorAttachmentOutput)
-        mut after: vk.SubpassDependency = zeroed()
-        after.dstSubpass = enums.SUBPASS_EXTERNAL
-        after.dstStageMask = enums.pipeline_stage(.FragmentShader)
-        after.dstAccessMask = enums.access(.ShaderRead)
-        deps := vk.Dependencies { before: before, after: after }
-        base := usize(addr(&deps))
-        assert(usize(addr(&deps.after)) - base == 28)
-        // after = { srcSubpass@28, dstSubpass@32, srcStageMask@36, dstStageMask@40,
-        //            srcAccessMask@44, dstAccessMask@48, flags@52 } exactly as C.
-        assert(load_u32(ptr(base)) == 4294967295)
-        assert(load_u32(ptr(base + 8)) == 1024)
-        assert(load_u32(ptr(base + 28)) == 0)
-        assert(load_u32(ptr(base + 32)) == 4294967295)
-        assert(load_u32(ptr(base + 40)) == 128)
-        assert(load_u32(ptr(base + 48)) == 32)
-        array := [before, after]
-        assert(usize(addr(&array[1])) - usize(addr(&array[0])) == 28)
-        assert(load_u32(ptr(usize(addr(&array[0])) + 40)) == 128)
-    }
-}
-
-@test fn vk_enum_values_match_the_khronos_tables() {
-    // The tables as Khronos prints them. A recited table once came out in the
-    // wrong order and shipped two pipelines blending with the inverse factors;
-    // this pins every value Storm converts to a C integer.
-    assert(enums.blend_factor(.SrcAlpha) == 6)
-    assert(enums.blend_factor(.OneMinusSrcAlpha) == 7)
-    assert(enums.blend_factor(.OneMinusDstColor) == 5)
-    assert(enums.blend_factor(.One) == 1)
-    assert(enums.blend_op(.Add) == 0 && enums.blend_op(.Max) == 4)
-    assert(enums.filter(.Nearest) == 0 && enums.filter(.Linear) == 1)
-    assert(enums.sampler_mipmap_mode(.Nearest) == 0 && enums.sampler_mipmap_mode(.Linear) == 1)
-    assert(enums.sampler_address_mode(.ClampToEdge) == 2)
-    assert(enums.primitive_topology(.TriangleList) == 3)
-    assert(enums.polygon_mode(.Fill) == 0)
-    assert(enums.cull_mode(.None) == 0 && enums.cull_mode(.Back) == 2)
-    assert(enums.front_face(.CounterClockwise) == 0 && enums.front_face(.Clockwise) == 1)
-    assert(enums.compare_op(.Less) == 1 && enums.compare_op(.LessOrEqual) == 3)
-    assert(enums.image_view_type(.Type2D) == 1 && enums.image_view_type(.Cube) == 3)
-    assert(enums.image_aspect(.Color) == 1 && enums.image_aspect(.Depth) == 2)
-    assert(enums.image_layout(.Undefined) == 0)
-    assert(enums.image_layout(.ColorAttachmentOptimal) == 2)
-    assert(enums.image_layout(.DepthStencilAttachmentOptimal) == 3)
-    assert(enums.image_layout(.ShaderReadOnlyOptimal) == 5)
-    assert(enums.attachment_load_op(.Load) == 0 && enums.attachment_load_op(.Clear) == 1)
-    assert(enums.attachment_store_op(.Store) == 0 && enums.attachment_store_op(.DontCare) == 1)
-    assert(enums.pipeline_bind_point(.Graphics) == 0)
-    assert(enums.descriptor_type(.CombinedImageSampler) == 1 && enums.descriptor_type(.UniformBuffer) == 6)
-    assert(enums.sharing_mode(.Exclusive) == 0)
-    assert(enums.image_tiling(.Optimal) == 0 && enums.image_tiling(.Linear) == 1)
-    assert(enums.command_buffer_usage(.OneTimeSubmit) == 1)
-    assert(enums.shader_stage(.Vertex) == 1 && enums.shader_stage(.Fragment) == 16)
-    assert(enums.shader_stage(.VertexFragment) == 17)
-    assert(enums.image_usage(.TransferSrc) == 1 && enums.image_usage(.Sampled) == 4)
-    assert(enums.image_usage(.ColorAttachment) == 16 && enums.image_usage(.DepthStencilAttachment) == 32)
-    assert(enums.buffer_usage(.TransferSrc) == 1 && enums.buffer_usage(.UniformBuffer) == 16)
-    assert(enums.buffer_usage(.VertexBuffer) == 128)
-    assert(enums.image_create(.CubeCompatible) == 16)
-    assert(enums.command_pool_flag(.ResetCommandBuffer) == 2)
-    assert(enums.pipeline_stage(.Host) == 16384)
-    assert(enums.descriptor_pool(.FreeDescriptorSet) == 2)
-    assert(enums.fence(.Signaled) == 1)
-    assert(enums.color_component(.RGBA) == 15)
-    assert(enums.samples(.Type1) == 1)
-    // The blend attachment is a value, not five integers: ALPHA_OVER is the
-    // one every alpha-over pipeline (UI and glass) writes.
-    unsafe {
-        mut attachment: vk.PipelineColorBlendAttachmentState = zeroed()
-        enums.apply_blend(&mut attachment, &enums.alpha_over())
-        assert(attachment.blendEnable == 1)
-        assert(attachment.srcColorBlendFactor == 6)
-        assert(attachment.dstColorBlendFactor == 7)
-        assert(attachment.srcAlphaBlendFactor == 1)
-        assert(attachment.dstAlphaBlendFactor == 7)
-        assert(attachment.colorBlendOp == 0 && attachment.alphaBlendOp == 0)
-        assert(attachment.colorWriteMask == 15)
-        enums.apply_blend(&mut attachment, &enums.shadow_max())
-        assert(attachment.srcColorBlendFactor == 1 && attachment.dstColorBlendFactor == 1)
-        assert(attachment.colorBlendOp == 4)
-    }
-}
-
-// The codes Storm acts on, against the Khronos VkResult reference page. The
-// old constant ERROR_OUT_OF_DATE_KHR was -1000001003, which is no VkResult at
-// all, so the out-of-date branch could never fire.
-@test fn vk_result_codes_match_the_khronos_table() {
-    assert(i32(enums.VkResult.Success) == 0)
-    assert(i32(enums.VkResult.ErrorOutOfHostMemory) == -1)
-    assert(i32(enums.VkResult.ErrorOutOfDeviceMemory) == -2)
-    assert(i32(enums.VkResult.ErrorDeviceLost) == -4)
-    assert(i32(enums.VkResult.ErrorExtensionNotPresent) == -7)
-    assert(i32(enums.VkResult.ErrorFeatureNotPresent) == -8)
-    assert(i32(enums.VkResult.ErrorIncompatibleDriver) == -9)
-    assert(i32(enums.VkResult.SuboptimalKHR) == 1000001003)
-    assert(i32(enums.VkResult.ErrorOutOfDateKHR) == -1000001004)
-    assert(i32(enums.VkResult.ErrorSurfaceLostKHR) == -1000000000)
-    assert(i32(enums.VkResult.ErrorNativeWindowInUseKHR) == -1000000001)
-    assert(enums.result_name(-1000001004) == "VK_ERROR_OUT_OF_DATE_KHR")
-    assert(enums.result_name(1000001003) == "VK_SUBOPTIMAL_KHR")
-    assert(enums.result_name(0) == "VK_SUCCESS")
-    assert(enums.result_name(12345) == "VK_ERROR_?")
-    assert(enums.is_success(0))
-    assert(enums.is_success(1000001003))
-    assert(!enums.is_success(-1000001004))
-    assert(enums.is_out_of_date(-1000001004))
-    assert(!enums.is_out_of_date(-1000001003))
+// Every step the enum has, in enum order. `Ready` is left out: it is the
+// sentinel for "no step failed", not a step. A new variant that is not added
+// here leaves these two tests one step shorter than the enum.
+fn setup_steps() -> [state.SetupStep; 17] {
+    [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
+        .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget,
+        .Texture]
 }
 
 // fail() is the one place a Vulkan code becomes a setup failure: it must hand
@@ -269,8 +256,7 @@ import ..src.state as state
 @test fn fail_hands_back_its_step_and_records_the_code() {
     unsafe {
         mut r: state.Renderer = zeroed()
-        steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
-            .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+        steps := setup_steps()
         mut i := 0
         while i < steps.len {
             r.lastResult = 0
@@ -287,8 +273,7 @@ import ..src.state as state
 // print as an empty string and the message would start with a space.
 @test fn every_setup_step_is_named_and_ready_is_the_sentinel() {
     assert(state.SetupStep.Ready.name() == "ready")
-    steps := [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
-        .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget]
+    steps := setup_steps()
     mut i := 0
     while i < steps.len {
         text := steps[i].name()
@@ -297,4 +282,204 @@ import ..src.state as state
         i = i + 1
     }
     assert(enums.result_name(-13) == "VK_ERROR_UNKNOWN")
+}
+
+// Each module owns its resources as one record, not as loose fields on the
+// renderer (texture.Material, depth.Depth). The renderer is what the registry
+// allocates by `size_of`, so the next cluster that moves into a record changes
+// this number — deliberately, here, where it is written once.
+@test fn owned_records_keep_their_size() {
+    unsafe {
+        assert(size_of(depth.Depth) == 24)
+        assert(size_of(texture.Material) == 152)
+        assert(size_of(ui.Atlas) == 128)
+        assert(size_of(ibl.Environment) == 960)
+        assert(size_of(shadow.Shadow) == 120)
+        assert(size_of(post.Stage) == 96)
+        assert(size_of(headless.Capture) == 56)
+        // Unchanged by both moves, measured: post took 12 words out and put
+        // a 96-byte record back; capture took 7 words out and put 56 bytes
+        // back. Same layout, other names.
+        assert(size_of(state.Renderer) == 6240)
+    }
+}
+
+// The pass state is an enum behind a u32 field (an enum cannot be a C-layout
+// field, E5003). A zeroed renderer is `.Idle`, which is why the field must
+// stay 0 = Idle: the registry calloc's the whole renderer. Every variant
+// survives the round trip, and a number nobody wrote is status 108 (measured
+// in a probe: the conversion validates). The values are the order the six
+// `PASS_*` constants had, so no recorded state changes meaning.
+@test fn the_pass_state_is_an_enum_behind_its_word() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        assert(state.pass(&r) == .Idle)
+        assert(i32(state.Pass.Idle) == 0 && i32(state.Pass.Waiting) == 1 && i32(state.Pass.Shadow) == 2)
+        assert(i32(state.Pass.Direct) == 3 && i32(state.Pass.Filtered) == 4 && i32(state.Pass.Composite) == 5)
+        for w in 0..6 {
+            state.set_pass(&mut r, state.Pass(w))
+            assert(i32(state.pass(&r)) == w)
+        }
+        state.set_pass(&mut r, .Composite)
+        assert(state.pass(&r) == .Composite)
+        assert(i32(state.pass(&r)) != i32(state.Pass.Direct))
+    }
+}
+
+// The capture flag is the same shape: 0/1/2 were three magic numbers for
+// "no capture", "a capture frame is being recorded" and "its pixels are read
+// back and `save` may write them". A zeroed renderer is `.Off`, `save` asks
+// for `.Ready`, and a windowed frame asks for anything but `.Recording`.
+@test fn the_capture_flag_is_an_enum_behind_its_word() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        assert(state.capture(&r) == .Off)
+        assert(i32(state.Capture.Off) == 0 && i32(state.Capture.Recording) == 1 && i32(state.Capture.Ready) == 2)
+        state.set_capture(&mut r, .Recording)
+        assert(state.capture(&r) == .Recording && state.capture(&r) != .Off)
+        state.set_capture(&mut r, .Ready)
+        assert(state.capture(&r) == .Ready && state.capture(&r) != .Recording)
+        state.set_capture(&mut r, .Off)
+        assert(state.capture(&r) == .Off)
+        assert(state.pass(&r) == .Idle)
+    }
+}
+
+// Every graphics pipeline is one Plan described into one record. The seven
+// pipelines were seven hand-written copies of the same state; these read
+// what a Plan writes, without a device, and pin the values the copies agreed
+// on (the facts) and the few they differed in (the decisions). The numbers
+// are the Khronos ones from enums.ddr: CullMode Back = 2, FrontFace
+// CounterClockwise = 0 and Clockwise = 1, CompareOp Less = 1 and LessOrEqual
+// = 3, BlendFactor SrcAlpha = 6 and OneMinusSrcAlpha = 7.
+@test fn a_plan_writes_the_facts_every_pipeline_shares() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        mut d: pipelines.Description = zeroed()
+        plan := pipelines.Plan {
+            vertex: ptr(11), fragment: ptr(22), layout: ptr(33), pass: ptr(44),
+            cull: .None, depth: pipelines.depth_off(), blend: .None,
+            vertices: .None, viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &plan, &mut d)
+        // Two stages, the right modules, entry point "main", nothing specialised.
+        assert(d.info.stageCount == 2 && d.stages.vertex.module == ptr(11) && d.stages.fragment.module == ptr(22))
+        assert(d.stages.vertex.stage == enums.shader_stage(.Vertex) && d.stages.fragment.stage == enums.shader_stage(.Fragment))
+        assert(d.stages.fragment.pSpecializationInfo == ptr(0))
+        assert(d.info.layout == ptr(33) && d.info.renderPass == ptr(44) && d.info.subpass == 0 && d.info.basePipelineIndex == -1)
+        // Triangle list, fill, width 1, one sample, one attachment.
+        assert(d.assembly.topology == enums.primitive_topology(.TriangleList))
+        assert(d.raster.polygonMode == enums.polygon_mode(.Fill) && d.raster.lineWidth == 1.0)
+        assert(d.samples.rasterizationSamples == 1 && d.blend.attachmentCount == 1)
+        // Every pointer the info holds points into the description itself.
+        assert(d.info.pStages == addr(&d.stages) && d.info.pVertexInputState == addr(&d.input))
+        assert(d.info.pRasterizationState == addr(&d.raster) && d.info.pDepthStencilState == addr(&d.depth_state))
+        assert(d.info.pColorBlendState == addr(&d.blend) && d.blend.pAttachments == addr(&d.blend_attachment))
+        // No vertex buffer, no dynamic state: a fullscreen pass with no cull.
+        assert(d.input.vertexBindingDescriptionCount == 0 && d.input.vertexAttributeDescriptionCount == 0)
+        assert(d.raster.cullMode == 0 && d.raster.frontFace == 1)
+        // Depth off still names a comparison, so no stale operation rides along.
+        assert(d.depth_state.depthTestEnable == 0 && d.depth_state.depthWriteEnable == 0 && d.depth_state.depthCompareOp == 3)
+        assert(d.blend_attachment.blendEnable == 0 && d.blend_attachment.colorWriteMask == 15)
+    }
+}
+
+@test fn a_plan_decides_cull_depth_blend_vertices_and_viewport() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        r.width = 1280
+        r.height = 800
+        mut d: pipelines.Description = zeroed()
+        // Opaque mesh: back faces culled (so the front face follows), depth
+        // tested and written, no blending, the whole 32-byte stream declared.
+        opaque := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .Back, depth: pipelines.depth_write(), blend: .None,
+            vertices: .Mesh, viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &opaque, &mut d)
+        assert(d.raster.cullMode == 2 && d.raster.frontFace == 0)
+        assert(d.depth_state.depthTestEnable == 1 && d.depth_state.depthWriteEnable == 1 && d.depth_state.depthCompareOp == 1)
+        assert(d.blend_attachment.blendEnable == 0)
+        assert(d.input.vertexBindingDescriptionCount == 1 && d.input.vertexAttributeDescriptionCount == 3)
+        assert(d.input.pVertexBindingDescriptions == addr(&d.mesh.binding) && d.input.pVertexAttributeDescriptions == addr(&d.mesh.attributes))
+        assert(d.mesh.binding.stride == 32 && d.mesh.attributes.uv.offset == 24)
+        // The frame's viewport, taken dynamically: the state points at the
+        // frame record and the dynamic state is there too.
+        assert(d.info.pViewportState == addr(&d.frame_view.viewport) && d.info.pDynamicState == addr(&d.frame_view.dynamic))
+        assert(d.frame_view.dynamic.dynamicStateCount == 2)
+
+        // Glass is the same pipeline with alpha-over and no depth write.
+        glass := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .Back, depth: pipelines.depth_test_only(), blend: .Some(records.alpha_over()),
+            vertices: .Mesh, viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &glass, &mut d)
+        assert(d.depth_state.depthTestEnable == 1 && d.depth_state.depthWriteEnable == 0)
+        assert(d.blend_attachment.blendEnable == 1 && d.blend_attachment.srcColorBlendFactor == 6 && d.blend_attachment.dstColorBlendFactor == 7)
+        assert(d.raster.cullMode == 2 && d.raster.frontFace == 0)
+
+        // The shadow pass: a fixed 1024 square baked in, so no dynamic state,
+        // and MAX blending keeps the surface closest to the light.
+        shadow := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .Back, depth: pipelines.depth_off(), blend: .Some(records.shadow_max()),
+            vertices: .Mesh, viewport: .Square(1024), encoded: false,
+        }
+        pipelines.describe(&r, &shadow, &mut d)
+        assert(d.info.pViewportState == addr(&d.square_view) && d.info.pDynamicState == ptr(0))
+        assert(d.square_view.pViewports == addr(&d.viewport) && d.square_view.pScissors == addr(&d.scissor))
+        assert(d.viewport.width == 1024.0 && d.viewport.height == 1024.0 && d.viewport.maxDepth == 1.0)
+        assert(d.scissor.extent.width == 1024 && d.scissor.extent.height == 1024)
+        assert(d.blend_attachment.blendEnable == 1 && d.blend_attachment.colorBlendOp == enums.blend_op(.Max))
+
+        // The UI declares its own two attributes and nothing is culled.
+        ui := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .None, depth: pipelines.depth_off(), blend: .Some(records.alpha_over()),
+            vertices: .Ui(32), viewport: .Frame, encoded: false,
+        }
+        pipelines.describe(&r, &ui, &mut d)
+        assert(d.raster.cullMode == 0 && d.raster.frontFace == 1)
+        assert(d.input.vertexBindingDescriptionCount == 1 && d.input.vertexAttributeDescriptionCount == 2)
+        assert(d.ui.binding.stride == 32 && d.ui.position.location == 0 && d.ui.color.location == 1)
+        assert(d.ui.color.offset == 16 && d.blend_attachment.blendEnable == 1)
+    }
+}
+
+@test fn the_ui_vertex_layout_is_written_by_its_one_writer() {
+    // The factory leaves the formats zero; the writer fills them, and the
+    // words are the registry's: vec4 for position/uv and vec4 for colour.
+    unsafe {
+        mut ui := records.ui_vertices(32)
+        records.apply_ui_vertices(&mut ui)
+        assert(ui.binding.stride == 32 && ui.binding.inputRate == 0)
+        assert(ui.position.location == 0 && ui.position.offset == 0 && ui.position.format == 109)
+        assert(ui.color.location == 1 && ui.color.offset == 16 && ui.color.format == 109)
+        // And the mesh's writer still writes vec3, vec3, vec2 (106, 106, 103).
+        mut mesh := records.vertex_input()
+        records.apply_vertex_input(&mut mesh)
+        assert(mesh.attributes.position.format == 106 && mesh.attributes.normal.format == 106 && mesh.attributes.uv.format == 103)
+    }
+}
+
+@test fn a_display_pipeline_specialises_its_fragment_on_the_target_format() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        mut d: pipelines.Description = zeroed()
+        plan := pipelines.Plan {
+            vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
+            cull: .None, depth: pipelines.depth_off(), blend: .None,
+            vertices: .None, viewport: .Frame, encoded: true,
+        }
+        // An sRGB target: the fragment is told, through the description's own
+        // encoding record; a byte target gets no specialisation at all.
+        r.format = enums.format(.B8G8R8A8_SRGB)
+        pipelines.describe(&r, &plan, &mut d)
+        assert(d.stages.fragment.pSpecializationInfo == addr(&d.encoding.info) && d.encoding.srgb == 1)
+        r.format = enums.format(.B8G8R8A8_UNORM)
+        pipelines.describe(&r, &plan, &mut d)
+        assert(d.stages.fragment.pSpecializationInfo == ptr(0))
+    }
 }

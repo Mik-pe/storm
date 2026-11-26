@@ -94,11 +94,11 @@ import ..src.gfx as gfx
     assert(input.down(.W) && input.down(.Shift) && !input.down(.S))
     // Shift is held but was not pressed this frame.
     assert(input.hit(.W) && !input.hit(.Shift))
-    assert(!input.button_down(gfx.MOUSE_RIGHT))
-    input.mouse.buttons = gfx.MOUSE_RIGHT
-    input.mouse.pressed = gfx.MOUSE_RIGHT
-    assert(input.button_down(gfx.MOUSE_RIGHT) && !input.button_down(gfx.MOUSE_LEFT))
-    assert(input.button_hit(gfx.MOUSE_RIGHT))
+    assert(!input.button_down(gfx.Button.Right))
+    input.mouse.buttons = gfx.button_bit(gfx.Button.Right)
+    input.mouse.pressed = gfx.button_bit(gfx.Button.Right)
+    assert(input.button_down(gfx.Button.Right) && !input.button_down(gfx.Button.Left))
+    assert(input.button_hit(gfx.Button.Right))
 }
 
 // Each key is its own bit: two keys sharing one would make one press look
@@ -135,4 +135,16 @@ import ..src.gfx as gfx
     assert(gfx.frame_vertex_capacity(grown, 16) == grown)
     maximum: u64 = 18446744073709551615
     assert(gfx.frame_vertex_capacity(maximum - 1, maximum) == maximum)
+}
+
+// The default sampler is the glTF spec's: magFilter LINEAR (9729),
+// minFilter LINEAR_MIPMAP_LINEAR (9987), wrapS/wrapT REPEAT (10497). What a
+// glTF file leaves unspecified means this, and both backends built exactly
+// this before a sampler was a value.
+@test fn default_sampler_is_the_gltf_default() {
+    s := gfx.sampler()
+    assert(s.mag == .Linear)
+    assert(s.min == .Linear)
+    assert(s.mips == .Linear)
+    assert(s.wrap == .Repeat)
 }

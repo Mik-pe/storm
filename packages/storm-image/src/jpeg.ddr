@@ -1,0 +1,506 @@
+// JPEG decoding in pure Dunder: baseline (SOF0) Huffman-coded 8-bit images,
+// every sampling factor up to 2x2 (4:4:4, 4:2:2, 4:2:0, 4:4:0 and grey), with
+// or without restart intervals. The output is the form a backend uploads:
+// 8-bit RGBA, rows top to bottom, no padding (ITU-T T.81).
+//
+// What is refused with a message rather than decoded halfway: progressive
+// (SOF2) and the other SOF processes, 12-bit precision, more than four
+// components, and arithmetic coding. Of the eleven Katla and Khronos files,
+// DamagedHelmet's five images are the only JPEGs — four baseline 4:2:0 and one
+// progressive — so the progressive one is still refused by name.
+//
+// Two facts of the format the code is built around:
+// - The quantisation table is stored in zigzag order, and so is the
+//   coefficient stream: the k-th coefficient decoded scales with `table[k]`,
+//   and only the dequantised value goes to its natural (row, column) place.
+// - Division truncates toward zero in Dunder and a negative value shifts
+//   logically, so the inverse DCT is the exact separable sum of T.81 A.3.3
+//   in f64 with no shifts at all. It is slower than libjpeg's integer AAN
+//   (8 rows + 8 columns of 8 products per block) and needs no table anyone
+//   can misremember; the decoder output is then within +-1 of libjpeg's, which
+//   rounds at every stage.
+import std.bytes as bytes
+import std.math as math
+
+import .image as image
+
+const MAX_PIXEL_BYTES: i64 = 268435456
+const MAX_COMPONENTS: i32 = 4
+
+// Zigzag order: ZIGZAG[k] is the natural index (row * 8 + column) of the k-th
+// coefficient in the stream (T.81 Figure A.6).
+const ZIGZAG: [i32; 64] = [
+    0, 1, 8, 16, 9, 2, 3, 10,
+    17, 24, 32, 25, 18, 11, 4, 5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13, 6, 7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63,
+]
+
+// One Huffman table: the code of every symbol that has one, or -1.
+// A canonical Huffman table in the decode direction (T.81 F.2.2.3): for each
+// code length, the first code of that length and where its symbols start in
+// `symbols`. A code of length L is in the table when it is at most
+// `first[L] + count[L] - 1`, and its symbol is `symbols[start[L] + code - first[L]]`.
+struct Huffman { first: [i32; 17], count: [i32; 17], start: [i32; 17], symbols: [u8; 256] }
+
+// A component's geometry in the frame and where its plane lies.
+struct Component { id: i32, h: i32, v: i32, dc_table: i32, ac_table: i32, quant: i32, blocks_wide: i32, blocks_high: i32, plane: []u8 }
+
+// ---- Bit reader ----
+
+// The entropy-coded segment, one bit at a time. A 0xFF byte in the segment is
+// followed by 0x00 (stuffing) and any other value is a marker: from there on
+// no more bits exist, and reads return 1s — the padding the encoder used to
+// end the last block before a restart marker (T.81 B.1.1.5), so the decode of
+// that block completes without special cases in the caller.
+// The entropy-coded segment, MSB first, one byte at a time. A marker in
+// the stream (FF followed by non-zero) ends the byte flow: `marker` holds
+// its second byte and the bits read after that are 1s, the padding T.81
+// F.2.2.3 requires, so the block the marker interrupts completes without
+// a special case in the decoder. `pos` stays on the FF so a restart can
+// step over the pair.
+struct Reader { data: &[]u8, pos: i32, acc: i32, n: i32, marker: i32 }
+
+fn reader(data: &[]u8, start: i32) -> Reader {
+    Reader { data: data, pos: start, acc: 0, n: 0, marker: 0 }
+}
+
+impl Reader {
+    fn receive(self: &mut Reader, count: i32) -> i32 {
+        mut value := 0
+        for _ in 0..count {
+            if self.n == 0 {
+                if self.marker != 0 {
+                    value = value.shl(1).bit_or(1)
+                    continue
+                }
+                if self.pos >= self.data.len {
+                    value = value.shl(1).bit_or(1)
+                    continue
+                }
+                b := i32(self.data[self.pos])
+                if b == 255 {
+                    if self.pos + 1 < self.data.len && self.data[self.pos + 1] == 0 {
+                        self.pos += 2
+                    } else {
+                        if self.pos + 1 < self.data.len { self.marker = i32(self.data[self.pos + 1]) }
+                        value = value.shl(1).bit_or(1)
+                        continue
+                    }
+                } else {
+                    self.pos += 1
+                }
+                self.acc = b
+                self.n = 8
+            }
+            self.n -= 1
+            value = value.shl(1).bit_or(self.acc.shr(self.n).bit_and(1))
+        }
+        value
+    }
+
+    // Step past the FF Dn pair the reader stopped at and start over.
+    fn take_restart(self: &mut Reader) {
+        while self.pos + 1 < self.data.len && self.data[self.pos] != 255 { self.pos += 1 }
+        self.pos += 2
+        self.acc = 0
+        self.n = 0
+        self.marker = 0
+    }
+}
+
+// The markers T.81 B.1.1.3 puts inside the SOF range without being frames:
+// DHT (C4), JPG (C8) and DAC (CC).
+fn reserved_marker(marker: i32) -> bool {
+    marker == 196 || marker == 200 || marker == 204
+}
+
+// Extend n bits to the signed value they encode (T.81 F.2.2.1 EXTEND): the
+// leading bit is the sign, the rest magnitude - 1 for negatives.
+fn extend(v: i32, n: i32) -> i32 {
+    if n == 0 { return 0 }
+    half := 1.shl(n - 1)
+    if v < half { v - half - half + 1 } else { v }
+}
+
+// ---- Huffman ----
+
+// Build the codes of a table from its 16 counts (how many codes of each
+// length) and symbols, in order (T.81 Annex C). Codes are stored right-aligned
+// in `sizes[i]` bits; `codes[s]` is -1 for a symbol without a code.
+fn build_huffman(counts: &[i32; 16], symbols: &[]u8) -> Result<Huffman, string> {
+    mut table := Huffman { first: [0; 17], count: [0; 17], start: [0; 17], symbols: [0; 256] }
+    mut code := 0
+    mut k := 0
+    for length in 1..17 {
+        table.first[length] = code
+        table.count[length] = counts[length - 1]
+        table.start[length] = k
+        for _ in 0..counts[length - 1] {
+            if k >= symbols.len || k >= 256 { return .Err("JPEG Huffman table has more codes than symbols") }
+            table.symbols[k] = symbols[k]
+            code += 1
+            k += 1
+        }
+        if code > 1.shl(length) { return .Err("JPEG Huffman table is overfull") }
+        code = code.shl(1)
+    }
+    .Ok(table)
+}
+
+// Decode one symbol one bit at a time: the shortest codes are the most common
+// and the lookup is a walk over `sizes` for the running code.
+fn blank_huffman() -> Huffman {
+    Huffman { first: [0; 17], count: [0; 17], start: [0; 17], symbols: [0; 256] }
+}
+
+fn decode_huffman(r: &mut Reader, table: &Huffman) -> Result<i32, string> {
+    mut code := 0
+    for length in 1..17 {
+        code = code.shl(1).bit_or(r.receive(1))
+        if table.count[length] > 0 && code < table.first[length] + table.count[length] {
+            return .Ok(i32(table.symbols[table.start[length] + code - table.first[length]]))
+        }
+    }
+    .Err("JPEG entropy data does not form a Huffman code")
+}
+
+// ---- Blocks ----
+
+// The 8x8 cosine basis of T.81 A.3.3 as a table, BASIS[v][u] = c(u) c(v) / 4
+// times nothing else: the inverse DCT is
+//   f(x, y) = sum_u sum_v F(u, v) * cu(u) cos((2x+1) u pi/16) * cu(v) cos((2y+1) v pi/16) / 4
+// and the two one-dimensional bases are kept separately so a block is two
+// passes of 8 products per output rather than 64.
+fn basis_table() -> [f64; 64] {
+    // basis[p * 8 + f] = c(f) * cos((2p + 1) f pi / 16): p a position in the
+    // block, f a frequency. The normalisation c(0) = 1/sqrt(2) belongs to the
+    // frequency, so the two indices are not interchangeable.
+    mut table: [f64; 64] = [0.0; 64]
+    for f in 0..8 {
+        c := if f == 0 { 0.7071067811865476 } else { 1.0 }
+        for p in 0..8 { table[p * 8 + f] = c * math.cos((2.0 * f64(p) + 1.0) * f64(f) * 3.141592653589793 / 16.0) }
+    }
+    table
+}
+
+// Inverse DCT of one block of dequantised coefficients (natural order), plus
+// 128, rounded and clamped, into `out` at (x0, y0) with the plane's stride.
+fn idct(block: &[i32; 64], basis: &[f64; 64], out: &mut []u8, x0: i32, y0: i32, stride: i32) {
+    // T.81 A.3.3 with the block in natural order, F[v][u] (v the vertical
+    // frequency, u the horizontal), separable in two passes:
+    //   tmp[x][v] = sum_u F[v][u] * c(u) cos((2x+1) u pi/16)
+    //   out[v][u] = (sum_y tmp[u][y] * c(v) cos((2y+1) v pi/16)) / 4 + 128
+    // `basis[p * 8 + f]` is c(f) cos((2p+1) f pi/16): p a position, f a
+    // frequency. The basis is not symmetric (c(0) is on the frequency), so
+    // the two arguments are never interchangeable.
+    //
+    // A typical block holds 15 nonzero coefficients of 64 and half its
+    // frequency rows are zero (measured on a 2048^2 photograph), and a zero
+    // coefficient contributes nothing: the passes multiply only the nonzero
+    // terms, and a row that is entirely zero leaves its whole column of
+    // `tmp` zero, which the second pass skips. Same sums, fewer products.
+    mut tmp: [f64; 64] = [0.0; 64]
+    mut live: [bool; 8] = [false; 8]
+    for v in 0..8 {
+        row := v * 8
+        if block[row] == 0 && block[row + 1] == 0 && block[row + 2] == 0 && block[row + 3] == 0 && block[row + 4] == 0 && block[row + 5] == 0 && block[row + 6] == 0 && block[row + 7] == 0 { continue }
+        for x in 0..8 {
+            mut sum: f64 = 0.0
+            for u in 0..8 {
+                c := block[row + u]
+                if c != 0 { sum += f64(c) * basis[x * 8 + u] }
+            }
+            tmp[x * 8 + v] = sum
+        }
+        live[v] = true
+    }
+    for v in 0..8 {
+        for x in 0..8 {
+            mut sum: f64 = 0.0
+            for y in 0..8 {
+                if live[y] { sum += tmp[x * 8 + y] * basis[v * 8 + y] }
+            }
+            sum = sum * 0.25 + 128.0
+            value := if sum <= 0.0 { 0 } else if sum >= 255.0 { 255 } else { i32(sum + 0.5) }
+            out[(y0 + v) * stride + x0 + x] = u8(value)
+        }
+    }
+}
+
+// Dequantise and invert one 8x8 block: DC difference from the predictor, AC
+// coefficients in zigzag until EOB (0x00) or 63 are covered.
+fn block(r: &mut Reader, dc: &Huffman, ac: &Huffman, quant: &[i32; 64], predictor: &mut i32, coefficients: &mut [i32; 64]) -> Result<(), string> {
+    for i in 0..64 { coefficients[i] = 0 }
+    t := decode_huffman(&mut r, dc)?
+    if t > 11 { return .Err("JPEG DC category " + t.str() + " is not valid") }
+    diff := extend(r.receive(t), t)
+    predictor += diff
+    coefficients[0] = predictor * quant[0]
+    mut k := 1
+    while k < 64 {
+        rs := decode_huffman(&mut r, ac)?
+        run := rs.shr(4)
+        size := rs.bit_and(15)
+        if size == 0 {
+            // EOB ends the block; ZRL (run 15) skips 16 zero coefficients.
+            if run != 15 { return .Ok }
+            k += 16
+            continue
+        } else {
+            if size > 10 { return .Err("JPEG AC category " + size.str() + " is not valid") }
+            k += run
+            if k > 63 { return .Err("JPEG AC coefficient runs past the end of the block") }
+            coefficients[ZIGZAG[k]] = extend(r.receive(size), size) * quant[k]
+        }
+        k += 1
+    }
+    .Ok
+}
+
+// ---- Upsampling ----
+
+// Read a sample from a plane at (x, y) in luma pixels, where the plane's
+// samples are `step` luma pixels apart and the triangle of libjpeg's
+// upsampling (jdsample.c h2v1/h2v2 fancy) weights the two nearest samples:
+// the k-th luma pixel in a box sits (k + 1/2) / step of the way between the
+// centres of its own sample and the next one, and the neighbour looked at is
+// on the far side of the box centre. With step 2 the weights are (3, 1)/4.
+fn sample(plane: &[]u8, x: i32, y: i32, step_x: i32, step_y: i32, wide: i32, high: i32) -> f64 {
+    // The plane's samples, `step_x` by `step_y` luma pixels apart, read at the
+    // luma pixel (x, y) with libjpeg's triangle upsampling (jdsample.c
+    // h2v1_fancy_upsample / h2v2_fancy_upsample). Each chroma sample is the
+    // centre of its box; a luma pixel in the box's first half leans on the
+    // centre before it, in the second half on the one after, with the weights
+    // 3/4 : 1/4 at a step of 2. In 2 * step parts the left weight is
+    // 2 * step - (2 * k + 1), and the heavier of left and right is the box's
+    // own centre. The two axes are independent, so a 2x2 box is the product
+    // of two 1-D passes. The result is kept fractional: the only rounding is
+    // the one at the pixel. `wide` and `high` are the plane's size in its own
+    // samples.
+    i := x / step_x
+    j := y / step_y
+    if step_x == 1 && step_y == 1 { return f64(plane[j * wide + i]) }
+    kx := x % step_x
+    ky := y % step_y
+    left := 2 * step_x - (2 * kx + 1)
+    up := 2 * step_y - (2 * ky + 1)
+    near_x := if left * 2 >= 2 * step_x { left } else { 2 * step_x - left }
+    near_y := if up * 2 >= 2 * step_y { up } else { 2 * step_y - up }
+    mut far_x := if left * 2 >= 2 * step_x { i - 1 } else { i + 1 }
+    mut far_y := if up * 2 >= 2 * step_y { j - 1 } else { j + 1 }
+    if far_x < 0 { far_x = 0 }
+    if far_x >= wide { far_x = wide - 1 }
+    if far_y < 0 { far_y = 0 }
+    if far_y >= high { far_y = high - 1 }
+    here := f64(plane[j * wide + i])
+    if step_y == 1 {
+        (f64(near_x) * here + f64(2 * step_x - near_x) * f64(plane[j * wide + far_x])) / f64(2 * step_x)
+    } else if step_x == 1 {
+        (f64(near_y) * here + f64(2 * step_y - near_y) * f64(plane[far_y * wide + i])) / f64(2 * step_y)
+    } else {
+        a := f64(plane[j * wide + far_x])
+        b := f64(plane[far_y * wide + i])
+        c := f64(plane[far_y * wide + far_x])
+        (f64(near_y * near_x) * here + f64(near_y * (2 * step_x - near_x)) * a + f64((2 * step_y - near_y) * near_x) * b + f64((2 * step_y - near_y) * (2 * step_x - near_x)) * c) / f64(4 * step_x * step_y)
+    }
+}
+
+// ---- Frame ----
+
+// Decode a baseline JPEG. The marker walk reads the tables and the frame, the
+// scan decodes MCU by MCU into a plane per component, and the planes are
+// upsampled into RGBA at the end.
+pub fn decode(data: &[]u8) -> Result<image.Image, string> {
+    if data.len < 4 || data[0] != 255 || data[1] != 216 { return .Err("not a JPEG file") }
+    mut at := 2
+    mut quant: [[i32; 64]; 4] = [[0; 64]; 4]
+    mut dc: [Huffman; 4] = [blank_huffman(), blank_huffman(), blank_huffman(), blank_huffman()]
+    mut ac: [Huffman; 4] = [blank_huffman(), blank_huffman(), blank_huffman(), blank_huffman()]
+    mut components: []Component = []
+    mut width := 0
+    mut height := 0
+    mut hmax := 1
+    mut vmax := 1
+    mut restart_interval := 0
+    mut scan_start := -1
+    while at + 4 <= data.len {
+        if data[at] != 255 { return .Err("JPEG marker expected at byte " + at.str()) }
+        marker := i32(data[at + 1])
+        if marker == 216 { at += 2; continue }
+        if marker == 217 { break }
+        if marker == 218 {
+            // SOS (T.81 B.2.3): the scan names the components it codes, in
+            // MCU order, and the Huffman table each uses for DC and AC. A
+            // baseline frame is one scan over every component in frame order;
+            // anything else is a multi-scan (progressive-style) layout.
+            length := bytes.u16_be(data, at + 2)
+            if length < 6 || at + 2 + length > data.len { return .Err("JPEG SOS segment runs past the end of the file") }
+            body := at + 4
+            count := i32(data[body])
+            if components.len == 0 { return .Err("JPEG scan before frame") }
+            if count != components.len { return .Err("JPEG scan codes " + count.str() + " components, the frame has " + components.len.str()) }
+            for c in 0..count {
+                entry := body + 1 + c * 2
+                selector := i32(data[entry])
+                tables := i32(data[entry + 1])
+                mut found := -1
+                for f in 0..components.len { if components[f].id == selector { found = f } }
+                if found != c { return .Err("JPEG scan lists component " + selector.str() + " out of frame order") }
+                components[c].dc_table = tables.shr(4)
+                components[c].ac_table = tables.bit_and(15)
+            }
+            scan_start = at + 2 + length
+            break
+        }
+        length := bytes.u16_be(data, at + 2)
+        if length < 2 || at + 2 + length > data.len { return .Err("JPEG segment " + marker.str() + " runs past the end of the file") }
+        body := at + 4
+        if marker == 192 {
+            // SOF0: baseline Huffman.
+            if data[body] != 8 { return .Err("JPEG precision " + i32(data[body]).str() + " is not supported (8 only)") }
+            height = bytes.u16_be(data, body + 1)
+            width = bytes.u16_be(data, body + 3)
+            count := i32(data[body + 5])
+            if width < 1 || height < 1 { return .Err("JPEG dimensions must be at least 1") }
+            if width > 16384 || height > 16384 { return .Err("JPEG dimensions must be at most 16384") }
+            if i64(width) * i64(height) * 4 > MAX_PIXEL_BYTES { return .Err("JPEG image is larger than 256 MiB decoded") }
+            if count < 1 || count > MAX_COMPONENTS { return .Err("JPEG has " + count.str() + " components, Storm reads 1 to 4") }
+            for c in 0..count {
+                entry := body + 6 + c * 3
+                h := i32(data[entry + 1]).shr(4)
+                v := i32(data[entry + 1]).bit_and(15)
+                if h < 1 || h > 2 || v < 1 || v > 2 { return .Err("JPEG component " + c.str() + " sampling " + h.str() + "x" + v.str() + " is not supported (1 or 2)") }
+                if h > hmax { hmax = h }
+                if v > vmax { vmax = v }
+            }
+            for c in 0..count {
+                entry := body + 6 + c * 3
+                h := i32(data[entry + 1]).shr(4)
+                v := i32(data[entry + 1]).bit_and(15)
+                blocks_wide := (width * h + hmax * 8 - 1) / (hmax * 8)
+                blocks_high := (height * v + vmax * 8 - 1) / (vmax * 8)
+                components.push(Component {
+                    id: i32(data[entry]), h: h, v: v,
+                    // Tq is the last byte of the SOF entry; Td/Ta come from SOS.
+                    quant: i32(data[entry + 2]), dc_table: 0, ac_table: 0,
+                    blocks_wide: blocks_wide, blocks_high: blocks_high, plane: [],
+                })
+            }
+        } else if marker == 194 {
+            return .Err("progressive JPEG (SOF2) is not supported")
+        } else if marker >= 192 && marker <= 207 && !reserved_marker(marker) {
+            // A SOF other than 0 or 2: 1 (extended sequential), 3 (lossless),
+            // 5–7 (differential), 9–11 (arithmetic), 13–15 (lossless/diff
+            // arithmetic). The name is the process's own, so a reader of the
+            // message can look it up.
+            process := marker - 192
+            return .Err("JPEG process SOF" + process.str() + " is not supported (baseline SOF0 only)")
+        } else if marker == 219 {
+            // DQT
+            mut p := body
+            while p < body + length - 2 {
+                pq := i32(data[p]).shr(4)
+                tq := i32(data[p].bit_and(15))
+                if pq != 0 { return .Err("JPEG 16-bit quantisation tables are not supported") }
+                if tq >= 4 { return .Err("JPEG quantisation table " + tq.str() + " is out of range") }
+                for k in 0..64 { quant[tq][k] = i32(data[p + 1 + k]) }
+                p += 65
+            }
+        } else if marker == 196 {
+            // DHT
+            mut p := body
+            while p < body + length - 2 {
+                class := i32(data[p].shr(4))
+                id := i32(data[p].bit_and(15))
+                if id >= 4 { return .Err("JPEG Huffman table " + id.str() + " is out of range") }
+                mut counts: [i32; 16] = [0; 16]
+                mut total := 0
+                for i in 0..16 { counts[i] = i32(data[p + 1 + i]); total += counts[i] }
+                symbols := (&data[p + 17..p + 17 + total]).clone()
+                built := build_huffman(&counts, &symbols)?
+                if class == 0 { dc[id] = built } else { ac[id] = built }
+                p += 17 + total
+            }
+        } else if marker == 221 {
+            restart_interval = bytes.u16_be(data, body)
+        }
+        at += 2 + length
+    }
+    if scan_start < 0 { return .Err("JPEG has no scan") }
+    if components.len == 0 { return .Err("JPEG has no frame") }
+    for c in &components { if quant[c.quant][0] == 0 { return .Err("JPEG component uses quantisation table " + c.quant.str() + " which is not defined") } }
+    mcus_wide := (width + hmax * 8 - 1) / (hmax * 8)
+    mcus_high := (height + vmax * 8 - 1) / (vmax * 8)
+    // One plane per component at its own sampling resolution, padded to whole
+    // blocks (the MCU geometry), with an 8-bit sample per position.
+    for c in &mut components {
+        bytes.pad(&mut c.plane, c.blocks_wide * 8 * c.blocks_high * 8)
+    }
+    mut r := reader(data, scan_start)
+    basis := basis_table()
+    mut predictors: [i32; 4] = [0; 4]
+    mut coefficients: [i32; 64] = [0; 64]
+    for my in 0..mcus_high {
+        for mx in 0..mcus_wide {
+            if restart_interval > 0 && (my * mcus_wide + mx) > 0 && (my * mcus_wide + mx) % restart_interval == 0 {
+                // Every restart interval begins a new entropy-coded segment
+                // with every predictor back at zero.
+                r.take_restart()
+                for i in 0..4 { predictors[i] = 0 }
+            }
+            for ci in 0..components.len {
+                c := &mut components[ci]
+                for by in 0..c.v {
+                    for bx in 0..c.h {
+                        block_x := mx * c.h + bx
+                        block_y := my * c.v + by
+                        block(&mut r, &dc[c.dc_table], &ac[c.ac_table], &quant[c.quant], &mut predictors[ci], &mut coefficients)?
+                        // A block of the MCU may lie past the image: the plane is
+                        // sized for whole MCUs, so it is still in bounds.
+                        idct(&coefficients, &basis, &mut c.plane, block_x * 8, block_y * 8, c.blocks_wide * 8)
+                    }
+                }
+            }
+        }
+    }
+    // Upsample to RGBA.
+    mut pixels: []u8 = []
+    pixels.reserve(width * height * 4)
+    grey := components.len == 1
+    cb := if grey { 0 } else { 1 }
+    cr := if grey { 0 } else { 2 }
+    for y in 0..height {
+        for x in 0..width {
+            luma := sample(&components[0].plane, x, y, hmax / components[0].h, vmax / components[0].v, components[0].blocks_wide * 8, components[0].blocks_high * 8)
+            if grey {
+                pixels.push(u8(clamp_byte(luma)))
+                pixels.push(u8(clamp_byte(luma)))
+                pixels.push(u8(clamp_byte(luma)))
+                pixels.push(255)
+            } else {
+                // Full-range YCbCr -> RGB of T.81 J.11 with fixed-point
+                // coefficients: each chroma is already upsampled to luma.
+                cbv := sample(&components[cb].plane, x, y, hmax / components[cb].h, vmax / components[cb].v, components[cb].blocks_wide * 8, components[cb].blocks_high * 8) - 128.0
+                crv := sample(&components[cr].plane, x, y, hmax / components[cr].h, vmax / components[cr].v, components[cr].blocks_wide * 8, components[cr].blocks_high * 8) - 128.0
+                pixels.push(u8(clamp_byte(luma + 1.402 * crv)))
+                pixels.push(u8(clamp_byte(luma - 0.344136 * cbv - 0.714136 * crv)))
+                pixels.push(u8(clamp_byte(luma + 1.772 * cbv)))
+                pixels.push(255)
+            }
+        }
+    }
+    .Ok(image.Image { width: width, height: height, pixels: pixels })
+}
+
+// Clamp a value to the byte range and round to nearest.
+fn clamp_byte(value: f64) -> i32 {
+    v := value + 0.5
+    if v < 0.0 { return 0 }
+    if v > 255.0 { return 255 }
+    i32(v)
+}

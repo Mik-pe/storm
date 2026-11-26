@@ -87,19 +87,36 @@ pub unsafe fn upload(rt: &objc.Runtime, target: ptr, width: u64, height: u64, by
 
 // ---- samplers ----
 
-pub unsafe fn sampler(rt: &objc.Runtime, device: ptr, filter: enums.SamplerFilter, mips: enums.SamplerMipFilter) -> Result<ptr, string> {
+// The Metal sampler for a gfx.Sampler, the same on every axis. The one
+// place outside enums.ddr that names a selector of MTLSamplerDescriptor.
+pub unsafe fn sampler(rt: &objc.Runtime, device: ptr, spec: &gfx.Sampler) -> Result<ptr, string> {
     descriptor := objc.make(rt, objc.class(rt, cstr("MTLSamplerDescriptor")))
-    objc.tell_number(rt, descriptor, cstr("setMinFilter:"), enums.sampler_filter(filter))
-    objc.tell_number(rt, descriptor, cstr("setMagFilter:"), enums.sampler_filter(filter))
-    objc.tell_number(rt, descriptor, cstr("setMipFilter:"), enums.sampler_mip_filter(mips))
-    // The same on every axis.
+    objc.tell_number(rt, descriptor, cstr("setMinFilter:"), enums.sampler_filter(spec.min))
+    objc.tell_number(rt, descriptor, cstr("setMagFilter:"), enums.sampler_filter(spec.mag))
+    objc.tell_number(rt, descriptor, cstr("setMipFilter:"), enums.sampler_mip_filter(spec.mips))
     for axis in [cstr("setSAddressMode:"), cstr("setTAddressMode:"), cstr("setRAddressMode:")] {
-        objc.tell_number(rt, descriptor, axis, enums.sampler_address_mode(.ClampToEdge))
+        objc.tell_number(rt, descriptor, axis, enums.sampler_address_mode(spec.wrap))
     }
     made := objc.send_to(rt, device, cstr("newSamplerStateWithDescriptor:"), descriptor)
     rt.release(descriptor)
     if made == ptr(0) { return .Err("the device could not make a sampler") }
     .Ok(made)
+}
+
+// A sampler that reads one texel exactly: the shadow map, and the sky's
+// environment maps (both are complete images, nothing to blend).
+pub fn exact() -> gfx.Sampler {
+    gfx.Sampler { mag: .Nearest, min: .Nearest, mips: .None, wrap: .ClampToEdge }
+}
+
+// A sampler that blends texels but has no mip chain: the glyph atlas.
+pub fn smooth() -> gfx.Sampler {
+    gfx.Sampler { mag: .Linear, min: .Linear, mips: .None, wrap: .ClampToEdge }
+}
+
+// Trilinear with clamped edges: the sky's environment cube.
+pub fn trilinear() -> gfx.Sampler {
+    gfx.Sampler { mag: .Linear, min: .Linear, mips: .Linear, wrap: .ClampToEdge }
 }
 
 // ---- depth ----

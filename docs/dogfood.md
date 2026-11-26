@@ -468,6 +468,183 @@ man in i en förstörs den och HUD:en räknar; `--eye x y z` startar kameran
 var som helst, vilket är hur capture-körningen bevisar plockningen (orbs 7/8,
 objects 13) utan tangentbord.
 
+## Uppföljning: vk.xml som källa
+
+`tools/vk.ddr` läser Khronos register och skriver `api.ddr`: 80 prototyper
+och 80 symboluppslag som tidigare stavades för hand. Tre saker i registret
+som en taggläsare måste veta, och som den första skissen felade på innan
+mätning rättade den: `<type category="handle">` omsluter en inre `<type>`
+(`VK_DEFINE_HANDLE`), så den första `</type>` stänger inte posten;
+`<implicitexternsyncparams>` innehåller `<param>`-element som är prosa, inte
+parametrar; och en parameter kan listas en gång per API-profil
+(`api="vulkan,vulkanbase"` mot `api="vulkansc"`), där `vulkansc` är ett annat
+API som bara delar prefix. Handkoden hade **ett** fel på 80 prototyper:
+`vkGetPhysicalDeviceQueueFamilyProperties` deklarerades `-> i32`, registriet
+säger `void`. De 79 andra var identiska med genereringen.
+
+**72. Byteoffset i en `string` måste ligga på en teckengränns — och bryter den tyst med status 106.** En genomsökning av en 3,3 MB `vk.xml` med `source[i..i + needle.len] == needle` vid varje offset avslutas med utgång **106** utan text, vid det första `©` i en kommentar. Symptom: `dunder run` skriver inget alls; sista `print` är den före loopen. Minimal repro: en fil med `<a>©</a>` och en loop som läser `s.value[i..i + 1]` för alla `i`. Workaround här: registryn läses som `[]u8` (`sys.read_u8`) och text dekodas bara mellan två taggränser (`bytes.decode_range`), som alltid är ASCII. Det fungerar och är snabbt (3,6 s för hela registret), men två saker saknas: en diagnostik som säger *vilken* operation och *vilket* offset som bröt gränsen (fynd 60: samma tysta slut som `to_bits()` på ett negativt flyttal), och en stdlibfunktion som söker ett ASCII-mönster i en `string` från en offset — `std.text.find` har ingen `from`-parameter, så varje anrop efter en träff börjar om från 0. Rekommendation: (a) status 106 ska peka ut operation och offset som status 103 gör för arrayer; (b) `text.find_from(text, needle, from)` eller en `[]u8`-vy av en `string` utan kopia.
+
+**73. `_ := f()` på en funktion utan returvärde kompilerar — så en felaktig `-> i32` syns inte när den rättas.** Skill-regeln är att ett anrop som returnerar `()` ska stå bart och att `_ := f()` på ett sådant är `E3002`. Mätt på 0.12.0 med en `extern fn(ptr)` (inget returvärde) i en `@c_layout`-post: `_ := f.void_ret(ptr(0))` går igenom `dunder check` grönt. Konsekvensen i Storm: `device.ddr` band `_ := r.api.GetPhysicalDeviceQueueFamilyProperties(…)` medan prototypen ljög `-> i32`, och när prototypen rättades till `void` kompilerade samma rad oförändrad — ingenting tvingade fram det korrekta bara anropet. Minimal repro: structen ovan. Workaround: raden ändrades för hand till ett bart anrop. Rekommendation: `E3002` för `_ :=` på `()`, som dokumentationen redan lovar; då blir en rättad prototyp ett compile-fel på varje anropsplats som bar på lögnen.
+
+**74. `i32(u32)` avbryter programmet när teckenbiten är satt — så ett `u32`-ord ur minnet kan inte bli ett `f32` via `from_bits`.** Symptom: `i32(w)` där `w: u32 >= 0x80000000` skriver `integer overflow or conversion out of range` och avslutar med utgång **101**. Den enda bitvägen till ett flyttal är `f32.from_bits(i32)` (fynd 55), och den vanliga källan till ett ord är `bytes.u32_le`/ett `[]u32`, alltså `u32`. Konsekvensen: varje negativt flyttal i en binär fil (en glTF-ACCESSOR med min/-max, en normals komponent, en `-0.0`) är oläslig på det sätt dokumentationen rekommenderar. Minimal repro: `w: u32 = 0xC1200000` (bitmönstret för −10.0); `i32(w)` dör på raden. Workaround här: magnitud plus aritmetisk negation (`m := f32.from_bits(i32(w.bit_and(0x7FFFFFFF))); v := 0.0 - m`), vilket stämmer för alla ändliga värden utom `-0.0` (blir `+0.0`) och NaN (blir `-NaN`, fortfarande NaN). Probemätningen av drivrutinsgränser träffade det: `maxSamplerAnisotropy` lästes på fel ord (ett teckenbitat mönster) och tolkades först som en kompilatorbugg. Rekommendation: `i32.from_bits(u32)`/`u32.from_bits(i32)` som syskon till `f32.from_bits`, eller att `i32(u32)` definieras som omtolkning (wrapping) på samma sätt som Rusts `as`.
+
+**75. `dunder run fil.ddr arg` ger tre olika missvisande meddelanden — inget nämner `--`.** `dunder --help` dokumenterar `dunder run [input.ddr] [-- program-args...]`, men när `--` glöms är diagnostiken annorlande beroende på argumentet och leder fel: `dunder run tools/vk.ddr --check` → `unknown option: --check` (utgång 2; låter som att *programmet* inte känner flaggan, som `git foo --bad`), `dunder run fil.ddr foo bar` → `expected a single source file` (låter som att två källfiler gavs), och `dunder run fil.ddr -x` → `unknown option: -x`. Samma för `build --help`. Orsak: `run` parserar allt efter filnamnet som kompilatorflaggor tills en `--` kommer. Konsekvensen i Storm: `tools/vk.ddr` dokumenterar `--check` i sin usage-rad, men raden som står i design.md/next-steps saknade `--`, och första körningen vid dokumentationsgenomgången tog fel väg. Minimal repro: ett program med `fn main() -> i32 { print(sys.arg_count().str()); 0 }`; `dunder run p.ddr --check` dör innan `main`. Workaround här: alltid `dunder run tools/vk.ddr -- /tmp/vk.xml --check` (nu skrivet så i next-steps och i verktygets usage-rad). Rekommendation: (a) när en okänd flagga följer källfilen, säg "program arguments require `--`: dunder run FIL -- ARGS"; (b) när ett andra icke-flaggargument följer källfilen, samma text i stället för "expected a single source file"; (c) `dunder run --help` ska visa `run`-användningen, inte "unknown option".
+
+**76. En `ptr`-ut-parameter kan läsas som om den vore handtaget den pekar på — tre olika krascher, ingen diagnostik.** Symptom: en hjälpare `unsafe fn create_image(r: &state.Renderer, …, image_out: ptr, memory_out: ptr, view_out: ptr) -> i32` med `r.api.CreateImage(r.device, addr(&info), ptr(0), image_out)` och sedan `r.api.GetImageMemoryRequirements(r.device, image_out, …)`, `view.image = image_out`, `BindImageMemory(…, image_out, …)`. Det kompilerar grönt (`image_out` och en `VkImage` är båda `ptr`), och `CreateImage` skriver handtaget *dit pekaren pekar*, alltså till anroparens lokala variabel — medan de följande raderna läser pekarens eget värde (adressen till den lokala variabeln) som om det vore handtaget. Konsekvensen i Storm: texturuppladdningen (3b) kraschade tre gånger med tre olika bilder och ingen rad som pekade på orsaken — `SIGSEGV` i `vkGetBufferMemoryRequirements` (handtaget var `VK_NULL_HANDLE` eftersom `staging_buffer` gjort samma misstag och `staging` förblev `ptr(0)`), loader-abort i `vkBeginCommandBuffer: Invalid commandBuffer`, och en tredje abort i `vkQueueSubmit` som visade sig vara en *annan* bugg (en glömd `EndCommandBuffer`) som dolles av att de två första krascherna aldrig nådde dit. Minimal repro: `unsafe fn fill(out: ptr) -> i32 { store_ptr(out, ptr(42)); _ := load_ptr(out); 0 }` — anropad som `mut v := ptr(0); _ := fill(addr(&mut v))` gör det rätt, och `fill(v)` (samma typ, också grönt) skriver in i adressen `0`. Det är den andra formen en ut-parameter bjuder in till när samma namn sedan läses som ett handtag. Workaround här: varje hjälpare binder sina handtag till lokaler (`mut image := ptr(0)`), skickar `addr(&mut image)` till Vulkan, och skriver ut-parametrarna i slutet med `store_ptr(image_out, image)` — formen `ui.ddr` och `ibl.ddr` redan använder; det blev en regel i texture.ddr och en granskning av varje `*_out: ptr` i paketet. Rekommendation: (a) en `ptr`-parameter ska inte kunna användas både som mål för `store_ptr` och som värde utan att typen skiljer dem — t.ex. en `out T`-parameter som bara får förekomma som `addr`-mål och som `store_ptr`-mål, eller (b) en varning när en parameter som är `addr`-mål i ett anrop (`f(p)` där `f` deklarerar `out`) också läses som `ptr`-värde i samma funktion. Idag är det enda skyddet konvention.
+
+**77. En tabellpost i en `const` går inte — och ett `{ f: v }` utan typnamn är inget uttryck, inte heller i en funktion.** Symptom: `const ENUMS: []Enum = [{ dunder: "Blend", block: "VkBlendFactor" }]` ger `E3007 unsupported constant type '__dunder_module_N'` (meddelandet namnger en intern modul, inte typen; det gäller även en struct av bara `string`, mätt i `/tmp` mot 0.12.0). Flyttad till `fn table() -> []Enum { [ { dunder: … }, … ] }` ger i stället `E1002 expected expression` med markören på `{`. Minimal repro: `struct Pair { a: string, b: string }` + `fn t() -> []Pair { [ { a: "p", b: "q" } ] }`. Det som kompilerar är `Pair { a: "p", b: "q" }` med typnamnet på varje rad (mätt: grönt). Workaround här: `tools/vk.ddr`:s tre urvalstabeller (`selected_enums`, `flag_sets`, `named_constants`) är funktioner som returnerar literalen med typnamn på varje post, byggda en gång i `main` och skickade som `&[]T` nedåt. Rekommendation: (a) en post på tabellform ska få härleda sin typ från elementtypen i en array-literal med känd returtyp (`-> []Pair`), så som `let x: Pair = { … }` får det; (b) E3007:s meddelandet ska namnge typen som avvisades, inte modulen.
+
+**78. Varken `parse.integer` eller `parse.hex` läser ett radixprefix — `0x…` ger `ok = false` i båda.** Symptom: `<enum value="0x00000003" name="VK_CULL_MODE_FRONT_AND_BACK" />` ur Khronos-registret gick genom `parse.integer` med `ok = false` och konstanten saknades i registret, vilket yttrade sig som "FrontAndBack is not numbered" tre funktioner senare. En väg dit via `parse.hex("0x00000003")` såg rimlig ut men gav också `ok = false` (mätt: `0x7FFFFFFF` likaså; `parse.hex("00000003")` ger 3). Minimal repro: `parse.integer("0x1F".clone()).ok` och `parse.hex("0x1F".clone()).ok` — båda falska. Workaround här: `enum_value` skär av `0x`-prefixet och ger resten till `parse.hex`. Rekommendation: `parse.hex` ska acceptera (eller `parse` erbjuda en funktion som accepterar) `0x`/`0X`, som C:s `strtoul` med bas 16 och `0` med bas 0 gör; registret, JSON-scheman och hashutdata skriver alla prefixet.
+
+**79. `text.starts_with(text, prefix)` — en parameter som heter som modulaliaset skuggar modulen.** Symptom: `fn f(text: string) -> bool { text.starts_with(text, "0x") }` ger `E2003 unknown field 'starts_with'` på `text`, för `text` är parametern, inte `import std.text as text`. Samma regel som kompetensen redan har för lokaler (`widgets := widgets.State::new()`), men den biter också på en *parameter*, och diagnostiken säger "field" — inte att namnet skuggar en modul. Workaround här: modulfunktioner nås via ett alias som ingen parameter heter (`import std.text as text` + parametrar döpta `value_text`, `source`). Rekommendation: E2003 bör nämna att namnet är skuggat av en parameter med samma namn som modulen ("`text` is a parameter; the module alias `text` is shadowed — import as another name"), som den redan gör för `&mut`-vidarebefordran.
+
+**80. `packages/zlib` dekodar rätt men 20–26× långsammare än libpng/stb — och kostnaden sitter i slingan, inte i algoritmen.** Symptom: `zlib.decompress` är korrekt på varje PNG i `~/Work/Katla/resources/models/` (13 bilder, `got == inflated`, Adler-32-grönt), men genomströmningen är 3,9–14,8 MB/s mot libpng/stb_images 100–300 MB/s (Wuffs upp till 1 GB/s). Mätt på Mikparchy med `sys.now_ms()` runt `decompress`, Dunder 0.12.0: Fox 1024² RGB (IDAT 26 kB, 118:1) 212 ms; Tiger 1024² RGBA (1,18 MB, 4:1) 814 ms; Tiger 2048² RGBA (7,5 MB, 2:1) 4 323 ms. Hela Tiger.glb är 10,0 s att inflate. **Kostnaden per dekad byte styrs av kompressionsförhållandet**, inte av utdatastorleken: Fox 67 ns/B, Tiger 0 258 ns/B, 4× skillnad. Var tiden går (uppdelat med prov i `/tmp`, `pngprobe`): 4,2 M `out.push` utan inflate ~190 ms och 4,2 M index-skrivningar ~60 ms, så push är en fjärdedel; resten är läsning i slingan: `HuffTable.decode` läser **ett bit i taget** (`bs.read_bits(&src, 1)` i `for bits in 1..16`, `ensure` om i varje) och en back-referens pushar **en byte i taget** (`for _ in 0..copy_len { b := out[out.len - dist]; out.push(b) }`). Långa referenser betalar push, korta betalar Huffman — därav förhållandet. **Var tiden går — mätt, inte läst ur koden (2026-11-25, `/tmp/pngprobe`):** tre former för back-referenskopian på 4,2 M byte (en `push` per byte som i dag; noll-push + index-skrivning; samma med löpande index; `array.resize` + index) ligger på **145–168 ms** för långa referenser (dist 1000) och 158–215 ms för korta (dist 8): kopieringsformen är brus. Att stoppa strömmen vid första utbyte (`max_bytes = 1`) kostar 0–1 ms på Tiger 0, Tiger 1 och Fox, dvs. rubriker och tabellbygge är ingen del av tiden. Allt sitter i tokenloopen, och eftersom kopieringen där är ~190 ms av Tiger 1:s 762 ms är **resterande ~75 % `HuffTable.decode`** — upp till 15 `read_bits(…, 1)`-anrop per symbol, `ensure` i varje, `!bs.ok` i varje. Minimal repro: `zlib.decompress` på vilken PNG:s sammanfogade `IDAT` som helst (ett 60-radars chunk-prov räcker); jämför med `python3 -c 'import zlib,sys;zlib.decompress(open("idat","rb").read())'`. Workaround här: ingen i Storm — avkodaren är korrekt, och Storm bygger glTF-bilder (next-steps 3c) mot `decompress` som det är; det är för långsamt för Tiger men inte för Fox. Rekommendation, i storleksordning efter **mätt** vinst: (a) läs *n* bitar i ett anrop i `decode` — en bitläsare med `n` som parameter och `ensure` en gång per symbol, eller en tabell över de första nio bitarna (tjäderns/Marks klassiska 9-bitarsuppslag) — är den enda posten som kan flytta 75 % av tiden; (b) kopiera en back-referens i ett anrop är **noll vinst** (mätt ovan) och dessutom inte uttryckbart som `bytes.extend(&mut out, &out[a..b])` (E4003, se fynd 81); (c) `out.reserve(expected)` hjälper högst mot pushes ~45 ns/B, en fjärdedel av Tiger 1. **Olöst:** inget — var tiden går är mätt; vad som återstår är att mätningen ovan upprepas i Dunder-repot när (a) är gjort.
+
+**81. Glömt `&mut`-vidarebefordran till en *generisk* funktion ger E3003 "cannot unify argument 1 (got '[]u8')" — utan noten som säger vad som är fel.** Symptom: `fn f(values: &mut []u8, n: i32) { array.resize(values, values.len + n, &u8(0)) }` ger
+`E3003: cannot unify argument 1 for generic function 'resize' (got '[]u8')` med caret på `values`. Samma misstag till en vanlig funktion ger `E3001: type mismatch: expected &mut []u8, got []u8` **med noten** "'values' is a '&mut' parameter that auto-dereferences; pass '&mut values' to forward it" (rättat blir kompilatorn grön). Noten saknas för den generiska mottagaren, och "cannot unify … got '[]u8'" läses som att *elementtypen* är fel — tre argument, och diagnostiken säger inte vilket. Minimal repro (0.12.0): `import std.array as arr` + funktionen ovan + `mut a: []u8 = []; f(&mut a, 1)`. Workaround: regeln är redan känd (för vidare `&mut r`); det som kostade tid var att diagnostiken inte påminde om den. Rekommendation: när ett argument till en generisk funktion inte unifierar och argumentet är en `&mut`-parameter som skickas utan `&mut`, sänd samma not som E3001 gör. Generiska mottagare med `&mut []T` finns i stdlib (`array.resize`, `array.fill`); de konkreta (`bytes.extend`, `bytes.extend_range`) ger E3001 med noten.
+
+**82. 156 rader PNG-dekodare kostar 1,1 s kompilering — och det är inte slingindexeringen.** Symptom: Storms `--glb` med texturer nådde `storm-image/src/decode.ddr` (156 rader) och `packages/zlib` (287 rader) från `main` för första gången (2026-11-25, `05a0250`): byggtiden gick 16,4 s → 18,2 s, dvs. **91 % av 20 s-budgeten**, för en kod som är en tusendel av trädet. Uppdelat med `dunder build --timings` på prov i `/tmp` (ett manifest, en `main` som når en funktion, Dunder 0.12.0, Mikparchy): `zlib.decompress` ensam = 14 funktioner, 4 263 MIR-operationer, `compiler=408 ms` (0,096 ms/op); `image.decode_png` + zlib = 21 funktioner, 8 177 operationer, `compiler=1 315 ms` — PNG-filtren är alltså 7 funktioner, 3 914 operationer, **+907 ms (0,23 ms/op, 2,4× zlib:s per op)**. Hela Storm före ändringen: 1 389 funktioner, 423 473 op, 14,7 s (0,035 ms/op). En gissning testades och **föll**: en slinga med `(y * w + x) * 4 + 1`-index kostade 261 op mot 242 för en platt slinga (3 ms) — indexaritmetik är inte det dyra. Vad som skiljer de sju PNG-funktioner (radfilter, palettuppslag, kanalexpansion) från zlib:s bitläsare är **inte mätt**; per-operationstalen säger bara att kostnaden per op varierar med 2–8× mellan moduler, så "MIR N operations" förutsäger inte byggtiden. Minimal repro: `dunder build --timings` på ett manifest med `img = { path = "packages/storm-image", capabilities = ["filesystem", "unsafe"] }` och en `main` som bara matchar `img.decode_png(&data)`; subtrahera samma tal för `zlib.decompress`. Workaround här: ingen — koden är rätt och läslig, budgeten har 1,8 s kvar. Rekommendation: `--profile-compiler` per *modul* (fynd 56 bad om det per funktion; per modul räcker för att hitta dessa 0,9 s utan provmanifest) — tills dess är "vilka op som är dyra" en öppen fråga och en kompilatoroptimering utan den mätningen är en gissning.
+
+**83. Ett ensamt namn som `match`-mönster binder alltid — även när namnet är en `const` i scope, och diagnostiken säger "unreachable match pattern" på *nästa* arm i stället för vad som är fel.** Symptom (0.12.0): med `pub const NEAREST: i64 = 9728` ger
+```
+match v { NEAREST => 1, _ => 2 }
+```
+`E3006: unreachable match pattern` med caret på `_`; med tre armar (`NEAREST`, `LINEAR`, `_`) står careten på `LINEAR`; med `9728 => 1, NEAREST => 2, _ => 3` står den på `_` — och `NEAREST => 2` fångar då *allt utom 9728* utan ett ord. Mätt: ett gemens namn (`other => 2`) binder likadant, så regeln är Rusts (ett ensamt namn är en binding, konstanter matchas bara som sökväg), men Dunder har ingen sökväg att skriva (`NEAREST` *är* konstantens hela namn), och det finns inget sätt alls att matcha en `const` i ett mönster. Minimal repro: `/tmp`-manifest, `const NEAREST: i64 = 9728`, `fn pick(v: i64) -> i32 { match v { NEAREST => 1, _ => 2 } }`, `dunder run` → E3006 på `_`. Uppstod i Storm `storm-gltf/src/textures.ddr` (`05a0250`-serien): glTF:s filter är tal (9728, 9729, 9984–9987), och en `match` med konstantnamn som mönster var den naturliga översättningen — den såg ut som en enum-`match`. Workaround här: if-kedjor med `==` (sex tal, läsbart), med en kommentar som pekar hit. Rekommendation: när ett mönster är ett ensamt namn som också är en `const` i scope, är det nästan alltid avsett som konstant: antingen (a) gör det till en konstant-match (då behöver Dunder en regel för när ett namn är konstant och när det binder — Rust skiljer på sökväg, och `self.path::CONST` är en sökväg Dunder redan har i `Enum.Variant`-mönster), eller (b) flytta diagnostiken till det första mönstret: "'NEAREST' binds a new variable and matches every value; a name that is a constant in scope cannot be matched — compare with `==`". E3006 på armen efter är korrekt men ett symptom.
+
+**84. Diagnostiker namnger varje användardefinierad typ som `__dunder_module_N` — struct och enum, i alla moduler, även i samma modul.** Symptom (0.12.0): en funktion som väntar en enum och får en annan ger
+```
+src/shadow.ddr:244:19: error[E3001]: type mismatch: expected __dunder_module_437, got __dunder_module_421
+```
+Minimal repro (tio rader i `main.ddr`, mätt i `/tmp`):
+```
+pub enum Shape { Cube, Plane }
+pub enum Blend { Opaque, Alpha }
+fn draw(shape: Shape) -> i32 { i32(shape) }
+fn main() { x := draw(Blend.Opaque); print(x) }
+```
+ger `expected __dunder_module_0, got __dunder_module_1`. Samma sak med två structar (`Shape { n }`, `Blend { n }`): `__dunder_module_0` mot `__dunder_module_1`. Mot en inbyggd typ namnges den inbyggda: `draw(1)` ger `expected __dunder_module_0, got i32`. Samma nummer i E2003: `x := make()` där `make() -> Shape`, sedan `x.nope` ger `unknown member 'nope' on __dunder_module_0`. Numret är modulens ordning i trädet, inte typen, och ingenting skiljer `Shape` från `Blend` i texten. I Storm (över 100 moduler) är det oläslbart: under städningen av pipeline-skapandet stod `vertices: pipelines.mesh_vertices()` (en `vk.VertexInput`) där `Vertices` väntades, och diagnostiken skickade mig till `enums.ImageTiling`/`ImageUsage` — två enumtyper som inte ingick i felet alls. Workaround här: läsa signaturen på det anrop som careten pekar på och räkna argumenten (fynd 63), och när det inte räcker byta en mot en `i32` för att se vilka sidor som byter — inget av det är en diagnostic. Rekommendation: varje diagnostic som skriver en typ ska skriva namnet som den deklarerades (`expected vk.VertexInput, got pipeline.Vertices`; för en anonym post fälten). Typen bär namnet — `dunder check` på ett program utan fel skriver inga nummer — så det är en formatteringsfunktion som används av E3001 och E2003, inte typkontrollen, som saknar det; en funktion att rätta på ett ställe.
+
+**85. En lokal som skickas till en `move`-parameter kräver `move` vid anropet — även när det är lokalens enda användning, och diagnostiken säger det med en text som måste läsas bokstavligt.** Symptom (0.12.0): `fn asset(move images: []Img) -> Asset`, kallat med `asset(images)` där `images` är en lokal som inte används igen, ger
+```
+tests/executor.ddr:331:25: error[E4001]: consuming parameter requires 'move value' or a fresh owned expression
+331 |     model := asset(parts, images)
+    |                         ^
+```
+Med markören på det *andra* argumentet lästes det som att `images` redan var flyttat — E4001 är nämligen också koden för "use of moved value", och en läsare som ser E4001 på ett argument letar efter en tidigare flytt av det värdet; två rundor gick åt till det innan en prob i `/tmp` visade att lokalens enda användning räcker för att få felet. Mätt i `/tmp` att regeln inte har med "sista användning" att göra: `takes(arr)` där `arr: [f32; 4]` är en lokal som aldrig nämns igen ger samma E4001, och `takes(move arr)` kompilerar — en **immutable** lokal får alltså flyttas med ett uttryckligt `move`. Ett färskt uttryck (litteral, funktionsanrop) behöver inget. Minimal repro:
+```
+fn takes(move a: [f32; 4]) -> f32 { a[0] }
+pub fn main() {
+    arr: [f32; 4] = [0.0, 1.0, 0.0, 3.0]
+    one := takes(arr)
+    print(one.str())
+}
+```
+ger E4001 på `arr`; `takes(move arr)` går. Uppstod i Storm `tests/executor.ddr` (tre tester som bygger en `gltf.Asset` ur lokaler). Skillen hade regeln för *parametrar* utan `move` (de lånas) men inte denna sida: att en lokal utan `move` **inte** flyttas vid sista användningen heller. Workaround här: `move` på varje argument som konsumeras, eller bygg värdet i anropet (`asset([part(...)], jpeg_and_png())`). Rekommendation: antingen (a) en sista användning av en lokal flyttar den automatiskt (Rusts regel; då är `move` på argument overflödigt och E4001 blir ett verkligt fel — använd efter flytt), eller (b) behåll kravet men låt diagnostiken säga *vilket* av de två fallen det är: "pass 'move images' — a local is not moved by its last use" mot "use of moved value" (E4001 är idag samma text för båda, och den ena är ett syntaxkrav, den andra ett verkligt fel). Dessutom: E4001 på raden gjorde att `one` på nästa rad rapporterades som `E2002 unknown local 'one'` — ett följdfel utan egen orsak.
+
+**86. En testmodul som testroten inte importerar körs aldrig — och `dunder test`, `dunder check` och `check --unused-functions` är alla gröna och tysta om den.** Symptom (0.12.0): `test_root` namnger *en* fil och `dunder test` samlar `@test` från "den valda rotfilen och i importerade projektmoduler" (`docs/syntax.md`) — inget annat, så en svit med flera testmoduler registrerar var och en med en rad `import .namn as _` i sviten (Storm `tests/suite.ddr`, `packages/storm-scene`, `packages/storm-image`). En ny fil `tests/zz_unimported.ddr` med en `@test` och utan den raden ger, mätt i en worktree av `620d2f3`:
+```
+$ dunder check --unused-functions            → exit 0, ingen diagnostik
+$ dunder check --unused-functions tests/suite.ddr
+checked tests/suite.ddr (89 modules)          → ingen diagnostik
+$ dunder test
+62 passed, 0 failed                           → exit 0; testet finns inte i talet
+```
+Det är fynd 64:s klass (en funktion utan anropare varnar aldrig) men med ett större hål: en `@test fn` som inte nås är inte död kod utan en **tappad kontroll** — sviten sjunker med ett och blir *grönare*, aldrig rödare. Hur lätt det glöms är mätt i git-historiken: **5 av 16** commits till Storms rot-svit (`6885819`, `ea708c0`, `6ffbc60`, `396c875`, `1ac2860`) ändrade *enbart* registreringsrader — `+1` till `+3` rader `import .x as _`, inga andra, i en separat commit efter att modulen landat. Mellan de två commit:arna kördes modulens tester aldrig. Minimal repro: ett manifest med `test_root = "tests/suite.ddr"`, en `tests/suite.ddr` med en `@test`, och en `tests/other.ddr` med en `@test` som sviten inte importerar (`dunder check --tests` ser den inte heller — typkontrollen omfattar samma rotfil och importer). Mätt: i worktraven ovan (`620d2f3`, utan vakt-testet) rapporterade rot-sviten `62 passed` *med* `zz_unimported.ddr` på plats — samma tal som utan den (60 egna `@test` + Skrifts 2); provens test fanns inte i räkningen. Workaround här: ett test i varje svit med flera testmoduler (`every_test_module_beside_the_suite_is_imported_by_it`) listar `tests/` med `fs.list_dir`, läser varje `.ddr` som innehåller `@test`, och kräver en rad `import .<namn>` i sviten — bevisat i en skrapkopia i båda riktningarna: orörd → grönt; en avregistrerad modul eller en ny oimporterad testfil → rött med filnamnet (`tests/suite.ddr never imports a test module: `import .orb as _` (tests/orb.ddr has tests)`); en fil *utan* `@test` (ett delat hjälpmedel) → grönt. Tre sviter bär samma 30 rader (tre oberoende testbinärer, ingen gemensam testmodul att importera). Rekommendation: (a) låt `test_root` få vara en **katalog** (`tests/`) så varje `*.ddr` i den är en testmodul — då finns det inget att glömma och `import .x as _`-tricket försvinner; eller (b) om filen ska vara enheten, låt `dunder test` **varna** (W1004: `tests/x.ddr has @test but is not reachable from the test root`) — verktyget vet redan vilka filer det samlade från och kan lista katalogen. (a) är den rätta grunden: det finns inget scenario där en fil med tester i `tests/` ska vara oimporterad.
+
+**87. En obalanserad klammer i användarens fil rapporteras i en stdlib-modul som laddas efter den — aldrig i filen som är trasig.** Symptom (0.12.0): Storms `packages/storm-vulkan/tests/suite.ddr` hade ett test med två `unsafe {` och en stängande `}` för lite (ett skript som klistrade in ett block tog med dess kommentar och `unsafe {` och lade ett eget `unsafe {` utanför). `dunder test` skrev:
+
+```
+<stdlib/bytes/utf8.ddr>:12:1: error[E3004]: @derive is only valid on top-level struct or enum declarations
+12 | @derive(Eq)
+```
+
+och ingenting om `suite.ddr`. Minimal repro (paket med `src/lib.ddr` = `pub fn one() -> i32 { 1 }`):
+
+```
+capability stdio, unsafe
+
+import sys
+import ..src.lib as lib
+
+@test fn unbalanced() {
+    unsafe {
+    // a comment
+    unsafe {
+        mut x: i32 = lib.one()
+        assert(x == 1)
+    }
+}
+
+@test fn other() {
+    _ := sys.eprint("other")
+    assert(true)
+}
+```
+
+```
+$ dunder check tests/suite.ddr
+<stdlib/sys.ddr>:380:45: error[E2003]: unknown type '__dunder_module_69'
+380 |     pub fn into_result(&self) -> Result<(), IoError> {
+```
+
+Tar du bort `sys.eprint`-raden (så att stdlib inte laddas efter brytpunkten) blir det i stället det rätta:
+
+```
+tests/suite.ddr:1:1: error[E1001]: unterminated body
+1 | capability stdio, unsafe
+```
+
+Orsak: parsern stänger de öppnande blocken i tur och ordning på nästa `}` den möter, så felet syns först när det som kommer efter den punkt som borde varit slutet på filen tolkas som kod på fel nivå — och det som kommer näst är nästa modul i importordningen, som råkar vara stdlib. Eftersom modulnumret (`__dunder_module_69`) också förskjuts med antalet moduler före brytpunkten, säger varken fil, rad eller typ var det började. En obalanserad klammer är den vanligaste konsekvensen av ett skript som klistrar in block (fynd 85:s lärdom, att två migrationsskript aldrig får matcha samma rad, är samma klass), och här kostade den en misstänkt kompilator och en bisektion av tre tester innan den hittades. Workaround: när en diagnostik pekar i `<stdlib/…>` och samma kolla är grön på orört träd, räkna klambrarna i den egna filen först (`python3 -c "s=open(f).read(); print(s.count('{')-s.count('}'))"`). Rekommendation: när parsern når filens slut med öppna block, rapportera **det** — E1001 på sista raden, med raden för den senaste öppnande klammern i noten — innan nästa modul laddas. Idag görs det bara när inget importeras efteråt, alltså precis när det inte behövs; med det skulle E3004/E2003/E5003 i stdlib alltid vara en äkta stdlib-upptäckt och aldrig ett eko från användarens fil.
+
+**88. En `extern fn` kan inte jämföras med `ptr(0)`, så "load() lämnade varje fält null" går inte att testa.** Symptom (0.12.0): storm-vk:s `Api` är en `@c_layout`-post av `extern fn(…) -> i32`-fält som `load()` fyller från `dl.symbol`; ett test ville bevisa att `load()` med ett bibliotek som saknar Vulkan-symboler vägrar *utan att ha skrivit något* (`assert(table.CreateInstance == ptr(0))`):
+
+```
+tests/suite.ddr:130:37: error[E5003]: type 'extern fn(ptr, ptr, ptr) -> i32' does not implement Eq
+```
+
+`ffi_fn(ptr)` går åt ett håll (ptr → extern fn) och inget åt det andra, och `Eq` saknas. Minimal repro: `@c_layout struct Api { CreateInstance: extern fn(ptr) -> i32 }`, `mut table: Api = zeroed()`, `assert(table.CreateInstance == ptr(0))`. Workaround här: asserta returvärdet (`assert(!api.load(&mut table, libc, false))`) och bevisa det starkare på det riktiga biblioteket i stället för "inget fält skrivet" — `assert(api.load(&mut table, loader, false))` mot `/usr/lib/libvulkan.so.1`, alltså att varje namn registret gav tabellen finns i loadern. Rekommendation: antingen `Eq` (jämförelse med `ptr(0)`) på `extern fn`-fält, eller en `fn_addr(extern fn) -> ptr`-builtin, spegelvändningen av `ffi_fn`. Det är frågan varje FFI-test vill ställa: är den här funktionspekaren noll?
+
+**89. Två generiska funktioner över samma trait-bundna typ på en kedja kostar kompileringstid för den inres hela nåd — enligt `--timings` utan att en enda MIR-operation läggs till.** Symptom (0.12.0): Storms `src/app.ddr` fick en hjälpfunktion `uploaded<B: gfx.Backend>(window: &mut B, …)` som anropades från den generiska `upload_model_textures<B>`; `tools/build-time.ddr` gick från 18,2 s till 20,1 s (över budget) medan `dunder build --timings` rapporterade 1431 → 1433 funktioner och 433 611 → 434 139 operationer — tre funktioner och 1 900 op som enligt fynd 82 är värda ~0,1 s. `--profile-compiler` visade +212 ms fördelat på faserna men +2 172 ms på `compiler=`-totalen, dvs. nästan allt låg utanför varje namngiven fas. Bisektion på riktig kod (samma worktree, samma kompilator, `git stash` mellan mätningarna): exakt samma två rader `decode_png` + `upload_texture` **inline** i `upload_model_textures<B>` gav 18,3 s; samma rader i en egen `uploaded<B>` gav 20,1 s; en extra generisk funktion `<B>` som bara anropade en trivial trait-metod kostade 0 ms. Minimal repro (`/tmp`, beroende `storm-image` som `path`, `decode_png` som tung löv; två mätningar per variant, Mikparchy):
+
+```
+fn direct<B: Backend>(window: &mut B, data: &[]u8) -> i32 {
+    decoded := image.decode_png(data)
+    match decoded { .Ok(d) => d.pixels.len + window.name().len, .Err(_) => 0 }
+}
+fn leaf<B: Backend>(window: &mut B, data: &[]u8) -> i32 { …samma kropp… }
+fn through<B: Backend>(window: &mut B, data: &[]u8) -> i32 { leaf(&mut window, data) }
+```
+
+| `main` når | byggtid |
+|---|---|
+| `direct<B>` (ett generiskt lager) | 1 900 ms |
+| `through<B>` → `leaf<B>` (två) | 2 170 ms |
+| `through<B>` → `leaf` **utan** `<B>` | 1 913 ms |
+
+Så det är inte nestling i sig och inte antalet call sites (en oanropad-generisk funktion kostade 0; decode i en *icke-generisk* funktion utöver den generiska kostade 0): det är att den inre funktionen är generisk över samma `B`. Workaround här, och den design som är rätt ändå: **en generisk funktion per kedja** — `upload_or_refused` (icke-generisk) avgör vad som ska laddas (decode, uppslag i tidigare uppladdningar, vägran med text) och lämnar det enda `window.upload_texture(…)`-anropet inline i `upload_model_textures<B>`; 18,4 s. Rekommendation: när två generiska funktioner instansieras med samma typargument ska den inres nåd inte kompileras en gång till — eller, om den gör det av skäl jag inte sett, ska `--timings`/`--profile-compiler` redovisa kostnaden per funktion så att 1,8 s syns var den finns i stället för i mellanskillnaden mellan `compiler=` och summan av faserna.
+
+**90. En `@embed_file`-shader har ingen kompileringskontroll vid `dunder check`, så en Metal-shader kan vara trasig i flera commit medan allt är grönt.** Symptom: `packages/storm-metal/shaders/storm.metal` läste `in.uv` i `mesh_fragment` sedan `6f325a8` (3b, 2026-11-24), men `struct MeshOut` aldrig haft fältet `uv` (`c876002`-matchen var `MeshVertex.uv`, attributet): shadern har inte kompilerat på Mac sedan dess, och `newLibraryWithSource` hade fallit vid start. `dunder check`, `dunder test` och `tools/shaders.ddr --check` (GLSL → SPIR-V via glslang) var alla gröna, för `.metal`-filen är en sträng (`@embed_file` i `shader.ddr`) som kompileras först vid körning. Upptäcktes av en slump vid läsning av shadern för MR-kartan. Fix: `uv` i `MeshOut`, skrivet i `mesh_vertex` (två rader). Workaround: inget på Linux — Metal-kompilatorn (`xcrun metal`) finns bara på macOS. Rekommendation: två saker. (1) I Dunder: ett `@embed_file`-alternativ som validerar innehållet mot ett verktyg vid bygget (`@embed_file("x.metal", check = ["xcrun", "metal", "-std=metal3.1"])`) eller allmän `dunder build --prebuild`-steg så `tools/shaders.ddr`:s kontrakt (`--check` exit 1/2) kan gälla Metal-shadern på Mac. (2) I Storm: `packages/storm-metal/tools/shaders.ddr` som `tools/shaders.ddr`, med en QA-punkt i `selftest.ddr` att shadern kompilerar — nästa steg 0f.
+
+**91. En fast array implementerar inte `Eq`, så två `[i64; 5]` kan inte jämföras — och därmed inte heller en struct som bär en.** Symptom (0.12.0): ett test ville jämföra de fem texturhandtag en inspelad draw bar mot en literal, `a == b` med `a, b: [i64; 5]`:
+
+```
+tests/executor.ddr:336:10: error[E3004]: type '[i64; 5]' does not implement Eq
+```
+
+Workaround här: elementvis helper i testet (`fn same_maps(a: [i64; 5], b: [i64; 5]) -> bool`, en `&&`-kedja av fem `==`). Rekommendation: `Eq` för fasta arrayer av `Eq`-element — samma regel som gäller structar av sådana fält.
+
+**92. En `if`-gren kan aldrig vara ett lånande uttryck — inte ens när båda grenarna lånar samma värde — och diagnosticen säger varken varför eller vilken form som gäller.** Symptom (0.12.0, Storm `src/particles.ddr`): `c := if i == 0 { &pink } else { &gold }` i en loop är `error[E4003]: if branch cannot return a borrow` med markören på den **första** grenens `&`. Mätt i en minimal repro (fyra varianter): (a) samma uttryck **utan** loop — samma fel, loopen är alltså inte orsaken; (b) en `if` av två **ägda** värden (`{ a } else { b }`) kompilerar — det är bara lån som vägras; (c) `{ &pink } else { &pink }`, **samma källa i båda grenarna** — samma fel: regeln är inte "två källor kan inte förenas" utan "en gren returnerar inget lån", och den form som vore den säkra (en källa, två grenar) vägras med; (d) den form diagnosticen för en *funktion* erbjuder (`-> &[f32; 4] from pink`, docs/syntax.md) vägrar den andra källan (`E4003: returned borrow must come from its declared shared parameter 'pink'`), och `from pink, gold` är `E1002`. Ett lån ur ett val mellan två källor är alltså inte uttryckbart som lån alls. Det är rimligt (ett lån har en livstid per källa), men `if`-diagnosticen är den enda av de tre som varken förklarar regeln eller pekar på `from`-formen, och den pekar på grenen i stället för uttrycket. Workaround här: en ägd kopia — `mut c := pink.clone(); if i != 0 { c = gold.clone() }` (fyra `[f32; 4]`, och det är den form `particles.ddr` har). Rekommendation: (1) låt `if`-grenar låna när alla grenar lånar samma källa (variant c) — det är ett lån, inte två; (2) annars säg det i diagnosticen: "an `if` expression cannot return a borrow; take `from` in a function or clone", så läsaren inte söker felet i loopen (det gjorde jag: tre minuter på en loop som var oskyldig).
+
+**93. En Dunderfunktion har ingen adress, så ett `extern fn`-fält kan bara fyllas från ett C-bibliotek — och en loop som läser råa bytes genom en sådan post går inte att testa utan biblioteket.** Symptom (0.12.0, mätt i en probe): en `@c_layout`-post med fältet `poll: extern fn(ptr) -> i32` (formen `sdl.ddr`:s `Window` har) och en Dunder-`fn fake_poll(event: ptr) -> i32` som skriver samma bytes SDL skulle. Tre vägar, tre diagnostiker: `h.poll = ffi_fn(addr(fake_poll))` är `error[E1002]: expected '&'` med markören på `addr(`; `addr(&fake_poll)` är `error[E3099]: addr requires a stored place` på `&`; `var calls: i32 = 0` på modulnivå (för anropstillståndet) är `error[E2001]: expected fn, struct, enum, trait or impl (imports must be loaded first)` — det finns inga globala `var`. Workaround här: det som är rent bryts ur loopen till en funktion av värden — `sdl.ddr`:s `sdl_button(number) -> u32` är testad mot SDL:s rubrik, medan `poll` (som läser `button` på offset 16 vid `kind` 1025/1026) inte är det; poll-vägen är bevisad bara i ett fönster med riktiga tangenter. Samma hål som fynd 88 (en funktionpekare-post går bara att observera genom att kallas), nu från andra hållet: den som *fyller* posten kan bara vara `dl.symbol`. Rekommendation: antingen `ffi_fn(fn name)` — en Dunderfunktion med C-kompatibel signatur som funktionsvärde; det är samma ABI kompilatorn redan genererar för callbackerna i `storm-metal/appkit.ddr`, som C anropar via riktiga adresser — eller en diagnostik som säger det rakt ut ("a function has no address; fill an `extern fn` field with `ffi_fn(dl.symbol(…))`"): E1002 `expected '&'` läses som ett stavfel och kostade två försök till.
+
+**94. `dunder check` och `dunder test` känner manifestets rötter och `--tests`/`--example` — men ett program under `tools/` är en rot som ingen form når, så \"checked … 0 fel\" ser komplett ut medan fem rötter står utanför.** Symptom (0.12.0, Storm): `packages/storm-metal/tools/selftest.ddr` kompilerade inte på `main` i **26,4 timmar under 45 committer** (`496d59b` 11-25 07:28 → rättat 11-26 09:50, fillens mtime; `git rev-list --count 496d59b..5e9c109` = 45), och varenda en av dem rapporterade \"`dunder check` 0 fel\" — sanningen, och ändå inte hela. Två fel i följd: `E3099 enum variant needs a type` när `mesh` fick fem texturargument (`e264590` ändrade signaturen och selftestet följde inte — felet är committens, inte kompilatorns), sedan `E2002 unknown local 'plain'` när ett skript (`5361964`) lade till `&plain, &unlit` i sju `mesh`-anrop men deklarerade de två värdena bara i `frame_checks` — inte i `post_frame`, som också anropar. Mätt vad som nås: `dunder check` i roten = `src/main.ddr` (108 moduler), `--tests` = `tests/suite.ddr`, `--example scene` = `examples/scene.ddr`, i ett paket = dess `root` (`src/metal.ddr`, 26 moduler) och `--tests` = `tests/suite.ddr` (19) — och `tools/selftest.ddr` är **27 egna moduler** som bara kontrolleras när den namnges (`dunder check packages/storm-metal/tools/selftest.ddr`). `dunder --help` listar `--example name` och `--tests` som manifestmedvetna former; en katalog med program har ingen. Felet är alltså inte att kompilatorn var tyst om ett fel den såg — den fick aldrig se filen — utan att den gröna raden *ser ut* som ett uttalande om projektet. Workaround här: `tools/check.ddr` — härleder rötterna ur trädet (`tools/`, `examples/`, `packages/*/tools/`, `packages/*/examples/` genom `fs.list_dir`; ingen tabell att glömma), typkontrollerar varje och sig själv, utgång 1 med namnet på den som faller, 2 när den inte kan köra; kontraktet bevisat i fyra fall (orört → 0, buggen tillbaka → 1, en ny oregistrerad tool → 1 med dess namn, argument/fel katalog → 2), 15 s för sju rötter. Rekommendation: en manifestmedveten form som når *varje* rot — `dunder check --all` (eller att `[examples]` får sällskap av en `[tools]`-tabell i `dunder.toml`, så `--example`/`--tools` blir samma sak och `--list-examples` listar dem) — och att `dunder check` utan argument, när katalogen håller `.ddr`-filer den *inte* kontrollerar, säger det: \"checked src/main.ddr; not checked: tools/x.ddr, …\". Det sista är det som hade stoppat båda felen vid första committen: inte en ny vakt att komma ihåg, utan att den befintliga talar om vad den inte såg.
+
+
+**95. Ett skift med ett negativt eller för stort antal avslutar programmet tyst med status 103 — inget meddelande, ingen rad.** Symptom (0.12.0, mätt i en probe): `i32(1).shl(-1)`, `i32(16).shr(-1)` och `i32(1).shl(32)` avslutar alla med utgång **103** och skriver ingenting; `i32(1).shl(31)` ger `-2147483648` (wrapping till `i32`, rimligt). Det är samma tysta slut som fynd 60 (`to_bits()` på ett negativt flyttal, 101) och 72 (`i32(u32)` med teckenbiten satt, 101), men den här gången med ett mönster som är vardag i varje binär parser: skiftantalet kommer ur *data*, inte ur en literal, så kompilatorn kan inte se det (E3007 kontrollerar literals, inte värden). I Storm dök det upp i JPEG-avkodaren (`packages/storm-image/src/jpeg.ddr`): `extend(v, n)` räknade `1.shl(n - 1)` för DC-kategori `n = 0` — den vanligaste kategorin i ett riktigt foto (DC-skillnaden noll) — och hela 2048²-bilden dog efter två block utan ett ord, medan sju små fixturer var gröna därför att ingen av dem innehöll kategorin. Workaround här: `if n == 0 { return 0 }` före skiftet, vilket är rätt matematik (T.81: kategori 0 är skillnaden 0), men det är en regel man måste *komma ihåg* per skift, och det är precis formen AGENTS.md förbjuder som bandaid. Rekommendation: (a) antingen definiera skiftet för alla `n` i `0..typbredd` och **ge en diagnostik med rad för övriga** (status 103 med texten `shift amount -1 out of range for i32` och källpositionen, som en array-indexering utanför gränsen får), eller (b) låt `shl`/`shr` på ett värde ur data vara wrapping inom typens bredd (`n.bit_and(31)`) — vilket som, men inte tyst: en avrundadbild som slutar efter två block utan en rad är den dyraste formen av ett avgränsat fel.
+
+**96. Ett import-alias och en funktion kan inte heta samma sak i en modul — och `E2005 duplicate declaration` säger inte vilken av dem som är importen.** Symptom (0.12.0, Storm `packages/storm-image/src/image.ddr`): modulen `import .decode as decode` (sibling-modulen för PNG) och en ny `pub fn decode(data) -> Result<Image, string>` som känner igen formatet ger `error[E2005]: duplicate declaration 'decode'` med markören på `fn decode`. Samma sak igen med aliaset `png` (mot den befintliga `pub fn png` som skriver en PNG-fil). Diagnostiken är korrekt och regeln är rimlig (ett namn, en sak), men läsaren står med två kandidater och en markör på den *nya*, så det läses som att modulen redan hade en `decode`-funktion. Workaround här: aliaset heter `png_file` (`import .decode as png_file`), vilket också säger vad det är — modulen heter `decode.ddr` men dess innehåll är PNG. Rekommendation: låt diagnosticen räkna upp båda — `duplicate declaration 'decode': imported from .decode at line 3, declared as fn at line 40` — så det är ett val av namn och inte en sökning.
+
+
 ## Grafikobservationer på macOS (Metal)
 
 Mätta på en Apple M5 med macOS 27.2 och Xcode installerat (Metal 4). Ingen
@@ -559,6 +736,31 @@ och 4,7 s CPU-tid: omkring 2 ms per frame på en kärna.
 
 ## Verifiering
 
+Mätning på Mikparchy, 2026-11-24 (låst session, generatorn för `layout.ddr`
++ `X::new()`-fabriker, Dunder 0.12.0 byggd 09:02): **152 egna `@test fn`
+gröna** i 16 sviter, varje svit lika många som sin `@test`-räkning (räknat
+som egna PASS-rader per fil; Skrifts två och paketens källmoduler hålls
+utanför), `dunder check` 0 varningar i Storms paket, `check
+--unused-functions` rent, `tools/build-time.ddr` **16 480–16 550 ms** av
+20 000 — samma siffra på oförändrad `0fd104e` i en worktree med samma
+kompilator, alltså kostar de 71 fabrikerna inget. `tools/vk.ddr --check`
+grönt för både `api.ddr` och `layout.ddr`, och `--check` utgång 2 med ett
+namngivet fel när en post i `STRUCTS` ligger efter den som nästlar den.
+Migreringens 135 borttagna `sType`-tal verifierades vart och ett mot
+registret (inkl. `PresentInfoKHR` = 1000001001 via extension-regeln) innan
+det togs bort: alla stämde. Capture 1280 × 800 före/efter (`0fd104e` i en
+worktree mot det nya trädet): **AE = 0**. Storlekspinnarna i
+`storm-vulkan` (17) håller oförändrade mot den genererade layouten.
+
+Mätning på Mikparchy, 2026-11-24 (låst session, `5a0a9ec`, Dunder 0.12.0,
+vid genomgången av dokumentationen mot koden): **188 egna tester gröna** —
+43 i roten och 145 i de 15 paketen, 16 sviter, varje svit lika många som sin
+`@test`-räkning (Skrifts två följer med i `storm-text` och `storm-ui`) —
+`dunder check` 0 varningar i Storms paket, `check --unused-functions` rent
+i roten, `tools/build-time.ddr` **16 036 ms** av 20 000, och `tools/vk.ddr
+-- /tmp/vk.xml --check` grönt mot den committade `api.ddr` (80 kommandon).
+Bara dokumentation rördes, så ingen capture togs.
+
 Storm `4123d5a` gav 185 godkända test i roten och de 15 paketen på både
 Macen och Mikparchy. Tabellen jämför Dunder 0.12.0 med `5a1ed4e` på
 samma träd. Varje tid är medianen för tre hela byggkommandon efter
@@ -571,6 +773,15 @@ Nybygget skrev till en ny utdatafil. Ombygget använde den befintliga filen.
 | Mac, ARM64 | Oförändrat | 1,182 s | 0,183 s |
 | Mikparchy, x86-64 | Nybygge | 15,601 s | 8,077 s |
 | Mikparchy, x86-64 | Oförändrat | 15,666 s | 1,109 s |
+
+Mätning på Mikparchy, 2026-11-24 (låst session, `1bd197a` + generatorn
+för `api.ddr`, Dunder 0.12.0): **147 egna `@test fn` gröna** i 16 sviter
+(43 rapporterade i roten och 149 i paketen; de tre sviter som når
+`storm-text` räknar med Skrifts två), `dunder check` 0 varningar i Storms
+paket, `check --unused-functions` rent, `tools/build-time.ddr` **16 072 ms**
+av 20 000. `tools/vk.ddr --check` grönt mot den nya `api.ddr` och utgång 1
+mot en avsiktligt ändrad kopia. Capture 1280 × 800 före/efter den genererade
+`api.ddr` (standard och `--glb Fox.glb`): **AE = 0**.
 
 Mätning på Mikparchy, 2026-11-24 (låst session, `a84ade9`, Dunder
 0.12.0): **140 egna tester gröna** (27 rot + 113 paket, 16 sviter, varje
@@ -664,7 +875,155 @@ inverterade områden. En visionmodell som skulle läsa effects-capturen fick
 i stället fox-capturen förbi (samma filnamn, ny konvertering) - därför står
 pixelproberna här, inte bildbeskrivningen. `--frames 5` utan capture på den
 låsta sessionen: SIGSEGV i första framen mellan `acquired image 0` och
-`render pass begun` (next-steps, kända begränsningar).
+`render pass begun` (next-steps, kända begränsningar). *Rättat samma kväll,
+se nästa stycke: på `a919b02` kraschar det inte.*
+
+**QA 2026-11-24 kväll (låst session, `a919b02`, Dunder 0.12.0, tolv captures på
+1280 × 800 och fönsterläge).** Fönsterläget på den låsta sessionen: `--frames 5`
+**status 0, 10/10**, 4,4 s; `--frames 20` med `--studio`, `--play`, `--glb
+Fox.glb`, `--effects`, `--no-post --no-aa`: alla status 0 på 4,6–5,1 s, och
+`--trace` visar `acquired image` → `render pass begun` → `present` →
+`presented 0` för varje frame. Samma commit-bygge av `ac268f0` i en worktree
+med samma kompilator: SIGSEGV **0/10**. Bisektionen dem emellan är icke-monoton
+(`bc2b300` grönt, `38942e5` kraschar, `fb4d5a7` grönt; `924dd7e`, `7c17c6d`,
+`a2ccbf3`, `a823658` bygger inte med 0.12.0: `E3006 non-exhaustive match` i
+`app.ddr`), så ingen enskild fix-commit kan namnges. Captures mot standard:
+`--eye 6 4 -7` AE 172 373 (16,8 %), `--eye 0 0 4.2` AE 175 318,
+`--glb Fox.glb` AE 419 764 (räven vit: Fox.glb har `baseColorTexture` men
+ingen `baseColorFactor`, så spec-default `[1,1,1,1]` gäller tills 3c),
+`--studio` AE 418 555, `--no-shadows` AE 39 599, `--no-post` AE 6 958,
+`--no-aa` AE 1 564. **AE = 0**: `--play` (standard är redan spelet),
+`--effects` (redan på i Blomsterskogen) och `--no-glass` i spelet (inget
+transparent i play-scenen). `--no-glass` i studion fungerar: reglaget Glass
+står av och `Glass / left`/`right` är borta ur scenträdet, AE 372 på
+standardkameran (panelerna står vid cyclorama-väggen på z = −2,8 med alfa
+0,20 och syns knappt), AE 104 med kameran rakt mot dem. Färgtoningen är
+avsiktligt diskret: `--no-post` skiftar 1–5 per kanal (himlen `(252,201,209)`
+mot `(251,198,208)`, marken `(191,216,198)` mot `(186,214,197)`); i studion
+är `--effects` 2 421 pixlar. Felvägarna ger alla status 1 med text:
+`--capture` utan fil, `--glb` utan fil, `--scene` utan fil; `--frames abc`
+och `--eye 1 2` faller till default.
+
+**QA 2026-11-25 (låst session, `c213029`, Dunder 0.12.0, tjugoen captures på
+1280 × 800, sju fönsterkörningar).** Felvägen gav ett fynd och en commit:
+`--capture --frames 1` **skrev en fil döpt `--frames`** i arbetskatalogen
+(3 MB), `--glb --capture x.ppm` läste `--capture` som modellnamn och
+`--texture --studio` läste `--studio` som textur — `args.value` tog ordet
+efter en flagga som dess värde även när det var en annan flagga, och bara
+`--scene` hade regeln "nästa ord börjar med `--`" inbakad vid anropet
+(`c213029`: regeln i `args.value`, `--scene`:s egen kontroll en enrading som
+`--capture`:s; AE = 0 mot baslinjen). Nu: `--capture --frames 1` → status 1
+`--capture requires an output file`; `--glb`/`--texture`/`--font` utan värde
+är "not given" (standardscenen), som `--eye 1 2` alltid varit. Övriga
+felvägar oförändrade: `--capture`/`--scene` utan fil, `--glb /nope/x.glb`,
+`--glb base.ppm` (`glTF file is neither GLB nor UTF-8 JSON`),
+DamagedHelmet (`image 0 is image/jpeg`) — alla status 1 med texten.
+
+Fönsterläget på den låsta sessionen: `--frames 5` **7/7 status 0**
+(standard, `--studio`, `--play`, `--glb Fox.glb`, `--effects`,
+`--no-post --no-aa`, `--trace`), 4,3–4,8 s, och `--trace` visar
+`acquired image` → `render pass begun` → `presented 0` × 5. Captures mot
+baslinjen: `--eye 6 4 -7` AE 172 373, `--eye 0 0 4.2` AE 175 318,
+`--eye 12 9 14` AE 134 217, `--studio` AE 418 555, `--glb Fox.glb` AE
+420 815, `--no-shadows` AE 39 599, `--no-post` AE 6 958, `--no-aa` AE
+1 564, `--studio --effects` mot `--studio` AE 2 421, `--studio --no-glass` AE
+372 — **samma tal som 2026-11-24 kväll** (deterministiskt: en andra
+baslinjecapture är AE = 0 mot den första). `--play`, `--effects` och
+`--no-glass` i spelet: AE = 0.
+
+**QA 2026-11-26 morgon (låst session, `a9e5a68` → `707edc7`, Dunder 0.12.0,
+fyrtiofyra captures på 1280 × 800, alla kontrollerade mot
+`16 + 1280·800·3` byte).** Spelscenen och studion mot `a9e5a68`: foxen står
+på gräset med fyra tassar i marken och skugga, himmel, moln, blommor,
+fjärilar, bi, HUD läslig rättvänt; scenträdet, inspektorn och statusraden
+`0/8 collected  6 passes  – fps` oskurna. Reglagen: `--effects` i spelet
+**0 ändrade pixlar** (temat är redan graderat, `graded(theme_grade)`;
+`--no-post` ändrar 96,9 % och är det som slår av det), `--effects` i
+studion 59 % (slår på det som är av). `--texture` med en capture som golv
+fungerar (golvprobe (300, 600): (93, 124, 125) → (67, 102, 92)).
+
+Två fel hittades och rättades samma timme:
+
+- **Laddade modeller stod i bordet.** `place_model` centrerade varje modell
+  på en fast punkt (0, 0, 4.2), oavsett djup. Mätt med Storms egen glTF-läsare
+  (bakade nodtransformer): Box 1,0 djup, Avokado 0,063 (y), Lantern 25,7 (y),
+  Fox 155 (z) — längsta sidan blir `MODEL_SIZE`, och en kub på 2,4 fick
+  bakkanten på z = 3,0, **0,2 in i pallen** som når 3,2. Fix `fa226c2`:
+  `at.z` är modellens *närmaste* sida (`MODEL_EDGE_Z = 3.7` = pallems kant
+  plus marginal) och modellen breder ut sig mot +z; `MODEL_SIZE` 2,4 → 2,0
+  för att en kub (värsta fallet, lika djup som hög) vid den nya platsen
+  annars når rad 756 av bildytans 55..755. Mätt med kamerans egen
+  projektion och mot captures: Box 401..719, Avokado 401..637, Lantern
+  401..608, Fox 496..719 — alla hela.
+- **En flagga ingen läser ignorerades tyst.** `storm --bogus --frames 1`
+  startade och renderade standardbilden utan ett ord; `tests/flags.ddr`
+  höll varje `--x`-literal i `src/` mot tabellen men inte orden på
+  kommandoraden. Fix `707edc7`: `args.unknown` räknar ur samma tabell och
+  `main` vägrar med `storm: unknown option --bogus`, usage och utgång 2.
+
+Två påståenden som en vision-modell gav om captures var **fel** och togs
+inte om: att Lanternens arm gick *genom* bordsskivan (en capture från
+`(7, 3, 6)` visar stolpen på golvet och lyktan fri, hela framför pallen)
+och att Fox.glb låg ner eller var klippt (från `(9, 3, 4,6)` står räven
+upprätt på fyra ben, huvudet mot −z, hel). Det som är sant i standardkameran
+är att räven är **liten**: 0,32 bred och 1,0 hög efter skala, på golvet
+bakom pallems kant i den låga vinkeln. Captures läses för komposition;
+varje påstående om geometri kontrolleras från en annan kamera.
+
+Öppet: **radvis banding i molnkanterna** (horisontella trappsteg där två
+molnytor möts, inte i den släta ytan; 5×-snitt av `(50, 100)`–`(550, 400)`),
+inte utrett — misstänkt lågupplöst element eller 8-bitars gräns, mätt i
+ingen shader. Glaspanelernas låga synlighet är den avsiktliga alfa 0,20
+ovan (2026-11-25), inte nytt.
+
+**QA 2026-11-26 (låst session, `5361964`, Dunder 0.12.0, tolv captures på
+1280 × 800).** Emissive (3d steg 2) mot worktree-baslinjer
+av `28665c4` (samma kommandon, `git status` ren, binären raderad och
+ombyggd): spelscenen, `--studio`, Box, Fox och Avokado **AE = 0**; Lantern
+skiljer sig i exakt **501 pixlar**, alla i en 22×67-ration vid (698–719,
+471–537) — lyktans glas, ingenting annat i bilden (+316 pixlar med R > 200;
+i ett 5×-snitt är glaset släckt före och varmt gult-orange efter). Två
+mätverktyg som ljuger hittades på vägen och är värda sin plats här:
+(a) **`magick compare -metric AE` på råa PPM är inget pixelantal.** På
+Lantern-paret (501 ändrade pixlar, räknade i Python över P6-kroppen) säger
+ImageMagick **264 352**, och dess diffbild är icke-svart i alla 1 024 000
+pixlar: den skalar om en otaggad PPM vid inläsning, så varje pixel
+"skiljer". AE = 0 är fortfarande ett giltigt identitetstest (samma
+skalning på båda filerna), och de äldre AE-talen ovan är jämförbara
+sinsemellan — men ett AE-skilt-noll är ingen siffra att tolka. Decimaltecknet
+är locale:ets (`264,352` under sv_SE). (b) **`/tmp` är en per-användarkvot
+som sviktar mitt i en fil.** `df` visade 753 MB ledigt medan mikpe ägde 3,1 GB
+mot en kvot på 3,7 GB; `write_bytes` fick `EDQUOT` efter en 64 MB-probe på
+noll byte. Symptomet i appen var `could not write the capture` med **status
+1 medan filen låg på disk**: 1 777 664 byte (58 %) i en körning, 0 i nästa —
+både binären i worktree:n och den nya, alltså miljön och inte koden. En
+halvskriven capture mot en annan ger ett meningslöst AE utan något fel från
+`magick`. Sex övergivna agentkataloger (`/tmp/storm-captures`, `-qa`,
+`-review.*`, `-vkpost.*`, `-macos-verify.*`, `-post-main.*`, 23–25 nov,
+1,07 GB) togs bort och alla tolv captures togs om till `$HOME` med
+filstorleken kontrollerad mot `16 + 1280·800·3` = 3 072 016 byte varje gång;
+talen ovan är från den omtagningen.
+
+Alla elva Katla-modeller (`~/Work/Katla/resources/models`) genom `--glb`:
+nio laddar med status 0 (Box, BoxInterleaved, Fox, FoxFixed, FoxBlender,
+Regular_plane, Avocado, Lantern) och två vägras med text: DamagedHelmet
+(JPEG, ovan) och Tiger (nedan). Läst i bilderna: Avokadon bär skal och kärna, Lanternen bär
+trätextur, kedja och hänge, Tiger är **helt vit** — dess material är
+`KHR_materials_pbrSpecularGlossiness` (`diffuseTexture` i en extension,
+inga `pbrMetallicRoughness`-fält) och filen listar den i
+`extensionsRequired`, så extensionens tabell säger "fail to load"; Storm
+laddade den och ritade vit. Rättat direkt efter: nu status 1 `requires
+extension KHR_materials_pbrSpecularGlossiness, which Storm does not read`
+(beslutet i next-steps 3c). Fox.glb är riggad
+(`JOINTS_0`/`WEIGHTS_0`, tre klipp) och ritas i bind-posen: Steg 4.
+Från `(6,4,-7)` står kameran mitt i molnen (`Cloud / Pearl`), som då fyller
+högra halvan av bilden med en grå yta — kameran, inte motorn.
+
+Editorn i studion: scenträd med sju objekt (`+ Collectibles 8` kollapsad),
+inspektorn med Metallic 0.98 / Roughness 0.24 / Opacity 1.00 och
+Rendering-reglagen, statusraden `0/8 collected  6 passes  – fps` oskuren.
+Spelet: Vallmo på gräset med fyra tassar i marken, skugga, somrar, bi,
+blommor, studsmolnet med guldpilar, inga svarta facetter, inget z-fighting.
 
 **På macOS, 2026-11-23 (gränssnittet och Metal).** Dunder 0.11.0, Apple M5,
 macOS 27.2. Trädet kompilerade inte på macOS innan detta arbete

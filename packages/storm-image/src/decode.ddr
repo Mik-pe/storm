@@ -1,0 +1,156 @@
+// PNG decoding in pure Dunder: the chunk walk, zlib through the Dunder
+// repo's `packages/zlib`, and the five row filters. The output is the form a
+// backend uploads: 8-bit RGBA, rows top to bottom, no padding.
+//
+// What is read is the PNG the glTF files in the world contain: bit depth 8,
+// colour types 0 (grey), 2 (RGB), 3 (palette), 4 (grey + alpha) and 6 (RGBA),
+// no interlacing. Bit depth 16 and Adam7 are refused with a message rather
+// than decoded halfway: neither occurs in a single Khronos or Katla sample,
+// and a silent 8-bit sample of a 16-bit image is not what the file says.
+import std.bytes as bytes
+import zlib
+import .image as image
+
+const SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10]
+const MAX_PIXEL_BYTES: i64 = 268435456
+
+// Chunk tags, big-endian ASCII (the four bytes read as one u32).
+pub const IHDR: i64 = 1229472850
+pub const PLTE: i64 = 1347179589
+pub const tRNS: i64 = 1951551059
+pub const IDAT: i64 = 1229209940
+pub const IEND: i64 = 1229278788
+
+// Channels per colour type; 0 for a type PNG does not define.
+fn channels(color_type: u8) -> i32 {
+    if color_type == 0 { return 1 }
+    if color_type == 2 { return 3 }
+    if color_type == 3 { return 1 }
+    if color_type == 4 { return 2 }
+    if color_type == 6 { return 4 }
+    0
+}
+
+struct Header { width: i32, height: i32, color_type: u8 }
+
+// A chunk's tag and where its data lies, or -1 past the end.
+fn chunk_at(data: &[]u8, at: i32) -> Result<Chunk, string> {
+    if at + 12 > data.len { return .Err("PNG ends inside a chunk header") }
+    length := i32(bytes.u32_be(data, at))
+    if length < 0 || at + 12 + length > data.len { return .Err("PNG chunk length runs past the end of the file") }
+    .Ok(Chunk { tag: bytes.u32_be(data, at + 4), start: at + 8, length: length })
+}
+
+struct Chunk { tag: i64, start: i32, length: i32 }
+
+// Decode a PNG. Every IDAT is concatenated before inflation, as the format
+// requires; the output limit is the sum of the row lengths including the
+// filter byte, so a stream that claims more pixels than the header says is
+// refused by zlib before anything is allocated for them.
+pub fn decode(data: &[]u8) -> Result<image.Image, string> {
+    if data.len < 57 { return .Err("not a PNG file") }
+    for i in 0..8 { if data[i] != SIGNATURE[i] { return .Err("not a PNG file") } }
+    mut at := 8
+    mut width := 0
+    mut height := 0
+    mut color_type: u8 = 0
+    mut have_header := false
+    mut idat: []u8 = []
+    mut palette: []u8 = []
+    mut transparency: []u8 = []
+    mut ended := false
+    while at + 12 <= data.len && !ended {
+        chunk := chunk_at(data, at)?
+        if chunk.tag == IHDR {
+            if have_header || chunk.length != 13 { return .Err("PNG IHDR must come first and be 13 bytes") }
+            width = i32(bytes.u32_be(data, chunk.start))
+            height = i32(bytes.u32_be(data, chunk.start + 4))
+            if width < 1 || height < 1 || width > 16384 || height > 16384 { return .Err("PNG dimensions must be between 1 and 16384") }
+            if data[chunk.start + 8] != 8 { return .Err("PNG bit depth " + i32(data[chunk.start + 8]).str() + " is not supported (8 only)") }
+            color_type = data[chunk.start + 9]
+            if channels(color_type) == 0 { return .Err("PNG colour type " + i32(color_type).str() + " is not valid") }
+            if color_type == 3 && data[chunk.start + 8] != 8 { return .Err("PNG palette images must be 8-bit") }
+            if data[chunk.start + 10] != 0 || data[chunk.start + 11] != 0 { return .Err("PNG compression and filter methods must be 0") }
+            if data[chunk.start + 12] != 0 { return .Err("interlaced PNG (Adam7) is not supported") }
+            have_header = true
+        } else if chunk.tag == PLTE {
+            if chunk.length == 0 || chunk.length % 3 != 0 { return .Err("PNG PLTE length must be a multiple of 3") }
+            palette = (&data[chunk.start..chunk.start + chunk.length]).clone()
+        } else if chunk.tag == tRNS {
+            if color_type == 3 && chunk.length > palette.len / 3 { return .Err("PNG tRNS has more entries than PLTE") }
+            transparency = (&data[chunk.start..chunk.start + chunk.length]).clone()
+        } else if chunk.tag == IDAT {
+            if !have_header { return .Err("PNG IDAT before IHDR") }
+            bytes.extend_range(&mut idat, data, chunk.start, chunk.start + chunk.length)
+        } else if chunk.tag == IEND {
+            ended = true
+        }
+        at = at + 12 + chunk.length
+    }
+    if !have_header { return .Err("PNG has no IHDR") }
+    if !ended { return .Err("PNG has no IEND") }
+    if idat.len == 0 { return .Err("PNG has no IDAT") }
+    channels := channels(color_type)
+    if color_type == 3 && palette.len == 0 { return .Err("PNG palette image has no PLTE") }
+    row_bytes := width * channels
+    row_total := row_bytes + 1
+    decoded := zlib.decompress(&idat, row_total * height)?
+    if decoded.len != row_total * height { return .Err("PNG image data is " + decoded.len.str() + " bytes, the header says " + (row_total * height).str()) }
+    if i64(width) * i64(height) * 4 > MAX_PIXEL_BYTES { return .Err("PNG image is larger than 256 MiB decoded") }
+    mut pixels: []u8 = []
+    pixels.reserve(width * height * 4)
+    // `previous` is the unfiltered row above; the first row filters against zeros.
+    mut previous: []u8 = []
+    bytes.pad(&mut previous, row_bytes)
+    mut row: []u8 = []
+    bytes.pad(&mut row, row_bytes)
+    for y in 0..height {
+        base := y * row_total
+        filter := decoded[base]
+        for x in 0..row_bytes { row[x] = decoded[base + 1 + x] }
+        if filter == 0 {
+        } else if filter == 1 {
+            for x in channels..row_bytes { row[x] = u8((i32(row[x]) + i32(row[x - channels])) % 256) }
+        } else if filter == 2 {
+            for x in 0..row_bytes { row[x] = u8((i32(row[x]) + i32(previous[x])) % 256) }
+        } else if filter == 3 {
+            for x in 0..row_bytes {
+                left := if x >= channels { i32(row[x - channels]) } else { 0 }
+                row[x] = u8((i32(row[x]) + (left + i32(previous[x])) / 2) % 256)
+            }
+        } else if filter == 4 {
+            for x in 0..row_bytes {
+                a := if x >= channels { i32(row[x - channels]) } else { 0 }
+                b := i32(previous[x])
+                c := if x >= channels { i32(previous[x - channels]) } else { 0 }
+                p := a + b - c
+                pa := (p - a).abs()
+                pb := (p - b).abs()
+                pc := (p - c).abs()
+                predictor := if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c }
+                row[x] = u8((i32(row[x]) + predictor) % 256)
+            }
+        } else {
+            return .Err("PNG row " + y.str() + " uses unknown filter " + filter.str())
+        }
+        for x in 0..width {
+            at_pixel := x * channels
+            if color_type == 6 {
+                pixels.push(row[at_pixel]); pixels.push(row[at_pixel + 1]); pixels.push(row[at_pixel + 2]); pixels.push(row[at_pixel + 3])
+            } else if color_type == 2 {
+                pixels.push(row[at_pixel]); pixels.push(row[at_pixel + 1]); pixels.push(row[at_pixel + 2]); pixels.push(255)
+            } else if color_type == 0 {
+                pixels.push(row[x]); pixels.push(row[x]); pixels.push(row[x]); pixels.push(255)
+            } else if color_type == 4 {
+                pixels.push(row[at_pixel]); pixels.push(row[at_pixel]); pixels.push(row[at_pixel]); pixels.push(row[at_pixel + 1])
+            } else {
+                index := i32(row[x])
+                if index * 3 + 2 >= palette.len { return .Err("PNG pixel references a palette entry that does not exist") }
+                pixels.push(palette[index * 3]); pixels.push(palette[index * 3 + 1]); pixels.push(palette[index * 3 + 2])
+                if index < transparency.len { pixels.push(transparency[index]) } else { pixels.push(255) }
+            }
+        }
+        for x in 0..row_bytes { previous[x] = row[x] }
+    }
+    .Ok(image.Image { width: width, height: height, pixels: pixels })
+}

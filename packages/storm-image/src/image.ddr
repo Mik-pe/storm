@@ -5,6 +5,8 @@ import std.bytes as bytes
 import std.dl as dl
 import std.fs as fs
 import sys
+import .decode as png_file
+import .jpeg as jpeg
 
 const PREVIEW_EDGE: i32 = 768
 const CAPTURE_BYTES: i64 = 67108864
@@ -30,10 +32,69 @@ fn header(data: &[]u8) -> Result<Header, string> {
     mut at: i32 = 3
     width := number(data, &mut at, 32)?
     height := number(data, &mut at, 10)?
-    if at + 4 > data.len || data[at] != 50 || data[at+1] != 53 || data[at+2] != 53 || data[at+3] != 10 { return .Err("expected 8-bit RGB pixels") }
+    if at + 4 > data.len || data[at] != 50 || data[at + 1] != 53 || data[at + 2] != 53 || data[at + 3] != 10 { return .Err("expected 8-bit RGB pixels") }
     at += 4
     if i64(width) * i64(height) * 3 != i64(data.len - at) || i64(data.len) > CAPTURE_BYTES { return .Err("capture size disagrees with its header") }
     .Ok(Header { width: width, height: height, start: at })
+}
+
+// An image in the form a backend uploads: 8-bit RGBA, rows top to bottom,
+// no padding (gfx.upload_texture).
+pub struct Image { width: i32, height: i32, pixels: []u8 }
+
+// A PNG file as RGBA: glTF's embedded images, `--texture`, the MCP preview.
+// Every colour type becomes RGBA8; bit depth 16 and interlacing are refused.
+pub fn decode_png(data: &[]u8) -> Result<Image, string> {
+    png_file.decode(data)
+}
+
+// A baseline JPEG file as RGBA (ITU-T T.81): every sampling factor up to
+// 2x2, with or without restart intervals. Progressive and the other SOF
+// processes are refused with a message.
+pub fn decode_jpeg(data: &[]u8) -> Result<Image, string> {
+    jpeg.decode(data)
+}
+
+// An image file as RGBA, by the bytes it starts with rather than by a
+// declared type: a glTF `mimeType` is a claim, the signature is the file.
+// Neither signature is a refusal that names both.
+pub fn decode(data: &[]u8) -> Result<Image, string> {
+    if data.len >= 8 && data[0] == 137 && data[1] == 80 && data[2] == 78 && data[3] == 71 {
+        return png_file.decode(data)
+    }
+    if data.len >= 2 && data[0] == 255 && data[1] == 216 { return jpeg.decode(data) }
+    .Err("neither a PNG nor a JPEG file")
+}
+
+// The empty image: width 0 and no pixels, the value a material without a
+// baseColorTexture carries.
+pub fn empty() -> Image {
+    Image { width: 0, height: 0, pixels: [] }
+}
+
+// The pixels of a P6 capture as RGBA (alpha 255). The same parser that
+// encodes a capture validates the file, so a texture and a preview agree on
+// what a Storm capture is.
+pub fn rgba(data: &[]u8) -> Result<Image, string> {
+    source := header(data)?
+    mut pixels: []u8 = []
+    pixels.reserve(source.width * source.height * 4)
+    mut at := source.start
+    for _ in 0..source.width * source.height {
+        pixels.push(data[at])
+        pixels.push(data[at + 1])
+        pixels.push(data[at + 2])
+        pixels.push(255)
+        at += 3
+    }
+    .Ok(Image { width: source.width, height: source.height, pixels: pixels })
+}
+
+// A P6 file on disk as RGBA, through the same reader every capture path uses.
+pub fn read_rgba(path: string) -> Result<Image, string> {
+    read := sys.read_u8_limit(path, CAPTURE_BYTES)
+    if !read.ok { return .Err("could not read the file: " + sys.error_message(read.error)) }
+    rgba(&read.value)
 }
 
 fn scanlines(data: &[]u8, source: Header, width: i32, height: i32) -> []u8 {

@@ -53,9 +53,9 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
         pads: [], prizes: [], impact: move impact,
         cloud_top: walk_surface.empty(), boost_top: walk_surface.empty(), effects: particles.empty()
     }
-    mut cloud := gltf.Asset { parts: [] }
-    mut boost := gltf.Asset { parts: [] }
-    mut butterfly := gltf.Asset { parts: [] }
+    mut cloud := gltf.empty_asset()
+    mut boost := gltf.empty_asset()
+    mut butterfly := gltf.empty_asset()
     mut cloud_meshes: []ecs.Entity = []
     mut boost_meshes: []ecs.Entity = []
     mut wings: []ecs.Entity = []

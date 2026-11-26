@@ -1,8 +1,15 @@
 capability unsafe
 
-import .api as vk
-import .layout as vkl
+import vk.api as vk
+import .depth as depth
+import .headless as headless
+import .ibl as ibl
+import .post as post
+import vk.layout as vkl
 import .sdl as sdl
+import .shadow as shadow
+import .texture as texture
+import .ui as ui
 
 @c_layout
 pub struct Buffer {
@@ -39,7 +46,8 @@ pub struct MemoryProperties {
 }
 
 pub const FRAME_COUNT: i32 = 2
-pub const MESH_PUSH_BYTES: u32 = 240
+// mvp(64) model(64) base_color(16) params(16) camera(16) emissive_factor(16).
+pub const MESH_PUSH_BYTES: u32 = 192
 
 // Which setup step failed. It is the return value of every setup function,
 // so a step cannot exist without a name: `name` matches exhaustively and the
@@ -48,7 +56,7 @@ pub const MESH_PUSH_BYTES: u32 = 240
 pub enum SetupStep {
     Ready, Window, Instance, PhysicalDevice, QueueFamily, Device, Format, Swapchain,
     Shadow, Pipeline, PostProcess, Ui, DepthBuffer, FrameSync, VertexBuffer,
-    Environment, CaptureTarget,
+    Environment, CaptureTarget, Texture,
 }
 
 impl SetupStep {
@@ -71,16 +79,30 @@ impl SetupStep {
             .VertexBuffer => "vertex buffer",
             .Environment => "environment maps",
             .CaptureTarget => "capture target",
+            .Texture => "material textures",
         }
     }
 }
 
-pub const PASS_IDLE: u32 = 0
-pub const PASS_WAITING: u32 = 1
-pub const PASS_SHADOW: u32 = 2
-pub const PASS_DIRECT: u32 = 3
-pub const PASS_FILTERED: u32 = 4
-pub const PASS_COMPOSITE: u32 = 5
+// What the renderer is recording right now. The field is a `u32` because an
+// enum may not live in a C layout (E5003), but nothing reads or writes it
+// except `pass()` and `set_pass()`: `pass()` converts through the enum, so a
+// number nobody wrote ends the program (status 108) instead of never matching.
+pub enum Pass { Idle = 0, Waiting = 1, Shadow = 2, Direct = 3, Filtered = 4, Composite = 5 }
+
+pub unsafe fn pass(r: &Renderer) -> Pass { Pass(i32(r.pass)) }
+
+pub fn set_pass(r: &mut Renderer, which: Pass) { r.pass = u32(i32(which)) }
+
+// Whether the frame being recorded is an offscreen capture, and whether its
+// pixels have been read back. Same shape as `Pass`: an integer field that only
+// `capture()` and `set_capture()` touch. `Off` is 0 because the registry
+// calloc's the renderer, and `destroy` returns to it.
+pub enum Capture { Off = 0, Recording = 1, Ready = 2 }
+
+pub unsafe fn capture(r: &Renderer) -> Capture { Capture(i32(r.captureOn)) }
+
+pub fn set_capture(r: &mut Renderer, which: Capture) { r.captureOn = i32(which) }
 
 @c_layout
 pub struct SampledTexture { sampler: ptr, layout: ptr, pool: ptr, set: ptr }
@@ -99,7 +121,6 @@ pub struct Renderer {
     family: u32,
     properties: Properties,
     memoryProperties: MemoryProperties,
-    debugMessenger: ptr,
     pool: ptr,
     commands: [ptr; 2],
     fences: [ptr; 2],
@@ -127,94 +148,45 @@ pub struct Renderer {
     skyFragmentShader: ptr,
     framebuffers: [ptr; 8],
     // Depth attachment, recreated together with the swapchain.
-    depthImage: ptr,
-    depthMemory: ptr,
-    depthView: ptr,
-    shadowInitialized: u32,
-    shadowImage: ptr,
-    shadowMemory: ptr,
-    shadowView: ptr,
-    shadowSampler: ptr,
-    shadowPass: ptr,
-    shadowFramebuffer: ptr,
-    shadowPipeline: ptr,
-    shadowPipelineLayout: ptr,
+    depth: depth.Depth,
+    // The sun's shadow map (shadow.ddr). The set and its layout are bound by
+    // the main pass, the mesh pipelines and the environment maps, so they
+    // stay here; the rest of the cluster is `shadow.Shadow`.
+    shadow: shadow.Shadow,
     shadowSetLayout: ptr,
-    shadowPool: ptr,
     shadowSet: ptr,
-    lightBuffer: ptr,
-    lightMemory: ptr,
-    lightMapped: ptr,
-    shadowVertShader: ptr,
-    shadowFragShader: ptr,
-    // Image-based lighting: prefiltered env cube (6 mips), irradiance cube,
-    // BRDF LUT, their samplers and the one-time build's pipelines and sets.
-    envImage: ptr,
-    envMemory: ptr,
-    envView: ptr,
-    envSampler: ptr,
-    envMipViews: [ptr; 6],
-    envFaceViews: [ptr; 36],
-    envFramebuffers: [ptr; 36],
-    irradianceImage: ptr,
-    irradianceMemory: ptr,
-    irradianceView: ptr,
-    irradianceSampler: ptr,
-    irradianceFaceViews: [ptr; 6],
-    irradianceFramebuffers: [ptr; 6],
-    brdfImage: ptr,
-    brdfMemory: ptr,
-    brdfView: ptr,
-    brdfSampler: ptr,
-    iblPass: ptr,
-    iblPipelineLayout: ptr,
-    iblSetLayout: ptr,
-    iblPool: ptr,
-    iblSets: [ptr; 6],
-    envPipeline: ptr,
-    prefilterPipelines: [ptr; 6],
-    irradiancePipeline: ptr,
-    // Offscreen scene target and the post-process stage.
-    sceneImage: ptr,
-    sceneMemory: ptr,
-    sceneView: ptr,
-    sceneSampleView: ptr,
+    // Image-based lighting: built once at startup from the sky.
+    environment: ibl.Environment,
+
+    // Offscreen scene target and the post-process stage (post.ddr). The set
+    // and its layout are bound by other modules, so they stay here; the rest
+    // of the cluster is `post.Stage`.
     sceneFramebuffer: ptr,
     scenePass: ptr,
     compositePass: ptr,
-    postPipeline: ptr,
-    postPipelineLayout: ptr,
-    postTexture: SampledTexture,
-    postVertShader: ptr,
-    postFragShader: ptr,
+    post: post.Stage,
     captureFramebuffer: ptr,
     // Text and UI.
-    uiPipeline: ptr,
-    uiPipelineLayout: ptr,
-    uiTexture: SampledTexture,
-    uiAtlasImage: ptr,
-    uiAtlasMemory: ptr,
-    uiAtlasMapped: ptr,
-    uiAtlasView: ptr,
-    uiVertex: Buffer,
-    uiCursor: u64,
-    uiVertShader: ptr,
-    uiFragShader: ptr,
+    atlas: ui.Atlas,
     vertex: Buffer,
+    meshSetLayouts: [ptr; 2],
+    // Material textures (texture.ddr): set 1 of the mesh pipeline.
+    material: texture.Material,
     window: sdl.Window,
     frameIndex: i64,
     trace: u32,
+    // Read through `pass()`, written through `set_pass()` only.
     pass: u32,
     resizePending: u32,
     pendingPass: vkl.RenderPassBeginInfo,
     pendingClear: [u64; 4],
     lastResult: i32,
     imageIndex: i32,
-    // Capture is rendered on the GPU, then copied into a tightly packed mapped buffer.
-    captureImage: ptr,
-    captureView: ptr,
-    captureMemory: ptr,
-    readback: Buffer,
+    // Capture is rendered on the GPU, then copied into a tightly packed mapped
+    // buffer (headless.ddr). Whether a capture is being recorded is frame
+    // state and stays here, behind `capture()`/`set_capture()`.
+    capture: headless.Capture,
+    // Read through `capture()`, written through `set_capture()` only.
     captureOn: i32,
     // Append cursor for the shared vertex buffer: every recorded draw keeps its
     // own slice, so later uploads cannot overwrite earlier geometry.

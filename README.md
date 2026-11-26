@@ -19,7 +19,9 @@ av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexp
 
 ## Förutsättningar
 
-- `dunder` 0.11.3 eller senare. Version 0.11.3 stöder den paketrelativa Metal-shadern och de lånade ECS-frågorna som används i spelet.
+- `dunder` 0.12.0 eller senare; senast verifierad med 0.12.0. `layout.ddr` använder
+  ett fält som är en fast array av en annan `@c_layout`-post (`VkImageBlit` med
+  `[Offset3D; 2]`), en konstruktion som är mätt på 0.12.0 men inte på 0.11.3.
 - Git i `PATH` och nätåtkomst vid första bygget. Dunder hämtar de låsta revisionerna av `dunder-skrift` och dess zlib-beroende automatiskt.
 - **Linux:** `vulkan-icd-loader` + en ICD (`vulkan-intel`, `vulkan-radeon`, …)
   och `sdl2` för fönstret. `glslangValidator` behövs bara när GLSL-shaders
@@ -74,16 +76,17 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | --- | --- | --- |
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
-| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `trait Backend`, och geometrihjälparna (`cube`, `plane`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
-| [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
+| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture`, `Textures` (materialets fem platser), `Encoding` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, encoding, &sampler)`/`mesh(…, &textures, surface)`, och geometrihjälparna (`cube`, `plane`, `sphere`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
+| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (82 prototyper + `load()`), `layout.ddr` (71 C-poster ur registret + fyra par-poster) och `enums.ddr` (35 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
+| [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx`, `vk` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
-| [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer och PBR-material. | `core` |
-| [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och propagering till `WorldTransform`. Modulen `animation` samplar och blandar nyckelposer för position, rotation och skala. | `core`, `ecs` |
+| [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer, PBR-material med `baseColorTexture` (bilder som bytes + samplern som `gfx.Sampler`). | `core`, `gfx` |
+| [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och propagering till `WorldTransform`. Modulen `animation` samplar och blandar nyckelposer för position, rotation och skala. | `core`, `ecs`, `gfx` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
 | [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning, studsmoln, bonusfjärilar och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
-| [`packages/storm-image`](packages/storm-image) | Omvandlar renderarens bild till en PNG med systemets zlib. | — |
+| [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt baseline-JPEG (4:4:4, 4:2:2, 4:2:0, grå, restart-markörer; progressivt vägras) som RGBA8, valt på filens signatur — bitdjup 16 och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
@@ -107,13 +110,20 @@ match window.begin() {
 }
 _ := window.begin_pass()
 _ := window.sky(&inv_view_projection.m, &sun, &zenith, &horizon)
-_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, .Opaque)
+_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, &gfx.no_textures(), .Opaque)
 _ := window.end()
 ```
 
 Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar åtta
 `f32` per vertex för position, normal och UV, en `Sky` (solen, himlen och
-ljusmatrisen, samlade i `gfx.sky_params`) och kamerans position.
+ljusmatrisen, samlade i `gfx.sky_params`), kamerans position, materialets fem
+texturer som **ett** värde `gfx.Textures` (`base`, `metallic_roughness`,
+`normal`, `occlusion`, `emissive`; `gfx.no_textures()` är fem gånger
+`no_texture()` och låter faktorerna stå) och ytan: `.Opaque` eller `.Blended`.
+`upload_texture(pixels, width, height, encoding, &sampler)` ger en `gfx.Texture`
+från RGBA8-pixlar: `encoding` säger om texeln är sRGB (en basfärg) eller
+linjär (en Metallic/Roughness-, normal- eller occlusion-karta), och mipkedjan
+byggs av backenden.
 
 - **På Vulkan** går konstanterna med push constants: 240 byte i meshpasset
   (två matriser, material, kamera och himmelsljus), och ljusmatrisen ligger i
@@ -150,7 +160,7 @@ skärmgradient.
 
 När kantutjämning eller färgeffekter används ritas scenen först till en färgtextur. Ett fullskärmspass läser texturen och jämnar ut diagonala kanter med FXAA, färgtonar bilden och ger ljusa partier en mjuk glöd enligt de valda inställningarna. Därefter ritas HUD och text i skärmens egen upplösning. Med båda inställningarna avstängda ritas scenen direkt till slutbilden. [Jämför kantutjämningen](docs/kantutjamning.png)
 
-FXAA är på från start i både spelet och Studio. Färgtoning och glöd är på i Blomsterskogen och av i materialstudien och banor utan blomskogstemat. **E** växlar färgtoning och glöd under körning. `--no-aa` stänger av kantutjämningen vid start. `--no-post` stänger av färgtoning och glöd vid start, medan `--effects` slår på dem. Ange `--no-aa --no-post` för att jämföra med direktrendering.
+FXAA är på från start i både spelet och Studio. Färgtoning och glöd är på i Blomsterskogen och av i materialstudien och banor utan blomskogstemat. **E** växlar färgtoning och glöd under körning. `--no-aa` stänger av kantutjämningen vid start. `--no-post` stänger av färgtoning och glöd vid start, medan `--effects` slår på dem — i Blomsterskogen, där de redan är på, ändrar `--effects` därför ingenting (capture **AE = 0** mot standard), och i studion är skillnaden 2 421 pixlar av 1 024 000: tonen är avsiktligt diskret (±0,03–0,09 i linjärt rum, `post.frag`). Ange `--no-aa --no-post` för att jämföra med direktrendering.
 
 ```dunder
 mut schedule := render.Graph::new()
@@ -161,7 +171,7 @@ _ := schedule.add_pass(.Transparent, "transparent", ["scene_color"], ["scene_col
 _ := schedule.add_pass(.PostProcess, "post", ["display"], ["scene_color"])
 _ := schedule.add_pass(.Ui, "ui", ["display"], ["display"])
 plan := schedule.compile()
-for step in 0..plan.steps.len { kind := plan.steps[step].kind }
+for step in 0..plan.steps.len { kind := plan.steps[step].kind; _ := kind }
 ```
 
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
@@ -186,6 +196,11 @@ för blendingens skull.
   Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta
 - `--frames N` – rendera N frames och avsluta (för smoke-test)
+- `--help` (eller `-h`) – skriv varje flagga med en rad och avsluta. Listan är
+  hela programmet: ett test (`tests/flags.ddr`) håller varje `--x` i `src/`
+  mot en rad i `args.flags()`, så en flagga utan hjälp-rad är rött.
+- `--scene fil` – ladda en bana i stället för demobanan; `--watch` läser om
+  den när filen sparas; `--font sökväg` väljer UI-typsnittet
 - `--capture fil.ppm` – rendera en bildruta till PPM, 1280 × 800 pixlar, utan att öppna ett fönster.
   Fungerar på en låst session; det är så QA görs utan tangentbord.
 - `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
@@ -193,6 +208,10 @@ för blendingens skull.
   `--eye` står kameran på baslinjen som varje pixeljämförelse mäter mot.
 - `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på
   marken mitt framför kameran)
+- `--texture fil.ppm` – studions golv bär en Storm-capture (P6, läst med
+  `image.read_rgba`); inget annat i scenen har textur. Utan flaggan är golvet
+  `gfx.no_textures()`. I spelet (`--play`, en bana) vägras flaggan med en
+  text: det finns inget golv att bära den.
 - `--no-glass` och `--no-shadows` stänger av glaset respektive skuggorna vid start. Inspektorn har också reglagen **Anti-aliasing** och **Color and glow**.
 - `--trace` – skriv varje inläsningssteg
 
@@ -225,11 +244,14 @@ cd packages/storm-metal && dunder run tools/selftest.ddr
 
 ### Kör på Linux
 
-Fönstret kräver en **olåst** Wayland-session (`hyprctl monitors` visar
-`solitaryBlockedBy`). Under en låst session kan Storm inte hämta nästa
-swapchain-bild efter de första frame-rutorna — det är kompositorn, inte
-renderaren (dogfood fynd 16 och 20). Då är `--capture fil.ppm --frames 1` vägen
-till en bild. Den vägen använder Vulkan direkt och fungerar även över SSH utan grafisk session.
+Fönstret kan öppnas på en **låst** Wayland-session (`hyprctl monitors` visar
+`solitaryBlockedBy`): `--frames N` presenterar och avslutar med status 0 —
+mätt 10/10 på `a919b02` och 10/10 på `9f879c9`, och med fem varianter (`--studio`, `--play`, `--glb`,
+`--effects`, `--no-post --no-aa`) à 20 frames. Det fanns en tid (fynd 16 och 20,
+och en SIGSEGV på `ac268f0`) då låset stoppade presentationen; det gäller inte
+trädet längre. Däremot syns bilden inte: skärmdump och `grim` blockeras av
+låsytan, så `--capture fil.ppm --frames 1` är vägen till en **bild** oavsett
+låsning. Den vägen använder Vulkan direkt och fungerar även över SSH utan grafisk session.
 `dunder run --example scene` kör ECS och textlayout helt utan fönster.
 
 Från en Mac kan Vulkan-sidan ändå hållas grön i typ: `dunder check --target
@@ -244,7 +266,7 @@ mut allocator := ecs.EntityAllocator::new()
 mut positions := ecs.Pool<Position>::new()
 e := allocator.create()
 _ := positions.insert(e, Position { x: 1.0, y: 2.0 })
-positions.get(e).x            // 1.0
+print(positions.get(e).x)      // 1.0
 positions.get_mut(e).x = 3.0
 _ := positions.remove(e)      // .Some(Position) — swap-remove behåller packning
 ```
@@ -305,7 +327,7 @@ Atlasen vet själv i vilken pixelstorlek dess glyfer rastrerades
 (`raster_size`), och `ui.Canvas` frågar den: texten ritas `RASTER_SIZE` punkter
 oavsett, så en Retina-display packar atlasen på dubbla storleken och får
 dubbel skärpa. Rita texten nära den storlek den rastrerades vid — `ui.RASTER_SIZE`
-är 22 px och editorn använder skalorna 0.8–1.2. En backend behöver en
+är 22 px och editorn ritar 11–22 punkter, alltså skalorna 0.5–1.0. En backend behöver en
 texturpipeline för att rita dem; Storms egna finns i `packages/storm-vulkan/src/ui.ddr`
 och `packages/storm-metal/src/ui.ddr`.
 
@@ -315,13 +337,21 @@ och `packages/storm-metal/src/ui.ddr`.
 dunder build                    # bygger src/main.ddr
 dunder run --example scene      # ECS/glTF/text utan fönster
 dunder test                     # rotpaketets tester; och i varje packages/*
-dunder run tools/shaders.ddr    # GLSL → SPIR-V
+dunder run tools/shaders.ddr -- --check   # GLSL → SPIR-V: utgång 1 om shader.ddr skiljer sig från källorna
+dunder run tools/shaders.ddr               # … eller skriv om den efter en shaderändring
+dunder run tools/vk.ddr -- /tmp/vk.xml --check   # registret → storm-vk: utgång 1 om en av de tre filerna skiljer sig
 dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
+dunder run tools/check.ddr      # varje programrot (tools/, examples/, packages/*/tools/) typkontrolleras; utgång 1 när en inte gör det
 ```
 
-Vulkans SPIR-V ligger i `packages/storm-vulkan/src/shader.ddr`. Kör
-`tools/shaders.ddr` med `glslangValidator` efter en ändring i GLSL-koden.
-Metal bäddar in `packages/storm-metal/shaders/storm.metal` direkt vid bygget.
+Vulkans SPIR-V ligger i `packages/storm-vulkan/src/shader.ddr`, en avledd
+fil: `tools/shaders.ddr` kompilerar `packages/storm-vulkan/shaders/*` med
+`glslangValidator`. `--check` har samma kontrakt som `tools/vk.ddr --check`
+— efter en ändring i GLSL-koden kör du det, och det fallerar tills modulen
+är omgenererad. `tools/vk.ddr` skriver `packages/storm-vk/` (Vulkan-posterna,
+prototyperna och enums ur Khronos `vk.xml`, som hämtas med
+`curl -o /tmp/vk.xml https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/main/xml/vk.xml`);
+inget i storm-vulkan skrivs av det. Metal bäddar in `packages/storm-metal/shaders/storm.metal` direkt vid bygget.
 
 ## Regler
 
@@ -330,6 +360,11 @@ Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
 - **Bygget ska ta under 20 sekunder** på Mikparchy. `dunder run tools/build-time.ddr`
   mäter och fallerar annars, även när bygget självt fallerar. En byggnad över
   budget pushas inte.
+- **Varje programrot ska typkontrolleras.** `dunder run tools/check.ddr` går
+  igenom `tools/`, `examples/` och `packages/*/tools/` — rötter som
+  `dunder check` utan argument aldrig når — och fallerar med namnet på den
+  som inte kompilerar. Listan är härledd ur trädet, så ett nytt verktyg står
+  under porten utan att registreras.
 - **Bara `main`.** Inga pull requester, inga reviews, ingen CI. Arbete
   commit:as på `main` och pushas direkt när `check`, testerna och
   byggbudgeten är gröna.

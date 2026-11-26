@@ -1,0 +1,102 @@
+// PNG decoding: every colour type, every row filter, the refusals. The
+// fixtures are real PNG files written by Python's zlib and Pillow, and the
+// expected pixels are what Pillow reads back from them — never what the
+// decoder under test says (a fixture built by the code it tests proves
+// nothing: Storm's glTF suite once agreed with itself on a wrong chunk type).
+capability filesystem, stdio
+
+import ..src.image as image
+import sys
+
+fn fixture(name: string) -> []u8 {
+    read := sys.read_u8("tests/fixtures/" + name)
+    assert(read.ok)
+    read.value
+}
+
+fn expect_pixels(decoded: &image.Image, expected: &[]u8) {
+    assert(decoded.pixels.len == expected.len)
+    for i in 0..expected.len {
+        if decoded.pixels[i] != expected[i] {
+            _ := sys.eprint("pixel byte " + i.str() + ": got " + decoded.pixels[i].str() + ", expected " + expected[i].str())
+        }
+        assert(decoded.pixels[i] == expected[i])
+    }
+}
+
+// rgba22.png: 2x2 RGBA, filter 0.
+@test fn rgba() {
+    decoded := image.decode_png(&fixture("rgba22.png")).unwrap()
+    assert(decoded.width == 2)
+    assert(decoded.height == 2)
+    expected: []u8 = [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 255, 255, 255, 0]
+    expect_pixels(&decoded, &expected)
+}
+
+// gray32.png: 3x2 grey, filter 1 (Sub).
+@test fn grey_sub() {
+    decoded := image.decode_png(&fixture("gray32.png")).unwrap()
+    assert(decoded.width == 3)
+    assert(decoded.height == 2)
+    expected: []u8 = [0, 0, 0, 255, 100, 100, 100, 255, 255, 255, 255, 255, 200, 200, 200, 255, 50, 50, 50, 255, 13, 13, 13, 255]
+    expect_pixels(&decoded, &expected)
+}
+
+// rgb45.png: 4x5 RGB, one row per filter (0–4), Paeth included.
+@test fn rgb_every_filter() {
+    decoded := image.decode_png(&fixture("rgb45.png")).unwrap()
+    assert(decoded.width == 4)
+    assert(decoded.height == 5)
+    expected: []u8 = [165, 77, 202, 255, 24, 37, 48, 255, 187, 29, 109, 255, 19, 44, 222, 255, 214, 35, 123, 255, 46, 217, 30, 255, 63, 114, 31, 255, 203, 25, 113, 255, 23, 68, 148, 255, 214, 73, 60, 255, 157, 92, 52, 255, 96, 190, 49, 255, 32, 30, 105, 255, 254, 218, 160, 255, 238, 232, 185, 255, 153, 127, 92, 255, 124, 41, 153, 255, 253, 175, 229, 255, 147, 37, 60, 255, 214, 84, 175, 255]
+    expect_pixels(&decoded, &expected)
+}
+
+// graya32.png: 3x2 grey + alpha, filter 2 (Up).
+@test fn grey_alpha() {
+    decoded := image.decode_png(&fixture("graya32.png")).unwrap()
+    assert(decoded.width == 3)
+    assert(decoded.height == 2)
+    expected: []u8 = [10, 10, 10, 255, 20, 20, 20, 0, 30, 30, 30, 128, 40, 40, 40, 7, 200, 200, 200, 200, 0, 0, 0, 255]
+    expect_pixels(&decoded, &expected)
+}
+
+// pal22.png: 2x2 palette with tRNS: alpha comes from the transparency chunk.
+@test fn palette_with_transparency() {
+    decoded := image.decode_png(&fixture("pal22.png")).unwrap()
+    expected: []u8 = [255, 0, 0, 200, 0, 255, 0, 100, 0, 0, 255, 255, 255, 0, 0, 200]
+    expect_pixels(&decoded, &expected)
+}
+
+// Bit depth 16 and Adam7 are refused with a message, never half-decoded.
+fn refusal(result: &Result<image.Image, string>) -> string {
+    match result { .Ok(_) => "decoded", .Err(s) => s.clone() }
+}
+
+@test fn refuses_16_bit() {
+    result := image.decode_png(&fixture("depth16.png"))
+    assert(result.is_err())
+    assert(refusal(&result) == "PNG bit depth 16 is not supported (8 only)")
+}
+
+@test fn refuses_interlaced() {
+    result := image.decode_png(&fixture("interlaced.png"))
+    assert(result.is_err())
+    assert(refusal(&result) == "interlaced PNG (Adam7) is not supported")
+}
+
+// A corrupt Adler-32 is zlib's refusal, passed through as the PNG's.
+@test fn refuses_corrupt_stream() {
+    assert(image.decode_png(&fixture("rgba22_bad_adler.png")).is_err())
+}
+
+@test fn refuses_not_a_png() {
+    assert(image.decode_png(&[1, 2, 3]).is_err())
+    not_png: []u8 = [80, 54, 10, 50, 32, 49, 10, 50, 53, 53, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57]
+    assert(image.decode_png(&not_png).is_err())
+}
+
+// empty(): the image a material without a texture carries.
+@test fn empty_has_no_pixels() {
+    none := image.empty()
+    assert(none.width == 0 && none.height == 0 && none.pixels.len == 0)
+}

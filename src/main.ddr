@@ -17,9 +17,16 @@ fn preview(session: &play.Session, path: string) -> Result<(), string> {
 fn main() -> i32 {
     argv := args.from_process()
     if args.flag(&argv, "--help") || args.flag(&argv, "-h") {
-        print("storm [--studio | --glb MODEL.glb | --play | --scene FILE [--watch] | --mcp] [--frames N] [--capture FILE.ppm] [--no-aa] [--no-post | --effects]")
-        print("Play Blomsterskogen, open the material studio, load a scene, or serve game tools on stdio.")
+        print(args.usage())
         return 0
+    }
+    // A flag the program does not read is a typo, never a default: refuse
+    // it by name instead of rendering a picture of something else.
+    bad := args.unknown(&argv)
+    if bad.len > 0 {
+        _ := sys.eprint("storm: unknown option " + bad)
+        print(args.usage())
+        return 2
     }
     if args.flag(&argv, "--mcp") { return mcp.serve(preview) }
     capture := args.flag(&argv, "--capture")

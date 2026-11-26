@@ -17,6 +17,7 @@
 import core
 import ecs
 import .skinning
+import gfx
 import std.math as _
 
 pub struct LocalTransform {
@@ -50,21 +51,56 @@ pub enum TransformField { X = 0, Y = 1, Z = 2, Rotation = 3, ScaleX = 4, ScaleY 
 
 // A PBR surface as the mesh shader takes it. Transparent surfaces are drawn
 // in the blended pass, back to front; everything else relies on depth.
+// `textures` are the surface's maps as the contract names them, each one
+// `gfx.no_texture()` or the handle of an uploaded texture: a handle is a
+// plain value, and the one who uploaded it owns it.
 pub struct Material {
     base: core.Color,
     metallic: f32,
     roughness: f32,
     emissive: f32,
+    // glTF's emissive term: rgb scales the emissive map's texel, w is its
+    // strength (1.0). Zero adds nothing, which is every hand-made surface.
+    emissive_factor: [f32; 4],
+    textures: gfx.Textures,
 }
 
 pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0 }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, emissive_factor: [0.0, 0.0, 0.0, 1.0], textures: gfx.no_textures() }
+}
+
+// The same surface with a base colour image. The image replaces nothing
+// else: metallic, roughness and emissive stay, and `base` becomes the tint
+// the shader multiplies onto the texel (glTF's baseColorFactor).
+pub fn textured(move surface: Material, texture: gfx.Texture) -> Material {
+    mut m := move surface
+    m.textures.base = texture
+    m
+}
+
+// The same surface with all its maps at once: what a glTF material hands
+// over. `base` is the first one's slot, so `textured` and this agree on
+// where the base colour lives.
+pub fn mapped(move surface: Material, move textures: gfx.Textures) -> Material {
+    mut m := move surface
+    m.textures = move textures
+    m
 }
 
 // The same surface with an emissive term: what the shader adds on its own,
 // for orbs, lamps and anything that should glow rather than reflect.
 pub fn emissive_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, emissive_factor: [0.0, 0.0, 0.0, 1.0], textures: gfx.no_textures() }
+}
+
+// A surface with glTF's emissive factor: rgb scales the emissive map's texel
+// and w is KHR_materials_emissive_strength (1.0 when the file has neither).
+// The map is `mapped`'s to give; a surface without one is off whatever the
+// factor says, since the white fallback times zero adds nothing.
+pub fn emissive_mapped(move surface: Material, move factor: [f32; 4]) -> Material {
+    mut m := move surface
+    m.emissive_factor = factor
+    m
 }
 
 pub struct Drawable {
@@ -309,14 +345,9 @@ impl Graph {
 
     pub fn set_material(&mut self, entity: ecs.Entity, move value: Material) -> bool {
         if !self.allocator.is_alive(entity) { return false }
-        if self.materials.contains(entity) {
-            self.materials.get_mut(entity).base = value.base.clone()
-            self.materials.get_mut(entity).metallic = value.metallic
-            self.materials.get_mut(entity).roughness = value.roughness
-            self.materials.get_mut(entity).emissive = value.emissive
-            return true
-        }
-        self.materials.insert(entity, value) >= 0
+        // Pool.insert replaces an existing row whole, so every field of the
+        // material arrives; a per-field copy here once left a new one behind.
+        self.materials.insert(entity, move value) >= 0
     }
 
     pub fn material_at(&self, entity: ecs.Entity) -> &Material from self { self.materials.get(entity) }

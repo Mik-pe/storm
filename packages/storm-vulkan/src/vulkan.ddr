@@ -17,19 +17,21 @@ import gfx
 import std.bytes as b
 import std.dl as dl
 import std.sys as sys
-import .api as api
+import vk.api as api
 import .depth as depth
 import .device as device
-import .enums as enums
+import vk.enums as enums
 import .headless as headless
 import .ibl as ibl
-import .layout as vk
+import vk.layout as vk
 import .pipeline as pipeline
 import .post as post
 import .shadow as shadow
 import .ui as ui
 import .sdl as sdl
 import .state as state
+import .texture as texture
+import .records as records
 
 // A live renderer, by generation: the handle is a plain value the
 // application can copy, and an expired one is refused, never followed.
@@ -63,6 +65,8 @@ unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: 
     step = depth.create(&mut r, r.width, r.height)
     if step != .Ready { return step }
     step = shadow.setup(&mut r)
+    if step != .Ready { return step }
+    step = texture.setup(&mut r)
     if step != .Ready { return step }
     step = pipeline.setup(&mut r)
     if step != .Ready { return step }
@@ -138,9 +142,9 @@ unsafe fn name(r: &state.Renderer) -> string {
 }
 
 unsafe fn capture_next_at(r: &mut state.Renderer) -> bool {
-    if r.pass != state.PASS_IDLE { return false }
+    if state.pass(&r) != .Idle { return false }
     if r.captureFramebuffer == ptr(0) && headless.setup(&mut r) != .Ready { return false }
-    r.captureOn = 1
+    state.set_capture(&mut r, .Recording)
     true
 }
 
@@ -188,18 +192,21 @@ fn draw_error(frames: i64, move message: string) -> DrawResult {
 
 unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult {
     if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed" } }
-    if r.pass != state.PASS_IDLE { return BeginResult { ok: false, error: "a frame is already being recorded" } }
+    if state.pass(&r) != .Idle { return BeginResult { ok: false, error: "a frame is already being recorded" } }
     slot := r.current
     trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
     // The CPU is about to reuse the mapped mesh, UI and light buffers shared by both slots.
     waited := r.api.WaitForFences(r.device, u32(r.fences.len), addr(&mut r.fences[0]), 1, 18446744073709551615)
     if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed" } }
+    // Every set of the last frame is out of use now: its pool starts over.
+    pooled := texture.begin_frame(&mut r)
+    if pooled != 0 { return BeginResult { ok: false, error: "the material descriptor pool could not be made (" + enums.result_name(pooled) + ")" } }
     if r.resizePending != 0 {
         mut width: i32 = 0
         mut height: i32 = 0
         r.window.GetDrawableSize(r.window.handle, addr(&mut width), addr(&mut height))
         if width > 0 && height > 0 && (u32(width) != r.width || u32(height) != r.height) {
-            capture := r.captureOn == 1
+            capture := state.capture(&r) == .Recording
             failed := recreate(&mut r)
             if failed != .Ready { return BeginResult { ok: false, error: "could not resize at " + describe(&r, failed) } }
             if capture && !capture_next_at(&mut r) { return BeginResult { ok: false, error: "could not resize the capture target" } }
@@ -216,19 +223,19 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
         trace_step(&r, "reserved " + r.vertex.capacity.str() + " vertex bytes for " + vertex_bytes.str())
     }
     mut image_index: u32 = 0
-    if r.surface == ptr(0) && r.captureOn != 1 {
+    if r.surface == ptr(0) && state.capture(&r) != .Recording {
         return BeginResult { ok: false, error: "offscreen rendering requires capture_next" }
     }
-    if r.captureOn != 1 {
+    if state.capture(&r) != .Recording {
         mut acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
             r.image_available[slot], ptr(0), addr(&mut image_index))
-        if enums.is_out_of_date(acquired) {
+        if records.is_out_of_date(acquired) {
             failed := recreate(&mut r)
             if failed != .Ready { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated at " + describe(&r, failed) } }
             acquired = r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
                 r.image_available[slot], ptr(0), addr(&mut image_index))
         }
-        if !enums.is_success(acquired) { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
+        if !records.is_success(acquired) { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
         trace_step(&r, "acquired image " + i32(image_index).str())
     }
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
@@ -236,17 +243,15 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     // Per-frame cursors: every stream is appended anew, by the frame itself.
     r.vertexCursor = 0
     ui.reset(&mut r)
-    mut begin: vk.CommandBufferBeginInfo = zeroed()
-    begin.sType = 42
+    mut begin: vk.CommandBufferBeginInfo = vk.CommandBufferBeginInfo::new()
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
         return BeginResult { ok: false, error: "beginning the command buffer failed" }
     }
     mut clear_color: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
-    mut pass: vk.RenderPassBeginInfo = zeroed()
-    pass.sType = 43
+    mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
     pass.renderPass = r.renderPass
-    pass.framebuffer = if r.captureOn == 1 { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
+    pass.framebuffer = if state.capture(&r) == .Recording { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
     pass.renderArea.extent.width = r.width
     pass.renderArea.extent.height = r.height
     pass.clearValueCount = 2
@@ -263,15 +268,15 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     r.pendingPass = pass
     r.pendingClear = clears
     r.pendingPass.pClearValues = addr(&mut r.pendingClear[0])
-    r.pass = state.PASS_WAITING
+    state.set_pass(&mut r, .Waiting)
     BeginResult { ok: true, error: "" }
 }
 
 // Open the main render pass. Called after prepare_frame and after the optional
 // shadow pass has been recorded into the same command buffer.
 unsafe fn open_main_pass(r: &mut state.Renderer, filtered: bool) -> BeginResult {
-    if r.pass == state.PASS_IDLE { return BeginResult { ok: false, error: "no frame in flight" } }
-    if r.pass != state.PASS_WAITING { return BeginResult { ok: false, error: "a render pass has already started" } }
+    if state.pass(&r) == .Idle { return BeginResult { ok: false, error: "no frame in flight" } }
+    if state.pass(&r) != .Waiting { return BeginResult { ok: false, error: "a render pass has already started" } }
     if !shadow.ensure_readable(&mut r) { return BeginResult { ok: false, error: "could not initialize the shadow map" } }
     mut pass := r.pendingPass.clone()
     if filtered {
@@ -279,9 +284,9 @@ unsafe fn open_main_pass(r: &mut state.Renderer, filtered: bool) -> BeginResult 
         if failed != .Ready { return BeginResult { ok: false, error: "could not set up the scene texture: " + describe(&r, failed) } }
         pass.framebuffer = r.sceneFramebuffer
         pass.renderPass = r.scenePass
-        r.pass = state.PASS_FILTERED
+        state.set_pass(&mut r, .Filtered)
     } else {
-        r.pass = state.PASS_DIRECT
+        state.set_pass(&mut r, .Direct)
     }
     device.set_frame_viewport(&r)
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
@@ -292,7 +297,7 @@ unsafe fn open_main_pass(r: &mut state.Renderer, filtered: bool) -> BeginResult 
 
 unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
     sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
-    if r.pass != state.PASS_DIRECT && r.pass != state.PASS_FILTERED { return draw_error(r.frameIndex, "sky requires an open scene") }
+    if state.pass(&r) != .Direct && state.pass(&r) != .Filtered { return draw_error(r.frameIndex, "sky requires an open scene") }
     slot := r.current
     // Push constants: inv_view_proj(64) + sun(16) + zenith(16) + horizon(16).
     mut push: [f32; 28] = [0.0; 28]
@@ -307,8 +312,8 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 }
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, blended: bool) -> DrawResult {
-    if r.pass != state.PASS_DIRECT && r.pass != state.PASS_FILTERED { return draw_error(r.frameIndex, "mesh requires an open scene") }
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], blended: bool) -> DrawResult {
+    if state.pass(&r) != .Direct && state.pass(&r) != .Filtered { return draw_error(r.frameIndex, "mesh requires an open scene") }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
@@ -323,48 +328,52 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     }
     r.vertexCursor = offset + bytes
     slot := r.current
-    // mvp(64) model(64) base_color(16) params(16) camera(16)
-    // sun(16) sun_color(16) zenith(16) horizon(16) = 240 bytes.
-    mut push: [f32; 60] = [0.0; 60]
+    // The draw's own values: mvp(64) model(64) base_color(16) params(16)
+    // camera(16) emissive_factor(16) = 192 bytes. The sun and the sky
+    // are the frame's, in set 0's uniform (shadow.set_light).
+    mut push: [f32; 48] = [0.0; 48]
     for i in 0..16 { push[i] = mvp[i] }
     for i in 0..16 { push[16 + i] = model[i] }
     for i in 0..4 { push[32 + i] = base_color[i] }
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
-    for i in 0..4 { push[44 + i] = sky.sun[i] }
-    for i in 0..3 { push[48 + i] = sky.sun_color[i] }
-    push[51] = sky.diffuse_fill
-    for i in 0..4 { push[52 + i] = sky.zenith[i] }
-    for i in 0..4 { push[56 + i] = sky.horizon[i] }
+    for i in 0..4 { push[44 + i] = emissive[i] }
     if blended {
         r.api.CmdBindPipeline(r.commands[slot], 0, r.transparentPipeline)
     } else {
         r.api.CmdBindPipeline(r.commands[slot], 0, r.pipeline)
     }
+    // Set 1 is the draw's: the five maps of this material, written now.
+    material_set := texture.bind(&mut r, textures)
+    if material_set == ptr(0) { return draw_error(r.frameIndex, "the frame's material descriptor sets are used up") }
+    r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.pipelineLayout, 1, 1, addr(&material_set), 0, ptr(0))
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.vertex.handle), addr(&offset))
+    // The frame's values once per draw until the contract has a per-pass
+    // hook (next-steps §7): the same 144 bytes the shadow pass wrote when
+    // it ran, now on every frame.
+    _ := shadow.set_light(&r, sky)
     r.api.CmdPushConstants(r.commands[slot], r.pipelineLayout, enums.shader_stage(.VertexFragment), 0, state.MESH_PUSH_BYTES, addr(&push[0]))
     r.api.CmdDraw(r.commands[slot], u32(vertices.len / gfx.VERTEX_FLOATS), 1, 0, 0)
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }
 
 unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
-    if r.pass == state.PASS_IDLE { return draw_error(r.frameIndex, "end without begin") }
-    if r.pass != state.PASS_DIRECT && r.pass != state.PASS_COMPOSITE { return draw_error(r.frameIndex, "end requires a finished scene") }
+    if state.pass(&r) == .Idle { return draw_error(r.frameIndex, "end without begin") }
+    if state.pass(&r) != .Direct && state.pass(&r) != .Composite { return draw_error(r.frameIndex, "end requires a finished scene") }
     slot := r.current
     r.api.CmdEndRenderPass(r.commands[slot])
-    if r.captureOn == 1 {
+    if state.capture(&r) == .Recording {
         headless.copy_to_host(&r)
     } else {
         // The same scene pass writes every target. A swapchain image must be
         // transitioned for the presentation engine.
-        mut barrier: vk.ImageMemoryBarrier = zeroed()
-        barrier.sType = 45
+        mut barrier: vk.ImageMemoryBarrier = vk.ImageMemoryBarrier::new()
         barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
         barrier.dstAccessMask = enums.access(.None)
         barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
         barrier.newLayout = enums.IMAGE_LAYOUT_PRESENT_SRC_KHR
-        barrier.srcQueueFamilyIndex = 4294967295
-        barrier.dstQueueFamilyIndex = 4294967295
+        barrier.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+        barrier.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
         barrier.image = r.images[r.imageIndex]
         barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
         barrier.subresourceRange.levelCount = 1
@@ -373,13 +382,12 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
             0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
     }
     if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
-        r.pass = state.PASS_IDLE
+        state.set_pass(&mut r, .Idle)
         return draw_error(r.frameIndex, "ending the command buffer failed")
     }
-    mut submit_info: vk.SubmitInfo = zeroed()
-    submit_info.sType = 4
+    mut submit_info: vk.SubmitInfo = vk.SubmitInfo::new()
     wait_stage := enums.pipeline_stage(.ColorAttachmentOutput)
-    if r.captureOn != 1 {
+    if state.capture(&r) != .Recording {
         submit_info.waitSemaphoreCount = 1
         submit_info.pWaitSemaphores = addr(&r.image_available[slot])
         submit_info.pWaitDstStageMask = addr(&wait_stage)
@@ -390,24 +398,23 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     submit_info.pCommandBuffers = addr(&r.commands[slot])
     trace_step(&r, "submit")
     if r.api.QueueSubmit(r.queue, 1, addr(&submit_info), r.fences[slot]) != 0 {
-        r.pass = state.PASS_IDLE
+        state.set_pass(&mut r, .Idle)
         return draw_error(r.frameIndex, "queue submission failed")
     }
-    if r.captureOn == 1 {
+    if state.capture(&r) == .Recording {
         // Offscreen frames are read back from mapped memory; nothing to present.
         if r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615) != 0 {
-            r.pass = state.PASS_IDLE
+            state.set_pass(&mut r, .Idle)
             return draw_error(r.frameIndex, "waiting for capture readback failed")
         }
-        r.captureOn = 2
-        r.pass = state.PASS_IDLE
+        state.set_capture(&mut r, .Ready)
+        state.set_pass(&mut r, .Idle)
         r.current = (r.current + 1) % 2
         r.frameIndex = r.frameIndex + 1
         return DrawResult { ok: true, error: "", frames: r.frameIndex }
     }
     mut image_index := u32(r.imageIndex)
-    mut present: vk.PresentInfoKHR = zeroed()
-    present.sType = 1000001001
+    mut present: vk.PresentInfoKHR = vk.PresentInfoKHR::new()
     present.waitSemaphoreCount = 1
     present.pWaitSemaphores = addr(&r.render_finished[r.imageIndex])
     present.swapchainCount = 1
@@ -416,8 +423,8 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     trace_step(&r, "present")
     presented := r.api.QueuePresentKHR(r.queue, addr(&present))
     trace_step(&r, "presented " + presented.str())
-    r.pass = state.PASS_IDLE
-    if enums.is_out_of_date(presented) {
+    state.set_pass(&mut r, .Idle)
+    if records.is_out_of_date(presented) {
         // The frame was not shown; build a new swapchain before the next one.
         failed := recreate(&mut r)
         if failed != .Ready { return draw_error(r.frameIndex, "swapchain is out of date and could not be recreated at " + describe(&r, failed)) }
@@ -528,7 +535,7 @@ impl gfx.Backend for Window {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            if !shadow.begin(ref_at(address), &sky.light_vp, &sky.light_dir_c) {
+            if !shadow.begin(ref_at(address), sky) {
                 return .Err("shadow pass could not start")
             }
             .Ok
@@ -571,11 +578,29 @@ impl gfx.Backend for Window {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], surface: gfx.Surface) -> Result<(), string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, surface == gfx.Surface.Blended))
+            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, textures, emissive, surface == gfx.Surface.Blended))
+        }
+    }
+
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return .Err("invalid or expired window handle") }
+            match texture.upload(ref_at(address), pixels, width, height, encoding, sampler) {
+                .Ok(id) => .Ok(gfx.Texture { id: id }),
+                .Err(message) => .Err(message),
+            }
+        }
+    }
+
+    fn free_texture(&mut self, handle: gfx.Texture) {
+        unsafe {
+            address := renderer(self.clone())
+            if address != ptr(0) { texture.free(ref_at(address), handle.id) }
         }
     }
 
@@ -635,6 +660,7 @@ unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     post.destroy(&mut r)
     ui.destroy(&mut r)
     ibl.destroy(&mut r)
+    texture.destroy(&mut r)
     depth.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)
