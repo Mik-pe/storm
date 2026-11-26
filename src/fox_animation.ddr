@@ -40,19 +40,19 @@ pub fn clips() -> Result<Clips, string> {
         [key(0.0, -0.045, 0.0, 0.0), key(0.05, 0.0, 0.0, 0.0), key(0.36, 0.0, 0.0, 0.0),
             key(0.52, 0.29, 0.0, 0.0), key(0.65, 0.59, 0.0, 0.0), key(0.84, -0.10, 0.0, 0.0)], [])?
     // Upward, apex and downward silhouettes, indexed by vertical velocity.
-    flight := anim.clip(1.0, [], [key(0.0, -0.32, 0.0, 0.0), key(0.5, -0.055, 0.0, 0.0), key(1.0, 0.24, 0.0, 0.0)],
-        [key(0.0, 0.93, 1.13, 1.08), key(0.5, 1.08, 1.02, 0.89), key(1.0, 0.975, 1.06, 1.08)])?
+    flight := anim.clip(1.0, [], [key(0.0, -0.21, 0.0, 0.0), key(0.5, -0.045, 0.0, 0.0), key(1.0, 0.16, 0.0, 0.0)],
+        [key(0.0, 0.975, 1.055, 1.025), key(0.5, 1.035, 1.01, 0.955), key(1.0, 0.99, 1.03, 1.025)])?
     // Coiled anticipation crouch bursting into joyful extension. Pink clouds amplify the soar.
-    launch := anim.clip(0.34, [], [key(0.0, 0.052, 0.0, 0.0), key(0.075, -0.14, 0.0, 0.0),
+    launch := anim.clip(0.34, [], [key(0.0, 0.052, 0.0, 0.0), key(0.085, -0.075, 0.0, 0.0),
         key(0.19, -0.035, 0.0, 0.0), key(0.34, 0.0, 0.0, 0.0)],
-        [key(0.0, 1.045, 0.915, 1.045), key(0.075, 0.915, 1.155, 0.945),
+        [key(0.0, 1.025, 0.95, 1.025), key(0.085, 0.96, 1.08, 0.975),
             key(0.19, 0.985, 1.035, 0.99), key(0.34, 1.0, 1.0, 1.0)])?
     // Marshmallow-soft squash absorption with a buoyant spring rebound and gentle settle.
-    impact := anim.clip(0.38, [], [key(0.0, 0.0, 0.0, 0.0), key(0.055, 0.135, 0.0, 0.0),
-        key(0.16, -0.082, 0.0, 0.0), key(0.265, 0.024, 0.0, 0.0),
+    impact := anim.clip(0.38, [], [key(0.0, 0.0, 0.0, 0.0), key(0.075, 0.085, 0.0, 0.0),
+        key(0.19, -0.04, 0.0, 0.0), key(0.265, 0.024, 0.0, 0.0),
         key(0.33, -0.008, 0.0, 0.0), key(0.38, 0.0, 0.0, 0.0)],
-        [key(0.0, 1.0, 1.0, 1.0), key(0.055, 1.15, 0.72, 1.115),
-            key(0.16, 0.945, 1.10, 0.96), key(0.265, 1.022, 0.962, 1.018),
+        [key(0.0, 1.0, 1.0, 1.0), key(0.075, 1.06, 0.87, 1.055),
+            key(0.19, 0.982, 1.038, 0.983), key(0.28, 1.008, 0.984, 1.008),
             key(0.33, 0.994, 1.012, 0.996), key(0.38, 1.0, 1.0, 1.0)])?
     blink := anim.clip(3.95, [], [], [key(2.16, 1.0, 1.0, 1.0), key(2.22, 1.0, 0.0, 1.0),
         key(2.25, 1.0, 0.0, 1.0), key(2.35, 1.0, 1.0, 1.0)])?
@@ -93,11 +93,11 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
     mut boost: f32 = 0.0
     if m.grounded {
         // Let the reaching paws settle onto the floor for the first few impact frames.
-        air = if m.landing_age >= 0.0 { (1.0 - unit(m.landing_age / 0.083)) * unit(m.landing_strength / 0.25) } else { 0.0 }
+        air = if m.landing_age >= 0.0 { (1.0 - smooth(0.0, 0.10, m.landing_age)) * unit(m.landing_strength / 0.25) } else { 0.0 }
         descent = 1.0
     } else if m.takeoff_age >= 0.0 && (m.landing_age < 0.0 || m.takeoff_age <= m.landing_age) {
         // Stepping off a ledge uses fall speed. An intentional jump unfolds from the planted stride.
-        air = unit(m.takeoff_age / 0.067)
+        air = smooth(0.0, 0.09, m.takeoff_age)
         if m.boost_age == m.takeoff_age {
             // A spring reverses velocity at contact. Carry the downstroke into its push.
             air = 1.0
@@ -110,7 +110,7 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
         sky := anim.sample(&c.flight, descent, .Clamp, base)
         body = anim.mix(body, sky, air, air, air)
         if !m.grounded && m.takeoff_age >= 0.0 && m.takeoff_age < 0.34 {
-            layer(&mut body, anim.sample(&c.launch, m.takeoff_age, .Clamp, base), (0.68 + 1.18 * boost) * air)
+            layer(&mut body, anim.sample(&c.launch, m.takeoff_age, .Clamp, base), (0.62 + 0.80 * boost) * air)
         }
     }
     mut dip: f32 = 0.0
@@ -153,7 +153,7 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
     chest.position.z = 0.018 * brisk
     mut result := Pose {
         body: body, chest: chest, air: air, descent: descent, boost: boost, compression: dip,
-        head: core.vec3(-0.052 * sway * idle - 0.57 * body.rotation.x - 0.30 * chest.rotation.x + 0.37 * dip
+        head: core.vec3(-0.052 * sway * idle - 0.57 * body.rotation.x - 0.30 * chest.rotation.x + 0.42 * dip
             -0.14 * boost + stroll * (-0.055 + 0.048 * (2.0 * gait - 0.35).sin())
             + 0.032 * brisk * (2.0 * gait - 0.25).sin(),
             0.145 * (m.seconds * 1.16).sin() * idle + m.bank * 0.23 - 0.10 * reach + stroll * 0.062 * (gait - 0.10).cos(),
@@ -187,7 +187,8 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
         brisk_wag := (0.14 + brisk * (0.07 + 0.055 * segment)) * (gait - 0.48 - lag).sin() * ground_run
         brisk_roll := (0.055 + brisk * (0.04 + 0.025 * segment)) * (gait - lag).cos() * ground_run
         boost_wag := if boost > 0.0 { (0.20 + 0.06 * segment) * boost * (m.boost_age * 16.0 - lag).sin() } else { f32(0.0) }
-        result.tail[i] = core.vec3(bounce + (sway * 0.085 + (0.32 - 0.65 * descent) * air) / (1.0 + segment)
+        brush_phase := smooth(0.08 + 0.10 * segment, 0.76 + 0.10 * segment, descent)
+        result.tail[i] = core.vec3(bounce + (sway * 0.085 + (0.23 - 0.46 * brush_phase) * air) / (1.0 + segment)
             + dip * 0.76 + stroll_pitch + brisk_lift - (0.12 + 0.04 * segment) * boost,
             wag + brisk_wag - m.bank * (0.24 - 0.04 * segment) + stroll_wag + boost_wag,
             (0.15 + 0.04 * segment) * (2.07 * m.seconds - lag).cos() * (1.0 - ground_run) + brisk_roll - boost * 0.09 + stroll_roll)
@@ -199,7 +200,8 @@ pub fn pose(c: &Clips, m: &play.PlayerMotion) -> Pose {
         stroll_ear_z := stroll * mirror * (-0.072 + 0.065 * (2.0 * gait - 0.70).cos())
         brisk_ear_x := -0.085 * brisk - (2.0 * gait - 0.92 - f32(i) * 0.14).cos() * brisk * (0.068 + 0.015 * mirror)
         brisk_ear_z := mirror * (0.055 * brisk * (2.0 * gait - 0.72).sin())
-        result.ears[i] = core.vec3(flick.x - (1.0 - descent) * air * (0.40 + boost * 0.36)
+        ear_phase := smooth(0.18 + 0.04 * f32(i), 0.90, descent)
+        result.ears[i] = core.vec3(flick.x - (1.0 - ear_phase) * air * (0.25 + boost * 0.36)
             -(2.0 * gait - 0.84).cos() * ground_run * (0.12 + 0.018 * mirror) + dip * 1.12 + stroll_ear_x + brisk_ear_x,
             mirror * flick.y, mirror * (flick.z + 0.045 * sway - dip * 0.88 - boost * 0.15)
             + m.bank * 0.09 + stroll_ear_z + brisk_ear_z)
@@ -286,22 +288,24 @@ pub fn foot(l: &Leg, p: &Pose, m: &play.PlayerMotion, s: &play.Session, exact: b
         target.y += if vertical < -0.15 { -0.15 } else { vertical }
     }
     mut pitch := paw.rotation.x * m.run_weight
-    tuck := 4.0 * p.descent * (1.0 - p.descent)
+    gather_start: f32 = if l.hind { 0.08 } else { 0.0 }
+    fold := smooth(gather_start, 0.90 + gather_start, p.descent)
+    tuck := 4.0 * fold * (1.0 - fold)
     mut flying := l.sole
     mut air := p.air
     if l.hind {
         // The rear toes finish the push before tucking under the pelvis.
         if !m.grounded { air = unit((air - 0.17) / 0.83) }
         else if m.landing_age >= 0.0 { air = (1.0 - unit((m.landing_age - 0.025) / 0.095)) * unit(m.landing_strength / 0.25) }
-        flying.y += 0.025 + 0.26 * tuck + 0.082 * p.descent + p.boost * 0.04
-        flying.z += -0.265 + 0.46 * tuck + 0.18 * p.descent - p.boost * 0.085
+        flying.y += 0.025 + 0.205 * tuck + 0.082 * p.descent + p.boost * 0.04
+        flying.z += -0.225 + 0.375 * tuck + 0.18 * p.descent - p.boost * 0.085
     } else {
-        flying.y += 0.195 * (1.0 - p.descent) + 0.265 * tuck + p.boost * 0.055
-        flying.z += 0.08 + 0.205 * p.descent - 0.22 * tuck + p.boost * 0.035
+        flying.y += 0.16 * (1.0 - p.descent) + 0.20 * tuck + p.boost * 0.055
+        flying.z += 0.065 + 0.155 * p.descent - 0.16 * tuck + p.boost * 0.035
     }
     target = core.add(core.scale(target, 1.0 - air), core.scale(flying, air))
-    in_flight := if l.hind { 0.50 + 0.48 * tuck - 0.29 * p.descent }
-    else { 0.34 + 0.91 * tuck - 0.77 * p.descent }
+    in_flight := if l.hind { 0.40 + 0.37 * tuck - 0.26 * p.descent }
+    else { 0.25 + 0.67 * tuck - 0.55 * p.descent }
     pitch += (in_flight - pitch) * air
     // Rotate about the planted toe or heel. The contact patch stays in world space as the wrist rolls.
     edge := l.toe.z - l.sole.z

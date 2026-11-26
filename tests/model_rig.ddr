@@ -23,3 +23,25 @@ import std.json as json
         assert(model.read_rig(&doc, doc.root).is_err())
     }
 }
+
+import ..src.art_asset
+
+@test fn playable_vallmo_carries_painted_joint_weights_for_body_legs_and_brush() {
+    fox := art_asset.load_rigged("fox").unwrap()
+    for name in ["Body_Foxglove", "PawFL_Foxglove", "ShinFL_Foxglove", "FootFL_Boots",
+        "PawFR_Foxglove", "ShinFR_Foxglove", "FootFR_Boots", "PawBL_Foxglove", "ShinBL_Foxglove", "FootBL_Boots",
+        "PawBR_Foxglove", "ShinBR_Foxglove", "FootBR_Boots", "Tail_Foxglove", "TailMid_Foxglove", "TailTip_Brush"] {
+        mut blended := false
+        for i in 0..fox.rig.skins.len {
+            s := &fox.rig.skins[i]
+            if fox.art.parts[s.part].name != name { continue }
+            assert(s.indices.len * 8 == fox.art.parts[s.part].vertices.len)
+            for v in s.influences {
+                mut count := 0
+                for w in v.weights { if w > 0.01 { count += 1 } }
+                if count >= 2 { blended = true; break }
+            }
+        }
+        assert(blended)
+    }
+}

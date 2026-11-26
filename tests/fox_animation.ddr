@@ -73,7 +73,7 @@ fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
     normal := fox.pose(&clips, &m)
     m.boost_age = m.takeoff_age
     boosted := fox.pose(&clips, &m)
-    assert(boosted.body.scale.y > normal.body.scale.y + 0.09 && boosted.ears[0].x < normal.ears[0].x - 0.10)
+    assert(boosted.body.scale.y > normal.body.scale.y + 0.035 && boosted.ears[0].x < normal.ears[0].x - 0.10)
     m.boost_age = -1.0
     m.takeoff_age = 0.5
     m.vertical_velocity = 0.0
@@ -81,21 +81,21 @@ fn named(g: &scene.Graph, name: string) -> Option<ecs.Entity> {
     m.takeoff_age = 0.95
     m.vertical_velocity = -4.5
     fall := fox.pose(&clips, &m)
-    assert(normal.body.rotation.x < 0.0 && fall.body.rotation.x > 0.0 && apex.body.scale.z < fall.body.scale.z - 0.12)
+    assert(normal.body.rotation.x < 0.0 && fall.body.rotation.x > 0.0 && apex.body.scale.z < fall.body.scale.z - 0.06)
     m.grounded = true
     m.vertical_velocity = 0.0
     m.landing_strength = 1.0
     m.landing_age = 0.0
     contact := fox.pose(&clips, &m)
     assert((fall.body.rotation.x - contact.body.rotation.x).abs() < 0.001)
-    m.landing_age = 0.055
+    m.landing_age = 0.075
     impact := fox.pose(&clips, &m)
-    m.landing_age = 0.16
+    m.landing_age = 0.19
     recoil := fox.pose(&clips, &m)
     m.landing_age = 0.40
     settled := fox.pose(&clips, &m)
-    assert(impact.body.scale.y < 0.85 && impact.body.scale.x > 1.05)
-    assert(recoil.body.scale.y > 1.05 && settled.body.scale.y == 1.0)
+    assert(impact.body.scale.y > 0.84 && impact.body.scale.y < 0.90 && impact.body.scale.x > 1.04)
+    assert(recoil.body.scale.y > 1.03 && settled.body.scale.y == 1.0)
 }
 
 @test fn standing_fox_keeps_its_soles_still_as_the_shoulders_breathe_and_both_eyes_blink() {
@@ -431,15 +431,15 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     m.takeoff_age = -1.0
     m.boost_age = -1.0
     m.landing_strength = 1.0
-    m.landing_age = 0.055
+    m.landing_age = 0.075
     squash := fox.pose(&clips, &m)
-    m.landing_age = 0.16
+    m.landing_age = 0.19
     rebound := fox.pose(&clips, &m)
-    m.landing_age = 0.265
+    m.landing_age = 0.28
     secondary := fox.pose(&clips, &m)
     m.landing_age = 0.40
     settled := fox.pose(&clips, &m)
-    assert(squash.body.scale.y < 0.78 && rebound.body.scale.y > 1.06)
+    assert(squash.body.scale.y < 0.90 && rebound.body.scale.y > 1.03 && rebound.body.scale.y < 1.06)
     assert(secondary.body.scale.y < 0.985 && settled.body.scale.y == 1.0)
 }
 
@@ -558,6 +558,44 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
             pt := core.transform_point(matrix, core.vec3(skin.vertices[b], skin.vertices[b + 1], skin.vertices[b + 2]))
             surface := cloud_support + ground.height(&world.cast.ground, &world.course, &cloud_s, pt.x, pt.z, cloud_support, true)
             assert(pt.y > surface + 0.015)
+        }
+    }
+}
+
+@test fn front_knee_skin_stays_closed_and_smooth_through_the_playable_jump() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut world := view.build(&s).unwrap()
+    view.sync(&mut world, &s, true)
+    upper := named(&world.graph, "PawFL_Foxglove").unwrap()
+    bind := world.graph.vertices(upper)
+    // The lowest thigh vertex belongs to the open seam ring.
+    mut ring := 0
+    for i in 0..bind.len / 8 { if bind[i * 8 + 1] < bind[ring + 1] { ring = i * 8 } }
+    mut thigh := -1
+    mut shin := -1
+    mut other := -1
+    for d in world.graph.drawables(core.vec3(0.0, 0.0, 0.0)) {
+        if d.entity.index == upper.index { thigh = d.mesh_index }
+        if world.graph.name(d.entity) != "ShinFL_Foxglove" { continue }
+        lower := world.graph.vertices(d.entity)
+        for k in 0..lower.len / 8 {
+            j := k * 8
+            if (lower[j] - bind[ring]).abs() + (lower[j + 1] - bind[ring + 1]).abs() +
+                (lower[j + 2] - bind[ring + 2]).abs() < 0.00001 {
+                shin = d.mesh_index; other = j; break
+            }
+        }
+    }
+    assert(thigh >= 0 && shin >= 0)
+    mut meshes := world.graph.mesh_snapshot()
+    for t in 0..84 {
+        play.step(&mut s, play.Input { x: 0.0, z: 0.0, jump: t == 4 })
+        if t % 3 != 0 { continue }
+        view.sync(&mut world, &s, true)
+        world.graph.pose_meshes(&mut meshes)
+        for k in 0..6 {
+            assert((meshes[thigh].vertices[ring + k] - meshes[shin].vertices[other + k]).abs() < 0.001)
         }
     }
 }
