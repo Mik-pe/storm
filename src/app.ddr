@@ -187,7 +187,7 @@ fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
     if frame.revision != world.geometry_revision() {
         frame.meshes = world.mesh_snapshot()
         frame.revision = world.geometry_revision()
-    }
+    } else { world.pose_meshes(&mut frame.meshes) }
     frame.solids.clear()
     frame.glass.clear()
     for item in world.drawables(eye) {

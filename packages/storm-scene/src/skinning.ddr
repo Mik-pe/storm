@@ -1,0 +1,66 @@
+import core
+import ecs
+
+pub struct Skin {
+    palette: []ecs.Entity, influences: []core.Influence,
+    first: []i32, next: []i32,
+}
+
+pub fn binding(move joints: []ecs.Entity, move influences: []core.Influence, indices: &[]i32) -> Option<Skin> {
+    mut first: []i32 = []
+    mut next: []i32 = []
+    for i in 0..influences.len {
+        inf := &influences[i]
+        mut total: f32 = 0.0
+        for k in 0..4 {
+            if inf.joints[k] < 0 || inf.joints[k] >= joints.len || !(inf.weights[k] >= 0.0) { return .None }
+            total += inf.weights[k]
+        }
+        if !(total > 0.999 && total < 1.001) { return .None }
+        first.push(-1)
+    }
+    for i in 0..indices.len {
+        v := indices[i]
+        if v < 0 || v >= first.len { return .None }
+        next.push(first[v])
+        first[v] = i
+    }
+    .Some(Skin { palette: move joints, influences: move influences, first: move first, next: move next })
+}
+
+fn influence_matrix(palette: &[]core.Mat4, inf: &core.Influence) -> core.Mat4 {
+    mut m := core.Mat4 { m: [0.0; 16] }
+    for i in 0..4 {
+        w := inf.weights[i]
+        if w == 0.0 { continue }
+        bone := &palette[inf.joints[i]]
+        if w == 1.0 { return bone.clone() }
+        for c in 0..4 { for r in 0..3 { m.m[4 * c + r] += w * bone.m[4 * c + r] } }
+    }
+    m
+}
+
+// A split mesh can repeat a vertex for hundreds of draw indices. Deform each
+// glTF vertex once and scatter its result to both the shadow and color stream.
+pub fn deform(s: &Skin, palette: &[]core.Mat4, bind: &[]f32, out: &mut []f32) {
+    for i in 0..s.first.len {
+        mut slot := s.first[i]
+        if slot < 0 { continue }
+        k := slot * 8
+        m := influence_matrix(palette, &s.influences[i])
+        p := core.transform_point(&m, core.vec3(bind[k], bind[k + 1], bind[k + 2]))
+        a := core.vec3(m.m[0], m.m[1], m.m[2])
+        b := core.vec3(m.m[4], m.m[5], m.m[6])
+        c := core.vec3(m.m[8], m.m[9], m.m[10])
+        co := core.cross(b, c)
+        mut n := core.normalize(core.add(core.scale(co, bind[k + 3]),
+            core.add(core.scale(core.cross(c, a), bind[k + 4]), core.scale(core.cross(a, b), bind[k + 5]))))
+        if core.dot(a, co) < 0.0 { n = core.scale(n, -1.0) }
+        while slot >= 0 {
+            v := 8 * slot
+            out[v] = p.x; out[v + 1] = p.y; out[v + 2] = p.z
+            out[v + 3] = n.x; out[v + 4] = n.y; out[v + 5] = n.z
+            slot = s.next[slot]
+        }
+    }
+}

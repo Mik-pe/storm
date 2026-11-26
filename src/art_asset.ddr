@@ -33,6 +33,7 @@ pub fn load_rigged(name: string) -> Result<Rigged, string> {
     j := json.Doc::parse_text(doc.json_text.clone())
     selected := nodes.active_scene(&j)?
     extras := j.field(selected, "extras")
-    rig := model.read_rig(&j, j.field(extras, "storm_rig"))?
+    mut rig := model.read_rig(&j, j.field(extras, "storm_rig"))?
+    rig.skins = gltf.skin_bindings(&doc, &j)?
     .Ok(Rigged { art: gltf.asset_from_json(&doc, &j)?, rig: move rig })
 }

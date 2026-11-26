@@ -3,7 +3,7 @@
 import core
 import std.json as json
 
-pub struct Placement { mesh: i32, world: core.Mat4 }
+pub struct Placement { mesh: i32, skin: i32, world: core.Mat4 }
 struct Pending { node: i32, parent: core.Mat4 }
 
 fn components(j: &json.Doc, node: i32, field: string, move defaults: []f32) -> Result<[]f32, string> {
@@ -62,7 +62,7 @@ pub fn placements(j: &json.Doc, mesh_count: i32) -> Result<[]Placement, string> 
     mut out: []Placement = []
     selected := active_scene(j)?
     if selected < 0 {
-        for i in 0..mesh_count { out.push(Placement { mesh: i, world: core.identity() }) }
+        for i in 0..mesh_count { out.push(Placement { mesh: i, skin: -1, world: core.identity() }) }
         return .Ok(move out)
     }
     nodes := j.field(j.root, "nodes")
@@ -81,7 +81,7 @@ pub fn placements(j: &json.Doc, mesh_count: i32) -> Result<[]Placement, string> 
         if j.field(node, "mesh") >= 0 {
             index := j.get_i64(node, "mesh").unwrap_or(-1)
             if index < 0 || index >= i64(mesh_count) { return .Err("invalid node mesh index") }
-            out.push(Placement { mesh: i32(index), world: world.clone() })
+            out.push(Placement { mesh: i32(index), skin: i32(j.get_i64(node, "skin").unwrap_or(-1)), world: world.clone() })
         }
         enqueue(j, j.field(node, "children"), world, count, &mut waiting)?
     }

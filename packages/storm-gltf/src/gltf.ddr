@@ -5,6 +5,7 @@
 // the first primitive for callers that consume separate attribute arrays.
 capability filesystem
 
+import core
 import std.bytes as bytes
 import std.json as json
 import std.wire as wire
@@ -372,4 +373,71 @@ pub fn interleave(mesh: &Mesh) -> []f32 {
         }
     }
     out
+}
+
+// Storm's procedural rigs already supply bind-to-world joint matrices for baked mesh positions.
+pub struct SkinBinding { part: i32, joints: []string, influences: []core.Influence, indices: []i32 }
+
+pub fn skin_bindings(doc: &Document, j: &json.Doc) -> Result<[]SkinBinding, string> {
+    meshes := j.field(j.root, "meshes")
+    placed := nodes.placements(j, j.count(meshes))?
+    mut bindings: []SkinBinding = []
+    mut part_index := 0
+    for instance in placed {
+        primitives := j.field(j.at(meshes, instance.mesh), "primitives")
+        if instance.skin < 0 { part_index += j.count(primitives); continue }
+        skin := j.at(j.field(j.root, "skins"), instance.skin)
+        list := j.field(skin, "joints")
+        if j.count(list) == 0 { return .Err("skin has no joints") }
+        mut names: []string = []
+        for k in 0..j.count(list) {
+            node := j.at(j.field(j.root, "nodes"), i32(j.as_i64(j.at(list, k)).unwrap_or(-1)))
+            name := j.get_str(node, "name").unwrap_or_default()
+            if name.len == 0 { return .Err("procedural rig needs named joints") }
+            names.push(move name)
+        }
+        for p in 0..j.count(primitives) {
+            primitive := j.at(primitives, p)
+            attrs := j.field(primitive, "attributes")
+            pos := match accessor(doc, j, i32(j.get_i64(attrs, "POSITION").unwrap_or(-1)), "VEC3") {
+                .Some(a) => a, .None => { return .Err("missing skin positions") },
+            }
+            if j.field(attrs, "JOINTS_1") >= 0 { return .Err("procedural rig supports four influences per vertex") }
+            ji := i32(j.get_i64(attrs, "JOINTS_0").unwrap_or(-1))
+            wi := i32(j.get_i64(attrs, "WEIGHTS_0").unwrap_or(-1))
+            ja := match accessor(doc, j, ji, "VEC4") { .Some(a) => a, .None => { return .Err("invalid skin joint accessor") } }
+            if ja.normalized || (ja.component != 5121 && ja.component != 5123) || ja.count != pos.count { return .Err("invalid skin joints") }
+            weights := read_accessor_f32(doc, j, wi, "VEC4")
+            if weights.len != pos.count * 4 { return .Err("invalid skin weights") }
+            mut influences: []core.Influence = []
+            influences.reserve(pos.count)
+            for v in 0..pos.count {
+                mut inf := core.Influence { joints: [0; 4], weights: [0.0; 4] }
+                mut total: f32 = 0.0
+                for c in 0..4 {
+                    index := read_index(&doc.bin, ja.base + ja.stride * v + c * component_size(ja.component), ja.component)
+                    w := weights[v * 4 + c]
+                    if index >= names.len || !(w >= 0.0 && w <= 1.0) { return .Err("invalid joint influence") }
+                    inf.joints[c] = index
+                    inf.weights[c] = w
+                    total += w
+                }
+                if total <= 0.0 { return .Err("skin vertex has no weight") }
+                for c in 0..4 { inf.weights[c] /= total }
+                influences.push(move inf)
+            }
+            mut indices: []i32 = []
+            if j.field(primitive, "indices") >= 0 {
+                indices = read_accessor_i32(doc, j, i32(j.get_i64(primitive, "indices").unwrap_or(-1)))
+            } else { for v in 0..pos.count { indices.push(v) } }
+            if indices.len == 0 || indices.len % 3 != 0 { return .Err("invalid skin triangle indices") }
+            for v in indices { if v < 0 || v >= pos.count { return .Err("skin index out of bounds") } }
+            m := &instance.world.m
+            det := core.dot(core.vec3(m[0], m[1], m[2]), core.cross(core.vec3(m[4], m[5], m[6]), core.vec3(m[8], m[9], m[10])))
+            if det < 0.0 { for tri in 0..indices.len / 3 { indices.swap(tri * 3 + 1, tri * 3 + 2) } }
+            bindings.push(SkinBinding { part: part_index, joints: names.clone(), influences: move influences, indices: move indices })
+            part_index += 1
+        }
+    }
+    .Ok(move bindings)
 }

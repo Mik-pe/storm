@@ -1,6 +1,8 @@
 // Storm core: vectors, matrices and colors. Pure Dunder, no OS access.
 import std.math as _
 
+pub struct Influence { joints: [i32; 4], weights: [f32; 4] }
+
 pub struct Vec2 { x: f32, y: f32 }
 pub struct Vec3 { x: f32, y: f32, z: f32 }
 pub struct Vec4 { x: f32, y: f32, z: f32, w: f32 }

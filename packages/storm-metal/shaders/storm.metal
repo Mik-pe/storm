@@ -100,8 +100,10 @@ struct MeshOut {
 vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [[buffer(1)]]) {
     float4 world = push.model * float4(in.position, 1.0);
     MeshOut out;
-    // Uniform scale is assumed; a non-uniform model matrix needs its inverse transpose.
-    out.world_normal = float3x3(push.model[0].xyz, push.model[1].xyz, push.model[2].xyz) * in.normal;
+    float3 a = push.model[0].xyz, b = push.model[1].xyz, c = push.model[2].xyz;
+    float3 co = cross(b, c);
+    out.world_normal = (dot(a, co) < 0.0 ? -1.0 : 1.0) *
+        (co * in.normal.x + cross(c, a) * in.normal.y + cross(a, b) * in.normal.z);
     out.world_position = world.xyz;
     out.position = push.mvp * float4(in.position, 1.0);
     return out;

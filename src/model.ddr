@@ -46,7 +46,7 @@ pub fn attach(g: &mut scene.Graph, root: ecs.Entity, art: &gltf.Asset, joints: &
 
 // Rig landmarks are in the same model space as the baked geometry.
 pub struct BindJoint { name: string, parent: string, pivot: core.Vec3, sole: Option<core.Vec3>, toe: Option<core.Vec3> }
-pub struct Rig { joints: []BindJoint }
+pub struct Rig { joints: []BindJoint, skins: []gltf.SkinBinding }
 
 impl Rig {
     fn index(&self, name: string) -> i32 {
@@ -79,7 +79,7 @@ pub fn read_rig(j: &json.Doc, node: i32) -> Result<Rig, string> {
     if j.get_i64(node, "version").unwrap_or(0) != 1 { return .Err("missing or unsupported Storm rig") }
     list := j.field(node, "joints")
     if j.kind(list) != .Array || j.count(list) == 0 { return .Err("rig needs joints") }
-    mut rig := Rig { joints: [] }
+    mut rig := Rig { joints: [], skins: [] }
     for i in 0..j.count(list) {
         item := j.at(list, i)
         name := j.get_str(item, "name").unwrap_or_default()

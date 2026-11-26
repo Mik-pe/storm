@@ -153,6 +153,19 @@ fn fox(g: &mut scene.Graph, parent: ecs.Entity, art: &gltf.Asset, rig: &model.Ri
     }
     mut first: []ecs.Entity = []
     model.attach(&mut g, root, art, &joints, &mut first, &[])
+    for i in 0..rig.skins.len {
+        skin := &rig.skins[i]
+        mut palette: []ecs.Entity = []
+        for name in skin.joints {
+            prefix := name + "_"
+            found := palette.len
+            for j in joints { if j.prefix == prefix { palette.push(j.mount); break } }
+            if found == palette.len { return .Err("missing skin joint " + name) }
+        }
+        if !g.bind_skin(first[skin.part], move palette, skin.influences.clone(), skin.indices.clone()) {
+            return .Err("invalid skin on " + art.parts[skin.part].name)
+        }
+    }
     mut blush: Option<ecs.Entity> = .None
     for node in first {
         if g.name(node) == "Head_Blush" { blush = .Some(node); break }

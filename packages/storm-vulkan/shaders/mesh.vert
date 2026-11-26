@@ -31,8 +31,10 @@ layout(location = 9) out vec2 vertex_uv;
 void main() {
     vec4 world = push.model * vec4(position, 1.0);
     world_position = world.xyz;
-    // Uniform scale is assumed; a non-uniform model matrix needs its inverse transpose.
-    world_normal = mat3(push.model) * normal;
+    vec3 a = push.model[0].xyz, b = push.model[1].xyz, c = push.model[2].xyz;
+    vec3 co = cross(b, c);
+    world_normal = (dot(a, co) < 0.0 ? -1.0 : 1.0) *
+        (co * normal.x + cross(c, a) * normal.y + cross(a, b) * normal.z);
     vertex_base_color = push.base_color;
     vertex_params = push.params;
     vertex_camera = push.camera_pos.xyz;

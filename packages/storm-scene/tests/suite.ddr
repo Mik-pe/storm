@@ -254,3 +254,38 @@ import core
 }
 
 import .animation as _
+
+@test fn weighted_instance_preserves_shared_bind_geometry_and_normals_across_frames() {
+    mut g := scene.Graph::new()
+    origin := core.vec3(0.0, 0.0, 0.0)
+    source := g.create_root(origin)
+    rest := g.create_root(origin)
+    moving := g.create_root(core.vec3(4.0, 0.0, 0.0))
+    g.set_scale(moving, core.vec3(3.0, 1.0, 1.0))
+    mut data: []f32 = []
+    for _ in 0..3 { for v in [1.0, 0.0, 0.0, 0.70710678, 0.70710678, 0.0, 0.2, 0.7] { data.push(f32(v)) } }
+    assert(g.set_mesh(source, move data))
+    instance := g.create_root(origin)
+    assert(g.share_mesh(instance, source))
+    inf := core.Influence { joints: [0, 1, 0, 0], weights: [0.5, 0.5, 0.0, 0.0] }
+    assert(g.bind_skin(instance, [rest, moving], [inf], [0, 0, 0]))
+    g.propagate()
+    mut streams := g.mesh_snapshot()
+    draws := g.drawables(origin)
+    bind := draws[0].mesh_index
+    skin := draws[1].mesh_index
+    assert(bind != skin && streams[bind].vertices[0] == 1.0)
+    for i in 0..3 {
+        k := i * 8
+        v := &streams[skin].vertices
+        assert((v[k] - 4.0).abs() < 0.00001)
+        assert((v[k + 3] - 0.4472136).abs() < 0.00001 && (v[k + 4] - 0.8944272).abs() < 0.00001)
+        assert(v[k + 6] == 0.2 && v[k + 7] == 0.7)
+    }
+    revision := g.geometry_revision()
+    g.set_position(moving, origin)
+    g.propagate()
+    g.pose_meshes(&mut streams)
+    assert(g.geometry_revision() == revision && streams[skin].vertices[0] == 2.0)
+    assert(g.vertices(instance)[0] == 1.0)
+}

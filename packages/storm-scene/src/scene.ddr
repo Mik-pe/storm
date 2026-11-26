@@ -16,6 +16,7 @@
 //   list := world.drawables(core.vec3(0.0, 2.2, 9.5))
 import core
 import ecs
+import .skinning
 import std.math as _
 
 pub struct LocalTransform {
@@ -86,6 +87,7 @@ pub struct Graph {
     names: ecs.Pool<Name>,
     meshes: ecs.Pool<Mesh>,
     instances: ecs.Pool<ecs.Entity>,
+    skins: ecs.Pool<skinning.Skin>,
     mesh_revision: i64,
     tree_revision: i64,
     world_order_revision: i64,
@@ -126,6 +128,7 @@ impl Graph {
             names: ecs.Pool<Name>::new(),
             meshes: ecs.Pool<Mesh>::new(),
             instances: ecs.Pool<ecs.Entity>::new(),
+            skins: ecs.Pool<skinning.Skin>::new(),
             mesh_revision: 0,
             tree_revision: 0,
             world_order_revision: -1, world_order: [],
@@ -198,6 +201,7 @@ impl Graph {
 
     // Hand geometry to a surviving instance before changing or destroying its owner.
     fn detach_mesh(&mut self, entity: ecs.Entity) {
+        _ := self.skins.remove(entity)
         if self.instances.remove(entity).is_some() || self.instances.len() == 0 { return }
         mut next := entity
         for i in 0..self.instances.len() {
@@ -252,7 +256,36 @@ impl Graph {
     }
 
     pub fn geometry_revision(&self) -> i64 { self.mesh_revision }
-    pub fn mesh_snapshot(&self) -> []Mesh { self.meshes.values().clone() }
+    pub fn bind_skin(&mut self, entity: ecs.Entity, move palette: []ecs.Entity, move weights: []core.Influence,
+        move indices: []i32) -> bool {
+        if !self.meshes.contains(entity) || self.meshes.get(entity).shape != .Mesh { return false }
+        if self.meshes.get(self.mesh_owner(entity)).vertices.len != indices.len * 8 { return false }
+        for joint in palette { if !self.is_alive(joint) { return false } }
+        skin := match skinning.binding(move palette, move weights, &indices) { .Some(s) => s, .None => { return false } }
+        _ := self.skins.insert(entity, move skin)
+        self.mesh_revision += 1
+        true
+    }
+
+    pub fn mesh_snapshot(&self) -> []Mesh {
+        mut meshes := self.meshes.values().clone()
+        for e in self.skins.entities() { meshes.push(self.meshes.get(self.mesh_owner(e)).clone()) }
+        self.pose_meshes(&mut meshes)
+        meshes
+    }
+
+    pub fn pose_meshes(&self, meshes: &mut []Mesh) {
+        for i in 0..self.skins.len() {
+            e := self.skins.entities()[i]
+            skin := self.skins.at(i)
+            mut palette: []core.Mat4 = []
+            for joint in skin.palette {
+                palette.push(if self.worlds.contains(joint) { self.world(joint).matrix.clone() } else { core.identity() })
+            }
+            rest := self.meshes.get(self.mesh_owner(e))
+            skinning.deform(skin, &palette, &rest.vertices, &mut meshes[self.meshes.len() + i].vertices)
+        }
+    }
 
     pub fn vertices(&self, entity: ecs.Entity) -> []f32 {
         if !self.meshes.contains(entity) { return [] }
@@ -458,10 +491,11 @@ impl Graph {
             mat := if mi >= 0 { self.materials.at(mi).clone() } else { material(0.5, 0.5, 0.5, 1.0, 0.0, 0.8) }
             out.push(Drawable {
                 entity: row.entity,
-                model: model,
+                model: if self.skins.contains(row.entity) { core.identity() } else { model },
                 material: mat,
                 shape: self.meshes.at(row.a).shape,
-                mesh_index: if self.instances.contains(row.entity) { self.meshes.dense_index(self.instances.get(row.entity).clone()) } else { row.a },
+                mesh_index: if self.skins.contains(row.entity) { self.meshes.len() + self.skins.dense_index(row.entity) }
+                else if self.instances.contains(row.entity) { self.meshes.dense_index(self.instances.get(row.entity).clone()) } else { row.a },
                 depth: dx * dx + dy * dy + dz * dz,
             })
         }
