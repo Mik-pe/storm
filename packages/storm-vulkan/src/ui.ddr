@@ -270,7 +270,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
 
 // Push vertices and draw them. Rectangles set uv.x to -1.
 pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) -> bool {
-    if (r.pass != state.PASS_DIRECT && r.pass != state.PASS_COMPOSITE) || vertices.len == 0 { return false }
+    if (state.pass(&r) != .Direct && state.pass(&r) != .Composite) || vertices.len == 0 { return false }
     bytes := u64(vertices.len) * 4
     if r.atlas.cursor + bytes > r.atlas.vertex.capacity { return false }
     _ := copy_bytes(ptr(usize(r.atlas.vertex.mapped) + usize(r.atlas.cursor)), ptr(usize(addr(&vertices[0]))), usize(bytes))

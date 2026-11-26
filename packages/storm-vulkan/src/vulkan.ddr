@@ -142,9 +142,9 @@ unsafe fn name(r: &state.Renderer) -> string {
 }
 
 unsafe fn capture_next_at(r: &mut state.Renderer) -> bool {
-    if r.pass != state.PASS_IDLE { return false }
+    if state.pass(&r) != .Idle { return false }
     if r.captureFramebuffer == ptr(0) && headless.setup(&mut r) != .Ready { return false }
-    r.captureOn = 1
+    state.set_capture(&mut r, .Recording)
     true
 }
 
@@ -192,7 +192,7 @@ fn draw_error(frames: i64, move message: string) -> DrawResult {
 
 unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult {
     if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed" } }
-    if r.pass != state.PASS_IDLE { return BeginResult { ok: false, error: "a frame is already being recorded" } }
+    if state.pass(&r) != .Idle { return BeginResult { ok: false, error: "a frame is already being recorded" } }
     slot := r.current
     trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
     // The CPU is about to reuse the mapped mesh, UI and light buffers shared by both slots.
@@ -206,7 +206,7 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
         mut height: i32 = 0
         r.window.GetDrawableSize(r.window.handle, addr(&mut width), addr(&mut height))
         if width > 0 && height > 0 && (u32(width) != r.width || u32(height) != r.height) {
-            capture := r.captureOn == 1
+            capture := state.capture(&r) == .Recording
             failed := recreate(&mut r)
             if failed != .Ready { return BeginResult { ok: false, error: "could not resize at " + describe(&r, failed) } }
             if capture && !capture_next_at(&mut r) { return BeginResult { ok: false, error: "could not resize the capture target" } }
@@ -223,10 +223,10 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
         trace_step(&r, "reserved " + r.vertex.capacity.str() + " vertex bytes for " + vertex_bytes.str())
     }
     mut image_index: u32 = 0
-    if r.surface == ptr(0) && r.captureOn != 1 {
+    if r.surface == ptr(0) && state.capture(&r) != .Recording {
         return BeginResult { ok: false, error: "offscreen rendering requires capture_next" }
     }
-    if r.captureOn != 1 {
+    if state.capture(&r) != .Recording {
         mut acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
             r.image_available[slot], ptr(0), addr(&mut image_index))
         if records.is_out_of_date(acquired) {
@@ -251,7 +251,7 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     mut clear_color: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
     mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
     pass.renderPass = r.renderPass
-    pass.framebuffer = if r.captureOn == 1 { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
+    pass.framebuffer = if state.capture(&r) == .Recording { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
     pass.renderArea.extent.width = r.width
     pass.renderArea.extent.height = r.height
     pass.clearValueCount = 2
@@ -268,15 +268,15 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     r.pendingPass = pass
     r.pendingClear = clears
     r.pendingPass.pClearValues = addr(&mut r.pendingClear[0])
-    r.pass = state.PASS_WAITING
+    state.set_pass(&mut r, .Waiting)
     BeginResult { ok: true, error: "" }
 }
 
 // Open the main render pass. Called after prepare_frame and after the optional
 // shadow pass has been recorded into the same command buffer.
 unsafe fn open_main_pass(r: &mut state.Renderer, filtered: bool) -> BeginResult {
-    if r.pass == state.PASS_IDLE { return BeginResult { ok: false, error: "no frame in flight" } }
-    if r.pass != state.PASS_WAITING { return BeginResult { ok: false, error: "a render pass has already started" } }
+    if state.pass(&r) == .Idle { return BeginResult { ok: false, error: "no frame in flight" } }
+    if state.pass(&r) != .Waiting { return BeginResult { ok: false, error: "a render pass has already started" } }
     if !shadow.ensure_readable(&mut r) { return BeginResult { ok: false, error: "could not initialize the shadow map" } }
     mut pass := r.pendingPass.clone()
     if filtered {
@@ -284,9 +284,9 @@ unsafe fn open_main_pass(r: &mut state.Renderer, filtered: bool) -> BeginResult 
         if failed != .Ready { return BeginResult { ok: false, error: "could not set up the scene texture: " + describe(&r, failed) } }
         pass.framebuffer = r.sceneFramebuffer
         pass.renderPass = r.scenePass
-        r.pass = state.PASS_FILTERED
+        state.set_pass(&mut r, .Filtered)
     } else {
-        r.pass = state.PASS_DIRECT
+        state.set_pass(&mut r, .Direct)
     }
     device.set_frame_viewport(&r)
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
@@ -297,7 +297,7 @@ unsafe fn open_main_pass(r: &mut state.Renderer, filtered: bool) -> BeginResult 
 
 unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
     sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> DrawResult {
-    if r.pass != state.PASS_DIRECT && r.pass != state.PASS_FILTERED { return draw_error(r.frameIndex, "sky requires an open scene") }
+    if state.pass(&r) != .Direct && state.pass(&r) != .Filtered { return draw_error(r.frameIndex, "sky requires an open scene") }
     slot := r.current
     // Push constants: inv_view_proj(64) + sun(16) + zenith(16) + horizon(16).
     mut push: [f32; 28] = [0.0; 28]
@@ -313,7 +313,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
     base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], blended: bool) -> DrawResult {
-    if r.pass != state.PASS_DIRECT && r.pass != state.PASS_FILTERED { return draw_error(r.frameIndex, "mesh requires an open scene") }
+    if state.pass(&r) != .Direct && state.pass(&r) != .Filtered { return draw_error(r.frameIndex, "mesh requires an open scene") }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
         if !vertices[i].is_finite() { return draw_error(r.frameIndex, "non-finite vertex value") }
@@ -358,11 +358,11 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
 }
 
 unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
-    if r.pass == state.PASS_IDLE { return draw_error(r.frameIndex, "end without begin") }
-    if r.pass != state.PASS_DIRECT && r.pass != state.PASS_COMPOSITE { return draw_error(r.frameIndex, "end requires a finished scene") }
+    if state.pass(&r) == .Idle { return draw_error(r.frameIndex, "end without begin") }
+    if state.pass(&r) != .Direct && state.pass(&r) != .Composite { return draw_error(r.frameIndex, "end requires a finished scene") }
     slot := r.current
     r.api.CmdEndRenderPass(r.commands[slot])
-    if r.captureOn == 1 {
+    if state.capture(&r) == .Recording {
         headless.copy_to_host(&r)
     } else {
         // The same scene pass writes every target. A swapchain image must be
@@ -382,12 +382,12 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
             0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
     }
     if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
-        r.pass = state.PASS_IDLE
+        state.set_pass(&mut r, .Idle)
         return draw_error(r.frameIndex, "ending the command buffer failed")
     }
     mut submit_info: vk.SubmitInfo = vk.SubmitInfo::new()
     wait_stage := enums.pipeline_stage(.ColorAttachmentOutput)
-    if r.captureOn != 1 {
+    if state.capture(&r) != .Recording {
         submit_info.waitSemaphoreCount = 1
         submit_info.pWaitSemaphores = addr(&r.image_available[slot])
         submit_info.pWaitDstStageMask = addr(&wait_stage)
@@ -398,17 +398,17 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     submit_info.pCommandBuffers = addr(&r.commands[slot])
     trace_step(&r, "submit")
     if r.api.QueueSubmit(r.queue, 1, addr(&submit_info), r.fences[slot]) != 0 {
-        r.pass = state.PASS_IDLE
+        state.set_pass(&mut r, .Idle)
         return draw_error(r.frameIndex, "queue submission failed")
     }
-    if r.captureOn == 1 {
+    if state.capture(&r) == .Recording {
         // Offscreen frames are read back from mapped memory; nothing to present.
         if r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615) != 0 {
-            r.pass = state.PASS_IDLE
+            state.set_pass(&mut r, .Idle)
             return draw_error(r.frameIndex, "waiting for capture readback failed")
         }
-        r.captureOn = 2
-        r.pass = state.PASS_IDLE
+        state.set_capture(&mut r, .Ready)
+        state.set_pass(&mut r, .Idle)
         r.current = (r.current + 1) % 2
         r.frameIndex = r.frameIndex + 1
         return DrawResult { ok: true, error: "", frames: r.frameIndex }
@@ -423,7 +423,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     trace_step(&r, "present")
     presented := r.api.QueuePresentKHR(r.queue, addr(&present))
     trace_step(&r, "presented " + presented.str())
-    r.pass = state.PASS_IDLE
+    state.set_pass(&mut r, .Idle)
     if records.is_out_of_date(presented) {
         // The frame was not shown; build a new swapchain before the next one.
         failed := recreate(&mut r)

@@ -318,7 +318,7 @@ pub unsafe fn set_light(r: &state.Renderer, sky: &gfx.Sky) -> bool {
 // --- recording ---
 
 pub unsafe fn begin(r: &mut state.Renderer, sky: &gfx.Sky) -> bool {
-    if r.pass != state.PASS_WAITING || r.shadow.shadowPass == ptr(0) { return false }
+    if state.pass(&r) != .Waiting || r.shadow.shadowPass == ptr(0) { return false }
     if !set_light(&r, sky) { return false }
     // Clear to -1000 so MAX blending lets any real surface win, and so the
     // shading pass can tell "no geometry" apart from a real distance.
@@ -336,7 +336,7 @@ pub unsafe fn begin(r: &mut state.Renderer, sky: &gfx.Sky) -> bool {
     pass.renderArea.extent.height = SHADOW_SIZE
     pass.clearValueCount = 1
     pass.pClearValues = addr(&mut clear[0])
-    r.pass = state.PASS_SHADOW
+    state.set_pass(&mut r, .Shadow)
     r.api.CmdBeginRenderPass(r.commands[r.current], addr(&pass), 0)
     r.api.CmdBindPipeline(r.commands[r.current], 0, r.shadow.shadowPipeline)
     // light_vp(64) + model(64, filled per draw) + light_dir_c(16) = 144 bytes.
@@ -348,7 +348,7 @@ pub unsafe fn begin(r: &mut state.Renderer, sky: &gfx.Sky) -> bool {
 }
 
 pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) -> bool {
-    if r.pass != state.PASS_SHADOW { return false }
+    if state.pass(&r) != .Shadow { return false }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return false }
     bytes := u64(vertices.len) * 4
     offset := r.vertexCursor
@@ -366,9 +366,9 @@ pub unsafe fn mesh(r: &mut state.Renderer, vertices: &[]f32, model: &[f32; 16]) 
 }
 
 pub unsafe fn end(r: &mut state.Renderer) -> bool {
-    if r.pass != state.PASS_SHADOW { return false }
+    if state.pass(&r) != .Shadow { return false }
     r.api.CmdEndRenderPass(r.commands[r.current])
-    r.pass = state.PASS_WAITING
+    state.set_pass(&mut r, .Waiting)
     r.shadow.shadowInitialized = 1
     true
 }

@@ -23,7 +23,7 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     r.captureImage = ptr(0)
     r.captureMemory = ptr(0)
     r.readback = zeroed()
-    r.captureOn = 0
+    state.set_capture(&mut r, .Off)
 }
 
 // The color attachment uses optimal tiling, including on devices that cannot
@@ -109,7 +109,7 @@ pub unsafe fn copy_to_host(r: &state.Renderer) {
 }
 
 pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
-    if r.captureOn != 2 || r.readback.mapped == ptr(0) { return false }
+    if state.capture(&r) != .Ready || r.readback.mapped == ptr(0) { return false }
     red := if records.format_is_bgra(r.format) { usize(2) } else { usize(0) }
     blue := usize(2) - red
     mut out: []u8 = []

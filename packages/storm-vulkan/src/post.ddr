@@ -115,7 +115,7 @@ pub unsafe fn ensure_target(r: &mut state.Renderer) -> state.SetupStep {
 }
 
 pub unsafe fn composite(r: &mut state.Renderer, settings: &gfx.PostProcess) -> Result<(), string> {
-    if r.pass != state.PASS_FILTERED { return .Err("post-processing requires an open filtered scene") }
+    if state.pass(&r) != .Filtered { return .Err("post-processing requires an open filtered scene") }
     if !settings.valid() { return .Err("post-process strength must be between 0 and 1") }
     cmd := r.commands[r.current]
     r.api.CmdEndRenderPass(cmd)
@@ -142,7 +142,7 @@ pub unsafe fn composite(r: &mut state.Renderer, settings: &gfx.PostProcess) -> R
     push := [f32(1.0) / f32(r.width), f32(1.0) / f32(r.height), f32(aa), settings.strength]
     r.api.CmdPushConstants(cmd, r.postPipelineLayout, enums.shader_stage(.Fragment), 0, 16, addr(&push[0]))
     r.api.CmdDraw(cmd, 3, 1, 0, 0)
-    r.pass = state.PASS_COMPOSITE
+    state.set_pass(&mut r, .Composite)
     .Ok
 }
 

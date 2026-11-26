@@ -284,6 +284,47 @@ fn setup_steps() -> [state.SetupStep; 17] {
     }
 }
 
+// The pass state is an enum behind a u32 field (an enum cannot be a C-layout
+// field, E5003). A zeroed renderer is `.Idle`, which is why the field must
+// stay 0 = Idle: the registry calloc's the whole renderer. Every variant
+// survives the round trip, and a number nobody wrote is status 108 (measured
+// in a probe: the conversion validates). The values are the order the six
+// `PASS_*` constants had, so no recorded state changes meaning.
+@test fn the_pass_state_is_an_enum_behind_its_word() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        assert(state.pass(&r) == .Idle)
+        assert(i32(state.Pass.Idle) == 0 && i32(state.Pass.Waiting) == 1 && i32(state.Pass.Shadow) == 2)
+        assert(i32(state.Pass.Direct) == 3 && i32(state.Pass.Filtered) == 4 && i32(state.Pass.Composite) == 5)
+        for w in 0..6 {
+            state.set_pass(&mut r, state.Pass(w))
+            assert(i32(state.pass(&r)) == w)
+        }
+        state.set_pass(&mut r, .Composite)
+        assert(state.pass(&r) == .Composite)
+        assert(i32(state.pass(&r)) != i32(state.Pass.Direct))
+    }
+}
+
+// The capture flag is the same shape: 0/1/2 were three magic numbers for
+// "no capture", "a capture frame is being recorded" and "its pixels are read
+// back and `save` may write them". A zeroed renderer is `.Off`, `save` asks
+// for `.Ready`, and a windowed frame asks for anything but `.Recording`.
+@test fn the_capture_flag_is_an_enum_behind_its_word() {
+    unsafe {
+        mut r: state.Renderer = zeroed()
+        assert(state.capture(&r) == .Off)
+        assert(i32(state.Capture.Off) == 0 && i32(state.Capture.Recording) == 1 && i32(state.Capture.Ready) == 2)
+        state.set_capture(&mut r, .Recording)
+        assert(state.capture(&r) == .Recording && state.capture(&r) != .Off)
+        state.set_capture(&mut r, .Ready)
+        assert(state.capture(&r) == .Ready && state.capture(&r) != .Recording)
+        state.set_capture(&mut r, .Off)
+        assert(state.capture(&r) == .Off)
+        assert(state.pass(&r) == .Idle)
+    }
+}
+
 // Every graphics pipeline is one Plan described into one record. The seven
 // pipelines were seven hand-written copies of the same state; these read
 // what a Plan writes, without a device, and pin the values the copies agreed

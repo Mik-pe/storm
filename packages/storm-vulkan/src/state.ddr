@@ -82,12 +82,25 @@ impl SetupStep {
     }
 }
 
-pub const PASS_IDLE: u32 = 0
-pub const PASS_WAITING: u32 = 1
-pub const PASS_SHADOW: u32 = 2
-pub const PASS_DIRECT: u32 = 3
-pub const PASS_FILTERED: u32 = 4
-pub const PASS_COMPOSITE: u32 = 5
+// What the renderer is recording right now. The field is a `u32` because an
+// enum may not live in a C layout (E5003), but nothing reads or writes it
+// except `pass()` and `set_pass()`: `pass()` converts through the enum, so a
+// number nobody wrote ends the program (status 108) instead of never matching.
+pub enum Pass { Idle = 0, Waiting = 1, Shadow = 2, Direct = 3, Filtered = 4, Composite = 5 }
+
+pub unsafe fn pass(r: &Renderer) -> Pass { Pass(i32(r.pass)) }
+
+pub fn set_pass(r: &mut Renderer, which: Pass) { r.pass = u32(i32(which)) }
+
+// Whether the frame being recorded is an offscreen capture, and whether its
+// pixels have been read back. Same shape as `Pass`: an integer field that only
+// `capture()` and `set_capture()` touch. `Off` is 0 because the registry
+// calloc's the renderer, and `destroy` returns to it.
+pub enum Capture { Off = 0, Recording = 1, Ready = 2 }
+
+pub unsafe fn capture(r: &Renderer) -> Capture { Capture(i32(r.captureOn)) }
+
+pub fn set_capture(r: &mut Renderer, which: Capture) { r.captureOn = i32(which) }
 
 @c_layout
 pub struct SampledTexture { sampler: ptr, layout: ptr, pool: ptr, set: ptr }
@@ -166,6 +179,7 @@ pub struct Renderer {
     window: sdl.Window,
     frameIndex: i64,
     trace: u32,
+    // Read through `pass()`, written through `set_pass()` only.
     pass: u32,
     resizePending: u32,
     pendingPass: vkl.RenderPassBeginInfo,
@@ -177,6 +191,7 @@ pub struct Renderer {
     captureView: ptr,
     captureMemory: ptr,
     readback: Buffer,
+    // Read through `capture()`, written through `set_capture()` only.
     captureOn: i32,
     // Append cursor for the shared vertex buffer: every recorded draw keeps its
     // own slice, so later uploads cannot overwrite earlier geometry.
