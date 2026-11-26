@@ -4,16 +4,24 @@
 //   dunder run tools/build-time.ddr
 //
 // The old binary is removed first so a failed build can never be mistaken
-// for a fast one (a stale binary passes every later check). The time is wall
-// clock around `dunder build`, measured with sys.now_ms(); the budget is
-// BUDGET_MS below and is a repo rule (AGENTS.md), not a target to tune per
-// machine. Exit status: 0 within budget, 1 over, 2 when the build failed.
+// for a fast one (a stale binary passes every later check). The budget is
+// wall clock around `dunder build` (BUDGET_MS, a repo rule in AGENTS.md, not
+// a target to tune per machine). The verdict is followed by where the time
+// went — the compiler's own `compiler=` phase, module loading and the number
+// of functions it emitted — read from `--timings=json`, so an over-budget
+// build says which half grew instead of leaving one number to explain both
+// (dogfood 98). Exit status: 0 within budget, 1 over, 2 when the build failed.
 capability process, filesystem, stdio
 
+import std.json as json
 import std.process as process
+import std.text as text
 import sys
 
 pub const BUDGET_MS: i64 = 20000
+
+// How the compiler's `--timings=json` line begins on stderr.
+pub const TIMINGS_PREFIX: string = "{\"kind\":\"timings\""
 
 // The binary `dunder build` writes for the host, where dunder.toml puts it.
 fn binary() -> string {
@@ -23,7 +31,7 @@ fn binary() -> string {
 }
 
 // Fallback when the shell has no dunder on PATH: the install the toolchain's own
-// installer creates. (`process.status` searches PATH itself and reports
+// installer creates. (`process.run` searches PATH itself and reports
 // exit 127 when nothing is found; a shell that relies on ~/.dunder/bin being
 // added interactively would otherwise read as a build failure.)
 fn installed_compiler() -> string {
@@ -37,25 +45,91 @@ fn installed_compiler() -> string {
     }
 }
 
+// One phase of the compiler's own accounting, in whole milliseconds; the JSON
+// reports nanoseconds. `.None` when the phase is absent, so a missing field
+// prints as unknown instead of as zero.
+fn phase_ms(doc: &json.Doc, phase: string) -> Option<i64> {
+    phases := doc.field(0, "phases")
+    match doc.get_i64(phases, phase) {
+        .Some(ns) => .Some(ns / 1000000),
+        .None => .None,
+    }
+}
+
+fn emitted_functions(doc: &json.Doc) -> i64 {
+    functions := doc.field(0, "functions")
+    match doc.get_i64(functions, "emitted") {
+        .Some(n) => n,
+        .None => -1,
+    }
+}
+
+// A number the report could not read, printed as such rather than as 0.
+fn ms_text(value: Option<i64>) -> string {
+    match value {
+        .Some(ms) => ms.str() + " ms",
+        .None => "unknown".clone(),
+    }
+}
+
+// The timings line of `--timings=json`, or `.None` when none was written (an
+// older compiler, or a build that failed before reporting).
+fn timings_line(diagnostics: &[]string) -> Option<string> {
+    for i in 0..diagnostics.len {
+        if text.starts_with(diagnostics[i], TIMINGS_PREFIX) { return .Some(diagnostics[i].clone()) }
+    }
+    .None
+}
+
+// Splits the compiler's stderr into lines (the timings line included).
+fn stderr_lines(stderr: string) -> []string {
+    mut out: []string = []
+    mut cursor := text.lines(stderr.as_str())
+    while cursor.advance() {
+        line := cursor.current().to_string()
+        if line.len > 0 { out.push(move line) }
+    }
+    out
+}
+
 fn main() -> i32 {
     // A missing binary is the normal case; an error here only means the
     // path was a directory or the like, which the build will report anyway.
     _ := sys.remove_file(binary())
 
     started := sys.now_ms()
-    mut result := process.status("dunder", ["build"])
-    if result.code == 127 { result = process.status(installed_compiler(), ["build"]) }
+    mut output := process.run("dunder", ["build", "--timings=json"])
+    if output.code == 127 { output = process.run(installed_compiler(), ["build", "--timings=json"]) }
     elapsed := sys.now_ms() - started
+    stderr := output.stderr_text()
+
+    // Everything the compiler said that is not the timings line is a
+    // diagnostic; keep it visible, in order, on the stream it came from.
+    diagnostics := stderr_lines(stderr)
+    for i in 0..diagnostics.len {
+        if !text.starts_with(diagnostics[i], TIMINGS_PREFIX) { _ := sys.eprint(diagnostics[i]) }
+    }
 
     // Both halves matter: a compiler that never started, and one that
     // started and said no. A failed build is fast, and must not read as one.
-    if !result.ok || result.code != 0 {
-        _ := sys.eprint("storm: dunder build failed (exit " + result.code.str() + ") after " + elapsed.str() + " ms")
+    if !output.ok || output.code != 0 {
+        _ := sys.eprint("storm: dunder build failed (exit " + output.code.str() + ") after " + elapsed.str() + " ms")
         return 2
     }
 
     verdict := if elapsed < BUDGET_MS { "ok" } else { "OVER BUDGET" }
-    print("storm: build " + elapsed.str() + " ms of " + BUDGET_MS.str() + " ms budget, " + verdict + "\n")
+    print("storm: build " + elapsed.str() + " ms of " + BUDGET_MS.str() + " ms budget, " + verdict)
+    match timings_line(&diagnostics) {
+        .Some(line) => {
+            match json.Doc::parse(line) {
+                .Ok(doc) => {
+                    _ := sys.eprint("storm: compiler " + ms_text(phase_ms(&doc, "compiler")) + ", module load " + ms_text(phase_ms(&doc, "module_load_lex_resolve")) + ", " + emitted_functions(&doc).str() + " functions emitted")
+                },
+                .Err(_) => { _ := sys.eprint("storm: compiler phases unknown (timings line did not parse)") },
+            }
+        },
+        .None => { _ := sys.eprint("storm: compiler phases unknown (no --timings=json line)") },
+    }
     if elapsed < BUDGET_MS { return 0 }
     return 1
 }
