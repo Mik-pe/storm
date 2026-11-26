@@ -89,6 +89,11 @@ const STRUCTS: []string = [
     "CommandBufferBeginInfo", "ClearColorValue", "ClearDepthStencilValue", "ClearValue",
     "RenderPassBeginInfo", "SubmitInfo", "PresentInfoKHR", "SwapchainCreateInfoKHR", "SurfaceCapabilitiesKHR",
     "SurfaceFormatKHR", "SemaphoreCreateInfo", "FenceCreateInfo", "Extent3D", "Offset3D", "ImageCreateInfo",
+    // The device's memory types and heaps, read once at device selection
+    // (device.allocate walks the types a requirement allows). Each heap is a
+    // u64 and a u32 padded to 16 bytes, so the record is 520 bytes, not a
+    // word buffer.
+    "MemoryHeap", "MemoryType", "PhysicalDeviceMemoryProperties",
     "StencilOpState", "PipelineDepthStencilStateCreateInfo", "BufferImageCopy", "ImageBlit",
     "FormatProperties", "MemoryBarrier", "ImageMemoryBarrier", "SamplerCreateInfo",
     "DescriptorSetLayoutBinding", "DescriptorSetLayoutCreateInfo", "DescriptorPoolSize",
@@ -792,7 +797,11 @@ fn parse_param(data: &[]u8, start: i32, end: i32) -> Param {
 // a parameter, plus the text between the brackets after `</name>` when there
 // is one (a number, or an enum name the registry defines). Only brackets that
 // follow `</name>` through whitespace count: a member's comment may hold a
-// `[` of its own (`BUFFER[_DYNAMIC]`).
+// `[` of its own (`BUFFER[_DYNAMIC]`). The registry writes a named length two
+// ways, `[VK_MAX_MEMORY_HEAPS]` and `[<enum>VK_MAX_MEMORY_HEAPS</enum>]`; the
+// second is the first wrapped in its element tag, so the wrapper is removed
+// and the length is the name. Anything else between the brackets stays as it
+// is, and the caller reports it rather than guessing a length.
 fn parse_member(data: &[]u8, start: i32, end: i32) -> Member {
     p := parse_param(data, start, end)
     mut array := ""
@@ -802,7 +811,14 @@ fn parse_member(data: &[]u8, start: i32, end: i32) -> Member {
         while at < end && (data[at] == 32 || data[at] == 9 || data[at] == 10 || data[at] == 13) { at += 1 }
         if at < end && data[at] == 91 {
             stop := find_bytes(data, at, end, "]")
-            if stop > at + 1 { array = text_at(data, at + 1, stop) }
+            if stop > at + 1 {
+                array = text_at(data, at + 1, stop)
+                enum_open := find_bytes(data, at + 1, stop, "<enum>")
+                enum_close := find_bytes(data, at + 1, stop, "</enum>")
+                if enum_open == at + 1 && enum_close > enum_open + 6 && enum_close + 7 == stop {
+                    array = text_at(data, enum_open + 6, enum_close)
+                }
+            }
         }
     }
     Member { type_name: p.type_name, pointer: p.pointer, name: p.name, array: array }

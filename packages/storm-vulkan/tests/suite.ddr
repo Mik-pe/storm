@@ -299,8 +299,49 @@ fn setup_steps() -> [state.SetupStep; 17] {
         assert(size_of(headless.Capture) == 56)
         // Unchanged by both moves, measured: post took 12 words out and put
         // a 96-byte record back; capture took 7 words out and put 56 bytes
-        // back. Same layout, other names.
-        assert(size_of(state.Renderer) == 6240)
+        // back. Same layout, other names. The memory properties then became
+        // the registry's 520-byte record in place of a 776-byte hand-written
+        // one: 6240 - 256, measured.
+        assert(size_of(state.Renderer) == 5984)
+    }
+}
+
+// The device's memory-type table as the Intel reports it on Mikparchy through
+// the generated record (six types, one 5.5 GiB device-local heap; read with a
+// probe against libvulkan on 2026-11-26): 0 = DEVICE_LOCAL, 1 = | HOST_VISIBLE
+// | HOST_COHERENT, 2 = | HOST_CACHED, then 3–5 the same for a reclaimable
+// heap. What vkAllocateMemory is asked for is the lowest index a requirement
+// allows that carries every wanted property; the choice is data, so it is
+// tested on the table and not in a window.
+@test fn a_requirement_takes_the_first_allowed_type_with_the_wanted_properties() {
+    unsafe {
+        mut properties: vk.PhysicalDeviceMemoryProperties = zeroed()
+        properties.memoryTypeCount = 6
+        properties.memoryTypes[0].propertyFlags = 1
+        properties.memoryTypes[1].propertyFlags = 7
+        properties.memoryTypes[2].propertyFlags = 15
+        properties.memoryTypes[3].propertyFlags = 1
+        properties.memoryTypes[4].propertyFlags = 7
+        properties.memoryTypes[5].propertyFlags = 15
+        mut needs_host: vk.MemoryRequirements = vk.MemoryRequirements::new()
+        needs_host.memoryTypeBits = 63
+        // A buffer every type can hold takes the device-local one when nothing
+        // is wanted, and the mappable one when the CPU must write it.
+        assert(device.memory_type(&properties, &needs_host, .None) == .Some(0))
+        assert(device.memory_type(&properties, &needs_host, .Some(enums.Memory.HostVisibleCoherent)) == .Some(1))
+        // A requirement that allows only types 3-5 skips the first three even
+        // when they would do: the bits, not the table order, decide.
+        mut only_reclaimable: vk.MemoryRequirements = vk.MemoryRequirements::new()
+        only_reclaimable.memoryTypeBits = 56
+        assert(device.memory_type(&properties, &only_reclaimable, .Some(enums.Memory.HostVisibleCoherent)) == .Some(4))
+        // Device-local is in every type here, so the first allowed one wins.
+        assert(device.memory_type(&properties, &only_reclaimable, .Some(enums.Memory.DeviceLocal)) == .Some(3))
+        // Nothing allows what no type has: Vulkan is not asked, and the caller
+        // gets -13 from allocate rather than an index.
+        mut only_local: vk.MemoryRequirements = vk.MemoryRequirements::new()
+        only_local.memoryTypeBits = 1
+        assert(device.memory_type(&properties, &only_local, .Some(enums.Memory.HostVisibleCoherent)) == .None)
+        assert(device.memory_type(&properties, &only_local, .None) == .Some(0))
     }
 }
 

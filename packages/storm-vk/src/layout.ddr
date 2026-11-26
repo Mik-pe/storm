@@ -980,6 +980,47 @@ impl ImageCreateInfo {
 }
 
 @c_layout
+pub struct MemoryHeap {
+    size: u64,
+    flags: u32,
+}
+
+impl MemoryHeap {
+    pub unsafe fn new() -> MemoryHeap {
+        mut value: MemoryHeap = zeroed()
+        value
+    }
+}
+
+@c_layout
+pub struct MemoryType {
+    propertyFlags: u32,
+    heapIndex: u32,
+}
+
+impl MemoryType {
+    pub unsafe fn new() -> MemoryType {
+        mut value: MemoryType = zeroed()
+        value
+    }
+}
+
+@c_layout
+pub struct PhysicalDeviceMemoryProperties {
+    memoryTypeCount: u32,
+    memoryTypes: [MemoryType; 32],
+    memoryHeapCount: u32,
+    memoryHeaps: [MemoryHeap; 16],
+}
+
+impl PhysicalDeviceMemoryProperties {
+    pub unsafe fn new() -> PhysicalDeviceMemoryProperties {
+        mut value: PhysicalDeviceMemoryProperties = zeroed()
+        value
+    }
+}
+
+@c_layout
 pub struct StencilOpState {
     failOp: u32,
     passOp: u32,

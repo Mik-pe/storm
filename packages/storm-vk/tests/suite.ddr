@@ -26,6 +26,30 @@ import sys
     assert(size_of(vkl.ImageSubresourceLayers) == 16)
 }
 
+// VkPhysicalDeviceMemoryProperties as C lays it out on a 64-bit host: a u32
+// count, 32 VkMemoryType of {u32 propertyFlags, u32 heapIndex} (8 each, so
+// the count sits at 4 and the heap count at 4 + 32*8 = 260), then 16
+// VkMemoryHeap of {u64 size, u32 flags, 4 pad} (16 each, the array at 264),
+// 520 in all. The hand-written record this replaced read heap i from word
+// 66 + i of a u32 buffer, which for i = 1 is the high half of heap 0's size:
+// a heap read is only correct for heap 0. Nothing reads a heap today; the
+// layout is pinned so the first one is.
+@test fn memory_properties_match_the_c_abi() {
+    assert(size_of(vkl.MemoryType) == 8)
+    assert(size_of(vkl.MemoryHeap) == 16)
+    assert(size_of(vkl.PhysicalDeviceMemoryProperties) == 520)
+    unsafe {
+        mut p: vkl.PhysicalDeviceMemoryProperties = zeroed()
+        base := usize(addr(&mut p))
+        assert(usize(addr(&mut p.memoryTypes)) - base == 4)
+        assert(usize(addr(&mut p.memoryHeapCount)) - base == 260)
+        assert(usize(addr(&mut p.memoryHeaps)) - base == 264)
+        assert(usize(addr(&mut p.memoryHeaps[1])) - usize(addr(&mut p.memoryHeaps[0])) == 16)
+        // Second type: one 8-byte stride plus the 4 bytes propertyFlags takes.
+        assert(usize(addr(&mut p.memoryTypes[1].heapIndex)) - usize(addr(&mut p.memoryTypes[0].propertyFlags)) == 12)
+    }
+}
+
 @test fn render_pass_structs_match_the_c_abi() {
     // Two attachments side by side must read as one contiguous array.
     assert(size_of(vk.AttachmentDescription) == 36)

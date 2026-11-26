@@ -64,15 +64,7 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> state.SetupStep {
     mut properties: state.Properties = zeroed()
     r.api.GetPhysicalDeviceProperties(r.physical, addr(&mut properties))
     r.properties = properties
-    // Read the 776-byte VkPhysicalDeviceMemoryProperties into a raw word buffer
-    // and copy out the two counts. Field-addressed aggregates of this size did
-    // not survive the FFI call.
-    mut raw: [u32; 194] = [0; 194]
-    r.api.GetPhysicalDeviceMemoryProperties(r.physical, addr(&mut raw[0]))
-    r.memoryProperties.typeCount = raw[0]
-    r.memoryProperties.heapCount = raw[65]
-    for i in 0..64 { r.memoryProperties.types[i] = raw[1 + i] }
-    for i in 0..64 { r.memoryProperties.heaps[i] = u64(raw[66 + i]) }
+    r.api.GetPhysicalDeviceMemoryProperties(r.physical, addr(&mut r.memoryProperties))
     .Ready
 }
 
@@ -384,29 +376,41 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.instance != ptr(0) { r.api.DestroyInstance(r.instance, ptr(0)) }
 }
 
-// Returns the VkResult of vkAllocateMemory, or VK_ERROR_UNKNOWN (-13) when no
-// memory type satisfies the requirements: Vulkan was never asked, so there is
-// no code from it, and -13 is Khronos' spelling of "unspecified". `want` is
-// the memory property every chosen type must have; `.None` asks for nothing
-// and takes the first type the requirements allow.
-pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, want: Option<enums.Memory>, output: ptr) -> i32 {
-    mut flags: i32 = 0
+// The first memory type a requirement allows that has every property in
+// `want`: the index vkAllocateMemory takes, or `.None` when no type does (and
+// Vulkan is never asked). `.None` for `want` asks for no property and takes
+// the first allowed type. Pure data over the registry's record, so a device's
+// table can be a test fixture.
+pub fn memory_type(properties: &vk.PhysicalDeviceMemoryProperties, requirements: &vk.MemoryRequirements, want: Option<enums.Memory>) -> Option<i32> {
+    mut flags: u32 = 0
     match want {
-        .Some(memory) => { flags = i32(enums.memory(memory)) },
+        .Some(memory) => { flags = enums.memory(memory) },
         .None => {},
     }
     mut i := 0
-    while i < i32(r.memoryProperties.typeCount) {
+    while i < i32(properties.memoryTypeCount) {
         bits := i32(requirements.memoryTypeBits)
-        if bits.bit_and(i32(1).shl(i)) != 0 && i32(r.memoryProperties.types[i * 2]).bit_and(flags) == flags {
-            mut alloc: vk.MemoryAllocateInfo = vk.MemoryAllocateInfo::new()
-            alloc.allocationSize = requirements.size
-            alloc.memoryTypeIndex = u32(i)
-            return r.api.AllocateMemory(r.device, addr(&alloc), ptr(0), output)
+        if bits.bit_and(i32(1).shl(i)) != 0 && properties.memoryTypes[i].propertyFlags.bit_and(flags) == flags {
+            return .Some(i)
         }
         i = i + 1
     }
-    -13
+    .None
+}
+
+// Returns the VkResult of vkAllocateMemory, or VK_ERROR_UNKNOWN (-13) when no
+// memory type satisfies the requirements: Vulkan was never asked, so there is
+// no code from it, and -13 is Khronos' spelling of "unspecified".
+pub unsafe fn allocate(r: &state.Renderer, requirements: &vk.MemoryRequirements, want: Option<enums.Memory>, output: ptr) -> i32 {
+    match memory_type(&r.memoryProperties, requirements, want) {
+        .Some(i) => {
+            mut alloc: vk.MemoryAllocateInfo = vk.MemoryAllocateInfo::new()
+            alloc.allocationSize = requirements.size
+            alloc.memoryTypeIndex = u32(i)
+            r.api.AllocateMemory(r.device, addr(&alloc), ptr(0), output)
+        },
+        .None => -13,
+    }
 }
 
 // One SPIR-V module from words already in memory. `bytes` is the word count

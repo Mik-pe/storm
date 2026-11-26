@@ -35,16 +35,6 @@ pub struct Properties {
     limits: Limits,
 }
 
-@c_layout
-pub struct MemoryProperties {
-    typeCount: u32,
-    // 32 VkMemoryType entries: propertyFlags then heapIndex, 8 bytes each.
-    types: [u32; 64],
-    heapCount: u32,
-    // 32 VkMemoryHeap entries: u64 size then u32 flags, padded to 16 bytes each.
-    heaps: [u64; 64],
-}
-
 pub const FRAME_COUNT: i32 = 2
 // mvp(64) model(64) base_color(16) params(16) camera(16) emissive_factor(16).
 pub const MESH_PUSH_BYTES: u32 = 192
@@ -120,7 +110,10 @@ pub struct Renderer {
     queue: ptr,
     family: u32,
     properties: Properties,
-    memoryProperties: MemoryProperties,
+    // The registry's VkPhysicalDeviceMemoryProperties, read once at device
+    // selection: device.allocate walks memoryTypes[] for the first type a
+    // requirement allows that has the wanted properties.
+    memoryProperties: vkl.PhysicalDeviceMemoryProperties,
     pool: ptr,
     commands: [ptr; 2],
     fences: [ptr; 2],
