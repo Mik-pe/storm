@@ -2,6 +2,7 @@ capability unsafe
 
 import vk.api as vk
 import .depth as depth
+import .headless as headless
 import .ibl as ibl
 import .post as post
 import vk.layout as vkl
@@ -181,11 +182,10 @@ pub struct Renderer {
     pendingClear: [u64; 4],
     lastResult: i32,
     imageIndex: i32,
-    // Capture is rendered on the GPU, then copied into a tightly packed mapped buffer.
-    captureImage: ptr,
-    captureView: ptr,
-    captureMemory: ptr,
-    readback: Buffer,
+    // Capture is rendered on the GPU, then copied into a tightly packed mapped
+    // buffer (headless.ddr). Whether a capture is being recorded is frame
+    // state and stays here, behind `capture()`/`set_capture()`.
+    capture: headless.Capture,
     // Read through `capture()`, written through `set_capture()` only.
     captureOn: i32,
     // Append cursor for the shared vertex buffer: every recorded draw keeps its

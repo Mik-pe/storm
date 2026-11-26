@@ -282,8 +282,10 @@ fn setup_steps() -> [state.SetupStep; 17] {
         assert(size_of(ibl.Environment) == 960)
         assert(size_of(shadow.Shadow) == 120)
         assert(size_of(post.Stage) == 96)
-        // Unchanged by the post move: 12 words left `Renderer` and one
-        // 96-byte record arrived — the same layout, other names.
+        assert(size_of(headless.Capture) == 56)
+        // Unchanged by both moves, measured: post took 12 words out and put
+        // a 96-byte record back; capture took 7 words out and put 56 bytes
+        // back. Same layout, other names.
         assert(size_of(state.Renderer) == 6240)
     }
 }
