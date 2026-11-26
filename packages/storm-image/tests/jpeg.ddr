@@ -108,18 +108,52 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
     near(&decoded, "helmet_512_ref", 3)
 }
 
-// Refusals name what was found. helmet_mr_256 is the progressive fixture that
-// exercises every entropy-layer path (ZRL, EOB runs, new nonzeros in refine;
-// measured with tests/fixtures/jpeg_tools.py census) — progressive16 has the
-// same ten scans but writes no AC coefficient at all, so it is not evidence
-// for AC decoding on its own.
-@test fn refuses_progressive() {
-    mut result := image.decode_jpeg(&fixture("progressive16.jpg"))
-    assert(result.is_err())
-    assert(refusal(&result) == "progressive JPEG (SOF2) is not supported")
-    result = image.decode_jpeg(&fixture("helmet_mr_256.jpg"))
-    assert(result.is_err())
-    assert(refusal(&result) == "progressive JPEG (SOF2) is not supported")
+// Progressive JPEG (SOF2): every entropy-layer path is exercised by
+// helmet_mr_256 (ZRL, EOB runs, new nonzeros in refine; measured with
+// tests/fixtures/jpeg_tools.py census) — progressive16 has the same ten scans
+// but writes no AC coefficient at all, so it is not evidence for AC decoding
+// on its own. The references are what Pillow (libjpeg-turbo) reads back.
+@test fn progressive16() {
+    decoded := image.decode_jpeg(&fixture("progressive16.jpg")).unwrap()
+    assert(decoded.width == 16)
+    assert(decoded.height == 16)
+    near(&decoded, "progressive16", 1)
+}
+
+// A complete progressive file is decoded with the same tolerance as a baseline
+// one (helmet_512, worst 3): the only difference between the two is the order
+// the coefficients arrive in.
+@test fn progressive_helmet() {
+    decoded := image.decode_jpeg(&fixture("helmet_mr_256.jpg")).unwrap()
+    assert(decoded.width == 256)
+    assert(decoded.height == 256)
+    near(&decoded, "helmet_mr_256", 3)
+}
+
+// Restart intervals in a progressive file: every entropy-coded segment starts
+// with the predictors at zero and no EOB run open (T.81 B.1.1.5, libjpeg
+// jdphuff.c process_restart), per scan. helmet_prog_restart has DRI = 4, so
+// each of its ten scans is cut into 256 segments.
+@test fn progressive_restart() {
+    decoded := image.decode_jpeg(&fixture("helmet_prog_restart.jpg")).unwrap()
+    assert(decoded.width == 256)
+    assert(decoded.height == 256)
+    near(&decoded, "helmet_prog_restart_ref", 3)
+}
+
+// A file cut after scan N (+ EOI) is a valid progressive JPEG: libjpeg decodes
+// it to the N-scan picture. helmet_cut_10 is the complete progression, so it
+// must match the full file exactly; the earlier cuts are decoded without error
+// (libjpeg smooths the incomplete DC picture on those, so there is no exact
+// reference to hold them to).
+@test fn progressive_cut_after_each_scan() {
+    for n in 1..11 {
+        name := "helmet_cut_" + (if n < 10 { "0" + n.str() } else { n.str() }) + ".jpg"
+        decoded := image.decode_jpeg(&fixture(name)).unwrap()
+        assert(decoded.width == 256)
+        assert(decoded.height == 256)
+        if n == 10 { near(&decoded, "helmet_mr_256", 3) }
+    }
 }
 
 @test fn refuses_not_a_jpeg() {

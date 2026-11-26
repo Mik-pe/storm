@@ -48,9 +48,9 @@ pub fn decode_png(data: &[]u8) -> Result<Image, string> {
     png_file.decode(data)
 }
 
-// A baseline JPEG file as RGBA (ITU-T T.81): every sampling factor up to
-// 2x2, with or without restart intervals. Progressive and the other SOF
-// processes are refused with a message.
+// A JPEG file as RGBA (ITU-T T.81): baseline (SOF0) and progressive (SOF2),
+// every sampling factor up to 2x2, with or without restart intervals in a
+// baseline file. The other SOF processes are refused with a message.
 pub fn decode_jpeg(data: &[]u8) -> Result<Image, string> {
     jpeg.decode(data)
 }

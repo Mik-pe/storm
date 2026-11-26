@@ -19,6 +19,7 @@
 //   (8 rows + 8 columns of 8 products per block) and needs no table anyone
 //   can misremember; the decoder output is then within +-1 of libjpeg's, which
 //   rounds at every stage.
+import std.array as array
 import std.bytes as bytes
 import std.math as math
 
@@ -47,8 +48,15 @@ const ZIGZAG: [i32; 64] = [
 // `first[L] + count[L] - 1`, and its symbol is `symbols[start[L] + code - first[L]]`.
 struct Huffman { first: [i32; 17], count: [i32; 17], start: [i32; 17], symbols: [u8; 256] }
 
-// A component's geometry in the frame and where its plane lies.
-struct Component { id: i32, h: i32, v: i32, dc_table: i32, ac_table: i32, quant: i32, blocks_wide: i32, blocks_high: i32, plane: []u8 }
+// A component's geometry in the frame, its coefficients (64 per block in
+// natural order, raw: scaled by the quantisation table only at the IDCT)
+// and the plane the IDCT writes.
+struct Component { id: i32, h: i32, v: i32, dc_table: i32, ac_table: i32, quant: i32, blocks_wide: i32, blocks_high: i32, plane: []u8, coefficients: []i32 }
+
+// One scan of the frame (T.81 B.2.3): the frame components it codes, in MCU
+// order, and the band and successive approximation. A baseline frame is one
+// scan of every component with Ss = 0, Se = 63, Ah = Al = 0.
+struct Scan { components: []i32, ss: i32, se: i32, ah: i32, al: i32 }
 
 // ---- Bit reader ----
 
@@ -154,6 +162,14 @@ fn build_huffman(counts: &[i32; 16], symbols: &[]u8) -> Result<Huffman, string> 
 
 // Decode one symbol one bit at a time: the shortest codes are the most common
 // and the lookup is a walk over `sizes` for the running code.
+// Whether a DHT segment has filled the table: a blank one has no code of
+// any length.
+fn defined(table: &Huffman) -> bool {
+    mut total := 0
+    for length in 1..17 { total += table.count[length] }
+    total > 0
+}
+
 fn blank_huffman() -> Huffman {
     Huffman { first: [0; 17], count: [0; 17], start: [0; 17], symbols: [0; 256] }
 }
@@ -188,32 +204,34 @@ fn basis_table() -> [f64; 64] {
     table
 }
 
-// Inverse DCT of one block of dequantised coefficients (natural order), plus
-// 128, rounded and clamped, into `out` at (x0, y0) with the plane's stride.
-fn idct(block: &[i32; 64], basis: &[f64; 64], out: &mut []u8, x0: i32, y0: i32, stride: i32) {
-    // T.81 A.3.3 with the block in natural order, F[v][u] (v the vertical
-    // frequency, u the horizontal), separable in two passes:
-    //   tmp[x][v] = sum_u F[v][u] * c(u) cos((2x+1) u pi/16)
-    //   out[v][u] = (sum_y tmp[u][y] * c(v) cos((2y+1) v pi/16)) / 4 + 128
-    // `basis[p * 8 + f]` is c(f) cos((2p+1) f pi/16): p a position, f a
-    // frequency. The basis is not symmetric (c(0) is on the frequency), so
-    // the two arguments are never interchangeable.
-    //
-    // A typical block holds 15 nonzero coefficients of 64 and half its
-    // frequency rows are zero (measured on a 2048^2 photograph), and a zero
-    // coefficient contributes nothing: the passes multiply only the nonzero
-    // terms, and a row that is entirely zero leaves its whole column of
-    // `tmp` zero, which the second pass skips. Same sums, fewer products.
+// Dequantise and invert one 8x8 block read at `offset` of a component's
+// coefficient buffer (natural order, raw), writing 8-bit samples into the
+// component's plane at (x0, y0).
+//
+// T.81 A.3.3, F[v][u] (v the vertical frequency, u the horizontal), separable
+// in two passes:
+//   tmp[x][v] = sum_u F[v][u] * c(u) cos((2x+1) u pi/16)
+//   out[v][u] = (sum_y tmp[u][y] * c(v) cos((2y+1) v pi/16)) / 4 + 128
+// `basis[p * 8 + f]` is c(f) cos((2p+1) f pi/16): p a position, f a
+// frequency. The basis is not symmetric (c(0) is on the frequency), so
+// the two arguments are never interchangeable.
+//
+// A typical block holds 15 nonzero coefficients of 64 and half its
+// frequency rows are zero (measured on a 2048^2 photograph), and a zero
+// coefficient contributes nothing: the passes multiply only the nonzero
+// terms, and a row that is entirely zero leaves its whole column of
+// `tmp` zero, which the second pass skips. Same sums, fewer products.
+fn idct(coefficients: &[]i32, offset: i32, quant: &[i32; 64], basis: &[f64; 64], out: &mut []u8, x0: i32, y0: i32, stride: i32) {
     mut tmp: [f64; 64] = [0.0; 64]
     mut live: [bool; 8] = [false; 8]
     for v in 0..8 {
         row := v * 8
-        if block[row] == 0 && block[row + 1] == 0 && block[row + 2] == 0 && block[row + 3] == 0 && block[row + 4] == 0 && block[row + 5] == 0 && block[row + 6] == 0 && block[row + 7] == 0 { continue }
+        if coefficients[offset + row] == 0 && coefficients[offset + row + 1] == 0 && coefficients[offset + row + 2] == 0 && coefficients[offset + row + 3] == 0 && coefficients[offset + row + 4] == 0 && coefficients[offset + row + 5] == 0 && coefficients[offset + row + 6] == 0 && coefficients[offset + row + 7] == 0 { continue }
         for x in 0..8 {
             mut sum: f64 = 0.0
             for u in 0..8 {
-                c := block[row + u]
-                if c != 0 { sum += f64(c) * basis[x * 8 + u] }
+                c := coefficients[offset + row + u]
+                if c != 0 { sum += f64(c * quant[row + u]) * basis[x * 8 + u] }
             }
             tmp[x * 8 + v] = sum
         }
@@ -232,15 +250,18 @@ fn idct(block: &[i32; 64], basis: &[f64; 64], out: &mut []u8, x0: i32, y0: i32, 
     }
 }
 
-// Dequantise and invert one 8x8 block: DC difference from the predictor, AC
-// coefficients in zigzag until EOB (0x00) or 63 are covered.
-fn block(r: &mut Reader, dc: &Huffman, ac: &Huffman, quant: &[i32; 64], predictor: &mut i32, coefficients: &mut [i32; 64]) -> Result<(), string> {
-    for i in 0..64 { coefficients[i] = 0 }
+// Baseline block (T.81 F.2.2): DC difference from the predictor, then AC
+// coefficients in zigzag until EOB (0x00) or 63 are covered. Writes the 64
+// raw (not dequantised) coefficients at `offset` in natural order, which is
+// the same place and form the progressive procedures write, so one
+// dequantise-and-transform pass serves both processes after the last scan.
+fn block(r: &mut Reader, dc: &Huffman, ac: &Huffman, predictor: &mut i32, out: &mut []i32, offset: i32) -> Result<(), string> {
+    for i in 0..64 { out[offset + i] = 0 }
     t := decode_huffman(&mut r, dc)?
     if t > 11 { return .Err("JPEG DC category " + t.str() + " is not valid") }
     diff := extend(r.receive(t), t)
     predictor += diff
-    coefficients[0] = predictor * quant[0]
+    out[offset] = predictor
     mut k := 1
     while k < 64 {
         rs := decode_huffman(&mut r, ac)?
@@ -255,11 +276,212 @@ fn block(r: &mut Reader, dc: &Huffman, ac: &Huffman, quant: &[i32; 64], predicto
             if size > 10 { return .Err("JPEG AC category " + size.str() + " is not valid") }
             k += run
             if k > 63 { return .Err("JPEG AC coefficient runs past the end of the block") }
-            coefficients[ZIGZAG[k]] = extend(r.receive(size), size) * quant[k]
+            out[offset + ZIGZAG[k]] = extend(r.receive(size), size)
         }
         k += 1
     }
     .Ok
+}
+
+// ---- Progressive procedures (T.81 Annex G) ----
+
+// The DC first pass of a progressive frame: the difference divided by 2^Al
+// (T.81 G.1.1; libjpeg jdphuff.c:309). The buffer starts at zero, so the
+// divided difference is the whole coefficient.
+fn dc_first(r: &mut Reader, table: &Huffman, al: i32, predictor: &mut i32, out: &mut []i32, offset: i32) -> Result<(), string> {
+    t := decode_huffman(&mut r, table)?
+    if t > 11 { return .Err("JPEG DC category " + t.str() + " is not valid") }
+    diff := extend(r.receive(t), t)
+    predictor += diff
+    out[offset] = predictor.shl(al)
+    .Ok
+}
+
+// One bit per block of the MCU, ORed into the DC coefficient at the bit
+// position being coded (T.81 G.1.2.1; libjpeg jdphuff.c:477).
+fn dc_refine(r: &mut Reader, out: &mut []i32, offset: i32, al: i32) {
+    if r.receive(1) == 1 { out[offset] = out[offset].bit_or(1.shl(al)) }
+}
+
+// AC coefficients of one block in one band (Ss..Se), first pass: no
+// coefficient in the band is nonzero yet, so a symbol with size 0 is ZRL or
+// an EOB run, and one with a size is a new nonzero divided by 2^Al. An EOB
+// run counts blocks, and the current block is the first of it (libjpeg
+// jdphuff.c:424), so the count less one is what the scan continues with.
+// Returns that remainder.
+fn ac_first(r: &mut Reader, table: &Huffman, scan: &Scan, out: &mut []i32, offset: i32, eobrun_in: i32) -> Result<i32, string> {
+    if eobrun_in > 0 {
+        for k in scan.ss..scan.se + 1 { out[offset + ZIGZAG[k]] = 0 }
+        return .Ok(eobrun_in - 1)
+    }
+    mut k := scan.ss
+    while k <= scan.se {
+        rs := decode_huffman(&mut r, table)?
+        run := rs.shr(4)
+        size := rs.bit_and(15)
+        if size != 0 {
+            k += run
+            if k > scan.se { return .Err("JPEG AC coefficient runs past the end of the band") }
+            if size > 10 { return .Err("JPEG AC category " + size.str() + " is not valid") }
+            out[offset + ZIGZAG[k]] = extend(r.receive(size), size).shl(scan.al)
+        } else if run == 15 {
+            // ZRL: fifteen zeros here, the loop's step is the sixteenth.
+            k += 15
+        } else {
+            return .Ok(1.shl(run) + r.receive(run) - 1)
+        }
+        k += 1
+    }
+    .Ok(0)
+}
+
+// AC refinement for one block (T.81 G.1.2.2; libjpeg jdphuff.c:497-651): the
+// band holds nonzeros from an earlier scan. A symbol with size 1 places a
+// new nonzero of magnitude 2^Al after `run` zeros, with the sign in the bit
+// that follows; every already nonzero coefficient the walk passes gets a
+// correction bit that raises its magnitude by 2^Al when set and not already
+// raised this scan. An EOB ends the band and the correction bits of the rest
+// of the block are read now; the block is the last of the run, so the count
+// is consumed after the rest of the block (libjpeg jdphuff.c:562), where
+// AC-first consumes it before. Returns the remainder.
+fn ac_refine(r: &mut Reader, table: &Huffman, scan: &Scan, out: &mut []i32, offset: i32, eobrun_in: i32) -> Result<i32, string> {
+    p1 := 1.shl(scan.al)
+    mut eobrun := eobrun_in
+    mut k := scan.ss
+    if eobrun == 0 {
+        while k <= scan.se {
+            rs := decode_huffman(&mut r, table)?
+            run := rs.shr(4)
+            size := rs.bit_and(15)
+            mut new_value := 0
+            if size != 0 {
+                // A new coefficient: its size is 1 by the spec, its sign the
+                // next bit.
+                if size != 1 { return .Err("JPEG AC refinement wrote a coefficient of size " + size.str() + " (1 only)") }
+                new_value = if r.receive(1) == 1 { p1 } else { -p1 }
+            } else if run != 15 {
+                // EOB: the run's length, then the rest of the block below.
+                eobrun = 1.shl(run) + r.receive(run)
+                break
+            }
+            // ZRL (run 15) or a new coefficient: advance over `run` zeros,
+            // appending a correction bit to every nonzero met on the way.
+            mut remaining := run
+            while k <= scan.se {
+                at := offset + ZIGZAG[k]
+                if out[at] != 0 {
+                    correct(&mut r, &mut out, at, p1)
+                } else {
+                    if remaining == 0 { break }
+                    remaining -= 1
+                }
+                k += 1
+            }
+            if new_value != 0 {
+                if k > scan.se { return .Err("JPEG AC refinement runs past the end of the band") }
+                out[offset + ZIGZAG[k]] = new_value
+            }
+            k += 1
+        }
+    }
+    if eobrun > 0 {
+        // The rest of the band after the EOB (or the whole band when a run
+        // was already open): correction bits only.
+        while k <= scan.se {
+            at := offset + ZIGZAG[k]
+            if out[at] != 0 {
+                correct(&mut r, &mut out, at, p1)
+            }
+            k += 1
+        }
+        eobrun -= 1
+    }
+    .Ok(eobrun)
+}
+
+// Correct one already nonzero coefficient in place: the correction bit
+// raises the magnitude by 2^Al in the direction of the sign unless the bit
+// position is already set (libjpeg jdphuff.c:611 "do nothing if already
+// changed it").
+fn correct(r: &mut Reader, out: &mut []i32, at: i32, p1: i32) {
+    if r.receive(1) == 1 && out[at].bit_and(p1) == 0 {
+        if out[at] >= 0 { out[at] += p1 } else { out[at] -= p1 }
+    }
+}
+
+// ---- Scans ----
+
+// Decode one scan's entropy-coded segment, MCU by MCU, into the components'
+// coefficient buffers. Which procedure a block goes through follows from
+// the scan's band and approximation (T.81 Annex G; libjpeg jdcoefct.c
+// decompress_onepass vs. jdphuff.c):
+//   Ss = 0, Se = 0, Ah = 0   DC first pass   every component of the MCU
+//   Ss = 0, Se = 0, Ah > 0   DC refinement   one bit per block
+//   Ss > 0,       Ah = 0     AC first pass   one component per scan
+//   Ss > 0,       Ah > 0     AC refinement   one component per scan
+// and the baseline scan (Ss = 0, Se = 63) is the whole block in one go.
+//
+// The MCU grid is the scan's, not the frame's (T.81 B.2.3): a scan listing
+// one component is non-interleaved and has one block per MCU over that
+// component's own block grid; a scan listing several is interleaved and has
+// v * h blocks of each listed component per MCU over the frame's MCU grid.
+// The predictors restart at zero at every restart marker, and so does the
+// EOB run (libjpeg jdphuff.c process_restart).
+fn decode_scan(r: &mut Reader, components: &mut []Component, dc: &[Huffman; 4], ac: &[Huffman; 4], scan: &Scan, mcus_wide: i32, mcus_high: i32, restart_interval: i32) -> Result<(), string> {
+    mut predictors: [i32; 4] = [0; 4]
+    mut eobrun := 0
+    single := scan.components.len == 1
+    rows := if single { components[scan.components[0]].blocks_high } else { mcus_high }
+    cols := if single { components[scan.components[0]].blocks_wide } else { mcus_wide }
+    for my in 0..rows {
+        for mx in 0..cols {
+            if restart_interval > 0 && (my * cols + mx) > 0 && (my * cols + mx) % restart_interval == 0 {
+                // Every restart interval begins a new entropy-coded segment
+                // with every predictor back at zero and no EOB run open.
+                r.take_restart()
+                for i in 0..4 { predictors[i] = 0 }
+                eobrun = 0
+            }
+            for si in 0..scan.components.len {
+                ci := scan.components[si]
+                c := &mut components[ci]
+                if single {
+                    scan_block(&mut r, c, dc, ac, scan, &mut predictors[ci], &mut eobrun, (my * c.blocks_wide + mx) * 64)?
+                } else {
+                    for by in 0..c.v {
+                        for bx in 0..c.h {
+                            scan_block(&mut r, c, dc, ac, scan, &mut predictors[ci], &mut eobrun, ((my * c.v + by) * c.blocks_wide + mx * c.h + bx) * 64)?
+                        }
+                    }
+                }
+            }
+        }
+    }
+    .Ok
+}
+
+// One block of one scan, through the procedure its band and approximation
+// select (see decode_scan).
+fn scan_block(r: &mut Reader, c: &mut Component, dc: &[Huffman; 4], ac: &[Huffman; 4], scan: &Scan, predictor: &mut i32, eobrun: &mut i32, offset: i32) -> Result<(), string> {
+    if scan.ss == 0 && scan.se == 63 && scan.ah == 0 && scan.al == 0 {
+        return block(&mut r, &dc[c.dc_table], &ac[c.ac_table], &mut predictor, &mut c.coefficients, offset)
+    }
+    if scan.ss == 0 {
+        if scan.ah == 0 {
+            dc_first(&mut r, &dc[c.dc_table], scan.al, &mut predictor, &mut c.coefficients, offset)
+        } else {
+            dc_refine(&mut r, &mut c.coefficients, offset, scan.al)
+            .Ok
+        }
+    } else if scan.ah == 0 {
+        next := ac_first(&mut r, &ac[c.ac_table], scan, &mut c.coefficients, offset, eobrun)?
+        eobrun = next
+        .Ok
+    } else {
+        next := ac_refine(&mut r, &ac[c.ac_table], scan, &mut c.coefficients, offset, eobrun)?
+        eobrun = next
+        .Ok
+    }
 }
 
 // ---- Upsampling ----
@@ -327,7 +549,10 @@ pub fn decode(data: &[]u8) -> Result<image.Image, string> {
     mut hmax := 1
     mut vmax := 1
     mut restart_interval := 0
-    mut scan_start := -1
+    mut progressive := false
+    mut scan_count := 0
+    mut mcus_wide := 0
+    mut mcus_high := 0
     while at + 4 <= data.len {
         if data[at] != 255 { return .Err("JPEG marker expected at byte " + at.str()) }
         marker := i32(data[at + 1])
@@ -335,33 +560,89 @@ pub fn decode(data: &[]u8) -> Result<image.Image, string> {
         if marker == 217 { break }
         if marker == 218 {
             // SOS (T.81 B.2.3): the scan names the components it codes, in
-            // MCU order, and the Huffman table each uses for DC and AC. A
-            // baseline frame is one scan over every component in frame order;
-            // anything else is a multi-scan (progressive-style) layout.
+            // MCU order, the Huffman table each uses for DC and AC, and its
+            // band (Ss, Se) and successive approximation (Ah, Al). A baseline
+            // frame has one scan over every component in frame order with
+            // Ss = 0, Se = 63, Ah = Al = 0; a progressive frame has several,
+            // and DHT segments may sit between them, so the walk continues
+            // after the scan's entropy-coded segment.
             length := bytes.u16_be(data, at + 2)
             if length < 6 || at + 2 + length > data.len { return .Err("JPEG SOS segment runs past the end of the file") }
             body := at + 4
             count := i32(data[body])
             if components.len == 0 { return .Err("JPEG scan before frame") }
-            if count != components.len { return .Err("JPEG scan codes " + count.str() + " components, the frame has " + components.len.str()) }
+            if count < 1 { return .Err("JPEG scan codes no components") }
+            if progressive && count > components.len { return .Err("JPEG scan codes " + count.str() + " components, the frame has " + components.len.str()) }
+            if !progressive && count != components.len { return .Err("JPEG scan codes " + count.str() + " components, the frame has " + components.len.str()) }
+            mut in_scan: [bool; 4] = [false; 4]
+            mut scan := Scan { components: [], ss: 0, se: 0, ah: 0, al: 0 }
             for c in 0..count {
                 entry := body + 1 + c * 2
                 selector := i32(data[entry])
                 tables := i32(data[entry + 1])
                 mut found := -1
                 for f in 0..components.len { if components[f].id == selector { found = f } }
-                if found != c { return .Err("JPEG scan lists component " + selector.str() + " out of frame order") }
-                components[c].dc_table = tables.shr(4)
-                components[c].ac_table = tables.bit_and(15)
+                if found < 0 { return .Err("JPEG scan codes component " + selector.str() + " which the frame does not have") }
+                if in_scan[found] { return .Err("JPEG scan lists component " + selector.str() + " twice") }
+                in_scan[found] = true
+                if !progressive && found != c { return .Err("JPEG scan lists component " + selector.str() + " out of frame order") }
+                components[found].dc_table = tables.shr(4)
+                components[found].ac_table = tables.bit_and(15)
+                if components[found].dc_table > 3 || components[found].ac_table > 3 { return .Err("JPEG scan names Huffman table " + tables.str() + " which is out of range") }
+                scan.components.push(found)
             }
-            scan_start = at + 2 + length
-            break
+            if progressive {
+                if length != 6 + count * 2 { return .Err("JPEG SOS segment has length " + length.str() + " for " + count.str() + " components") }
+                scan.ss = i32(data[body + 1 + count * 2])
+                scan.se = i32(data[body + 2 + count * 2])
+                scan.ah = i32(data[body + 3 + count * 2]).shr(4)
+                scan.al = i32(data[body + 3 + count * 2]).bit_and(15)
+                // The scan parameters a decoder may refuse (libjpeg
+                // jdphuff.c:91-112, JERR_BAD_PROGRESSION): a DC band codes
+                // Se = 0 only; an AC band has Ss <= Se < 64 and one
+                // component; a refinement scan (Ah > 0) has Al = Ah - 1
+                // exactly; Al <= 13.
+                if scan.ss == 0 {
+                    if scan.se != 0 { return .Err("JPEG DC scan codes band 0.." + scan.se.str() + " (Se must be 0)") }
+                } else {
+                    if scan.se >= 64 || scan.ss > scan.se { return .Err("JPEG scan band " + scan.ss.str() + ".." + scan.se.str() + " is not valid") }
+                    if count != 1 { return .Err("JPEG AC scan codes " + count.str() + " components (one only)") }
+                }
+                if scan.ah != 0 && scan.al != scan.ah - 1 { return .Err("JPEG refinement scan has Ah = " + scan.ah.str() + ", Al = " + scan.al.str() + " (Al must be Ah - 1)") }
+                if scan.al > 13 { return .Err("JPEG scan successive approximation Al = " + scan.al.str() + " is not valid (13 at most)") }
+            } else {
+                scan = Scan { components: scan.components.clone(), ss: 0, se: 63, ah: 0, al: 0 }
+            }
+            for si in 0..scan.components.len {
+                c := &components[scan.components[si]]
+                if c.quant >= 4 || quant[c.quant][0] == 0 { return .Err("JPEG component uses quantisation table " + c.quant.str() + " which is not defined") }
+                if !defined(&dc[c.dc_table]) { return .Err("JPEG scan uses DC Huffman table " + c.dc_table.str() + " which is not defined") }
+                if scan.se > 0 && scan.ah == 0 && !defined(&ac[c.ac_table]) { return .Err("JPEG scan uses AC Huffman table " + c.ac_table.str() + " which is not defined") }
+            }
+            if scan_count == 0 {
+                // The first scan sizes the buffers: the frame is complete by
+                // now (its tables may still follow, but the geometry is not).
+                for c in &mut components {
+                    array.resize(&mut c.coefficients, c.blocks_wide * c.blocks_high * 64, &0)
+                    bytes.pad(&mut c.plane, c.blocks_wide * 8 * c.blocks_high * 8)
+                }
+            }
+            scan_count += 1
+            mut r := reader(data, at + 2 + length)
+            decode_scan(&mut r, &mut components, &dc, &ac, &scan, mcus_wide, mcus_high, restart_interval)?
+            // The reader stops on the FF of the marker that ended the
+            // segment (it never steps over one), so the walk continues there.
+            at = r.pos
+            continue
         }
         length := bytes.u16_be(data, at + 2)
         if length < 2 || at + 2 + length > data.len { return .Err("JPEG segment " + marker.str() + " runs past the end of the file") }
         body := at + 4
-        if marker == 192 {
-            // SOF0: baseline Huffman.
+        if marker == 192 || marker == 194 {
+            // SOF0 (baseline) and SOF2 (progressive): the same frame header,
+            // T.81 B.2.2; the process differs only in how many scans follow.
+            if components.len > 0 { return .Err("JPEG has two frames") }
+            progressive = marker == 194
             if data[body] != 8 { return .Err("JPEG precision " + i32(data[body]).str() + " is not supported (8 only)") }
             height = bytes.u16_be(data, body + 1)
             width = bytes.u16_be(data, body + 3)
@@ -378,6 +659,8 @@ pub fn decode(data: &[]u8) -> Result<image.Image, string> {
                 if h > hmax { hmax = h }
                 if v > vmax { vmax = v }
             }
+            mcus_wide = (width + hmax * 8 - 1) / (hmax * 8)
+            mcus_high = (height + vmax * 8 - 1) / (vmax * 8)
             for c in 0..count {
                 entry := body + 6 + c * 3
                 h := i32(data[entry + 1]).shr(4)
@@ -389,17 +672,16 @@ pub fn decode(data: &[]u8) -> Result<image.Image, string> {
                     // Tq is the last byte of the SOF entry; Td/Ta come from SOS.
                     quant: i32(data[entry + 2]), dc_table: 0, ac_table: 0,
                     blocks_wide: blocks_wide, blocks_high: blocks_high, plane: [],
+                    coefficients: [],
                 })
             }
-        } else if marker == 194 {
-            return .Err("progressive JPEG (SOF2) is not supported")
         } else if marker >= 192 && marker <= 207 && !reserved_marker(marker) {
             // A SOF other than 0 or 2: 1 (extended sequential), 3 (lossless),
             // 5–7 (differential), 9–11 (arithmetic), 13–15 (lossless/diff
             // arithmetic). The name is the process's own, so a reader of the
             // message can look it up.
             process := marker - 192
-            return .Err("JPEG process SOF" + process.str() + " is not supported (baseline SOF0 only)")
+            return .Err("JPEG process SOF" + process.str() + " is not supported (baseline SOF0 and progressive SOF2 only)")
         } else if marker == 219 {
             // DQT
             mut p := body
@@ -408,7 +690,10 @@ pub fn decode(data: &[]u8) -> Result<image.Image, string> {
                 tq := i32(data[p].bit_and(15))
                 if pq != 0 { return .Err("JPEG 16-bit quantisation tables are not supported") }
                 if tq >= 4 { return .Err("JPEG quantisation table " + tq.str() + " is out of range") }
-                for k in 0..64 { quant[tq][k] = i32(data[p + 1 + k]) }
+                // The table is stored in zigzag order (T.81 B.2.4.1); it is
+                // kept in natural order, the order the coefficient buffer
+                // and the IDCT index, so no later lookup needs the zigzag.
+                for k in 0..64 { quant[tq][ZIGZAG[k]] = i32(data[p + 1 + k]) }
                 p += 65
             }
         } else if marker == 196 {
@@ -431,40 +716,19 @@ pub fn decode(data: &[]u8) -> Result<image.Image, string> {
         }
         at += 2 + length
     }
-    if scan_start < 0 { return .Err("JPEG has no scan") }
+    if scan_count == 0 { return .Err("JPEG has no scan") }
     if components.len == 0 { return .Err("JPEG has no frame") }
-    for c in &components { if quant[c.quant][0] == 0 { return .Err("JPEG component uses quantisation table " + c.quant.str() + " which is not defined") } }
-    mcus_wide := (width + hmax * 8 - 1) / (hmax * 8)
-    mcus_high := (height + vmax * 8 - 1) / (vmax * 8)
-    // One plane per component at its own sampling resolution, padded to whole
-    // blocks (the MCU geometry), with an 8-bit sample per position.
-    for c in &mut components {
-        bytes.pad(&mut c.plane, c.blocks_wide * 8 * c.blocks_high * 8)
-    }
-    mut r := reader(data, scan_start)
+    // One coefficient buffer and one plane per component at its own sampling
+    // resolution, padded to whole blocks (the MCU geometry). The buffer holds
+    // the raw coefficients of every scan; the plane is written once, after
+    // the last scan, by the dequantising IDCT.
     basis := basis_table()
-    mut predictors: [i32; 4] = [0; 4]
-    mut coefficients: [i32; 64] = [0; 64]
-    for my in 0..mcus_high {
-        for mx in 0..mcus_wide {
-            if restart_interval > 0 && (my * mcus_wide + mx) > 0 && (my * mcus_wide + mx) % restart_interval == 0 {
-                // Every restart interval begins a new entropy-coded segment
-                // with every predictor back at zero.
-                r.take_restart()
-                for i in 0..4 { predictors[i] = 0 }
-            }
-            for ci in 0..components.len {
-                c := &mut components[ci]
-                for by in 0..c.v {
-                    for bx in 0..c.h {
-                        block_x := mx * c.h + bx
-                        block_y := my * c.v + by
-                        block(&mut r, &dc[c.dc_table], &ac[c.ac_table], &quant[c.quant], &mut predictors[ci], &mut coefficients)?
-                        // A block of the MCU may lie past the image: the plane is
-                        // sized for whole MCUs, so it is still in bounds.
-                        idct(&coefficients, &basis, &mut c.plane, block_x * 8, block_y * 8, c.blocks_wide * 8)
-                    }
-                }
+    for c in &mut components {
+        mut offset := 0
+        for by in 0..c.blocks_high {
+            for bx in 0..c.blocks_wide {
+                idct(&c.coefficients, offset, &quant[c.quant], &basis, &mut c.plane, bx * 8, by * 8, c.blocks_wide * 8)
+                offset += 64
             }
         }
     }
