@@ -352,7 +352,7 @@ fn input_checks(failures: &mut i32) {
 
         first := appkit.poll(&rt, &mut window)
         expect(&mut failures, "a new window reports no input and is not closed",
-            !first.closed && !first.input.down(gfx.Key.W) && !first.input.button_down(gfx.MOUSE_LEFT) && !first.input.hit(gfx.Key.W))
+            !first.closed && !first.input.down(gfx.Key.W) && !first.input.button_down(gfx.Button.Left) && !first.input.hit(gfx.Key.W))
 
         // W and D go down, W comes up, the left shift changes, the left
         // button goes down 100 points from the left and 500 from the top.
@@ -374,7 +374,7 @@ fn input_checks(failures: &mut i32) {
         expect(&mut failures, "the pointer is reported from the top-left corner, in points",
             (pressed.input.mouse.x - 100.0).abs() < 0.5 && (pressed.input.mouse.y - 500.0).abs() < 0.5)
         expect(&mut failures, "the left button is down and was pressed",
-            pressed.input.button_down(gfx.MOUSE_LEFT) && pressed.input.button_hit(gfx.MOUSE_LEFT) && !pressed.input.button_down(gfx.MOUSE_RIGHT))
+            pressed.input.button_down(gfx.Button.Left) && pressed.input.button_hit(gfx.Button.Left) && !pressed.input.button_down(gfx.Button.Right))
 
         // The button comes up; nothing else happens.
         appkit.synthesize_click(&rt, &window, 2, 100.0, 500.0)
@@ -382,13 +382,13 @@ fn input_checks(failures: &mut i32) {
         expect(&mut failures, "what was pressed belongs to the frame it happened in; what is held stays held",
             later.input.down(gfx.Key.D) && !later.input.hit(gfx.Key.D) && later.input.down(gfx.Key.Shift) && !later.input.hit(gfx.Key.Shift) && !later.input.hit(gfx.Key.W))
         expect(&mut failures, "a button that came up is not down and was not pressed",
-            !later.input.button_down(gfx.MOUSE_LEFT) && !later.input.button_hit(gfx.MOUSE_LEFT))
+            !later.input.button_down(gfx.Button.Left) && !later.input.button_hit(gfx.Button.Left))
 
         // The right button, then a click far from the first.
         appkit.synthesize_click(&rt, &window, 3, 700.0, 20.0)
         right := appkit.poll(&rt, &mut window)
         expect(&mut failures, "the right button is told apart from the left, and the pointer followed it",
-            right.input.button_down(gfx.MOUSE_RIGHT) && right.input.button_hit(gfx.MOUSE_RIGHT) &&
+            right.input.button_down(gfx.Button.Right) && right.input.button_hit(gfx.Button.Right) &&
             (right.input.mouse.x - 700.0).abs() < 0.5 && (right.input.mouse.y - 20.0).abs() < 0.5)
 
         // The window is closed, as its close button would: the next poll says so.

@@ -153,12 +153,14 @@ pub unsafe fn poll(w: &mut Window) {
         if kind == 1025 || kind == 1026 {
             button := load_u8(ptr(usize(base) + 16))
             if button < 32 {
-                mask := u32(1).shl(i32(button))
-                if kind == 1025 {
-                    w.buttons = w.buttons.bit_or(mask)
-                    w.buttons_pressed = w.buttons_pressed.bit_or(mask)
-                } else {
-                    w.buttons = w.buttons.bit_and(u32(4294967295).bit_xor(mask))
+                mask := sdl_button(u32(button))
+                if mask != 0 {
+                    if kind == 1025 {
+                        w.buttons = w.buttons.bit_or(mask)
+                        w.buttons_pressed = w.buttons_pressed.bit_or(mask)
+                    } else {
+                        w.buttons = w.buttons.bit_and(mask.bit_xor(4294967295))
+                    }
                 }
             }
             w.x = load_i32(ptr(usize(base) + 20))
@@ -175,6 +177,17 @@ pub unsafe fn poll(w: &mut Window) {
 
 // One place pairs an SDL scancode with the engine key it means.
 fn bind(table: &mut [i32; 512], scancode: i32, key: gfx.Key) { table[scancode] = i32(key) }
+
+// One place pairs an SDL button number with the engine button it means.
+// The numbers are SDL_mouse.h's (SDL_BUTTON_LEFT 1, MIDDLE 2, RIGHT 3); the
+// bits are the contract's (`gfx.Button`). They are not the same numbers: a
+// shift of SDL's number would make a left click read as the right button.
+pub fn sdl_button(number: u32) -> u32 {
+    if number == 1 { return gfx.button_bit(gfx.Button.Left) }
+    if number == 2 { return gfx.button_bit(gfx.Button.Middle) }
+    if number == 3 { return gfx.button_bit(gfx.Button.Right) }
+    0
+}
 
 // The window's raw key and mouse state as the engine sees it.
 pub fn input(w: &Window) -> gfx.Input {

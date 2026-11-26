@@ -157,9 +157,9 @@ pub fn modifier_flag(key: gfx.Key) -> u64 {
 // The mouse button an event type and button number mean: 0 for one Storm
 // does not report. Left, right and the middle button (the second "other").
 pub fn button_of(kind: u64, number: u64) -> u32 {
-    if kind == enums.event_type(.LeftMouseDown) || kind == enums.event_type(.LeftMouseUp) { return gfx.MOUSE_LEFT }
-    if kind == enums.event_type(.RightMouseDown) || kind == enums.event_type(.RightMouseUp) { return gfx.MOUSE_RIGHT }
-    if number == 2 { return gfx.MOUSE_MIDDLE }
+    if kind == enums.event_type(.LeftMouseDown) || kind == enums.event_type(.LeftMouseUp) { return gfx.button_bit(gfx.Button.Left) }
+    if kind == enums.event_type(.RightMouseDown) || kind == enums.event_type(.RightMouseUp) { return gfx.button_bit(gfx.Button.Right) }
+    if number == 2 { return gfx.button_bit(gfx.Button.Middle) }
     0
 }
 

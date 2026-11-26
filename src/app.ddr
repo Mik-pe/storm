@@ -586,7 +586,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             if dt > 0.1 { dt = 0.1 }
             // Mouse look only while the right button is held.
             over_view := editor.in_viewport(&studio, frame.input.mouse.x, frame.input.mouse.y, f32(frame.width), f32(frame.height))
-            camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.MOUSE_RIGHT))
+            camera.update(&frame.input, f32(dt), over_view && frame.input.button_down(gfx.Button.Right))
             if frame.input.hit(gfx.Key.R) {
                 baseline := args.aim(argv)
                 camera = input.Camera::new(baseline.position)
@@ -691,7 +691,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             } else if kind == render.PassKind.Ui {
                 canvas.clear()
                 mouse := frame.input.mouse
-                pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.MOUSE_LEFT), frame.input.button_down(gfx.MOUSE_LEFT))
+                pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.Button.Left), frame.input.button_down(gfx.Button.Left))
                 if playing {
                     paused := transport.paused()
                     if session.scene.theme == .Blossom {

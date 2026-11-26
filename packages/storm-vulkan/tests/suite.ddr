@@ -80,9 +80,23 @@ import ..src.ui as ui
         assert(input.down(gfx.Key.W) && !input.hit(gfx.Key.W))
         assert(input.down(gfx.Key.Shift) && !input.down(gfx.Key.Ctrl) && !input.down(gfx.Key.S))
         assert(input.mouse.x == 12.0 && input.mouse.y == 34.0 && input.mouse.dx == 3.0 && input.mouse.dy == -2.0)
-        assert(input.button_down(gfx.MOUSE_RIGHT) && !input.button_down(gfx.MOUSE_LEFT) && input.button_hit(gfx.MOUSE_RIGHT))
+        assert(input.button_down(gfx.Button.Right) && !input.button_down(gfx.Button.Left) && input.button_hit(gfx.Button.Right))
         assert(input.mouse.scroll == 1.0)
     }
+}
+
+// SDL numbers its buttons left 1, middle 2, right 3 (SDL_mouse.h) and the
+// contract numbers its bits 1, 2, 4. The pairing is a table, not a shift:
+// until 2026-11-26 `poll` shifted SDL's number, so a left click on Linux set
+// the bit the engine reads as the right button, and the right button set a
+// bit nothing read. Pinned against the header's three numbers.
+@test fn an_sdl_button_number_is_paired_with_the_engine_button_by_name() {
+    assert(sdl.sdl_button(1) == gfx.button_bit(gfx.Button.Left))
+    assert(sdl.sdl_button(2) == gfx.button_bit(gfx.Button.Middle))
+    assert(sdl.sdl_button(3) == gfx.button_bit(gfx.Button.Right))
+    assert(gfx.button_bit(gfx.Button.Left) == 1 && gfx.button_bit(gfx.Button.Right) == 2 && gfx.button_bit(gfx.Button.Middle) == 4)
+    // A button Storm does not report (X1 is 4, X2 is 5) sets no bit at all.
+    assert(sdl.sdl_button(0) == 0 && sdl.sdl_button(4) == 0 && sdl.sdl_button(5) == 0)
 }
 
 @test fn vertex_input_declares_the_whole_stream() {

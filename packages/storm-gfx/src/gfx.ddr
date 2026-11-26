@@ -22,10 +22,12 @@ pub enum Key {
     Ctrl = 17, Shift = 18,
 }
 
-// Mouse buttons, as bits of `Mouse.buttons`.
-pub const MOUSE_LEFT: u32 = 1
-pub const MOUSE_RIGHT: u32 = 2
-pub const MOUSE_MIDDLE: u32 = 4
+// Mouse buttons. The values are the bits of `Mouse.buttons`/`Mouse.pressed`,
+// and the contract owns them: a backend pairs its platform's button with the
+// name (SDL numbers left 1, middle 2, right 3; these are not SDL's bits) in
+// the same way it pairs a scancode with a `Key`. The methods take the enum,
+// so a number nobody named cannot reach a comparison.
+pub enum Button { Left = 1, Right = 2, Middle = 4 }
 
 // The pointer this frame, in points from the window's top-left corner.
 // `dx`/`dy` are the motion since the last frame, positive right and down.
@@ -48,6 +50,8 @@ pub struct Input {
 
 fn key_bit(key: Key) -> u32 { u32(1).shl(i32(key)) }
 
+pub fn button_bit(button: Button) -> u32 { u32(i32(button)) }
+
 impl Input {
     pub fn empty() -> Input {
         Input { held: 0, pressed: 0, mouse: Mouse { x: 0.0, y: 0.0, dx: 0.0, dy: 0.0, buttons: 0, pressed: 0, scroll: 0.0 } }
@@ -59,9 +63,11 @@ impl Input {
     // The key went down during this frame.
     pub fn hit(&self, key: Key) -> bool { self.pressed.bit_and(key_bit(key)) != 0 }
 
-    pub fn button_down(&self, button: u32) -> bool { self.mouse.buttons.bit_and(button) != 0 }
+    // The button is held down.
+    pub fn button_down(&self, button: Button) -> bool { self.mouse.buttons.bit_and(button_bit(button)) != 0 }
 
-    pub fn button_hit(&self, button: u32) -> bool { self.mouse.pressed.bit_and(button) != 0 }
+    // The button went down during this frame.
+    pub fn button_hit(&self, button: Button) -> bool { self.mouse.pressed.bit_and(button_bit(button)) != 0 }
 }
 
 // What the window looks like at the start of a frame. `width` and `height`

@@ -94,11 +94,11 @@ import ..src.gfx as gfx
     assert(input.down(.W) && input.down(.Shift) && !input.down(.S))
     // Shift is held but was not pressed this frame.
     assert(input.hit(.W) && !input.hit(.Shift))
-    assert(!input.button_down(gfx.MOUSE_RIGHT))
-    input.mouse.buttons = gfx.MOUSE_RIGHT
-    input.mouse.pressed = gfx.MOUSE_RIGHT
-    assert(input.button_down(gfx.MOUSE_RIGHT) && !input.button_down(gfx.MOUSE_LEFT))
-    assert(input.button_hit(gfx.MOUSE_RIGHT))
+    assert(!input.button_down(gfx.Button.Right))
+    input.mouse.buttons = gfx.button_bit(gfx.Button.Right)
+    input.mouse.pressed = gfx.button_bit(gfx.Button.Right)
+    assert(input.button_down(gfx.Button.Right) && !input.button_down(gfx.Button.Left))
+    assert(input.button_hit(gfx.Button.Right))
 }
 
 // Each key is its own bit: two keys sharing one would make one press look

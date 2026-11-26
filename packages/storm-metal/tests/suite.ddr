@@ -156,10 +156,10 @@ import ..src.records as records
 
 // Which mouse button an event means, and whether it went down.
 @test fn mouse_events_mean_the_right_buttons() {
-    assert(appkit.button_of(enums.event_type(.LeftMouseDown), 0) == gfx.MOUSE_LEFT)
-    assert(appkit.button_of(enums.event_type(.RightMouseUp), 1) == gfx.MOUSE_RIGHT)
+    assert(appkit.button_of(enums.event_type(.LeftMouseDown), 0) == gfx.button_bit(gfx.Button.Left))
+    assert(appkit.button_of(enums.event_type(.RightMouseUp), 1) == gfx.button_bit(gfx.Button.Right))
     // The middle button is the second of the "other" buttons.
-    assert(appkit.button_of(enums.event_type(.OtherMouseDown), 2) == gfx.MOUSE_MIDDLE)
+    assert(appkit.button_of(enums.event_type(.OtherMouseDown), 2) == gfx.button_bit(gfx.Button.Middle))
     assert(appkit.button_of(enums.event_type(.OtherMouseDown), 3) == 0)
     assert(appkit.button_went_down(enums.event_type(.LeftMouseDown)))
     assert(appkit.button_went_down(enums.event_type(.RightMouseDown)))
