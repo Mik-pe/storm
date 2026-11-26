@@ -15,7 +15,7 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
-**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). Kvar i 3d, i ordningen: occlusion → normal (3e). Se avsnitt 3d.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). Kvar i 3d, i ordningen: occlusion → normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (82 prototyper + `load()`; `vkResetDescriptorPool`
@@ -232,9 +232,7 @@ Tre committer: `2c0c33c` (PNG-avkodare), `496d59b` (`gfx.Sampler`), `05a0250`
 ger de pixlar Pillow läser (tre prober: (67,63,30) vid (0,0), (219,135,41)
 vid (512,512), (255,250,242) vid (541,694)). Box.glb, som inte har några
 texturer, ger AE = 0 mot 3b-capturen, liksom spelscenen och `--texture`.
-DamagedHelmet avbrytes med status 1 och `progressive JPEG (SOF2) is not
-supported` (2026-11-26: baseline-JPEG avkodas nu, se "Kvar i 3c" — Helmet
-har en progressiv bild av fem).
+DamagedHelmet avkodas sedan 2026-11-26: baseline- och progressiv JPEG (den har en progressiv bild av fem; se "Kvar i 3c").
 
 **Vad filerna innehåller** (uppmätt med en chunk-läsare över de elva
 Khronos-/Katla-filerna, 2026-11-25): färgtyp 2 (RGB) och 6 (RGBA) dominerar,
@@ -293,121 +291,66 @@ alltså det vanliga fallet, inte undantaget.
 
 **Kvar i 3c:**
 
-- **JPEG: baseline är landat (2026-11-26), progressivt kvar.**
-  `packages/storm-image/src/jpeg.ddr` (506 rader) avkodar SOF0 med varje
-  sampling upp till 2×2 (4:4:4, 4:2:2, 4:2:0, grå), med och utan
+- **JPEG: baseline och progressivt är landade (2026-11-26).**
+  `packages/storm-image/src/jpeg.ddr` (770 rader) avkodar SOF0 och SOF2 med
+  varje sampling upp till 2×2 (4:4:4, 4:2:0, 4:2:2, grå), med och utan
   restart-markörer, till samma `Image` som PNG. Formen är PNG:s: markörgång,
   vägran med namn, Pillow/libjpeg-turbo 3.2.0:s pixlar som referens i
-  elva tester (sju handgjorda fixturer + DamagedHelmet 512²). Tre beslut,
-  alla mätta mot Pillow i stället för gissade: (1) **IDCT är den exakta
-  separabla DCT:en i `f64`** (T.81 A.3.3, ingen AAN-tabell att komma ihåg;
-  resultatet skiljer sig från libjpegs heltals-IDCT med ≤ 1 per kanal);
-  (2) **chroma hålls flytande genom upsamplingen in i färgmatrisen** — att
-  avrunda chroma till 8 bitar före matrisen (libjpegs ordning) är *sämre*
-  på varje fixtur (444: 256 kanaler över 1 mot 0; Helmet: 98 026 mot 2 384);
-  (3) **triangel-upsampling** (h2v1/h2v2 "fancy", 3/4 : 1/4 i 2·step-delar),
-  bevisad mot Pillow på 4:2:0, 4:2:2 och udda 9×9. Tolerans ±1 på de små
-  fixturerna; Helmet 512² har worst 3 / 2 384 av 786 432 kanaler / medel
-  0,14, så dess tolerans är 3 med kravet medel < 0,5 (ett logikfel ger
-  medel ≥ 5: mätt 37 för fel upsamlingsmodell). Huffman är den kanoniska
-  formen (första kod per längd + startindex, T.81 F.2.2.3), vilket gav
-  7,5 → 5,9 s på 2048² mot en linjärsökning per bit. **Kostnad: 220 ms
-  byggtid** (18 557 → 18 776 ms; PNG kostade 1 100, dogfood 82) och 5,9 s
-  för 2048² (varav IDCT 2,0 s, Huffman 2,7 s, pixlar 2,8 s). **Kvar:**
-  (a) **progressivt JPEG** (SOF2) — DamagedHelmet har en progressiv bild av
-  fem och vägras därför fortfarande. **Researchad 2026-11-26; besluten nedan
-  är mätta mot filen, specen och två referensimplementationer, inte gissade.**
-  *Vad filen ber om* (markörgång över alla tio `.glb` i Katla: fem JPEG:er,
-  alla i `DamagedHelmet.glb`, fyra SOF0 4:2:0 och **en** SOF2 — image 1,
-  MR-kartan, 1,3 MB; ingen av de fem har DRI): 2048², 4:4:4 (alla
-  komponenter 1×1), **tio scans i libjpegs standardordning** `jpeg_simple_
-  progression` — DC-first (Al=1), AC-first 1–5 (Al=2), AC-first 1–63 (Al=1)
-  per chroma, AC-first 6–63 (Al=2), AC-refine 1–63 (Ah=2 Al=1), DC-refine
-  (Ah=1 Al=0), AC-refine 1–63 (Ah=1 Al=0) ×3 — och **ingen DRI**. Alla fyra
-  MCU-procedurer i T.81 G krävs alltså, men inte restart i en flerscan-fil.
-  *Vad koden är för storlek*: libjpegs fyra procedurer (`jdphuff.c` rad
-  289–651, `decode_mcu_DC_first/AC_first/DC_refine/AC_refine`) är **213
-  kodrader C** med kommentarer, blanka och suspenderingsraderna borträknade
-  (43 + 53 + 24 + 93 — AC-refine ensam är 44 %: den vandrar över redan
-  icke-nollor och läser en korrektionsbit per sådan), stbs två
-  (`stbi__jpeg_decode_block_prog_dc/ac`) 128 kodrader på samma sätt. En
-  Dunder-version ligger på 150–220 rader för procedurerna, plus
-  koefficientbufferten och omskrivningen av `decode` (181 rader idag: ett
-  block → IDCT → plan per MCU; progressivt är *alla* scans → buffert → IDCT
-  en gång efter sista scan). Av `jpeg.ddr`:s 392 fn-rader är **184 gemensamma
-  och oförändrade** (läsare, `extend`, kanonisk Huffman, IDCT, triangel-
-  upsampling, färgmatris), 27 (`block`) är baseline-scans procedur och behålls
-  som fallet Ah=0, Ss=0..63, en scan — baseline *är* ett specialfall av
-  spectral selection med DC+AC i samma scan, så `block` blir inte död kod utan
-  den första av procedurerna. *Beslut, i ordning:*
-  1. **Koefficientbuffer per komponent i naturlig ordning, odekvantifierad
-     till IDCT** (libjpeg: "not dequantized"; korrektionsbitarna i refine
-     ska läggas till *före* multiplikationen med quanttabellen). Storlek,
-     räknat: 65 536 block per komponent vid 2048² × 64 × 3 komponenter —
-     **48 MiB i `i32`, 24 MiB i `i16`** (mätt i Python; `[]i16` och `[i16; N]`
-     typcheckar i Dunder 0.12.0, så `i16` är ett val att mätta, inte uteslutet:
-     T.81:s råa koefficienter ryms i 11 bitar + tecken, det är den
-     *dekvantiserade* produkten som inte ryms — libjpeg håller `short` och
-     dekvantiserar i IDCT:n). Per pixel är bufferten 12 B mot RGBA-pixlarnas
-     16 B, så `MAX_PIXEL_BYTES` (256 MiB) som gräns för *summan* täcker båda;
-     mät att 2048² håller.
-  2. **Samma `Reader`, `Huffman`, `extend`** återanvänds oförändrade: T.81 G
-  ändrar *vad* symbolerna betyder, inte hur de läses.
-  3. **EOBRUN är scan-tillstånd, nollställt vid varje scan-start och varje
-  restart** (libjpeg `start_pass_phuff_decoder` rad 187, `process_restart`
-  rad 250); en AC-first EOB `r` betyder `2^r + appended` **plus nuvarande
-  block** (`EOBRUN--` direkt, libjpeg rad 424), i AC-refine **minus nuvarande
-  block** (ingen `--`, rad 562–568; stb skriver `2^r - 1`). Den asymmetrin
-  är den vanligaste buggen i nya dekodare och är ett testfall i sig.
-  4. **Validering per scan** enligt `start_pass_phuff_decoder`: DC-band ⇒
-  `Se == 0`; annars `Ss ≤ Se < 64` och **exakt en komponent**; refine
-  (`Ah ≠ 0`) ⇒ `Al == Ah − 1`; `Al ≤ 13`. En överträdelse vägras med namn
-  (`JPEG scan Ss=… Se=… Ah=… Al=… is not a valid progression`), inte
-  tolkas. "AC utan föregående DC-scan" är en varning i libjpeg — här vägras
-  det (en koefficientbuffert utan DC är ett halvdant svar).
-  5. **Fixturer — den befintliga räcker inte.** `progressive16.jpg` (522 B,
-  16×16, 4:2:0, en MCU) har samma tio scans men varje AC-scan är **exakt en
-  symbol** (`R0S0` ×1 eller `R2S0` ×1 = EOB-run över alla block; mätt), inga
-  koefficienter skrivs någonsin av AC-first, inga ZRL, inga nya icke-nollor
-  i refine: en dekodare som returnerar DC och nollor för AC ger samma pixlar
-  på den. Den bevisar markörgången, DC-first och DC-refine (kategorier
-  0, 0, 5), inte AC. Till den skrivs **`helmet_mr_256.jpg`** (DamagedHelmet
-  MR nedskalad till 256², Pillow `quality=75, progressive=True, subsampling=0`,
-  25 625 B) med PNG-twin av *Pillows* pixlar. Mätt med en symbolcensus
-  (entropy-lagret avkodat utan koefficienter; AC-refine-rader är delmått —
-  verktyget vandrar inte över redan kända icke-nollor och stannar efter en
-  femtedel): alla fyra procedurer, ZRL i **fem av åtta** AC-scans (4, 1, 2,
-  9, 3 — alla fyra refine-scans och en first), 469–881 EOB-symboler per
-  AC-scan (runs över tomma block, längden mäts inte av verktyget),
-  DC-kategori 0 vanligast (412 av 3 072 — dogfood 95 gäller progressivt
-  också), AC-first med riktiga koefficienter (`R0S1` × 527–1 279 per scan),
-  AC-refine med `R0S1`-nyckel (457–511 per scan, delmått). Referens för
-  *delbara* bilder: filen trunkerad efter scan N + EOI avkodas av libjpeg
-  till **exakt det en progressiv tittare ser efter N scans** (mätt på
-  `helmet_mr_256`: tio trunkeringar, alla avkodas, medelskillnad mot hela
-  filen 18,30 → 0,000 monoton, sista exakt 0), så varje
-  delsteg har egna referenspixlar — det är testet av att en scan skriver
-  *rätt* bitar, inte bara rätt antal.
-  6. **Generatorn in i paketet**: `packages/storm-image/tests/make_fixtures.py`
-  (idag levde den i `/tmp` när `77b4b6c` landade; en fixtur utan generator
-  är inte reproducerbar). Den skriver om *alla* JPEG-fixturer, inklusive de
-  åtta baseline, så censusen kan köras mot varje. Mätverktygen från den här
-  researchen ligger redan i paketet: **`tests/fixtures/jpeg_tools.py`** med
-  `scans` (markörgång), `census` (vilka Huffman-symboler och stigar varje
-  scan utövar; AC-refine-rader är delmått), `glb` (alla JPEG:er i en
-  modellkatalog) och `trunc` (filen avklippt efter scan N + EOI, skillnad
-  mot hela) — deras tal är det som gör en ny fixtur mättbar. `helmet_mr_256`
-  och dess PNG-twin är landade och registrerade i `refuses_progressive`, som
-  är testet som byts ut mot `near(...)` när dekodern finns.
-  *Omfattning*: en timme räcker till punkterna 1–4 + fixtur + test på
-  `helmet_mr_256` och `progressive16` (byggtid: +? ms — JPEG kostade 220,
-  PNG 1 100; mät `tools/build-time.ddr` före och efter). Restart i
-  progressiva filer (DRI) utövas av ingen av de elva filerna och lämnas som
-  nästa delsteg med samma form (`take_restart` + EOBRUN=0).
-  (b) hastighet: 5,9 s för 2048² är en laddningsskärm — nästa mätpunkt är
-  bit-läsaren (ett `receive`-anrop per bit, ~10 M anrop per 2048²-bild; en
-  32-bitarsackumulator med korrekt invariant är den uppenbara formen, men
-  det första försöket var fel och togs bort: mät, antag inte).
+  femton tester (sju handgjorda baseline-fixturer, DamagedHelmet 512²,
+  `progressive16`, `helmet_mr_256` med tio trunkeringar, och
+  `helmet_prog_restart` med DRI = 4). Tre beslut, alla mätta mot Pillow i
+  stället för gissade: (1) **IDCT är den exakta separabla DCT:en i `f64`**
+  (T.81 A.3.3, ingen AAN-tabell att komma ihåg; resultatet skiljer sig från
+  libjpegs heltals-IDCT med ≤ 1 per kanal); (2) **chroma hålls flytande genom
+  upsamplingen in i färgmatrisen** — att avrunda chroma till 8 bitar före
+  matrisen (libjpegs ordning) är *sämre* på varje fixtur (444: 256 kanaler
+  över 1 mot 0; Helmet: 98 026 mot 2 384); (3) **triangel-upsampling**
+  (h2v1/h2v2 "fancy", 3/4 : 1/4 i 2·step-delar), bevisad mot Pillow på
+  4:2:0, 4:2:2 och udda 9×9. Tolerans ±1 på de små fixturerna; Helmet 512²
+  har worst 3 / 2 384 av 786 432 kanaler / medel 0,14, så dess tolerans är 3
+  med kravet medel < 0,5 (ett logikfel ger medel ≥ 5: mätt 37 för fel
+  upsamlingsmodell). Huffman är den kanoniska formen (första kod per längd
+  + startindex, T.81 F.2.2.3), vilket gav 7,5 → 5,9 s på 2048² mot en
+  linjärsökning per bit. **Kostnad: 220 ms byggtid för baseline** (18 557 →
+  18 776 ms; PNG kostade 1 100, dogfood 82); den progressiva delen når
+  `main` bara genom `jpeg.ddr`, som redan var med, och mättes till +25 ms
+  (9 603 → 9 644/9 616 ms, inom bruset). 5,9 s för 2048² (varav IDCT 2,0 s,
+  Huffman 2,7 s, pixlar 2,8 s).
+  *Den progressiva designen, som koden nu är:* en **koefficientbuffert per
+  komponent i naturlig ordning** (`Component.coefficients`, `[]i32`, 64 per
+  block, råa — dekvantifiering sker i IDCT:n), dit varje scan skriver via
+  T.81 G:s fyra MCU-procedurer (`dc_first`, `ac_first`, `dc_refine`,
+  `ac_refine`, 90 rader) och baseline-`block` (27 rader) som femte fall
+  (Ah=0, Ss=0..63, en scan). `decode` går markörerna igenom och kör varje SOS
+  genom `decode_scan` (flera SOS med DHT emellan; icke-interleaved scannar
+  har *sin egen* MCU-grid — blockgridden, ett block per MCU), och dekvant +
+  IDCT + upsampling körs en gång efter sista scan. `EOBRUN` är
+  scan-tillstånd som nollställs vid varje scan-start och varje restart
+  tillsammans med prediktorerna; en AC-first-EOB `r` betyder `2^r +
+  appended` **plus nuvarande block** (`eobrun − 1` returneras), i AC-refine
+  **minus nuvarande block** (libjpeg `jdphuff.c` rad 424 mot 562–568 —
+  asymmetrin är den vanligaste buggen i nya dekodare och är testfall i sig
+  genom `helmet_mr_256`). Validering per scan enligt
+  `start_pass_phuff_decoder`: DC-band ⇒ `Se == 0`; annars `Ss ≤ Se < 64` och
+  **exakt en komponent**; refine (`Ah ≠ 0`) ⇒ `Al == Ah − 1`; `Al ≤ 13`;
+  ZRL är **15 + loopens steg**, inte 16 (libjpeg rad 414 — den buggen gav
+  fyra felaktiga block av 1 024 på `helmet_mr_256`, alla efter ett ZRL, och
+  hittades genom att varje block jämfördes koefficient för koefficient mot
+  en oberoende Python-dekodare). Fixturer och mätverktyg:
+  `tests/fixtures/jpeg_tools.py` (`scans`, `census`, `glb`, `trunc`);
+  `helmet_cut_NN.jpg` är filen avklippt efter scan N + EOI (en *verklig*
+  trunkerad progressiv fil — libjpeg avkodrar den till N-scan-bilden och
+  våra tio avkodas alla, den tionde exakt lika med hela filen). En
+ varning för den som jämför de nio första mot libjpegs PNG:ar: libjpeg
+  **utjämnar DC-bilden** (`jdcoefct.c decompress_smooth_data`, default på
+  för ofullständiga progressiva bilder), så deras pixlar är inte
+  `128 + DC·q/8` och skillnaden (±4–8 spridda, vid kanter 60+) är inte ett
+  dekoderfel. **Kvar:** hastighet — 5,9 s för 2048² är en laddningsskärm;
+  nästa mätpunkt är bit-läsaren (ett `receive`-anrop per bit, ~10 M anrop
+  per 2048²-bild; en 32-bitarsackumulator med korrekt invariant är den
+  uppenbara formen, men det första försöket var fel och togs bort: mät,
+  antag inte). Ingen av de elva modellfilerna har 16-bitars, aritmetisk
+  kodning, eller en progressiv fil med DRI utöver testfixturen.
 - **Metal:s mipkedja.** `storm-metal/src/texture.ddr` fyller nivå 0 med
   `replaceRegion` och har ingen blit-kodare: en textur på Metal har **en**
   nivå, och `mips != None` mappas idag till `NotMipmapped`. Vulkan bygger
