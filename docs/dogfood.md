@@ -922,6 +922,51 @@ baslinjen: `--eye 6 4 -7` AE 172 373, `--eye 0 0 4.2` AE 175 318,
 baslinjecapture är AE = 0 mot den första). `--play`, `--effects` och
 `--no-glass` i spelet: AE = 0.
 
+**QA 2026-11-26 morgon (låst session, `a9e5a68` → `707edc7`, Dunder 0.12.0,
+fyrtiofyra captures på 1280 × 800, alla kontrollerade mot
+`16 + 1280·800·3` byte).** Spelscenen och studion mot `a9e5a68`: foxen står
+på gräset med fyra tassar i marken och skugga, himmel, moln, blommor,
+fjärilar, bi, HUD läslig rättvänt; scenträdet, inspektorn och statusraden
+`0/8 collected  6 passes  – fps` oskurna. Reglagen: `--effects` i spelet
+**0 ändrade pixlar** (temat är redan graderat, `graded(theme_grade)`;
+`--no-post` ändrar 96,9 % och är det som slår av det), `--effects` i
+studion 59 % (slår på det som är av). `--texture` med en capture som golv
+fungerar (golvprobe (300, 600): (93, 124, 125) → (67, 102, 92)).
+
+Två fel hittades och rättades samma timme:
+
+- **Laddade modeller stod i bordet.** `place_model` centrerade varje modell
+  på en fast punkt (0, 0, 4.2), oavsett djup. Mätt med Storms egen glTF-läsare
+  (bakade nodtransformer): Box 1,0 djup, Avokado 0,063 (y), Lantern 25,7 (y),
+  Fox 155 (z) — längsta sidan blir `MODEL_SIZE`, och en kub på 2,4 fick
+  bakkanten på z = 3,0, **0,2 in i pallen** som når 3,2. Fix `fa226c2`:
+  `at.z` är modellens *närmaste* sida (`MODEL_EDGE_Z = 3.7` = pallems kant
+  plus marginal) och modellen breder ut sig mot +z; `MODEL_SIZE` 2,4 → 2,0
+  för att en kub (värsta fallet, lika djup som hög) vid den nya platsen
+  annars når rad 756 av bildytans 55..755. Mätt med kamerans egen
+  projektion och mot captures: Box 401..719, Avokado 401..637, Lantern
+  401..608, Fox 496..719 — alla hela.
+- **En flagga ingen läser ignorerades tyst.** `storm --bogus --frames 1`
+  startade och renderade standardbilden utan ett ord; `tests/flags.ddr`
+  höll varje `--x`-literal i `src/` mot tabellen men inte orden på
+  kommandoraden. Fix `707edc7`: `args.unknown` räknar ur samma tabell och
+  `main` vägrar med `storm: unknown option --bogus`, usage och utgång 2.
+
+Två påståenden som en vision-modell gav om captures var **fel** och togs
+inte om: att Lanternens arm gick *genom* bordsskivan (en capture från
+`(7, 3, 6)` visar stolpen på golvet och lyktan fri, hela framför pallen)
+och att Fox.glb låg ner eller var klippt (från `(9, 3, 4,6)` står räven
+upprätt på fyra ben, huvudet mot −z, hel). Det som är sant i standardkameran
+är att räven är **liten**: 0,32 bred och 1,0 hög efter skala, på golvet
+bakom pallems kant i den låga vinkeln. Captures läses för komposition;
+varje påstående om geometri kontrolleras från en annan kamera.
+
+Öppet: **radvis banding i molnkanterna** (horisontella trappsteg där två
+molnytor möts, inte i den släta ytan; 5×-snitt av `(50, 100)`–`(550, 400)`),
+inte utrett — misstänkt lågupplöst element eller 8-bitars gräns, mätt i
+ingen shader. Glaspanelernas låga synlighet är den avsiktliga alfa 0,20
+ovan (2026-11-25), inte nytt.
+
 **QA 2026-11-26 (låst session, `5361964`, Dunder 0.12.0, tolv captures på
 1280 × 800).** Emissive (3d steg 2) mot worktree-baslinjer
 av `28665c4` (samma kommandon, `git status` ren, binären raderad och
