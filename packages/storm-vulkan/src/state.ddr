@@ -3,6 +3,7 @@ capability unsafe
 import vk.api as vk
 import .depth as depth
 import .ibl as ibl
+import .post as post
 import vk.layout as vkl
 import .sdl as sdl
 import .shadow as shadow
@@ -156,19 +157,13 @@ pub struct Renderer {
     // Image-based lighting: built once at startup from the sky.
     environment: ibl.Environment,
 
-    // Offscreen scene target and the post-process stage.
-    sceneImage: ptr,
-    sceneMemory: ptr,
-    sceneView: ptr,
-    sceneSampleView: ptr,
+    // Offscreen scene target and the post-process stage (post.ddr). The set
+    // and its layout are bound by other modules, so they stay here; the rest
+    // of the cluster is `post.Stage`.
     sceneFramebuffer: ptr,
     scenePass: ptr,
     compositePass: ptr,
-    postPipeline: ptr,
-    postPipelineLayout: ptr,
-    postTexture: SampledTexture,
-    postVertShader: ptr,
-    postFragShader: ptr,
+    post: post.Stage,
     captureFramebuffer: ptr,
     // Text and UI.
     atlas: ui.Atlas,
