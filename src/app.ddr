@@ -105,13 +105,18 @@ fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
 // lands in view whatever units it was authored in.
 //
 // The size is the largest a model can be and still fit the studio's fixed
-// camera whole (eye (0, 4, 10.8), fov 0.85, pitched 16 degrees down at the
-// turntable; viewport rows 55..755). A cube -- the worst case, as deep as
-// it is tall -- of 2.4 standing at MODEL_EDGE_Z lands on rows 360..756,
-// its last row under the status bar; at 2.0 it lands on 401..719 (measured
-// with the camera's own projection, QA 2026-11-26). A tall, thin model
-// such as the lantern fits at either.
-pub const MODEL_SIZE: f32 = 2.0
+// camera whole: eye (0, 4, 10.8), pitch -0.22, fov 0.85, the frame's own
+// aspect (the 3D view is the whole window; the panels are drawn over it),
+// viewport rows 48..767 under the top bar and above the status bar. A cube
+// -- the worst case, as deep as it is tall -- standing at MODEL_EDGE_Z
+// spans rows 528..759 at 1.3 (231 rows tall, 9 rows of floor above the
+// status bar). The table, measured through the camera's own projection
+// and confirmed on the capture's red pixels to a row: 1.4 ends on 765
+// (no floor left under it), 1.7 on 785 and the earlier 2.0 on 804, both
+// under the status bar -- Box.glb's front face was cut off (QA
+// 2026-11-27). `a_loaded_model_fits_the_studio_camera` pins both ends, so
+// the number cannot drift from the camera again.
+pub const MODEL_SIZE: f32 = 1.3
 // Where a loaded model stands in the studio: centred on x, on the floor, and
 // with its *nearest* side this far in front of the turntable. The plinth
 // reaches 3.2 out (gallery.ddr), so this is its edge plus the margin; the
