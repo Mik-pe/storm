@@ -108,9 +108,16 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
     near(&decoded, "helmet_512_ref", 3)
 }
 
-// Refusals name what was found.
+// Refusals name what was found. helmet_mr_256 is the progressive fixture that
+// exercises every entropy-layer path (ZRL, EOB runs, new nonzeros in refine;
+// measured with tests/fixtures/jpeg_tools.py census) — progressive16 has the
+// same ten scans but writes no AC coefficient at all, so it is not evidence
+// for AC decoding on its own.
 @test fn refuses_progressive() {
-    result := image.decode_jpeg(&fixture("progressive16.jpg"))
+    mut result := image.decode_jpeg(&fixture("progressive16.jpg"))
+    assert(result.is_err())
+    assert(refusal(&result) == "progressive JPEG (SOF2) is not supported")
+    result = image.decode_jpeg(&fixture("helmet_mr_256.jpg"))
     assert(result.is_err())
     assert(refusal(&result) == "progressive JPEG (SOF2) is not supported")
 }
