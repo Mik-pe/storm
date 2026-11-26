@@ -85,13 +85,13 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`e264590` + `--help`-tabellen,
-  Dunder 0.12.0, låst session) omfattade **248 egna `@test`** — 67 i roten
-  och 181 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
+  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`e6fc71b`, Dunder
+  0.12.0, låst session) omfattade **254 egna `@test`** — 66 i roten
+  och 188 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
   sträng räknas inte) — alla gröna, varje
   svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
   i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
-  `N passed` blir 254). 17 sviter
+  `N passed` blir 260). 17 sviter
   kördes med `dunder test` i roten och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
   `load_model`) är testbar utan fönster: vad ett pass får, när
   mesh-kopian tas (bara när geometrin revideras — och aldrig från en
@@ -465,18 +465,26 @@ med AE = 0. Kvar: **post** (10 fält; `scenePass`, `compositePass` och
 `sceneFramebuffer` lämnas ut) och **capture** (5; `captureFramebuffer`
 lämnas ut, `captureOn` är frame-state och stannar bland de platta fälten).
 
-**Ett tillstånd som lever i ett fält är nästa `r.stage`.** `Renderer.pass:
-u32` med sex `PASS_*`-konstanter (`IDLE`, `WAITING`, `SHADOW`, `DIRECT`,
-`FILTERED`, `COMPOSITE`) läses av tretton jämförelser i fyra moduler (24 referenser) och ger fyra
-felmeddelanden deras text. Det är formen princip 5 förbjuder och steg 4
-ersatte med `SetupStep`. Storm-metal har redan `pub enum Pass { None, Shadow,
-Main, FilteredScene, Composite }` och jämför med `.Shadow`. På Vulkan-sidan
-får en enum inte vara ett `@c_layout`-fält (E5003), så fältet blir `u32` och
-läses genom en validerande omvandling — `state.Pass(i32(r.pass))` avbryter
-med status 108 på ett tal ingen skrivit, medan en if-kedja bara aldrig
-matchar — och de sex konstanterna försvinner. En enum-variant som inte finns
-blir omöjlig att skriva; det är hela skillnaden. Avgränsat nästa steg efter
-post och capture: fyra moduler, en commit, AE = 0.
+**Ett tillstånd som lever i ett fält var nästa `r.stage`.** `Renderer.pass`
+var `u32` med sex `PASS_*`-konstanter (`IDLE`, `WAITING`, `SHADOW`, `DIRECT`,
+`FILTERED`, `COMPOSITE`), läst av sjutton jämförelser och elva tilldelningar
+i fyra moduler (28 referenser, räknade med `grep -o`), och gav fyra
+felmeddelanden deras text. Det var formen princip 5 förbjuder och steg 4
+ersatte med `SetupStep`. Storm-metal hade redan `pub enum Pass { None, Shadow,
+Main, FilteredScene, Composite }` och jämför med `.Shadow`. Sedan
+2026-11-26 gör Vulkan-sidan detsamma: en enum får inte vara ett
+`@c_layout`-fält (E5003, på nytt mätt på 0.12.0), så fältet är `u32` men
+rörs **bara** genom två funktioner i `state.ddr` — `state.pass(&r)` läser
+det genom den validerande omvandlingen (`Pass(i32(r.pass))` avbryter med
+status 108 på ett tal ingen skrivit, medan en if-kedja bara aldrig matchar)
+och `state.set_pass(&mut r, .X)` skriver det. De sex konstanterna är borta;
+`r.pass` och `PASS_` finns på noll rader utanför `state.ddr` (mätt), och
+`the_pass_state_is_an_enum_behind_its_word` pinner att en nollställd
+renderare är `.Idle` (registret calloc:ar hela posten, så 0 måste vara
+`Idle`) och att varje variant överlever tur och retur. En enum-variant som
+inte finns blir omöjlig att skriva; det är hela skillnaden. En commit,
+AE = 0 på fem captures (game, studio, Fox, direkt utan efterbehandling,
+utan skuggor).
 
 ## 6. Öppna frågor
 
