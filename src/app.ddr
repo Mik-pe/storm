@@ -284,6 +284,64 @@ pub fn frame_plan(shadows: bool, glass: bool, filtered: bool) -> render.Compiled
 
 enum Launch { Studio, Game, Preview }
 
+// The game's transport: whether the level is being edited, run, or run one
+// tick at a time. One value, so "paused in the studio" cannot be written.
+pub enum Mode { Studio, Running, Paused }
+
+// What one frame does to the level, decided by the transport.
+pub enum Tick {
+    // Nothing: the studio is up, or the frame is a capture.
+    None,
+    // One simulation tick with these controls (paused, Step).
+    Step(play.Input),
+    // The elapsed seconds with these controls (running).
+    Advance(f64, play.Input),
+}
+
+pub struct Transport {
+    mode: Mode,
+    // The frame grading: `None` follows the level's theme until E is pressed.
+    grade: Option<bool>,
+}
+
+impl Transport {
+    pub fn new(mode: Mode, grade: Option<bool>) -> Transport { Transport { mode: mode, grade: grade } }
+
+    pub fn mode(&self) -> Mode { self.mode }
+    pub fn playing(&self) -> bool { self.mode != .Studio }
+    pub fn paused(&self) -> bool { self.mode == .Paused }
+    // What the frame is graded with: a choice, else the theme's.
+    pub fn graded(&self, theme_grade: bool) -> bool { self.grade.unwrap_or(theme_grade) }
+
+    // Leave the studio for the game, at the level's start.
+    pub fn play(&mut self) { self.mode = .Running }
+
+    // The transport's answer to this frame's keys, HUD action and elapsed
+    // seconds. `session` is restarted here when asked, so the keyboard and
+    // the button share the one path. `capturing` freezes the level: a capture
+    // is one frame of it.
+    pub fn apply(&mut self, keys: &gfx.Input, action: play_ui.Action, session: &mut play.Session, dt: f64, capturing: bool) -> Tick {
+        if action == .Studio { self.mode = .Studio }
+        if self.mode == .Studio { return .None }
+        if keys.hit(.E) { self.grade = .Some(!self.graded(session.scene.theme == .Blossom)) }
+        if action == .Restart || keys.hit(.R) {
+            session = play.start(&session.scene)
+            self.mode = .Running
+        }
+        if action == .TogglePause || keys.hit(.Q) {
+            self.mode = if self.mode == .Paused { .Running } else { .Paused }
+        }
+        if capturing { return .None }
+        controls := play_view.controls(keys)
+        if self.mode == .Paused {
+            // One step per press: the Step button's action, not a held key.
+            if action == .Step { return .Step(controls) }
+            return .None
+        }
+        .Advance(dt, controls)
+    }
+}
+
 pub fn run<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, argv: &[]string) -> Result<(), string> {
     path := args.value(argv, "--scene")
     if args.flag(argv, "--scene") && path.len == 0 { return .Err("--scene requires a scene file") }
@@ -307,7 +365,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     move initial: play.Session, launch: Launch, shot: string, move file: scene_file.Watch) -> Result<(), string> {
     mut watcher := move file
     mut session := move initial
-    mut playing := launch != .Studio
+    playing := launch != .Studio
     exporting := launch == .Preview
     limit := args.frame_limit(argv)
     mut window := open(TITLE, if exporting { 720 } else { 1280 }, if exporting { 450 } else { 800 })?
@@ -343,7 +401,6 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     backdrop: [f32; 4] = [0.24, 0.34, 0.38, 1.0]
     mut hud := widgets.State::new()
     mut action := play_ui.Action.Idle
-    mut paused := false
     glb := args.value(argv, "--glb")
     if glb.len > 0 {
         match load_model_into(&mut window, &mut graph, glb, core.vec3(0.0,0.0,4.2)) {
@@ -391,7 +448,8 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
 
     disable_post := args.flag(argv, "--no-post")
     enable_post := args.flag(argv, "--effects") && !disable_post
-    mut game_grade: Option<bool> = if disable_post { .Some(false) } else if enable_post { .Some(true) } else { .None }
+    grade: Option<bool> = if disable_post { .Some(false) } else if enable_post { .Some(true) } else { .None }
+    mut transport := Transport::new(if playing { .Running } else { .Studio }, grade)
     mut studio := editor.new(study.ring, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), enable_post)
     studio.antialias = !args.flag(argv, "--no-aa")
     mut glass_visible := true
@@ -475,10 +533,9 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         if studio.play_requested {
             studio.play_requested = false
             session = play.start(&session.scene)
-            playing = true
-            paused = false
+            transport.play()
         }
-        if action == .Studio { playing = false }
+        playing := transport.playing()
         aspect := f32(frame.width) / f32(frame.height)
         mut view_camera := camera
         mut frame_sky := sky.clone()
@@ -492,17 +549,13 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
             }
         }
         if playing {
-            if frame.input.hit(.E) { game_grade = .Some(!game_grade.unwrap_or(session.scene.theme == .Blossom)) }
-            if action == .Restart || frame.input.hit(.R) {
-                session = play.start(&session.scene)
-                paused = false
+            tick := transport.apply(&frame.input, action, &mut session, dt, capturing)
+            match tick {
+                .Step(controls) => play.step(&mut session, controls),
+                .Advance(seconds, controls) => { _ := play.advance(&mut session, seconds, controls) },
+                .None => {},
             }
-            if action == .TogglePause || frame.input.hit(.Q) { paused = !paused }
-            controls := play_view.controls(&frame.input)
-            if !capturing {
-                if paused && action == .Step { play.step(&mut session, controls) }
-                else if !paused { _ := play.advance(&mut session, dt, controls) }
-            }
+            paused := transport.paused()
             play_view.sync(&mut game_view, &session, paused || capturing)
             area := play_view.framing(&game_view, &session, paused || capturing)
             if !custom_eye { view_camera = play_view.camera(&area, aspect) }
@@ -553,7 +606,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
         else { gather(&mut geometry, &graph, view_camera.position) }
         shadows := studio.shadows && geometry.solids.len > 0
         transparent := geometry.glass.len > 0
-        grade := if playing { game_grade.unwrap_or(session.scene.theme == .Blossom) } else { studio.effects }
+        grade := if playing { transport.graded(session.scene.theme == .Blossom) } else { studio.effects }
         finish := gfx.PostProcess { antialias: studio.antialias, strength: if grade { 1.0 } else { 0.0 } }
         filtered := finish.enabled()
         if plan.steps.len == 0 || shadows != planned_shadows || transparent != planned_glass || filtered != planned_filter {
@@ -620,12 +673,13 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                 mouse := frame.input.mouse
                 pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.MOUSE_LEFT), frame.input.button_down(gfx.MOUSE_LEFT))
                 if playing {
+                    paused := transport.paused()
                     if session.scene.theme == .Blossom {
                         action = play_ui.woodland(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
                             session.scene.name, session.flowers, session.total_flowers, session.butterflies, session.total_butterflies, paused, session.won)
                     } else {
                         action = play_ui.draw(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height),
-                        session.scene.name, session.tick, paused, session.player >= 0, game_view.has_goal, session.won)
+                            session.scene.name, session.tick, paused, session.player >= 0, game_view.has_goal, session.won)
                     }
                     if scene_file.failed(&watcher) { play_ui.reload_error(&mut canvas, &atlas, f32(frame.width)) }
                 } else {

@@ -1,0 +1,151 @@
+// The game's transport, without a window: what each frame's keys and HUD
+// action do to the level's mode, and the one simulation call that follows.
+import ..src.app as app
+import ..src.play_ui as hud
+import gfx
+import play
+
+// A frame's keys: `pressed` are the keys that went down this frame, `held`
+// the ones still down from before.
+fn keys(pressed: gfx.Key, held: gfx.Key) -> gfx.Input {
+    mut input := gfx.Input::empty()
+    input.pressed = u32(1).shl(i32(pressed))
+    input.held = u32(1).shl(i32(held))
+    input
+}
+
+fn pressed(key: gfx.Key) -> gfx.Input { keys(key, .A) }
+
+// One frame's worth of elapsed seconds. `play.advance` runs at most eight
+// ticks per call (its catch-up cap), so a test frame is one tick long.
+const FRAME: f64 = 1.0 / 60.0
+
+// Apply one frame and run the tick it asks for, the way the frame loop does.
+fn frame(t: &mut app.Transport, input: &gfx.Input, action: hud.Action, s: &mut play.Session, dt: f64, capturing: bool) {
+    match t.apply(input, action, &mut s, dt, capturing) {
+        .Step(controls) => play.step(&mut s, controls),
+        .Advance(seconds, controls) => { _ := play.advance(&mut s, seconds, controls) },
+        .None => {},
+    }
+}
+
+fn idle() -> hud.Action { hud.Action.Idle }
+
+@test fn running_advances_by_the_frame_and_stays_running() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut t := app.Transport::new(.Running, .None)
+    none := gfx.Input::empty()
+    for _ in 0..30 { frame(&mut t, &none, idle(), &mut s, FRAME, false) }
+    // Thirty frames of one tick each are thirty ticks, and the mode never moved.
+    assert(s.tick == 30 && t.mode() == .Running && t.playing() && !t.paused())
+    // A held key is a control, not a command: D walks, and nothing else changes.
+    walking := keys(.A, .D)
+    for _ in 0..15 { frame(&mut t, &walking, idle(), &mut s, FRAME, false) }
+    start := play.position(&play.start(&level), s.player).x
+    assert(s.tick == 45 && t.mode() == .Running && play.position(&s, s.player).x > start)
+}
+
+@test fn pause_freezes_the_level_and_step_moves_exactly_one_tick() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut t := app.Transport::new(.Running, .None)
+    none := gfx.Input::empty()
+    frame(&mut t, &pressed(.Q), idle(), &mut s, FRAME, false)
+    // The frame that pauses does not also advance: the pause lands first.
+    assert(t.paused() && s.tick == 0)
+    // While paused, elapsed time does nothing.
+    for _ in 0..120 { frame(&mut t, &none, idle(), &mut s, FRAME, false) }
+    assert(s.tick == 0 && t.paused())
+    // Step is one simulation tick per press.
+    frame(&mut t, &none, .Step, &mut s, FRAME, false)
+    frame(&mut t, &none, .Step, &mut s, 0.001, false)
+    assert(s.tick == 2 && t.paused())
+    // Q resumes, and the frame that resumes runs: the pause is read before
+    // the tick is chosen, so the same frame advances by its own elapsed time.
+    frame(&mut t, &pressed(.Q), idle(), &mut s, FRAME, false)
+    assert(t.mode() == .Running && s.tick == 3)
+    frame(&mut t, &none, idle(), &mut s, FRAME, false)
+    assert(s.tick == 4)
+}
+
+@test fn restart_returns_to_the_first_tick_and_clears_pause() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut t := app.Transport::new(.Running, .None)
+    none := gfx.Input::empty()
+    // Walk left to the first flower (the demo's are at negative x), so
+    // there is progress to lose.
+    walking := keys(.D, .A)
+    for _ in 0..120 { frame(&mut t, &walking, idle(), &mut s, FRAME, false) }
+    assert(s.tick == 120 && s.flowers > 0)
+    // R restarts from the keyboard. Like resuming, the frame that restarts
+    // runs: the new session has advanced one tick when the frame is over.
+    frame(&mut t, &pressed(.R), idle(), &mut s, FRAME, false)
+    assert(s.tick == 1 && s.flowers == 0 && t.mode() == .Running)
+    // Pause, then the Restart button: both restart and leave the game running.
+    frame(&mut t, &pressed(.Q), idle(), &mut s, 0.0, false)
+    assert(t.paused())
+    frame(&mut t, &none, .Restart, &mut s, 0.0, false)
+    assert(s.tick == 0 && t.mode() == .Running)
+    // Restart and Q on the same frame: the pause is read last, so it wins.
+    frame(&mut t, &pressed(.Q), .Restart, &mut s, 0.0, false)
+    assert(s.tick == 0 && t.paused())
+}
+
+@test fn the_studio_button_leaves_the_game_and_the_play_button_returns() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut t := app.Transport::new(.Running, .None)
+    none := gfx.Input::empty()
+    frame(&mut t, &none, .Studio, &mut s, FRAME, false)
+    assert(t.mode() == .Studio && !t.playing() && s.tick == 0)
+    // In the studio nothing reaches the level: no key and no button.
+    frame(&mut t, &pressed(.R), .Step, &mut s, FRAME, false)
+    frame(&mut t, &pressed(.Q), .TogglePause, &mut s, FRAME, false)
+    frame(&mut t, &keys(.A, .D), idle(), &mut s, FRAME, false)
+    assert(t.mode() == .Studio && s.tick == 0 && !t.paused())
+    // Back to the game: running, not paused, and the keyboard works again.
+    t.play()
+    frame(&mut t, &pressed(.Q), idle(), &mut s, FRAME, false)
+    assert(t.mode() == .Paused && s.tick == 0)
+}
+
+@test fn a_capture_is_one_frozen_frame_whatever_the_keys() {
+    level := play.demo()
+    mut s := play.start(&level)
+    mut t := app.Transport::new(.Running, .None)
+    none := gfx.Input::empty()
+    // A held key and a long frame: the level stays at its first tick.
+    frame(&mut t, &keys(.A, .D), idle(), &mut s, 5.0, true)
+    frame(&mut t, &none, .Step, &mut s, 5.0, true)
+    // Step during a capture is refused without pausing: the mode is untouched.
+    assert(s.tick == 0 && t.mode() == .Running)
+    // Transport keys still work during a capture; only the level is frozen.
+    frame(&mut t, &pressed(.R), idle(), &mut s, 5.0, true)
+    assert(s.tick == 0 && t.mode() == .Running)
+}
+
+@test fn grading_follows_the_theme_until_e_chooses() {
+    mut plain := play.demo()
+    plain.theme = .Plain
+    mut blossom := play.demo()
+    blossom.theme = .Blossom
+    mut s := play.start(&plain)
+    mut t := app.Transport::new(.Running, .None)
+    // No choice: each level's theme decides.
+    assert(!t.graded(plain.theme == .Blossom) && t.graded(blossom.theme == .Blossom))
+    // E flips from what the frame would have been graded with, and sticks
+    // across levels of either theme.
+    frame(&mut t, &pressed(.E), idle(), &mut s, 0.0, false)
+    assert(t.graded(plain.theme == .Blossom) && t.graded(blossom.theme == .Blossom))
+    frame(&mut t, &pressed(.E), idle(), &mut s, 0.0, false)
+    assert(!t.graded(plain.theme == .Blossom) && !t.graded(blossom.theme == .Blossom))
+    // A flag's choice is a choice, not the theme's.
+    mut forced := app.Transport::new(.Running, .Some(true))
+    assert(forced.graded(plain.theme == .Blossom) && forced.graded(blossom.theme == .Blossom))
+    // The studio does not read E: its effects are the editor's own.
+    mut studio := app.Transport::new(.Studio, .None)
+    frame(&mut studio, &pressed(.E), idle(), &mut s, 0.0, false)
+    assert(!studio.graded(plain.theme == .Blossom) && studio.graded(blossom.theme == .Blossom))
+}

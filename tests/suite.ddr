@@ -286,6 +286,7 @@ import ui.widgets as widgets
 
 import .play_view as _
 import .scene_file as _
+import .transport as _
 
 import ..src.app as app
 import render
