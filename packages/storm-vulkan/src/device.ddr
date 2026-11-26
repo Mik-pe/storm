@@ -50,7 +50,7 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> state.SetupStep {
     mut best := -1
     mut best_score := -1
     for i in 0..i32(count) {
-        mut properties: state.Properties = zeroed()
+        mut properties: vk.PhysicalDeviceProperties = zeroed()
         r.api.GetPhysicalDeviceProperties(devices[i], addr(&mut properties))
         if properties.limits.maxPushConstantsSize < state.MESH_PUSH_BYTES { continue }
         mut score := 0
@@ -61,7 +61,7 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> state.SetupStep {
     }
     if best < 0 { return .PhysicalDevice }
     r.physical = devices[best]
-    mut properties: state.Properties = zeroed()
+    mut properties: vk.PhysicalDeviceProperties = zeroed()
     r.api.GetPhysicalDeviceProperties(r.physical, addr(&mut properties))
     r.properties = properties
     r.api.GetPhysicalDeviceMemoryProperties(r.physical, addr(&mut r.memoryProperties))

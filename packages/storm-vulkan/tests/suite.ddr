@@ -193,9 +193,9 @@ import ..src.ui as ui
 
 @test fn image_creation_and_device_limits_match_the_vulkan_abi() {
     unsafe {
-        mut properties: state.Properties = zeroed()
+        mut properties: vk.PhysicalDeviceProperties = zeroed()
         assert(usize(addr(&properties.limits.maxPushConstantsSize)) - usize(addr(&properties)) == 328)
-        assert(size_of(state.Properties) >= 824)
+        assert(size_of(vk.PhysicalDeviceProperties) == 824)
         image := device.image_2d_info(126, 512, 128, enums.ImageTiling.Optimal, enums.ImageUsage.DepthStencilAttachment)
         assert(image.sType == 14 && image.imageType == 1 && image.format == 126)
         assert(image.extent.width == 512 && image.extent.height == 128 && image.extent.depth == 1)
@@ -301,8 +301,10 @@ fn setup_steps() -> [state.SetupStep; 17] {
         // a 96-byte record back; capture took 7 words out and put 56 bytes
         // back. Same layout, other names. The memory properties then became
         // the registry's 520-byte record in place of a 776-byte hand-written
-        // one: 6240 - 256, measured.
-        assert(size_of(state.Renderer) == 5984)
+        // one (6240 - 256), and the device properties the registry's 824-byte
+        // record in place of a 1356-byte one whose last 1024 bytes were a
+        // guessed `rest` (5984 - 536, the 4 being alignment), measured.
+        assert(size_of(state.Renderer) == 5448)
     }
 }
 

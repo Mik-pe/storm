@@ -94,6 +94,11 @@ const STRUCTS: []string = [
     // u64 and a u32 padded to 16 bytes, so the record is 520 bytes, not a
     // word buffer.
     "MemoryHeap", "MemoryType", "PhysicalDeviceMemoryProperties",
+    // The device's limits, read at device selection (push-constant size,
+    // image dimensions). The registry's record is 824 bytes (gcc, and the
+    // same pinned in storm-vk's suite); a hand-written prefix plus a
+    // guessed rest was 1356.
+    "PhysicalDeviceSparseProperties", "PhysicalDeviceLimits", "PhysicalDeviceProperties",
     "StencilOpState", "PipelineDepthStencilStateCreateInfo", "BufferImageCopy", "ImageBlit",
     "FormatProperties", "MemoryBarrier", "ImageMemoryBarrier", "SamplerCreateInfo",
     "DescriptorSetLayoutBinding", "DescriptorSetLayoutCreateInfo", "DescriptorPoolSize",
@@ -541,6 +546,13 @@ struct Registry {
     extensions: []Extension,
     typedefs: map.Map<string, string>,
     handles: map.Map<string, bool>,
+    enums: map.Map<string, bool>,
+    // An enum block holding a negative value is signed in C by its values,
+    // so i32 in Dunder; every other enum is u32. VkResult is the one Storm
+    // binds (its errors are the `dir="-"` form, negative), and it is what
+    // keeps every `-> i32` prototype: with "every enum is u32" the generator
+    // rewrote 40 of them to `-> u32` in one run.
+    signed: map.Map<string, bool>,
     records: map.Map<string, Record>,
     constants: map.Map<string, Constant>,
     blocks: map.Map<string, []string>,
@@ -705,6 +717,23 @@ fn scan_types(data: &[]u8, r: &mut Registry) {
         } else if category == "handle" {
             name := inner(data, t.body_start, close, "name")
             if name != "" { r.handles.put(name.clone(), true) }
+        } else if category == "enum" {
+            // <type category="enum" name="VkStructureType"/>: the name is an
+            // attribute and the element is empty, so the registry says which
+            // type names are enums, and no reader has to infer it from silence.
+            name := attribute(data, t.attr_start, t.attr_end, "name")
+            if name != "" { r.enums.put(name.clone(), true) }
+        } else if category == "bitmask" {
+            // <type category="bitmask">typedef <type>VkFlags</type> <name>VkImageUsageFlags</name>;</type>
+            // is a typedef the registry marks as a flag set, and
+            // <type category="bitmask" name="VkGeometryFlagsNV" alias="VkGeometryFlagsKHR"/>
+            // is another name for one. Both are followed to the width, so a
+            // VkFlags64 set stays 64 bits because the registry says so.
+            name := inner(data, t.body_start, close, "name")
+            base := inner(data, t.body_start, close, "type")
+            alias := attribute(data, t.attr_start, t.attr_end, "alias")
+            if name != "" && base != "" { r.typedefs.put(name.clone(), base.clone()) }
+            if name != "" && alias != "" { r.typedefs.put(name.clone(), alias.clone()) }
         } else if category == "struct" || category == "union" {
             // A record's name is an attribute, not a child element.
             name := attribute(data, t.attr_start, t.attr_end, "name")
@@ -987,6 +1016,7 @@ fn extension_number_named(r: &Registry, named: string) -> i64 {
 // lookup, and in its block's list for the order the registry declares.
 fn put_constant(r: &mut Registry, name: string, block: string, value: i64) {
     r.constants.put(name.clone(), Constant { block: block.clone(), value: value })
+    if value < 0 { r.signed.put(block.clone(), true) }
     if !r.blocks.contains(block.clone()) { r.blocks.put(block.clone(), []) }
     mut names := r.blocks.get(block.clone()).unwrap()
     names.push(name.clone())
@@ -1000,6 +1030,8 @@ fn registry(data: &[]u8) -> Registry {
         extensions: [],
         typedefs: map.Map<string, string>::new(),
         handles: map.Map<string, bool>::new(),
+        enums: map.Map<string, bool>::new(),
+        signed: map.Map<string, bool>::new(),
         records: map.Map<string, Record>::new(),
         constants: map.Map<string, Constant>::new(),
         blocks: map.Map<string, []string>::new(),
@@ -1073,26 +1105,17 @@ fn resolves_to(r: &Registry, type_name: string) -> string {
 fn dunder_type(r: &Registry, p: &Param) -> string {
     if p.pointer { return "ptr" }
     if r.handles.contains(p.type_name) { return "ptr" }
-    match resolves_to(r, p.type_name) {
-        "uint32_t" => "u32",
-        "int32_t" => "i32",
-        "int" => "i32",
-        "uint64_t" => "u64",
-        "size_t" => "u64",
-        "float" => "f32",
-        "char" => "ptr",
-        _ => "u32",
-    }
+    if enum_is(r, p.type_name) != "" { return enum_is(r, p.type_name) }
+    scalar(resolves_to(r, p.type_name)).0
 }
 
 // `void` has no value; `VkResult` and every enum come back as the `int32_t`
 // the headers make of them.
 fn return_type(r: &Registry, c: &Command) -> string {
     if c.returns == "void" { return "" }
-    match resolves_to(r, c.returns) {
-        "uint32_t" => "u32",
-        _ => "i32",
-    }
+    if r.handles.contains(c.returns) { return "ptr" }
+    if enum_is(r, c.returns) != "" { return enum_is(r, c.returns) }
+    scalar(resolves_to(r, c.returns)).0
 }
 
 // ---- writing api.ddr ---------------------------------------------------------
@@ -1146,21 +1169,51 @@ fn write_api(r: &Registry, names: &[]string) -> string {
 // ---- writing layout.ddr ------------------------------------------------------
 
 // The Dunder type of a member. A record nested by value keeps its registry
-// name without the `Vk`; a handle is a pointer; `size_t` is `usize`, a size
-// in Dunder as in C; `char` by value is a byte.
+// name without the `Vk`; a pointer is a pointer, a handle included. An enum
+// is the 32-bit C enum the registry declares it (`category="enum"`); every
+// other type is a C width, and a width has one Dunder type and one size in
+// `scalar`, the same table `c_size` reads its bytes from — so the type a
+// field is written with and the size it is laid out by cannot disagree. ""
+// for a width the registry has and the table lacks: `main` refuses it by
+// name before anything is written. The alternative was a silent `u32`, and
+// the size was still counted right, so nothing saw it: `pipelineCacheUUID`
+// is `uint8_t[16]` and was written as 64 bytes of `u32`.
+// The C width of an enum the registry declares: "i32" when its block holds a
+// negative value, "u32" for any other, "" when the name is not an enum at all.
+fn enum_is(r: &Registry, type_name: string) -> string {
+    if !r.enums.contains(type_name.clone()) { return "" }
+    if r.signed.contains(type_name.clone()) { return "i32" }
+    "u32"
+}
+
 fn member_type(r: &Registry, m: &Member) -> string {
     if m.pointer { return "ptr" }
     if r.records.contains(m.type_name) { return m.type_name[2..m.type_name.len] }
     if r.handles.contains(m.type_name) { return "ptr" }
-    match resolves_to(r, m.type_name) {
-        "uint32_t" => "u32",
-        "int32_t" => "i32",
-        "int" => "i32",
-        "uint64_t" => "u64",
-        "size_t" => "usize",
-        "float" => "f32",
-        "char" => "u8",
-        _ => "u32",
+    if enum_is(r, m.type_name) != "" { return enum_is(r, m.type_name) }
+    scalar(resolves_to(r, m.type_name)).0
+}
+
+// A C scalar as the registry's typedef resolves to it: its Dunder type and
+// its (size, alignment) in bytes, or ("", (0, 0)) for a width the registry
+// has and this table lacks. A flag set (`VkImageUsageFlags`) is a typedef of `VkFlags`, itself a
+// typedef of `uint32_t`, so it arrives here as that width.
+fn scalar(c_type: string) -> (string, (i64, i64)) {
+    match c_type {
+        "int8_t" => ("i8", (1, 1)),
+        "uint8_t" => ("u8", (1, 1)),
+        "char" => ("u8", (1, 1)),
+        "int16_t" => ("i16", (2, 2)),
+        "uint16_t" => ("u16", (2, 2)),
+        "int32_t" => ("i32", (4, 4)),
+        "int" => ("i32", (4, 4)),
+        "uint32_t" => ("u32", (4, 4)),
+        "float" => ("f32", (4, 4)),
+        "int64_t" => ("i64", (8, 8)),
+        "uint64_t" => ("u64", (8, 8)),
+        "size_t" => ("usize", (8, 8)),
+        "double" => ("f64", (8, 8)),
+        _ => ("", (0, 0)),
     }
 }
 
@@ -1196,6 +1249,7 @@ fn written_members(r: &Registry, rec: &Record) -> []Member {
 // The C size and alignment of a type name, with C alignment rules; (0, 0) when
 // the type is not something the registry widths say, which the caller reports.
 fn c_size(r: &Registry, type_name: string) -> (i64, i64) {
+    if r.enums.contains(type_name) { return (4, 4) }
     if r.records.contains(type_name) {
         rec := r.records.get(type_name).unwrap()
         mut size: i64 = 0
@@ -1212,13 +1266,7 @@ fn c_size(r: &Registry, type_name: string) -> (i64, i64) {
         }
         return ((size + align - 1) / align * align, align)
     }
-    match resolves_to(r, type_name) {
-        "uint8_t" => (1, 1), "int8_t" => (1, 1), "char" => (1, 1),
-        "uint16_t" => (2, 2), "int16_t" => (2, 2),
-        "uint32_t" => (4, 4), "int32_t" => (4, 4), "int" => (4, 4), "float" => (4, 4),
-        "uint64_t" => (8, 8), "int64_t" => (8, 8), "size_t" => (8, 8),
-        _ => (0, 0),
-    }
+    scalar(resolves_to(r, type_name)).1
 }
 
 // The C size and alignment of one member: its type's, times its array length.
@@ -1490,6 +1538,17 @@ fn main() -> i32 {
             _ := sys.eprint("vk: vk" + n + " is not in the registry")
             return 2
         }
+        cmd := r.commands.get(n.clone()).unwrap()
+        for i in 0..cmd.params.len {
+            if dunder_type(&r, &cmd.params[i]) == "" {
+                _ := sys.eprint("vk: vk" + n + "." + cmd.params[i].name + " has a type this tool does not translate: " + cmd.params[i].type_name)
+                return 2
+            }
+        }
+        if cmd.returns != "void" && return_type(&r, &cmd) == "" {
+            _ := sys.eprint("vk: vk" + n + " returns a type this tool does not translate: " + cmd.returns)
+            return 2
+        }
     }
     // Every record Storm names is in the registry; every record nested in one
     // of them is declared before its user; every array length and structure
@@ -1513,10 +1572,18 @@ fn main() -> i32 {
                 _ := sys.eprint("vk: Vk" + name + "." + m.name + " has an array length the registry does not number: " + m.array)
                 return 2
             }
+            if member_type(&r, m) == "" {
+                _ := sys.eprint("vk: Vk" + name + "." + m.name + " has a type this tool does not translate: " + m.type_name)
+                return 2
+            }
             if m.pointer || !r.records.contains(m.type_name) { continue }
             for um in &r.records.get(m.type_name).unwrap().members {
                 if um.array != "" && array_length(r, um) == "" {
                     _ := sys.eprint("vk: " + m.type_name + "." + um.name + " has an array length the registry does not number: " + um.array)
+                    return 2
+                }
+                if member_type(&r, um) == "" {
+                    _ := sys.eprint("vk: " + m.type_name + "." + um.name + " has a type this tool does not translate: " + um.type_name)
                     return 2
                 }
             }

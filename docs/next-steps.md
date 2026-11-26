@@ -34,10 +34,17 @@ registret — vertexformaterna, `Blend` och `apply_*`, `DisplayEncoding`/
 vilka display-format capture läser — bor i `storm-vulkan/records.ddr` (158
 rader, handskrivna). Registrets tester (Khronos-tabellerna, C-ABI-storlekar,
 paren, `load()` mot riktiga libvulkan) följde med till `storm-vk/tests`.
-Kvar i storm-vk: `state.ddr`:s `MemoryProperties`
-(skrivs idag ur ett rått `raw[]`-fältord i `device.ddr`) som en genererad
-`VkPhysicalDeviceMemoryProperties`, och `DisplayEncoding`/`FrameViewport`
-(Storms poster med egna fält, därför handskrivna i `records.ddr`). Sedan **Renderer-uppdelningen**,
+Kvar i storm-vk var `state.ddr`:s `MemoryProperties` (läst ur ett rått
+`raw[]`-fältord i `device.ddr`, med heap *i* på ord `66 + i` där registriet
+har `66 + 4i`) och `Properties`/`Limits` (en handskriven post vars sista
+1 024 byte var en gissad `rest: [u64; 128]`) — båda är
+sedan 2026-11-26 registriets poster (`VkPhysicalDeviceMemoryProperties`,
+520 byte, och `VkPhysicalDeviceProperties`, 824 byte, var och en med
+sina offsets pinnade mot gcc), och generatorn vägrar en bredd den inte
+översätter i stället för att skriva `u32`. Kvar: `DisplayEncoding`/
+`FrameViewport` (Storms poster med egna fält, därför handskrivna i `records.ddr`), och
+`device.ddr` läser `properties.deviceType` som `1`/`2` (`VkPhysicalDeviceType`
+finns i registret, inte i `enums.ddr`). Sedan **Renderer-uppdelningen**,
 kluster för kluster (design.md §3b): `depth.Depth`, `ui.Atlas`,
 `ibl.Environment` och `shadow.Shadow` är gjorda (2026-11-25, `Renderer`
 121 → 72 fält), och 2026-11-26 följde `post.Stage` (12 fält mätta; `scenePass`,

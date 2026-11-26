@@ -50,6 +50,32 @@ import sys
     }
 }
 
+// The device's properties: a 256-byte name, a 16-byte UUID and the 106-member
+// limits record, every number the one gcc gives the registry's declaration
+// (x86_64). The sizes alone would pass a record with two widths swapped;
+// the offsets pin where each kind of member lands — a float after u32s, a
+// u64 last — so `uint8_t[16]` written as `u32[16]` cannot pass again.
+@test fn device_properties_match_the_c_abi() {
+    assert(size_of(vkl.PhysicalDeviceLimits) == 504)
+    assert(size_of(vkl.PhysicalDeviceSparseProperties) == 20)
+    assert(size_of(vkl.PhysicalDeviceProperties) == 824)
+    unsafe {
+        mut p: vkl.PhysicalDeviceProperties = zeroed()
+        base := usize(addr(&mut p))
+        assert(usize(addr(&mut p.deviceName)) - base == 20)
+        assert(usize(addr(&mut p.pipelineCacheUUID)) - base == 276)
+        assert(usize(addr(&mut p.pipelineCacheUUID[15])) - usize(addr(&mut p.pipelineCacheUUID[0])) == 15)
+        assert(usize(addr(&mut p.limits)) - base == 296)
+        // Inside limits (296), gcc puts the push-constant size at 32, the first
+        // float at 272, the first [2] array at 280 and the last u64 at 496.
+        assert(usize(addr(&mut p.limits.maxPushConstantsSize)) - base == 328)
+        assert(usize(addr(&mut p.limits.maxSamplerAnisotropy)) - base == 568)
+        assert(usize(addr(&mut p.limits.maxViewportDimensions)) - base == 576)
+        assert(usize(addr(&mut p.limits.nonCoherentAtomSize)) - base == 792)
+        assert(usize(addr(&mut p.sparseProperties)) - base == 800)
+    }
+}
+
 @test fn render_pass_structs_match_the_c_abi() {
     // Two attachments side by side must read as one contiguous array.
     assert(size_of(vk.AttachmentDescription) == 36)

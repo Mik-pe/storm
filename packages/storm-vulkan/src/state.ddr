@@ -19,22 +19,6 @@ pub struct Buffer {
     capacity: u64,
 }
 
-@c_layout
-pub struct Limits {
-    maxImageDimension1D: u32, maxImageDimension2D: u32, maxImageDimension3D: u32,
-    maxImageDimensionCube: u32, maxImageArrayLayers: u32, maxTexelBufferElements: u32,
-    maxUniformBufferRange: u32, maxStorageBufferRange: u32, maxPushConstantsSize: u32,
-    rest: [u64; 128],
-}
-
-@c_layout
-pub struct Properties {
-    apiVersion: u32, driverVersion: u32, vendorID: u32, deviceID: u32, deviceType: u32,
-    deviceName: [u8; 256],
-    pipelineCacheUUID: [u8; 16],
-    limits: Limits,
-}
-
 pub const FRAME_COUNT: i32 = 2
 // mvp(64) model(64) base_color(16) params(16) camera(16) emissive_factor(16).
 pub const MESH_PUSH_BYTES: u32 = 192
@@ -109,7 +93,11 @@ pub struct Renderer {
     device: ptr,
     queue: ptr,
     family: u32,
-    properties: Properties,
+    // The registry's VkPhysicalDeviceProperties, read once at device selection
+    // (824 bytes, the size C gives it). What is read of it is the device's
+    // name, its type and `limits.maxPushConstantsSize`; the rest is the
+    // driver's, and a record nobody guesses the shape of cannot be too short.
+    properties: vkl.PhysicalDeviceProperties,
     // The registry's VkPhysicalDeviceMemoryProperties, read once at device
     // selection: device.allocate walks memoryTypes[] for the first type a
     // requirement allows that has the wanted properties.

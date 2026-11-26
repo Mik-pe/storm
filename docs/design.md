@@ -541,8 +541,9 @@ utan skuggor).
   ger. Kommandolistan är Storms (vilka kommandon som laddas), typerna är
   registriets. De tio WSI-kommandona hamnar i `load()`:s `windowed`-gren
   därför att `VK_KHR_swapchain` beror på `VK_KHR_surface` i registriet, inte
-  på en handskriven lista. `layout.ddr` är den andra utdatafilen: 71 poster
-  ur registret, varje med `impl X { pub unsafe fn new() -> X }` som
+  på en handskriven lista. `layout.ddr` är den andra utdatafilen: 77 poster
+  ur registriet (81 deklarationer med de fyra paren), varje med
+  `impl X { pub unsafe fn new() -> X }` som
   nollställer och skriver `sType` (strukturtypen är en `values=` på
   registriets `sType`-medlem, och en `<enum extends="VkStructureType"
   offset="N"/>` i en extension räknas fram: 1 000 000 000 + (nummer − 1) ×
@@ -558,7 +559,27 @@ utan skuggor).
   registret äger talen, Storm äger urvalet (en tabell i verktyget: Dunder-namn,
   registrets block, varje variant med registrets konstant och Storms kommentar),
   kombinerade flaggor är summan av namngivna bitar, och ett namn registret inte
-  känner är exit 2 med namnet. För Metal behövs det inte på samma sätt: det
+  känner är exit 2 med namnet. Detsamma gäller bredderna, i posterna och i
+  prototyperna: en typ verktyget inte översätter är exit 2 med namnet
+  (`VkPost.fält`, `vkCmdDraw.vertexCount`, `vkCreateImage returns …`), inte
+  ett tyst `u32`/`i32` — det var tre tabeller med varsin tysta fallback
+  (`member_type`, `dunder_type`, `return_type`) och `c_size` med en fjärde
+  som räknade byte-storleken. Nu läser alla ur `scalar` (C-bredd → Dunder-typ
+  och byte-storlek i samma rad), och registret säger självt vilka namn som
+  är enums (`category="enum"`), vilka som är flaggmängder (`category="bitmask"`,
+  en typedef av `VkFlags`) och vilka enums som är signerade (ett block med
+  ett negativt värde, `dir="-"`: `VkResult` är det Storm binder) — så inget
+  av det läses ur tystnad. Att signeraden är ett faktum och inte en detalj
+  mättes på vägen: "varje enum är `u32`" skrev om 40 prototyper till
+  `-> u32` i en körning, `VkResult` är negativ, och Storm läser den som `i32`.
+  Bakom allt ligger en mätt bugg i generatorn: `pipelineCacheUUID` är
+  `uint8_t[16]` och översattes till `u32[16]`, 64 byte i stället för 16 —
+  byte-storleken räknades rätt av den andra tabellen, så ingen `--check`
+  skulle ha sett det, och `limits` hamnade 48 byte fel. Upptäckt när
+  `VkPhysicalDeviceProperties` blev en av de 77 posterna (den första med en
+  `uint8_t`-medlem), mätt mot gcc innan något var committat; layouten som
+  gcc ger är den som pinnas i storm-vk:s svit.
+  För Metal behövs det inte på samma sätt: det
   som hålls för hand är 195 `cstr`-literaler — 155 selektorer, 18 klassnamn,
   14 C-symboler, 6 frameworksökvägar och 2 type-encodings — och 54
   `extern fn`-fält i 34 unika signaturer, och det
