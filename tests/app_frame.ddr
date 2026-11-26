@@ -117,12 +117,16 @@ fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity 
     app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     assert(frame.solids().len == 1)
     draw := &frame.solids()[0]
-    // The longest side (1.0) becomes MODEL_SIZE, the cube's centre moves to
-    // `at`, and its bottom sits on y = 0.
+    // The longest side (1.0) becomes MODEL_SIZE, the cube is centred on
+    // `at.x`, and its bottom sits on y = 0.
     scale := draw.model.m[0]
     assert((scale - app.MODEL_SIZE).abs() < 0.0001)
-    assert((draw.model.m[12] - 1.0).abs() < 0.0001 && (draw.model.m[14] - 2.0).abs() < 0.0001)
+    assert((draw.model.m[12] - 1.0).abs() < 0.0001)
     assert((draw.model.m[13] - app.MODEL_SIZE * 0.5).abs() < 0.0001)
+    // `at.z` is the model's NEAREST side, not its centre: the cube's centre
+    // is half a depth further out, so the whole model lies at z >= at.z and
+    // nothing of it can reach behind that line into what stands there.
+    assert((draw.model.m[14] - (2.0 + app.MODEL_SIZE * 0.5)).abs() < 0.0001)
     // Every vertex of the box is at rest on or above the ground after scale.
     mesh := &frame.meshes()[0]
     mut lowest: f32 = 1.0e20
@@ -132,6 +136,45 @@ fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity 
     }
     assert((lowest + 0.5).abs() < 0.001)
     assert((lowest * scale + draw.model.m[13]).abs() < 0.001)
+}
+
+// The nearest side is measured on the vertices, not assumed at the origin:
+// a part authored wholly in front of its origin (z from 1 to 3) is moved so
+// that z = 1 lands on `at.z`, and the depth does not push the back through.
+@test fn a_model_whose_origin_is_behind_it_still_clears_its_edge() {
+    // A slab authored wholly in front of its origin: x and y in 0..1, z from
+    // 1 to 3, so the depth (2.0) is its longest side and its origin is behind
+    // every vertex.
+    slab := gltf.Part {
+        name: "slab", material_name: "", color: [1.0, 1.0, 1.0, 1.0], metallic: 0.0, roughness: 0.5,
+        vertices: [
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+            0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
+            1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+            0.0, 0.0, 3.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+            0.0, 1.0, 3.0, 0.0, 0.0, 1.0, 0.0, 1.0,
+            1.0, 1.0, 3.0, 0.0, 0.0, 1.0, 1.0, 1.0,
+        ],
+        texture: -1, sampler: gfx.sampler(), metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
+        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0, 0.0, 0.0, 1.0]
+    }
+    mut model := gltf.empty_asset()
+    model.parts = [slab]
+    mut world := scenegraph.Graph::new()
+    placed := app.place_model(&mut world, &model, "slab", core.vec3(0.0, 0.0, 3.7), &[])
+    assert(placed.is_ok())
+    world.propagate()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    scale := frame.solids()[0].model.m[0]
+    // The longest side is the depth (2.0), so the slab is MODEL_SIZE deep
+    // and its nearest vertex (z = 1) sits exactly on the edge: the model
+    // never reaches behind `at.z`, whatever its origin was.
+    nearest := 1.0 * scale + frame.solids()[0].model.m[14]
+    assert((nearest - 3.7).abs() < 0.0001)
+    assert((scale * 2.0 - app.MODEL_SIZE).abs() < 0.0001)
 }
 
 // The whole way a textured model takes: glTF reads the image bytes and the

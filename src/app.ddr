@@ -45,8 +45,25 @@ fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
 // Loads a .glb into the scene as a node with its own vertex stream, scaled to
 // MODEL_SIZE units on its longest side and resting on y = 0, so any model
 // lands in view whatever units it was authored in.
-pub const MODEL_SIZE: f32 = 2.4
-// Place a GLB in the graph, scaled to MODEL_SIZE and centred on `at`.
+//
+// The size is the largest a model can be and still fit the studio's fixed
+// camera whole (eye (0, 4, 10.8), fov 0.85, pitched 16 degrees down at the
+// turntable; viewport rows 55..755). A cube -- the worst case, as deep as
+// it is tall -- of 2.4 standing at MODEL_EDGE_Z lands on rows 360..756,
+// its last row under the status bar; at 2.0 it lands on 401..719 (measured
+// with the camera's own projection, QA 2026-11-26). A tall, thin model
+// such as the lantern fits at either.
+pub const MODEL_SIZE: f32 = 2.0
+// Where a loaded model stands in the studio: centred on x, on the floor, and
+// with its *nearest* side this far in front of the turntable. The plinth
+// reaches 3.2 out (gallery.ddr), so this is its edge plus the margin; the
+// model spreads away from the table, whatever its depth. A fixed centre
+// instead put a cube's back 0.2 into the plinth (QA 2026-11-26).
+pub const MODEL_EDGE_Z: f32 = 3.7
+// Place a GLB in the graph, scaled to MODEL_SIZE, centred on `at.x`, resting
+// on `at.y`, and with its nearest side at `at.z` -- it spreads towards +z,
+// away from whatever stands behind it. A model of any depth then clears the
+// same edge, instead of a depth its caller had to know in advance.
 // `textures[i]` is the uploaded base colour image of part i, or
 // `gfx.no_texture()` for a part that is only a colour.
 pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
@@ -77,7 +94,10 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: strin
     if span.y > extent { extent = span.y }
     if span.z > extent { extent = span.z }
     scale := if extent > 0.0 { MODEL_SIZE / extent } else { f32(1.0) }
-    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x)*0.5*scale, at.y-lo.y*scale, at.z-(lo.z+hi.z)*0.5*scale))
+    // The root sits at the model's origin; its vertices reach from lo.z to
+    // hi.z around it. Putting the nearest side (lo.z * scale) on at.z means
+    // the root moves to at.z - lo.z * scale.
+    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x)*0.5*scale, at.y-lo.y*scale, at.z-lo.z*scale))
     _ := graph.set_name(base, path.clone())
     graph.set_scale(base, core.vec3(scale,scale,scale))
     for i in 0..model.parts.len {
@@ -403,7 +423,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     mut action := play_ui.Action.Idle
     glb := args.value(argv, "--glb")
     if glb.len > 0 {
-        match load_model_into(&mut window, &mut graph, glb, core.vec3(0.0,0.0,4.2)) {
+        match load_model_into(&mut window, &mut graph, glb, core.vec3(0.0, 0.0, MODEL_EDGE_Z)) {
             .Ok => {}, .Err(err) => { return stop(move window, glb + ": " + err) },
         }
     }
