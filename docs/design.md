@@ -93,7 +93,19 @@
   svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
   i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
   `N passed` blir 262). 17 sviter
-  kördes med `dunder test` i roten och i varje `packages/*`. Ramens exekutor (`app.gather`, `vertex_bytes`,
+  kördes med `dunder test` i roten och i varje `packages/*`. **En rot som
+  inget av dem når är ett program under `tools/`, `examples/` eller
+  `packages/*/tools/`** (mätt: `dunder check` utan argument = `src/main.ddr`,
+  `--tests` = sviten, `--example` = manifestets exempel, i ett paket = dess
+  `root`) — och `storm-metal/tools/selftest.ddr` låg trasigt på main i 26
+  timmar (`496d59b` 11-25 07:28 → rättat 11-26 09:50; första felet
+  `E3099 enum variant needs a type` när `mesh` fick sina texturer, det
+  andra `E2002 unknown local 'plain'` sedan `5361964`) under **45
+  committer** som alla låg inom `dunder check`:s gröna. Sedan 2026-11-26
+  vaktar `tools/check.ddr` dem: den härleder rötterna ur katalogerna (ingen
+  tabell), typkontrollerar varje och sig själv, och fallerar med namnet
+  (utgång 1; 2 när den inte kan lista eller kompilatorn inte startar;
+  kontraktet bevisat i fyra fall). Ramens exektor (`app.gather`,
   `load_model`) är testbar utan fönster: vad ett pass får, när
   mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas

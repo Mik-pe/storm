@@ -1,0 +1,127 @@
+// Storm's type-check gate: every program root in the tree that `dunder check`
+// alone never reaches. Run from the repo root before every push:
+//
+//   dunder run tools/check.ddr
+//
+// `dunder check` (no argument) checks src/main.ddr, `--tests` the suite,
+// `--example` a manifest example, and `dunder check` in a package its root.
+// None of them reaches a program under tools/ or packages/*/tools/, so a tool
+// can sit on main not compiling while every report says "check: 0 errors" —
+// which is what happened to storm-metal's self-test: broken for a day through
+// seven commits that each claimed a green check.
+//
+// The roots are derived from the tree, not listed here: every .ddr directly
+// under tools/, examples/, packages/*/tools/ and packages/*/examples/. A new
+// tool is therefore under the gate the moment it is written, and this file
+// checks itself. Exit status: 0 all roots check, 1 one did not, 2 the gate
+// could not run (a directory it cannot list, a compiler that did not start).
+capability filesystem, process, stdio
+
+import std.array as array
+import std.fs as fs
+import std.process as process
+import sys
+
+// The directories whose immediate .ddr children are program roots. `tools`
+// is relative to the repo root, which is where the gate is run from.
+const ROOT_DIRS: []string = ["tools", "examples"]
+
+fn installed_compiler() -> string {
+    match process.env("HOME") {
+        .Some(home) => {
+            installed := home + "/.dunder/bin/dunder"
+            if sys.metadata(installed).ok && sys.metadata(installed).is_file { return installed }
+            "dunder"
+        },
+        .None => "dunder",
+    }
+}
+
+// The .ddr files directly under `dir`, or .Err when it cannot be listed.
+fn sources(dir: string) -> Result<[]string, string> {
+    match fs.list_dir(dir) {
+        .Ok(items) => {
+            mut found: []string = []
+            for name in &items {
+                if name.len > 4 && name[name.len - 4..name.len] == ".ddr" { found.push(dir + "/" + name) }
+            }
+            array.sort(&mut found)
+            .Ok(found)
+        },
+        .Err(e) => .Err(dir + ": errno " + e.code().str()),
+    }
+}
+
+// Whether `dir` exists as a directory: a package without tools/ is the normal
+// case, not an error.
+fn is_dir(dir: string) -> bool {
+    info := sys.metadata(dir)
+    info.ok && info.is_dir
+}
+
+// Every program root the gate covers, in a stable order.
+fn roots() -> Result<[]string, string> {
+    mut all: []string = []
+    for dir in &ROOT_DIRS {
+        if !is_dir(dir) { continue }
+        match sources(dir) {
+            .Ok(found) => { for f in &found { all.push(f.clone()) } },
+            .Err(why) => return .Err(why),
+        }
+    }
+    match fs.list_dir("packages") {
+        .Ok(packages) => {
+            for package in &packages {
+                if !is_dir("packages/" + package) { continue }
+                for leaf in ["tools", "examples"] {
+                    dir := "packages/" + package + "/" + leaf
+                    if !is_dir(dir) { continue }
+                    match sources(dir) {
+                        .Ok(found) => { for f in &found { all.push(f.clone()) } },
+                        .Err(why) => return .Err(why),
+                    }
+                }
+            }
+        },
+        .Err(e) => return .Err("packages: errno " + e.code().str()),
+    }
+    array.sort(&mut all)
+    .Ok(all)
+}
+
+fn main() -> i32 {
+    if sys.arg_count() > 1 {
+        _ := sys.eprint("usage: dunder run tools/check.ddr")
+        return 2
+    }
+    list := match roots() {
+        .Ok(all) => all,
+        .Err(why) => { _ := sys.eprint("storm: could not list the program roots: " + why); return 2 },
+    }
+    if list.len == 0 {
+        _ := sys.eprint("storm: no program roots found; run from the repo root")
+        return 2
+    }
+
+    mut failed: []string = []
+    started := sys.now_ms()
+    for root in &list {
+        // The compiler's diagnostics go to the terminal as they come; the
+        // gate only counts. 127 is a compiler nothing on PATH could start.
+        mut result := process.status("dunder", ["check", root.clone()])
+        if result.code == 127 { result = process.status(installed_compiler(), ["check", root.clone()]) }
+        if result.code == 127 {
+            _ := sys.eprint("storm: dunder check could not start for " + root)
+            return 2
+        }
+        if !result.ok || result.code != 0 { failed.push(root.clone()) }
+    }
+    elapsed := sys.now_ms() - started
+
+    for root in &failed { _ := sys.eprint("storm: " + root + " does not check") }
+    verdict := if failed.len == 0 { "ok" } else { "FAILED" }
+    print("storm: check " + list.len.str() + " roots, " + failed.len.str() + " failed, " +
+        elapsed.str() + " ms, " + verdict)
+    if failed.len == 0 { return 0 }
+    return 1
+}
