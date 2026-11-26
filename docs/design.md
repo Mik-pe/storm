@@ -219,6 +219,7 @@ Vad som skiljer backends åt, och var det får synas:
 | Cull och frontface: pipeline-state / encoder-state | `storm-metal/device.ddr: Pipeline { state, cull }` + `pass.bind` |
 | Hur en yta skapas: SDL / AppKit + `CAMetalLayer` | `storm-vulkan/sdl.ddr`, `storm-metal/appkit.ddr` |
 | Tangentkoder: SDL-scancodes / macOS key codes | en tabell per backend, parar kod med namngiven `gfx.Key` |
+| Musknappar: SDL:s nummer (vänster 1, mitten 2, höger 3) / AppKits händelser | en tabell per backend (`sdl.ddr: sdl_button`, `appkit.ddr: button_of`), parar med namngiven `gfx.Button` — biten (1, 2, 4) ägs av kontraktet, inte av plattformen |
 
 ## 3. Enums i FFI-lagret
 
@@ -429,12 +430,32 @@ moduler:
 | ui | 10 | `ui.ddr` | inga | `ui.Atlas` (128 byte) — **gjord** |
 | ibl | 25 | `ibl.ddr` | inga | `ibl.Environment` (960 byte) — **gjord** |
 | shadow | 17 | `shadow.ddr` | `shadowSet` (ibl ×3, vulkan ×1), `shadowSetLayout` (pipeline ×2) | `shadow.Shadow` (120 byte) — **gjord**; de två namnen stannar på `Renderer` |
-| post | 10 | `post.ddr` | `sceneFramebuffer` (vulkan ×1), `scenePass`/`compositePass` (pipeline, device, vulkan) | `post.Stage` — nästa |
-| capture | 5 | `headless.ddr` | `captureFramebuffer` (vulkan ×2) | `headless.Capture` |
+| post | 12 | `post.ddr` | `sceneFramebuffer` (vulkan ×1), `scenePass`/`compositePass` (pipeline, device, vulkan) | `post.Stage` (96 byte) — **gjord**; de tre namnen stannar |
+| capture | 5 | `headless.ddr` | `captureFramebuffer` (vulkan ×2) | `headless.Capture` (56 byte) — **gjord**; `captureFramebuffer` stannar |
 
-`Renderer` har **72 fält** efter de fyra flyttarna (121 före): fem poster
-och 67 platta, varav `captureOn`, `pass`, `pendingPass`, `pendingClear`,
-`frameIndex`, `current` och `imageIndex` är frame-state och hör hemma där.
+`Renderer` har **61 fält** efter de sex flyttarna (121 före): sju poster
+(`material`, `depth`, `atlas`, `environment`, `shadow`, `post`, `capture`)
+och 54 platta. De 54 är fyra sorter, mätta 2026-11-26 med samma skript som
+tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 13:
+
+- **25 kärna** (`api` … `renderPass`: instans, yta, enhet, kö, pooler,
+  synkronisering, swapchain och dess bilder): läses av tio moduler —
+  `device` (23 av namnen), `vulkan` (15), `post` (7), `headless` (6), `ui`
+  (6), `pipeline` (5), `texture` (4), `ibl` (3), `shadow` (3), `depth` (1).
+- **10 pipeline-handtag** (`pipelineLayout`, `pipeline`, `skyPipeline`,
+  `transparentPipeline`, deras layouter, shadermoduler och `framebuffers`):
+  `pipeline.ddr` skapar dem, `device.ddr` förstör dem och `vulkan.ddr` binder
+  dem i varje draw. De är *inte* ett ägarkluster — de är orchestringens
+  handtag, samma sort som `shadowSet` — så de stannar.
+- **6 gränsnamn** som klusterflyttarna medvetet lämnade: `sceneFramebuffer`,
+  `scenePass`, `compositePass` (post), `captureFramebuffer` (capture),
+  `shadowSet`, `shadowSetLayout` (shadow).
+- **13 orchesteringens egna**: `window`, `vertex`, `meshSetLayouts` och
+  frame-state (`current` räknas till kärnan; `frameIndex`, `imageIndex`,
+  `pass`, `pendingPass`, `pendingClear`, `lastResult`, `captureOn`,
+  `resizePending`, `trace`, `vertexCursor` hör hit). Nästan alla läses bara
+  av `vulkan.ddr`; undantagen är `vertex` (device, shadow), `window` (device)
+  och `pendingPass` (post).
 
 Regler som gör att flytten inte blir något att "komma ihåg":
 
@@ -445,7 +466,7 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
 - **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
   i `tests/suite.ddr` (`Depth` 24, `Atlas` 128, `Shadow` 120, `Environment`
-  960, `Material` 152, `Renderer` 6 240 byte — alla mätta, ingen räknad: en
+  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 6 240 byte — alla mätta, ingen räknad: en
   storlek gissad i huvudet var fel två gånger av tre, och testet var rött
   tills den var mätt). Registret allokerar `size_of(state.Renderer) + 8192`,
   så nästa kluster som flyttar ändrar det talet — medvetet, i testet, inte
@@ -462,10 +483,12 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   klusterflytt ändrar bilden; den ändrar bara var namnen bor.
 
 Ordningen efter depth var **ui** (10 fält), **ibl** (25), **shadow** (17,
-de två set-namnen stannar) — alla gjorda 2026-11-25, var och en en commit
-med AE = 0. Kvar: **post** (10 fält; `scenePass`, `compositePass` och
-`sceneFramebuffer` lämnas ut) och **capture** (5; `captureFramebuffer`
-lämnas ut, `captureOn` är frame-state och stannar bland de platta fälten).
+de två set-namnen stannade) — alla 2026-11-25 — och sedan **post** (12
+fält, mätt; `scenePass`, `compositePass` och `sceneFramebuffer` stannar) och
+**capture** (5; `captureFramebuffer` stannar, `captureOn` är frame-state och
+stannar bland de platta fälten) — 2026-11-26. Sex kluster, sex commit:ar,
+AE = 0 på var och en. Tabellens kluster är slut; det som återstår av
+`Renderer` är kärnan och orchestringens handtag, som hör där.
 
 **Ett tillstånd som lever i ett fält var nästa `r.stage`.** `Renderer.pass`
 var `u32` med sex `PASS_*`-konstanter (`IDLE`, `WAITING`, `SHADOW`, `DIRECT`,
