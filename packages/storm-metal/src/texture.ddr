@@ -41,12 +41,12 @@ pub unsafe fn setup(rt: &objc.Runtime, gpu: ptr, textures: &mut []Texture, flat:
     default := gfx.sampler()
     made := device.sampler(rt, gpu, &default)?
     white := device.texture(rt, gpu, .Type2D, .RGBA8Unorm_sRGB, 1, 1, 1, .ShaderRead, .Shared)?
-    pixels := [255, 255, 255, 255]
+    pixels: [u8; 4] = [255, 255, 255, 255]
     device.upload(rt, white, 1, 1, 4, addr(&pixels[0]))
     textures.push(Texture { image: white, sampler: made, generation: 1 })
     flat.image = device.texture(rt, gpu, .Type2D, .RGBA8Unorm, 1, 1, 1, .ShaderRead, .Shared)?
     flat.sampler = device.sampler(rt, gpu, &default)?
-    normal := [127, 127, 255, 255]
+    normal: [u8; 4] = [127, 127, 255, 255]
     device.upload(rt, flat.image, 1, 1, 4, addr(&normal[0]))
     .Ok
 }

@@ -457,7 +457,7 @@ unsafe fn upload_flat(r: &state.Renderer, place: &mut Slot) -> i32 {
     mut mapped := ptr(0)
     code = staging_buffer(r, 4, addr(&mut staging), addr(&mut staging_memory), addr(&mut mapped))
     if code != 0 { return code }
-    normal := [127, 127, 255, 255]
+    normal: [u8; 4] = [127, 127, 255, 255]
     _ := copy_bytes(mapped, addr(&normal[0]), 4)
     mut cmd := ptr(0)
     code = begin(r, addr(&mut cmd))
