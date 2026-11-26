@@ -5,7 +5,8 @@ import std.bytes as bytes
 import std.dl as dl
 import std.fs as fs
 import sys
-import .decode as decode
+import .decode as png_file
+import .jpeg as jpeg
 
 const PREVIEW_EDGE: i32 = 768
 const CAPTURE_BYTES: i64 = 67108864
@@ -44,7 +45,25 @@ pub struct Image { width: i32, height: i32, pixels: []u8 }
 // A PNG file as RGBA: glTF's embedded images, `--texture`, the MCP preview.
 // Every colour type becomes RGBA8; bit depth 16 and interlacing are refused.
 pub fn decode_png(data: &[]u8) -> Result<Image, string> {
-    decode.decode(data)
+    png_file.decode(data)
+}
+
+// A baseline JPEG file as RGBA (ITU-T T.81): every sampling factor up to
+// 2x2, with or without restart intervals. Progressive and the other SOF
+// processes are refused with a message.
+pub fn decode_jpeg(data: &[]u8) -> Result<Image, string> {
+    jpeg.decode(data)
+}
+
+// An image file as RGBA, by the bytes it starts with rather than by a
+// declared type: a glTF `mimeType` is a claim, the signature is the file.
+// Neither signature is a refusal that names both.
+pub fn decode(data: &[]u8) -> Result<Image, string> {
+    if data.len >= 8 && data[0] == 137 && data[1] == 80 && data[2] == 78 && data[3] == 71 {
+        return png_file.decode(data)
+    }
+    if data.len >= 2 && data[0] == 255 && data[1] == 216 { return jpeg.decode(data) }
+    .Err("neither a PNG nor a JPEG file")
 }
 
 // The empty image: width 0 and no pixels, the value a material without a

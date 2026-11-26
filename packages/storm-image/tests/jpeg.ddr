@@ -1,0 +1,132 @@
+capability filesystem, stdio
+
+import ..src.image as image
+import sys
+
+fn fixture(name: string) -> []u8 {
+    read := sys.read_u8("tests/fixtures/" + name)
+    assert(read.ok)
+    read.value
+}
+
+fn refusal(result: &Result<image.Image, string>) -> string {
+    match result { .Ok(_) => "decoded", .Err(s) => s.clone() }
+}
+
+// JPEG decoding against Pillow (libjpeg-turbo 3.2.0): the fixtures are files
+// Pillow wrote, and the expected pixels are what Pillow reads back from them.
+// The decoder here is the exact float DCT where libjpeg rounds at every stage,
+// so the comparison is per channel within +-1 (libjpeg's own tolerance between
+// its IDCT implementations), and the mean absolute difference is reported so a
+// real error (a wrong coefficient, a wrong upsampling) cannot hide inside it.
+// `tolerance` is the largest channel difference allowed; the mean absolute
+// difference must also stay under 0.5, which is what separates libjpeg's
+// rounding from a wrong coefficient or a wrong upsampling (measured: a wrong
+// upsampling model gives a mean of 5 and worst 50+, a wrong one on a 512^2
+// photograph a mean of 62).
+fn near(decoded: &image.Image, name: string, tolerance: i32) {
+    expected := image.decode_png(&fixture(name + ".png")).unwrap()
+    assert(decoded.width == expected.width)
+    assert(decoded.height == expected.height)
+    mut worst := 0
+    mut sum := 0
+    mut over := 0
+    for i in 0..expected.pixels.len {
+        mut d := i32(decoded.pixels[i]) - i32(expected.pixels[i])
+        if d < 0 { d = -d }
+        if d > worst { worst = d }
+        sum += d
+        if d > tolerance { over += 1 }
+    }
+    mean := f64(sum) / f64(expected.pixels.len)
+    if worst > tolerance || mean >= 0.5 {
+        _ := sys.eprint(name + ": worst channel difference " + worst.str() + " > " + tolerance.str() + ", " + over.str() + " channels over, mean " + mean.str())
+    }
+    assert(worst <= tolerance)
+    assert(mean < 0.5)
+}
+
+// tiny1x1.jpg: one pixel, three components 1x1 — Huffman, DC, DCT, YCbCr.
+@test fn tiny() {
+    decoded := image.decode_jpeg(&fixture("tiny1x1.jpg")).unwrap()
+    assert(decoded.width == 1 && decoded.height == 1)
+    expected: []u8 = [10, 20, 231, 255]
+    for i in 0..4 { assert(decoded.pixels[i] == expected[i]) }
+}
+
+// gray8x8.jpg: one grey block, a gradient in both directions (AC coefficients).
+@test fn grey_block() {
+    decoded := image.decode_jpeg(&fixture("gray8x8.jpg")).unwrap()
+    assert(decoded.width == 8 && decoded.height == 8)
+    near(&decoded, "gray8x8", 1)
+}
+
+// rgb16x16_444.jpg: three full-resolution components, four quadrants of colour.
+@test fn ycbcr_444() {
+    decoded := image.decode_jpeg(&fixture("rgb16x16_444.jpg")).unwrap()
+    assert(decoded.width == 16 && decoded.height == 16)
+    near(&decoded, "rgb16x16_444", 1)
+}
+
+// rgb16x16_420.jpg: chroma subsampled 2x2 — the common case, and DamagedHelmet's.
+@test fn ycbcr_420() {
+    decoded := image.decode_jpeg(&fixture("rgb16x16_420.jpg")).unwrap()
+    near(&decoded, "rgb16x16_420", 1)
+}
+
+// rgb16x16_422.jpg: chroma subsampled 2x1.
+@test fn ycbcr_422() {
+    decoded := image.decode_jpeg(&fixture("rgb16x16_422.jpg")).unwrap()
+    near(&decoded, "rgb16x16_422", 1)
+}
+
+// odd9x9_420.jpg: dimensions that leave an incomplete MCU at the right and
+// bottom edges, with subsampling: the padding blocks are decoded and dropped.
+@test fn incomplete_mcu() {
+    decoded := image.decode_jpeg(&fixture("odd9x9_420.jpg")).unwrap()
+    assert(decoded.width == 9 && decoded.height == 9)
+    near(&decoded, "odd9x9_420", 1)
+}
+
+// gray32x32_restart.jpg: a restart interval of 2 MCUs — predictors reset and
+// the reader resynchronises at each RSTn marker.
+@test fn restart_markers() {
+    decoded := image.decode_jpeg(&fixture("gray32x32_restart.jpg")).unwrap()
+    near(&decoded, "gray32x32_restart", 1)
+}
+
+// A real file: DamagedHelmet's first base-colour image, 2048x2048 4:2:0 —
+// A real photograph, the kind of file the decoder exists for (DamagedHelmet's
+// base colour, scaled to 512^2 and re-encoded): 4:2:0 with ZRL runs and zero
+// DC differences, which the small hand-made fixtures never produce. A full
+// 2048^2 frame decodes in about 6 s; the suite keeps the small one. Here
+// libjpeg's integer upsampling and fixed-point colour matrix round a few
+// thousand of 786 432 channels by one more than the exact sums (measured:
+// worst 3, 2 384 over 1, mean 0.14), so the tolerance is 3.
+@test fn damaged_helmet_base_color() {
+    decoded := image.decode_jpeg(&fixture("helmet_512.jpg")).unwrap()
+    near(&decoded, "helmet_512_ref", 3)
+}
+
+// Refusals name what was found.
+@test fn refuses_progressive() {
+    result := image.decode_jpeg(&fixture("progressive16.jpg"))
+    assert(result.is_err())
+    assert(refusal(&result) == "progressive JPEG (SOF2) is not supported")
+}
+
+@test fn refuses_not_a_jpeg() {
+    assert(image.decode_jpeg(&[1, 2, 3]).is_err())
+    assert(image.decode_jpeg(&[255, 216, 255, 217]).is_err())
+}
+
+// decode(): the format is known by the bytes, not by a declared mime type.
+@test fn decode_sniffs_the_format() {
+    from_jpeg := image.decode(&fixture("tiny1x1.jpg")).unwrap()
+    assert(from_jpeg.pixels[2] == 231)
+    from_png := image.decode(&fixture("rgba22.png")).unwrap()
+    assert(from_png.pixels[0] == 255 && from_png.pixels[1] == 0)
+    neither: []u8 = [71, 73, 70, 56, 57, 97]
+    refused := image.decode(&neither)
+    assert(refusal(&refused) == "neither a PNG nor a JPEG file")
+}

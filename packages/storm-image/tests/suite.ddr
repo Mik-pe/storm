@@ -9,6 +9,7 @@ import std.path as path
 import std.text as text
 import sys
 
+import .jpeg as jpeg
 import .png as png
 
 fn sample() -> []u8 {

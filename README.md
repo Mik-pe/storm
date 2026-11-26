@@ -86,7 +86,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
 | [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning, studsmoln, bonusfjärilar och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
-| [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG som RGBA8 (bitdjup 8, alla färgtyper, adam7 och 16 bit vägras) — ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
+| [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt baseline-JPEG (4:4:4, 4:2:2, 4:2:0, grå, restart-markörer; progressivt vägras) som RGBA8, valt på filens signatur — bitdjup 16 och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
