@@ -633,6 +633,8 @@ tests/executor.ddr:336:10: error[E3004]: type '[i64; 5]' does not implement Eq
 
 Workaround här: elementvis helper i testet (`fn same_maps(a: [i64; 5], b: [i64; 5]) -> bool`, en `&&`-kedja av fem `==`). Rekommendation: `Eq` för fasta arrayer av `Eq`-element — samma regel som gäller structar av sådana fält.
 
+**92. En `if`-gren kan aldrig vara ett lånande uttryck — inte ens när båda grenarna lånar samma värde — och diagnosticen säger varken varför eller vilken form som gäller.** Symptom (0.12.0, Storm `src/particles.ddr`): `c := if i == 0 { &pink } else { &gold }` i en loop är `error[E4003]: if branch cannot return a borrow` med markören på den **första** grenens `&`. Mätt i en minimal repro (fyra varianter): (a) samma uttryck **utan** loop — samma fel, loopen är alltså inte orsaken; (b) en `if` av två **ägda** värden (`{ a } else { b }`) kompilerar — det är bara lån som vägras; (c) `{ &pink } else { &pink }`, **samma källa i båda grenarna** — samma fel: regeln är inte "två källor kan inte förenas" utan "en gren returnerar inget lån", och den form som vore den säkra (en källa, två grenar) vägras med; (d) den form diagnosticen för en *funktion* erbjuder (`-> &[f32; 4] from pink`, docs/syntax.md) vägrar den andra källan (`E4003: returned borrow must come from its declared shared parameter 'pink'`), och `from pink, gold` är `E1002`. Ett lån ur ett val mellan två källor är alltså inte uttryckbart som lån alls. Det är rimligt (ett lån har en livstid per källa), men `if`-diagnosticen är den enda av de tre som varken förklarar regeln eller pekar på `from`-formen, och den pekar på grenen i stället för uttrycket. Workaround här: en ägd kopia — `mut c := pink.clone(); if i != 0 { c = gold.clone() }` (fyra `[f32; 4]`, och det är den form `particles.ddr` har). Rekommendation: (1) låt `if`-grenar låna när alla grenar lånar samma källa (variant c) — det är ett lån, inte två; (2) annars säg det i diagnosticen: "an `if` expression cannot return a borrow; take `from` in a function or clone", så läsaren inte söker felet i loopen (det gjorde jag: tre minuter på en loop som var oskyldig).
+
 
 ## Grafikobservationer på macOS (Metal)
 
@@ -919,6 +921,34 @@ baslinjen: `--eye 6 4 -7` AE 172 373, `--eye 0 0 4.2` AE 175 318,
 372 — **samma tal som 2026-11-24 kväll** (deterministiskt: en andra
 baslinjecapture är AE = 0 mot den första). `--play`, `--effects` och
 `--no-glass` i spelet: AE = 0.
+
+**QA 2026-11-26 (låst session, `5361964`, Dunder 0.12.0, tolv captures på
+1280 × 800).** Emissive (3d steg 2) mot worktree-baslinjer
+av `28665c4` (samma kommandon, `git status` ren, binären raderad och
+ombyggd): spelscenen, `--studio`, Box, Fox och Avokado **AE = 0**; Lantern
+skiljer sig i exakt **501 pixlar**, alla i en 22×67-ration vid (698–719,
+471–537) — lyktans glas, ingenting annat i bilden (+316 pixlar med R > 200;
+i ett 5×-snitt är glaset släckt före och varmt gult-orange efter). Två
+mätverktyg som ljuger hittades på vägen och är värda sin plats här:
+(a) **`magick compare -metric AE` på råa PPM är inget pixelantal.** På
+Lantern-paret (501 ändrade pixlar, räknade i Python över P6-kroppen) säger
+ImageMagick **264 352**, och dess diffbild är icke-svart i alla 1 024 000
+pixlar: den skalar om en otaggad PPM vid inläsning, så varje pixel
+"skiljer". AE = 0 är fortfarande ett giltigt identitetstest (samma
+skalning på båda filerna), och de äldre AE-talen ovan är jämförbara
+sinsemellan — men ett AE-skilt-noll är ingen siffra att tolka. Decimaltecknet
+är locale:ets (`264,352` under sv_SE). (b) **`/tmp` är en per-användarkvot
+som sviktar mitt i en fil.** `df` visade 753 MB ledigt medan mikpe ägde 3,1 GB
+mot en kvot på 3,7 GB; `write_bytes` fick `EDQUOT` efter en 64 MB-probe på
+noll byte. Symptomet i appen var `could not write the capture` med **status
+1 medan filen låg på disk**: 1 777 664 byte (58 %) i en körning, 0 i nästa —
+både binären i worktree:n och den nya, alltså miljön och inte koden. En
+halvskriven capture mot en annan ger ett meningslöst AE utan något fel från
+`magick`. Sex övergivna agentkataloger (`/tmp/storm-captures`, `-qa`,
+`-review.*`, `-vkpost.*`, `-macos-verify.*`, `-post-main.*`, 23–25 nov,
+1,07 GB) togs bort och alla tolv captures togs om till `$HOME` med
+filstorleken kontrollerad mot `16 + 1280·800·3` = 3 072 016 byte varje gång;
+talen ovan är från den omtagningen.
 
 Alla elva Katla-modeller (`~/Work/Katla/resources/models`) genom `--glb`:
 nio laddar med status 0 (Box, BoxInterleaved, Fox, FoxFixed, FoxBlender,

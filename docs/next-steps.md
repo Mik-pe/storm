@@ -15,7 +15,7 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
-**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. Kvar i 3d, i ordningen: **emissive** (Lantern är släkt: kartan läses inte än, steg 2) → occlusion → normal (3e). Se avsnitt 3d.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). Kvar i 3c: JPEG (DamagedHelmet), Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). Kvar i 3d, i ordningen: occlusion → normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (82 prototyper + `load()`; `vkResetDescriptorPool`
@@ -392,7 +392,10 @@ kvalitetsproblem.
    (−0,45,−0,45,0,78). Därför delas ett handtag mellan platser som pekar
    på samma *trippel*, inte samma (bild, sampler): ORM i en fil är en
    trippel, och bas + MR i samma bild är två uppladdningar. `emissive`-
-   skalären (`core.Color`, specens `emissiveFactor`) är steg 2.
+   faktorn är steg 2 och blev `[f32; 4]`, inte `core.Color`: styrkan
+   (`KHR_materials_emissive_strength`) är specens fjärde värde och hör
+   till faktorn — en `core.Color` hade krävt en separat styrka att
+   "komma ihåg".
 2. **Set 1 har fem bindings (0–4) och skrivs per draw, inte per slot.**
    Forskningens första beslut — ett set per slot med alla fem bindings —
    gäller bara när alla fem kartor är samma bild (ORM-filer där basen
@@ -415,15 +418,30 @@ kvalitetsproblem.
    (0 och 1 i steg 1); en layout med fem är ett giltigt superset.
    Vulkan garanterar `maxDescriptorSetSampledImages` ≥ 16, så fem är
    inom garantin.
-3. **Inga nya push-constant-fält.** Blocket är **exakt 240 byte, alla
-   använda** (mätt: 0–15 mvp, 16–31 model, 32–35 base, 36–39 params,
-   40–42 kamera med **43 som enda lediga float**, 44–47 sol, 48–50
-   solfärg + 51 `diffuse_fill`, 52–55 zenit, 56–59 horisont; 60 ord), och 240 är
-   taket (fynd 25). `normalScale` och `aoStrength` bärs därför **inte**
-   än: båda är 1.0 i alla elva filer, och en ledig float rymmer inte
-   båda. När en fil ber om dem hör de hemma i en per-yta-uniform (§7),
-   inte i push constants — det är nästa grind, och den är designad för
-   i §7 ("en uniform buffer per frame med en ljusarray").
+3. **Push-constants bär bara per-draw-värden; det som är samma för varje
+   draw i en frame bor i set 0:s `Light`-uniform.** (Omskrivet
+   2026-11-26; det tidigare beslutet, "inga nya fält", mätte rätt och
+   drog fel slutsats.) Mätningen då: 60 ord, 0–15 mvp, 16–31 model,
+   32–35 base, 36–39 params, 40–42 kamera med **43 som enda lediga
+   float**, 44–47 sol, 48–50 solfärg + 51 `diffuse_fill`, 52–55 zenit,
+   56–59 horisont — och 240 var taket (fynd 25), så ett fält till var
+   omöjligt. Men de sista 16 orden var **per frame**: samma sol och
+   himmel för varje draw, skickade i per-draw-minne. Det var grunden
+   som inte bar, och inte ett block som var "fullt". Sedan `5361964`:
+   `LIGHT_BYTES` 80 → 144 (`light_vp`, `light_dir_c`, `sun`, `sun_color`
+   med fill, `zenith`, `horizon`), skrivet av `shadow.set_light(sky)`
+   från mesh-passet — det enda stället som har himlen varje frame, för
+   skuggpasset är valfritt (den första capturen utan skuggor var en
+   himmelslös scen: `set_light` i `shadow.begin` skrevs aldrig). Push är
+   **192 byte**: mvp 0–63, model 64–127, base_color 128–143, params
+   144–159, camera_pos 160–175, emissive_factor 176–191 — **64 byte
+   luft** under taket. Kvar där som tekniskt är per-pass men utan
+   hook: kamerans läge och skuggflaggan (`params.w`); de stannar tills
+   kontraktet får en per-frame-hook (§7). `set_light` är nu per draw
+   (en 144-byte-kopia, samma pris som när värdena låg i push) och blir
+   per frame med hooken. `normalScale`/`aoStrength` (båda 1.0 i alla
+   elva filer) ryms nu i pushen när en fil ber om dem; en per-yta-
+   uniform (§7) är fortfarande rätt form när de blir fler.
 4. **Tangentbas: shadern deriverar, och `TANGENT` läses inte in än.**
    Beslutet är *avgränsat*: referensshaderns form
    (`t = normalize(t_ − ng·dot(ng, t_))`, `b = cross(ng, t)`) är tolv
@@ -453,8 +471,11 @@ kvalitetsproblem.
 7. **`storm-gltf` läser varje texturplats som en `TextureInfo`** (bild,
    sampler, −1 = saknas), samma `textures[i].source → images[source]`-väg
    som basen, `Err` på ett ogiltigt index eller en textur utan `source`.
-   Landat för bas och MR (steg 1); normal, occlusion, emissive samma form.
-   `emissiveFactor` läses som `core.Color` i steg 2. Appens
+   Landat för bas, MR (steg 1) och emissive (steg 2); normal och occlusion
+   samma form.
+   `emissiveFactor` läses som `[f32; 4]` i steg 2 (landat: tre
+   komponenter, `.w` = `KHR_materials_emissive_strength`, 1.0 som
+   default; fyra komponenter vägras). Appens
    `upload_model_textures` delar upp arbetet efter vem som behöver
    backenden: `upload_or_refused` (icke-generisk) avgör och avkodar, och
    det enda `window.upload_texture`-anropet står inline i den generiska
@@ -492,9 +513,28 @@ fallback × faktor = faktor), 8 009 px på Avokado (bbox 533–745 ×
 emissive är steg 2). Bygge 18,4 s; tester gröna: rot 65 `N passed` (63 egna + Skrifts 2),
 storm-vulkan 20, storm-gltf 14.
 
+**Landat i 3d, steg 2 (2026-11-26, `5361964`):** `gfx.Backend::mesh` tar
+`emissive: &[f32; 4]` (rgb = `emissiveFactor`, w =
+`KHR_materials_emissive_strength`), `scene.Material` bär den och
+`emissive_mapped(surface, factor)` sätter den; storm-gltf läser
+`emissiveTexture` (sRGB), `emissiveFactor` (3 komponenter, default noll;
+fyra vägras) och strength (default 1,0). Shadern adderar
+`texel(emissive) * factor.rgb * factor.w` till `albedo * params.z`:
+handgjorda ytor är oförändrade (vit fallback × noll). Push-constants
+192 byte, `Light` 144 byte (beslut 3). `set_material` på en befintlig
+yta kopierade fält för fält och tappade tyst det nya fältet; nu är
+hela raden `Pool.insert` (test:
+`an_emissive_material_keeps_its_factor_through_set_material`). Bevis mot
+worktree-baslinjer av `28665c4`: spelscenen, `--studio`, Box, Fox,
+Avokado AE = 0; Lantern skiljer sig i 501 pixlar (räknade i Python; `magick`
+säger AE 264 352, som inte är ett pixelantal — dogfood QA 2026-11-26),
+alla i lyktans glas, 22×67 px vid (698–719, 471–537), +316 pixlar R>200 —
+lyktan är tänd. Bygge 18,3 s; tester: rot 67 egna `@test`, storm-gltf
+18, storm-scene 24.
+
 **Kvar i 3d efter besluten:** `TANGENT` som vertexattribut + MikkTSpace
-(3e), `normalScale`/`aoStrength` (uniform, §7), `KHR_materials_*
-emissive_strength`, `texCoord` ≠ 0 (ingen fil använder det; beslut 1 i
+(3e), `normalScale`/`aoStrength` (ryms nu i pushen, beslut 3), `texCoord`
+≠ 0 (ingen fil använder det; beslut 1 i
 3c:s research gäller: Storm läser `TEXCOORD_0`).
 
 ## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning, ECS-frågor
@@ -556,6 +596,12 @@ aldrig i appen; vilken backendmetod som bär det researchas när steget tas.
 
 Push constants räcker för en sol. Nästa steg är en uniform buffer per frame
 (per-frame descriptor set) med en ljusarray, kameraposition och tid.
+
+**Påbörjad (2026-11-26, 3d beslut 3):** solen, himlen och fyllnadsljuset
+bor sedan `5361964` i set 0:s `Light`-uniform (144 byte) i stället för
+push-constants; den skrivs ur mesh-passet per draw (`shadow.set_light`)
+eftersom kontraktet inte har någon per-frame-hook att skriva den ur.
+Nästa: hooken (en gång per frame), kamerapositionen dit, sedan arrayen.
 
 ## 8. Input
 
