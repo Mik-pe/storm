@@ -210,12 +210,12 @@ import sys
 // `extern fn` has no Eq, so the refusal is asserted as the return value.)
 @test fn load_refuses_a_non_loader_and_fills_from_the_real_one() {
     unsafe {
-        libc := dl.open(cstr("/usr/lib/libc.so.6"), 2)
+        libc := if target_is("macos") { dl.open(cstr("/usr/lib/libSystem.B.dylib"), 2) } else { dl.open(cstr("/usr/lib/libc.so.6"), 2) }
         assert(libc != ptr(0))
         mut table: api.Api = zeroed()
         assert(!api.load(&mut table, libc, false))
 
-        loader := dl.open(cstr("/usr/lib/libvulkan.so.1"), 2)
+        loader := if target_is("macos") { dl.open(cstr("libvulkan.1.dylib"), 2) } else { dl.open(cstr("/usr/lib/libvulkan.so.1"), 2) }
         if loader == ptr(0) {
             _ := sys.eprint("no libvulkan on this machine; the loader half is skipped")
         } else {
