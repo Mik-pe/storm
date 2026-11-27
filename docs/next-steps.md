@@ -23,7 +23,7 @@ kom med 3d steg 1, för set-pooler som frigörs per frame), `layout.ddr` (71
 `@c_layout`-poster med en `impl X { pub unsafe fn new() -> X }`-fabrik per post
 som nollställer och skriver `sType`; de fyra par-posterna `Dependencies`,
 `Attachments`, `References`, `ShaderStages` kommer från verktygets `PAIRS`-tabell)
-och `enums.ddr` (35 enums, urvalet som data i verktyget, talen ur registret).
+och `enums.ddr` (36 enums, urvalet som data i verktyget, talen ur registret).
 Ingen fil har en markör och ingen importerar `gfx` eller `core`;
 `--check` jämför hela filen (utgång 1 om den skiljer sig från registret;
 `--check api`/`--check layout`/`--check enums` för en fil). Anropet är
@@ -42,9 +42,14 @@ sedan 2026-11-26 registriets poster (`VkPhysicalDeviceMemoryProperties`,
 520 byte, och `VkPhysicalDeviceProperties`, 824 byte, var och en med
 sina offsets pinnade mot gcc), och generatorn vägrar en bredd den inte
 översätter i stället för att skriva `u32`. Kvar: `DisplayEncoding`/
-`FrameViewport` (Storms poster med egna fält, därför handskrivna i `records.ddr`), och
-`device.ddr` läser `properties.deviceType` som `1`/`2` (`VkPhysicalDeviceType`
-finns i registret, inte i `enums.ddr`). Sedan **Renderer-uppdelningen**,
+`FrameViewport` (Storms poster med egna fält, därför handskrivna i `records.ddr`).
+`VkPhysicalDeviceType` är sedan 2026-11-27 i `enums.ddr` med alla fem
+varianterna (registriet äger talen; `--check enums` fallerar om de skiljer sig),
+och enhetsvalet läser `properties.deviceType` genom `records.device_rank` —
+discrete 3, integrated 2, resten 1 — så varken `1` eller `2` står i `device.ddr`.
+En typ registret inte numrerar rankas med resten i stället för att döda
+processen (fynd 106: `Enum(n)` förbi sista varianten är en tyst 108, och det
+här talet kommer från drivrutinen, inte från Storm). Sedan **Renderer-uppdelningen**,
 kluster för kluster (design.md §3b): `depth.Depth`, `ui.Atlas`,
 `ibl.Environment` och `shadow.Shadow` är gjorda (2026-11-25, `Renderer`
 121 → 72 fält), och 2026-11-26 följde `post.Stage` (12 fält mätta; `scenePass`,

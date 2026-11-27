@@ -45,7 +45,7 @@
   och varje post har en `new()`-fabrik som skriver strukturtypen, så talet
   finns på en rad per post i en fil ingen skriver för hand (§6).
 - **Enums är ett eget lager, och lagret är ett eget paket:** `storm-vk/enums.ddr`
-  (genererad, §6) har 35 `pub enum`, 34 konverterare, `result_name` och tre
+  (genererad, §6) har 36 `pub enum`, 35 konverterare, `result_name` och tre
   konstanter — inget `unsafe`, ingen import, inget Storm. Storms skrivare av
   C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`) och de
   värden de skriver (`Blend`, `alpha_over`, `shadow_max`) står i
@@ -86,12 +86,12 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. **331 egna `@test`** på `8cc9859` (räknade
-  2026-11-27 med `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över
-  listan: 119 i roten, 17 filer, och 212 i de 16 paketen), alla gröna,
+  delade vertexströmmen. **332 egna `@test`** (räknade 2026-11-27 med
+  regexen `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över listan: 119 i
+  roten, 17 filer, och 213 i de 16 paketen), alla gröna,
   varje svit lika många som den har `@test` (Skrifts två följer med som
   PASS-rader i de tre sviter som når `storm-text` — roten, `storm-text`,
-  `storm-ui` — så `N passed` blir 337). 17 sviter körs med `dunder test` i
+  `storm-ui` — så `N passed` blir 338). 17 sviter körs med `dunder test` i
   roten och i varje `packages/*`. Föregående kontroll (`9e487b5`, Dunder
   0.12.0, låst session) gav 318 — siffran åldras med varje test som landar;
   det som inte åldras är regeln: *antalet `@test` i sviten är det antal som
@@ -129,10 +129,10 @@
   **En siffra i det här avsnittet är en mätning på en kompilator:** står
   ingen version vid den gäller den inte.
 
-Registret är ett eget paket, **`storm-vk`** (2 257 rader, allt genererat ur
+Registret är ett eget paket, **`storm-vk`** (2 267 rader, allt genererat ur
 `vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (347:
 82 prototyper + `load()`), `layout.ddr` (1 479: 81 poster — 77 registriposter
-med `new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 35
+med `new()` + fyra par-poster, se §6), `enums.ddr` (441: 36 enums, 35
 konverterare, `result_name` och registrets konstanter). Det som är Storms
 val står i storm-vulkan `records.ddr` (158): vertexformaten, `Blend` och
 `apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
