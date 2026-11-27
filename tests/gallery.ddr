@@ -1,0 +1,117 @@
+// The material study, built the way the app builds it: pieces on the
+// turntable hub, a floor under them, glass on both sides.
+import core
+import ecs
+import gfx
+import scene
+import ..src.gallery as gallery
+
+fn world_origin(g: &scene.Graph, e: ecs.Entity) -> core.Vec3 {
+    core.transform_point(&g.world(e).matrix, core.vec3(0.0, 0.0, 0.0))
+}
+
+fn named(items: []scene.Drawable, g: &scene.Graph, name: string) -> i32 {
+    mut found := -1
+    for i in 0..items.len {
+        if g.name(items[i].entity) == name { found = i }
+    }
+    found
+}
+
+@test fn the_study_is_nine_nodes_on_a_hub_with_a_floor_and_two_glass_screens() {
+    mut graph := scene.Graph::new()
+    study := gallery.build(&mut graph)
+    graph.propagate()
+    assert(graph.len() == 9)
+    assert(graph.name(study.hub) == "Turntable" && graph.name(study.floor) == "Studio floor")
+    assert(graph.name(study.ring) == "Brass torus")
+    assert(graph.name(study.left) == "Glass / left" && graph.name(study.right) == "Glass / right")
+    // The hub carries the pieces and draws nothing itself; the floor is a
+    // root of its own, one centimetre below the plinth.
+    assert(graph.shape(study.hub).is_none())
+    assert(graph.shape(study.floor).is_some())
+    assert((graph.local(study.floor).position.y - -0.01).abs() < 0.0001)
+    // Six pieces and two screens: everything but the hub is drawn.
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    assert(items.len == 8)
+    assert(named(items, &graph, "Basalt footing") >= 0 && named(items, &graph, "Limestone plinth") >= 0)
+    assert(named(items, &graph, "Fluted ceramic") >= 0 && named(items, &graph, "Porcelain sphere") >= 0)
+}
+
+@test fn turning_the_hub_carries_the_pieces_and_leaves_the_floor_and_the_screens() {
+    mut graph := scene.Graph::new()
+    study := gallery.build(&mut graph)
+    graph.propagate()
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    ceramic := items[named(items, &graph, "Fluted ceramic")].entity
+    before_ring := world_origin(&graph, study.ring)
+    before_ceramic := world_origin(&graph, ceramic)
+    before_floor := world_origin(&graph, study.floor)
+    before_glass := world_origin(&graph, study.left)
+    graph.set_rotation(study.hub, 1.0)
+    graph.propagate()
+    after_ring := world_origin(&graph, study.ring)
+    after_ceramic := world_origin(&graph, ceramic)
+    assert(core.length(core.sub(after_ring, before_ring)) > 0.1)
+    assert(core.length(core.sub(after_ceramic, before_ceramic)) > 0.1)
+    // Both stay at their height: the hub turns about y.
+    assert((after_ring.y - before_ring.y).abs() < 0.0001 && (after_ceramic.y - before_ceramic.y).abs() < 0.0001)
+    // The floor and the screens are roots of their own and do not move.
+    assert(core.length(core.sub(world_origin(&graph, study.floor), before_floor)) < 0.0001)
+    assert(core.length(core.sub(world_origin(&graph, study.left), before_glass)) < 0.0001)
+}
+
+@test fn the_screens_are_the_only_transparent_pieces_and_stand_like_panes() {
+    mut graph := scene.Graph::new()
+    study := gallery.build(&mut graph)
+    graph.propagate()
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    mut glass := 0
+    for d in items {
+        if d.material.base.a < 1.0 {
+            glass += 1
+            assert(d.entity.index == study.left.index || d.entity.index == study.right.index)
+            // A pane is thin in z and tall in y, whatever its name says.
+            assert(graph.local(d.entity).scale.z < 0.1 && graph.local(d.entity).scale.y > 2.0)
+        }
+    }
+    assert(glass == 2)
+    // The screens face inwards from opposite sides, so their turns differ in sign.
+    assert(graph.local(study.left).rotation_y * graph.local(study.right).rotation_y < 0.0)
+}
+
+@test fn brass_is_the_only_metal_and_every_piece_starts_at_or_above_the_floor() {
+    mut graph := scene.Graph::new()
+    study := gallery.build(&mut graph)
+    graph.propagate()
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    mut metal := 0
+    for d in items {
+        if d.material.metallic > 0.8 { metal += 1 }
+        assert(graph.local(d.entity).position.y >= -0.01)
+    }
+    assert(metal == 1)
+    assert(graph.material_value(study.ring, .Metallic) > 0.8)
+}
+
+// The ring is a torus of 64 x 20 quads with unit normals, the ceramic a
+// revolve of 8 bands x 144 slices, and the two discs 4 bands x 80 slices:
+// the counts are the shape, and a strip that lost a row would be a hole.
+@test fn the_pieces_keep_their_full_quad_counts() {
+    mut graph := scene.Graph::new()
+    study := gallery.build(&mut graph)
+    graph.propagate()
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    ring := graph.vertices(study.ring)
+    assert(ring.len == 64 * 20 * 6 * gfx.VERTEX_FLOATS)
+    for v in 0..ring.len / gfx.VERTEX_FLOATS {
+        k := v * gfx.VERTEX_FLOATS
+        n := core.length(core.vec3(ring[k + 3], ring[k + 4], ring[k + 5]))
+        assert((n - 1.0).abs() < 0.001)
+    }
+    assert(graph.vertices(items[named(items, &graph, "Fluted ceramic")].entity).len == 8 * 144 * 6 * gfx.VERTEX_FLOATS)
+    assert(graph.vertices(items[named(items, &graph, "Basalt footing")].entity).len == 4 * 80 * 6 * gfx.VERTEX_FLOATS)
+    assert(graph.vertices(items[named(items, &graph, "Limestone plinth")].entity).len == 4 * 80 * 6 * gfx.VERTEX_FLOATS)
+    // The screens are scaled cubes and own no vertices of their own.
+    assert(graph.vertices(study.left).len == 0 && graph.vertices(study.right).len == 0)
+}
