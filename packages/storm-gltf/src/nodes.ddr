@@ -1,6 +1,7 @@
 // Flatten the selected scene in node order. Geometry libraries without scenes
 // expose each mesh once in its local coordinate system.
 import core
+import gfx
 import std.json as json
 
 pub struct Placement { mesh: i32, skin: i32, world: core.Mat4 }
@@ -88,7 +89,14 @@ pub fn placements(j: &json.Doc, mesh_count: i32) -> Result<[]Placement, string> 
     .Ok(move out)
 }
 
-// Inverse-transpose normals and triangle winding follow the same affine transform.
+// Positions take the whole matrix, normals the inverse transpose (the
+// cofactor basis, so a non-uniform scale keeps them perpendicular), and the
+// tangent the matrix's linear part -- it is dp/du, a direction in the surface,
+// so the translation does not reach it -- then both are renormalized. A
+// mirrored node (negative determinant) turns the normal and swaps the last two
+// corners of every triangle; the tangent's w keeps the mirrored UV island's
+// handedness. Each vertex is read and written through the contract, so the
+// stream's layout lives in one place.
 pub fn bake(vertices: &mut []f32, matrix: &core.Mat4) {
     identity := core.identity()
     mut changed := false
@@ -100,17 +108,23 @@ pub fn bake(vertices: &mut []f32, matrix: &core.Mat4) {
     t := core.vec3(matrix.m[12], matrix.m[13], matrix.m[14])
     na := core.cross(b, c); nb := core.cross(c, a); nc := core.cross(a, b)
     mirrored := core.dot(a, na) < 0.0
-    for i in 0..vertices.len / 8 {
-        k := i * 8
-        point := core.add(t, core.add(core.scale(a, vertices[k]), core.add(core.scale(b, vertices[k + 1]), core.scale(c, vertices[k + 2]))))
-        mut normal := core.normalize(core.add(core.scale(na, vertices[k + 3]), core.add(core.scale(nb, vertices[k + 4]), core.scale(nc, vertices[k + 5]))))
+    for i in 0..vertices.len / gfx.VERTEX_FLOATS {
+        mut v := gfx.vertex_at(vertices, i * gfx.VERTEX_FLOATS)
+        point := core.add(t, core.add(core.scale(a, v.x), core.add(core.scale(b, v.y), core.scale(c, v.z))))
+        mut normal := core.normalize(core.add(core.scale(na, v.nx), core.add(core.scale(nb, v.ny), core.scale(nc, v.nz))))
+        tangent := core.normalize(core.add(core.scale(a, v.tx), core.add(core.scale(b, v.ty), core.scale(c, v.tz))))
         if mirrored { normal = core.scale(normal, -1.0) }
-        vertices[k] = point.x; vertices[k + 1] = point.y; vertices[k + 2] = point.z
-        vertices[k + 3] = normal.x; vertices[k + 4] = normal.y; vertices[k + 5] = normal.z
+        v.x = point.x; v.y = point.y; v.z = point.z
+        v.nx = normal.x; v.ny = normal.y; v.nz = normal.z
+        v.tx = tangent.x; v.ty = tangent.y; v.tz = tangent.z
+        gfx.put_vertex(&mut vertices, i * gfx.VERTEX_FLOATS, &v)
     }
     if mirrored {
-        for tri in 0..vertices.len / 24 {
-            for i in 0..8 { vertices.swap(tri * 24 + 8 + i, tri * 24 + 16 + i) }
+        mut tri := 0
+        while tri * 3 * gfx.VERTEX_FLOATS < vertices.len {
+            base := tri * 3 * gfx.VERTEX_FLOATS
+            for i in 0..gfx.VERTEX_FLOATS { vertices.swap(base + gfx.VERTEX_FLOATS + i, base + 2 * gfx.VERTEX_FLOATS + i) }
+            tri = tri + 1
         }
     }
 }

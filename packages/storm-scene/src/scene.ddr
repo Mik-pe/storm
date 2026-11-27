@@ -307,7 +307,7 @@ impl Graph {
     pub fn bind_skin(&mut self, entity: ecs.Entity, move palette: []ecs.Entity, move weights: []core.Influence,
         move indices: []i32) -> bool {
         if !self.meshes.contains(entity) || self.meshes.get(entity).shape != .Mesh { return false }
-        if self.meshes.get(self.mesh_owner(entity)).vertices.len != indices.len * 8 { return false }
+        if self.meshes.get(self.mesh_owner(entity)).vertices.len != indices.len * gfx.VERTEX_FLOATS { return false }
         for joint in palette { if !self.is_alive(joint) { return false } }
         skin := match skinning.binding(move palette, move weights, &indices) { .Some(s) => s, .None => { return false } }
         _ := self.skins.insert(entity, move skin)

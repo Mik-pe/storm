@@ -3,6 +3,7 @@
 // "the orbs look dark" is pinned here: cap triangles are wound the way their
 // normals point, so the face that is lit is also the face that is drawn.
 import scene as scenegraph
+import gfx
 import ..src.game as game
 
 // The mesh of the first orb in a freshly spawned ring.
@@ -14,21 +15,19 @@ fn orb_mesh() -> []f32 {
 
 @test fn a_token_is_twelve_triangles_around_a_six_sided_outline() {
     vertices := orb_mesh()
-    // 6 outline segments x 2 caps x 3 vertices x 8 floats.
-    assert(vertices.len == 6 * 2 * 3 * 8)
+    // 6 outline segments x 2 caps x 3 vertices, each a whole Vertex.
+    assert(vertices.len == 6 * 2 * 3 * gfx.VERTEX_FLOATS)
     mut tips := 0
     for i in 0..36 {
-        x := vertices[i * 8]
-        y := vertices[i * 8 + 1]
-        z := vertices[i * 8 + 2]
+        v := gfx.vertex_at(&vertices, i * gfx.VERTEX_FLOATS)
         // Every vertex is either a tip (on the axis, at +-0.22) or on the
         // outline: 0.15 out from the axis, in the plane.
-        if x == 0.0 && z == 0.0 {
-            assert(y == 0.22 || y == -0.22)
+        if v.x == 0.0 && v.z == 0.0 {
+            assert(v.y == 0.22 || v.y == -0.22)
             tips += 1
         } else {
-            assert(y == 0.0)
-            assert((x * x + z * z - 0.15 * 0.15).abs() < 0.00001)
+            assert(v.y == 0.0)
+            assert((v.x * v.x + v.z * v.z - 0.15 * 0.15).abs() < 0.00001)
         }
     }
     // One tip per cap triangle.
@@ -41,18 +40,13 @@ fn orb_mesh() -> []f32 {
     mut down := 0
     for t in 0..12 {
         // The three corners of triangle t, and the normal they all share.
-        ax := vertices[t * 24]
-        ay := vertices[t * 24 + 1]
-        az := vertices[t * 24 + 2]
-        bx := vertices[t * 24 + 8]
-        by := vertices[t * 24 + 9]
-        bz := vertices[t * 24 + 10]
-        cx := vertices[t * 24 + 16]
-        cy := vertices[t * 24 + 17]
-        cz := vertices[t * 24 + 18]
-        nx := vertices[t * 24 + 3]
-        ny := vertices[t * 24 + 4]
-        nz := vertices[t * 24 + 5]
+        at := t * 3 * gfx.VERTEX_FLOATS
+        a := gfx.vertex_at(&vertices, at)
+        b := gfx.vertex_at(&vertices, at + gfx.VERTEX_FLOATS)
+        c := gfx.vertex_at(&vertices, at + 2 * gfx.VERTEX_FLOATS)
+        nx := a.nx
+        ny := a.ny
+        nz := a.nz
         // Unit normal, tilted away from the plane -- the same tilt on every
         // cap (0.68 over a unit outline direction), up on one cap, down on
         // the other -- and pointing outward from the axis, never inward.
@@ -60,12 +54,12 @@ fn orb_mesh() -> []f32 {
         assert((ny * ny - 0.68 * 0.68 / 1.4624).abs() < 0.001)
         assert(nx * nx + nz * nz > 0.5)
         // The face's own normal from its winding: (b - a) x (c - a).
-        ux := bx - ax
-        uy := by - ay
-        uz := bz - az
-        vx := cx - ax
-        vy := cy - ay
-        vz := cz - az
+        ux := b.x - a.x
+        uy := b.y - a.y
+        uz := b.z - a.z
+        vx := c.x - a.x
+        vy := c.y - a.y
+        vz := c.z - a.z
         fx := uy * vz - uz * vy
         fy := uz * vx - ux * vz
         fz := ux * vy - uy * vx

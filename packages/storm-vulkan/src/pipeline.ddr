@@ -331,7 +331,7 @@ pub unsafe fn describe(r: &state.Renderer, plan: &Plan, description: &mut Descri
             description.mesh = mesh_vertices()
             description.input.vertexBindingDescriptionCount = 1
             description.input.pVertexBindingDescriptions = addr(&description.mesh.binding)
-            description.input.vertexAttributeDescriptionCount = 3
+            description.input.vertexAttributeDescriptionCount = records.vertex_attributes()
             description.input.pVertexAttributeDescriptions = addr(&description.mesh.attributes)
         },
         .Ui(stride) => {

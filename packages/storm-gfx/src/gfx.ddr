@@ -279,11 +279,22 @@ pub trait Backend {
 }
 
 // Mesh stream shared by primitives, imported assets, and every render pass.
-pub const VERTEX_FLOATS: i32 = 8
-pub const VERTEX_BYTES: u32 = 32
+// A vertex is position, normal, uv and tangent (x y z w): twelve f32. The
+// offsets are facts of this order and nothing else may write them; a backend
+// describes its layout from these, and the fifth float group is the
+// tangent basis a normal map is read through (w = sign of the bitangent,
+// glTF 2.0 §3.7.2.1 -- a file's w is -sign(det) per triangle, and a
+// winding-derived basis cannot see a mirrored UV island, so it is carried).
+pub const VERTEX_FLOATS: i32 = 12
+pub const VERTEX_BYTES: u32 = 48
 pub const NORMAL_OFFSET: u32 = 12
 pub const UV_OFFSET: u32 = 24
-pub const INITIAL_VERTEX_BYTES: u64 = 4194304
+pub const TANGENT_OFFSET: u32 = 32
+// The first frame's vertex buffer: a full level (128 shared spheres of 480
+// corners, 48 bytes each) held for both frames is 5.6 MiB, so the largest
+// scene never reallocates after its first frame. A derived number, not a
+// round one: a fifth vertex attribute would raise it again.
+pub const INITIAL_VERTEX_BYTES: u64 = 6291456
 
 // Reuse the high-water allocation; allow room for edits that grow a scene gradually.
 pub fn frame_vertex_capacity(current: u64, required: u64) -> u64 {
@@ -300,10 +311,55 @@ pub struct Vertex {
     x: f32, y: f32, z: f32,
     nx: f32, ny: f32, nz: f32,
     u: f32, v: f32,
+    tx: f32, ty: f32, tz: f32, tw: f32,
 }
 
+// A tangent frame for any unit normal, never parallel to it (Frisvad's
+// branch: a normal close to +x or -x is crossed with +y, every other with
+// +x, so the cross is never near zero).
+// A vertex on its own -- a particle's sphere tip, a file without TANGENT
+// and without a usable UV triangle -- gets this; a triangle or a file's
+// TANGENT replaces it with the surface's own frame.
+pub fn normal_tangent(nx: f32, ny: f32, nz: f32) -> [f32; 4] {
+    mut axis: [f32; 3] = [1.0, 0.0, 0.0]
+    if nx.abs() > 0.9 { axis = [0.0, 1.0, 0.0] }
+    // cross(n, axis)
+    mut tx := ny * axis[2] - nz * axis[1]
+    mut ty := nz * axis[0] - nx * axis[2]
+    mut tz := nx * axis[1] - ny * axis[0]
+    l := (tx * tx + ty * ty + tz * tz).sqrt()
+    if l > 0.0 { tx = tx / l; ty = ty / l; tz = tz / l }
+    [tx, ty, tz, 1.0]
+}
+
+// A vertex of a hand-built surface. Its tangent is not given: it is derived
+// from the triangle the vertex lands in (`push_triangle`), the way a file
+// without TANGENT is loaded (glTF 2.0 §3.7.2.1, "SHOULD calculate tangents").
+// A vertex pushed on its own keeps the frame its normal gives.
 pub fn vertex(x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32, u: f32, v: f32) -> Vertex {
-    Vertex { x: x, y: y, z: z, nx: nx, ny: ny, nz: nz, u: u, v: v }
+    t := normal_tangent(nx, ny, nz)
+    Vertex { x: x, y: y, z: z, nx: nx, ny: ny, nz: nz, u: u, v: v, tx: t[0], ty: t[1], tz: t[2], tw: t[3] }
+}
+
+// The vertex at float offset `i` of a stream: the one reader of the format,
+// through the offsets above. Copying a vertex from a stream is this call,
+// never an index list someone keeps in step with the layout.
+pub fn vertex_at(stream: &[]f32, i: i32) -> Vertex {
+    Vertex {
+        x: stream[i], y: stream[i + 1], z: stream[i + 2],
+        nx: stream[i + 3], ny: stream[i + 4], nz: stream[i + 5],
+        u: stream[i + 6], v: stream[i + 7],
+        tx: stream[i + 8], ty: stream[i + 9], tz: stream[i + 10], tw: stream[i + 11],
+    }
+}
+
+// Overwrites the vertex at float offset `i` with `p`'s twelve floats, in the
+// same order `vertex_at` reads them (a test reads back what this wrote).
+pub fn put_vertex(stream: &mut []f32, i: i32, p: &Vertex) {
+    stream[i] = p.x; stream[i + 1] = p.y; stream[i + 2] = p.z
+    stream[i + 3] = p.nx; stream[i + 4] = p.ny; stream[i + 5] = p.nz
+    stream[i + 6] = p.u; stream[i + 7] = p.v
+    stream[i + 8] = p.tx; stream[i + 9] = p.ty; stream[i + 10] = p.tz; stream[i + 11] = p.tw
 }
 
 pub fn push_vertex(vertices: &mut []f32, p: Vertex) {
@@ -315,9 +371,51 @@ pub fn push_vertex(vertices: &mut []f32, p: Vertex) {
     vertices.push(p.nz)
     vertices.push(p.u)
     vertices.push(p.v)
+    vertices.push(p.tx)
+    vertices.push(p.ty)
+    vertices.push(p.tz)
+    vertices.push(p.tw)
 }
 
-pub fn push_triangle(vertices: &mut []f32, a: Vertex, b: Vertex, c: Vertex) {
+// The tangent of one triangle, Lengyel's form: t = +dp/du from the UV
+// Jacobian, orthogonalised against the face normal, and w = -sign(det) so
+// that cross(n, t) * w is the file's bitangent (glTF 2.0 §3.7.2.1:
+// bitangent = cross(normal, tangent.xyz) * tangent.w). Every corner of the
+// triangle gets the same frame -- a file's w is a fact of the triangle, and
+// exporters split vertices at the seam.
+// A degenerate UV triangle (det = 0) has no dp/du: its three corners get
+// the one frame their face normal gives, the same on each.
+pub fn triangle_tangent(a: Vertex, b: Vertex, c: Vertex) -> [f32; 4] {
+    e1 := [b.x - a.x, b.y - a.y, b.z - a.z]
+    e2 := [c.x - a.x, c.y - a.y, c.z - a.z]
+    du1 := b.u - a.u
+    dv1 := b.v - a.v
+    du2 := c.u - a.u
+    dv2 := c.v - a.v
+    det := du1 * dv2 - du2 * dv1
+    if det == 0.0 { return normal_tangent(a.nx, a.ny, a.nz) }
+    r := 1.0 / det
+    mut tx := (e1[0] * dv2 - e2[0] * dv1) * r
+    mut ty := (e1[1] * dv2 - e2[1] * dv1) * r
+    mut tz := (e1[2] * dv2 - e2[2] * dv1) * r
+    // Gram-Schmidt against the face normal: t - n (n . t).
+    n := [a.nx, a.ny, a.nz]
+    k := n[0] * tx + n[1] * ty + n[2] * tz
+    tx = tx - n[0] * k
+    ty = ty - n[1] * k
+    tz = tz - n[2] * k
+    l := (tx * tx + ty * ty + tz * tz).sqrt()
+    if l > 0.0 { tx = tx / l; ty = ty / l; tz = tz / l }
+    mut w: f32 = -1.0
+    if det < 0.0 { w = 1.0 }
+    [tx, ty, tz, w]
+}
+
+pub fn push_triangle(vertices: &mut []f32, mut move a: Vertex, mut move b: Vertex, mut move c: Vertex) {
+    t := triangle_tangent(a, b, c)
+    a.tx = t[0]; a.ty = t[1]; a.tz = t[2]; a.tw = t[3]
+    b.tx = t[0]; b.ty = t[1]; b.tz = t[2]; b.tw = t[3]
+    c.tx = t[0]; c.ty = t[1]; c.tz = t[2]; c.tw = t[3]
     push_vertex(&mut vertices, a)
     push_vertex(&mut vertices, b)
     push_vertex(&mut vertices, c)

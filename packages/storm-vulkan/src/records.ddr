@@ -10,11 +10,16 @@ import vk.enums as enums
 import vk.layout as layout
 import .state as state
 
-// Three attribute descriptions in C order (location 0, 1, 2) for
-// pVertexAttributeDescriptions. A record of records is contiguous (a Dunder
-// array of C records is not (finding 54).
+// Four attribute descriptions in C order (location 0..3) for
+// pVertexAttributeDescriptions: position, normal, uv, tangent. A record of
+// records is contiguous (a Dunder array of C records is not, finding 54).
 @c_layout
-pub struct VertexAttributes { position: layout.VertexInputAttributeDescription, normal: layout.VertexInputAttributeDescription, uv: layout.VertexInputAttributeDescription }
+pub struct VertexAttributes {
+    position: layout.VertexInputAttributeDescription,
+    normal: layout.VertexInputAttributeDescription,
+    uv: layout.VertexInputAttributeDescription,
+    tangent: layout.VertexInputAttributeDescription,
+}
 
 @c_layout
 pub struct VertexInput {
@@ -22,11 +27,19 @@ pub struct VertexInput {
     attributes: VertexAttributes,
 }
 
-// The binding and the three attributes every mesh pipeline declares, with
+// How many attribute descriptions a `VertexAttributes` holds: counted from
+// the record, so a pipeline's attribute count cannot disagree with the
+// array it points at. A function, not a const: `size_of` is not a constant
+// expression in Dunder (0.13.1, E3007 names it an unknown identifier).
+pub fn vertex_attributes() -> u32 {
+    u32(size_of(VertexAttributes) / size_of(layout.VertexInputAttributeDescription))
+}
+
+// The binding and the four attributes every mesh pipeline declares, with
 // zeroed format fields: `apply_vertex_input` fills them. The shadow
 // shader reads only location 0, but a pipeline must declare all the buffer
-// contains: with a 24-byte stride against a 32-byte stream the whole shadow
-// map would be wrong without a single error.
+// contains: with a stride narrower than the stream the whole shadow map
+// would be wrong without a single error.
 pub fn vertex_input() -> VertexInput {
     VertexInput {
         binding: layout.VertexInputBindingDescription { binding: 0, stride: gfx.VERTEX_BYTES, inputRate: 0 },
@@ -34,6 +47,7 @@ pub fn vertex_input() -> VertexInput {
             position: layout.VertexInputAttributeDescription { location: 0, binding: 0, format: 0, offset: 0 },
             normal: layout.VertexInputAttributeDescription { location: 1, binding: 0, format: 0, offset: gfx.NORMAL_OFFSET },
             uv: layout.VertexInputAttributeDescription { location: 2, binding: 0, format: 0, offset: gfx.UV_OFFSET },
+            tangent: layout.VertexInputAttributeDescription { location: 3, binding: 0, format: 0, offset: gfx.TANGENT_OFFSET },
         },
     }
 }
@@ -193,13 +207,15 @@ pub unsafe fn transition_image(r: &state.Renderer, cmd: ptr, image: ptr, base_mi
 }
 
 // The only writer of the mesh vertex layout's enum fields: one binding in
-// vertex rate, position and normal as vec3, uv as vec2. Stride and offsets
-// come from the record itself (gfx.VERTEX_BYTES), never from here.
+// vertex rate, position, normal and tangent as vec3/vec3/vec4, uv as vec2.
+// Stride and offsets come from the record itself (gfx.VERTEX_BYTES and the
+// gfx offsets), never from here.
 pub unsafe fn apply_vertex_input(input: &mut VertexInput) {
     input.binding.inputRate = enums.vertex_input_rate(.Vertex)
     input.attributes.position.format = enums.format(.R32G32B32_SFLOAT)
     input.attributes.normal.format = enums.format(.R32G32B32_SFLOAT)
     input.attributes.uv.format = enums.format(.R32G32_SFLOAT)
+    input.attributes.tangent.format = enums.format(.R32G32B32A32_SFLOAT)
 }
 
 // The only writer of the UI vertex layout's enum fields: one binding in

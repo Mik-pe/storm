@@ -169,22 +169,26 @@ fn rootless() -> ecs.Entity { ecs.Entity { index: -1, generation: 0 } }
 // The nearest side is measured on the vertices, not assumed at the origin:
 // a part authored wholly in front of its origin (z from 1 to 3) is moved so
 // that z = 1 lands on `at.z`, and the depth does not push the back through.
+// One corner of the slab below, looking down +z.
+fn slab_corner(x: f32, y: f32, z: f32) -> gfx.Vertex {
+    gfx.vertex(x, y, z, 0.0, 0.0, 1.0, x, y)
+}
+
 @test fn a_model_whose_origin_is_behind_it_still_centres_on_its_spot() {
     // A slab authored wholly in front of its origin: x and y in 0..1, z from
     // 1 to 3, so the depth (2.0) is its longest side and its origin is behind
-    // every vertex.
+    // every vertex. Eight corners, every normal +z, built through the contract.
+    mut slab_vertices: []f32 = []
+    depths: [f32; 2] = [1.0, 3.0]
+    corners: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+    for z in depths {
+        for corner in corners {
+            gfx.push_vertex(&mut slab_vertices, slab_corner(corner[0], corner[1], z))
+        }
+    }
     slab := gltf.Part {
         name: "slab", material_name: "", color: [1.0, 1.0, 1.0, 1.0], metallic: 0.0, roughness: 0.5,
-        vertices: [
-            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-            1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0,
-            0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-            1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0,
-            0.0, 0.0, 3.0, 0.0, 0.0, 1.0, 0.0, 0.0,
-            1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 1.0, 0.0,
-            0.0, 1.0, 3.0, 0.0, 0.0, 1.0, 0.0, 1.0,
-            1.0, 1.0, 3.0, 0.0, 0.0, 1.0, 1.0, 1.0,
-        ],
+        vertices: slab_vertices,
         texture: -1, sampler: gfx.sampler(), metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
         emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0, 0.0, 0.0, 1.0],
         occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0

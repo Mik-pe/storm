@@ -33,10 +33,14 @@ fn puff_mesh() -> []f32 {
     out.reserve(5 * sphere.len)
     for lobe in 0..5 {
         r := rad[lobe]
+        // A lobe is the sphere scaled and moved: the frame each vertex
+        // carries (normal, uv, tangent) is the sphere's own, unchanged.
         for i in 0..sphere.len / gfx.VERTEX_FLOATS {
-            at := i * gfx.VERTEX_FLOATS
-            gfx.push_vertex(&mut out, gfx.vertex(sphere[at] * r + ox[lobe], sphere[at + 1] * r + oy[lobe], sphere[at + 2] * r + oz[lobe],
-                sphere[at + 3], sphere[at + 4], sphere[at + 5], sphere[at + 6], sphere[at + 7]))
+            mut v := gfx.vertex_at(&sphere, i * gfx.VERTEX_FLOATS)
+            v.x = v.x * r + ox[lobe]
+            v.y = v.y * r + oy[lobe]
+            v.z = v.z * r + oz[lobe]
+            gfx.push_vertex(&mut out, v)
         }
     }
     out
@@ -69,9 +73,11 @@ fn dandelion_mesh() -> []f32 {
     core_ball := gfx.sphere(6, 4)
     mut out: []f32 = []
     for i in 0..core_ball.len / gfx.VERTEX_FLOATS {
-        at := i * gfx.VERTEX_FLOATS
-        gfx.push_vertex(&mut out, gfx.vertex(core_ball[at] * 0.34, core_ball[at + 1] * 0.34 - 0.14, core_ball[at + 2] * 0.34,
-            core_ball[at + 3], core_ball[at + 4], core_ball[at + 5], core_ball[at + 6], core_ball[at + 7]))
+        mut v := gfx.vertex_at(&core_ball, i * gfx.VERTEX_FLOATS)
+        v.x = v.x * 0.34
+        v.y = v.y * 0.34 - 0.14
+        v.z = v.z * 0.34
+        gfx.push_vertex(&mut out, v)
     }
     hub := gfx.vertex(0.0, 0.10, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
     for i in 0..6 {

@@ -56,15 +56,19 @@ struct Spin { speed: f32 }
     assert(!allocator.is_alive(e))
 }
 
-@test fn contract_cube_emits_twelve_position_normal_uv_triangles() {
+@test fn contract_cube_emits_twelve_whole_vertex_triangles() {
     mut vertices: []f32 = []
     gfx.cube(&mut vertices, 0.5)
-    assert(vertices.len == 36 * 8)
+    assert(vertices.len == 36 * gfx.VERTEX_FLOATS)
     // First vertex of the +Z face: bottom-left, position (-0.5,-0.5,0.5),
-    // normal (0,0,1), uv (0,1): v = 0 is the image's top edge.
-    assert(vertices[0] == -0.5 && vertices[2] == 0.5)
-    assert(vertices[3] == 0.0 && vertices[4] == 0.0 && vertices[5] == 1.0)
-    assert(vertices[6] == 0.0 && vertices[7] == 1.0)
+    // normal (0,0,1), uv (0,1): v = 0 is the image's top edge -- and the
+    // tangent that uv implies: u runs along +x, v along -y, so the frame is
+    // +x with w = +1 (det(du, dv) < 0 flips the bitangent, w carries it).
+    first := gfx.vertex_at(&vertices, 0)
+    assert(first.x == -0.5 && first.z == 0.5)
+    assert(first.nx == 0.0 && first.ny == 0.0 && first.nz == 1.0)
+    assert(first.u == 0.0 && first.v == 1.0)
+    assert(first.tx == 1.0 && first.ty == 0.0 && first.tz == 0.0 && first.tw == 1.0)
 }
 
 // --- the application's own logic: arguments and the orb game, no window ---

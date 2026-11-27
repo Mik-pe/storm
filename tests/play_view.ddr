@@ -33,7 +33,9 @@ import ..src.play_view as view
     for _ in 0..play.MAX_ENTITIES { level.entities.push(model.entities[1].clone()) }
     vertices := view.sphere_geometry(&level)
     assert(vertices.len > 0 && vertices.len % (3 * gfx.VERTEX_FLOATS) == 0)
-    assert(vertices.len * 4 * 2 * level.entities.len <= 4194304)
+    // One sphere's stream, once per entity, for both frames: no reallocation
+    // after the first frame of the largest level. Measured: 5 898 240 bytes.
+    assert(u64(vertices.len * 4 * 2 * level.entities.len) <= gfx.INITIAL_VERTEX_BYTES)
 }
 
 @test fn picking_and_restarting_restore_the_same_flower_meshes() {

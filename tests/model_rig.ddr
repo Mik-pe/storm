@@ -1,4 +1,5 @@
 import ..src.model
+import gfx
 import std.json as json
 
 @test fn rig_reads_model_space_landmarks_and_resolves_unordered_parents() {
@@ -35,7 +36,7 @@ import ..src.art_asset
         for i in 0..fox.rig.skins.len {
             s := &fox.rig.skins[i]
             if fox.art.parts[s.part].name != name { continue }
-            assert(s.indices.len * 8 == fox.art.parts[s.part].vertices.len)
+            assert(s.indices.len * gfx.VERTEX_FLOATS == fox.art.parts[s.part].vertices.len)
             for v in s.influences {
                 mut count := 0
                 for w in v.weights { if w > 0.01 { count += 1 } }

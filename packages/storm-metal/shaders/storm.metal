@@ -95,6 +95,7 @@ struct MeshVertex {
     float3 position [[attribute(0)]];
     float3 normal [[attribute(1)]];
     float2 uv [[attribute(2)]];
+    float4 tangent [[attribute(3)]]; // xyz = +dp/du, w = sign of the bitangent
 };
 
 struct MeshOut {

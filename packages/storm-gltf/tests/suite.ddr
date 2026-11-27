@@ -73,11 +73,71 @@ fn append_u32(out: &mut []u8, value: u32) {
     doc := gltf.load_bytes(&data)
     mesh := gltf.load_mesh(&doc)
     stream := gltf.interleave(&mesh)
-    assert(stream.len == 24)
-    assert(stream[0] == 0.0 && stream[1] == 0.0 && stream[2] == 0.0)
-    assert(stream[3] == 0.0 && stream[4] == 1.0 && stream[5] == 0.0)
-    // No TEXCOORD_0 in the file: uv is (0, 0), not an error.
-    assert(stream[6] == 0.0 && stream[7] == 0.0)
+    assert(stream.len == 3 * gfx.VERTEX_FLOATS)
+    first := gfx.vertex_at(&stream, 0)
+    assert(first.x == 0.0 && first.y == 0.0 && first.z == 0.0)
+    // No NORMAL in the file: (0, 1, 0), the fallback a viewer shows a
+    // normal-less model with.
+    assert(first.nx == 0.0 && first.ny == 1.0 && first.nz == 0.0)
+    // No TEXCOORD_0 in the file: uv is (0, 0), not an error -- and with no uv
+    // there is no UV Jacobian: the frame is the one the +y normal gives
+    // (cross(+y, +x) = -z), never a zero vector and never one along the normal.
+    assert(first.u == 0.0 && first.v == 0.0)
+    assert(first.tx == 0.0 && first.ty == 0.0 && first.tz == -1.0 && first.tw == 1.0)
+    // No TANGENT in the file: the mesh carries none.
+    assert(mesh.tangents.len == 0)
+}
+
+// A real file's TANGENT comes through as four floats a vertex, untouched.
+// The fixture's triangle maps x to u and z to v, so the frame a loader
+// derives from it is tangent +x, w = -1; the file says tangent +z, w = +1
+// (values read back from the file with Python's struct, in
+// make_tangent_fixture.py). A loader that dropped TANGENT and derived hands
+// (1, 0, 0, -1) here and fails: the file's handedness is the fact a normal
+// map needs on a mirrored UV island, and no winding-derived basis carries it.
+@test fn the_files_tangent_rides_through_as_four_floats() {
+    doc := gltf.load("tests/fixtures/tangent_triangle.glb")
+    assert(doc.ok)
+    mesh := gltf.load_mesh(&doc)
+    assert(mesh.ok)
+    assert(mesh.vertex_count == 3 && mesh.index_count == 3)
+    assert(mesh.tangents.len == 12)
+    // The accessor as the file wrote it, read by the loader under test.
+    assert(mesh.tangents[0] == 0.0 && mesh.tangents[1] == 0.0 && mesh.tangents[2] == 1.0 && mesh.tangents[3] == 1.0)
+    stream := gltf.interleave(&mesh)
+    assert(stream.len == 3 * gfx.VERTEX_FLOATS)
+    for k in 0..3 {
+        at := gfx.vertex_at(&stream, k * gfx.VERTEX_FLOATS)
+        // Everything the old stream carried is still there.
+        assert(at.y == 0.0 && at.ny == 1.0)
+        assert(at.tx == 0.0 && at.ty == 0.0 && at.tz == 1.0 && at.tw == 1.0)
+    }
+    // The same positions and uv without TANGENT derive the other frame.
+    mut bare := gltf.empty_mesh()
+    bare.ok = true
+    bare.positions = mesh.positions.clone()
+    bare.normals = mesh.normals.clone()
+    bare.uvs = mesh.uvs.clone()
+    bare.indices = mesh.indices.clone()
+    bare.index_count = mesh.index_count
+    bare.vertex_count = mesh.vertex_count
+    derived := gltf.interleave(&bare)
+    at := gfx.vertex_at(&derived, 0)
+    assert(at.tx == 1.0 && at.ty == 0.0 && at.tz == 0.0 && at.tw == -1.0)
+}
+
+// A TANGENT accessor whose count does not match POSITION is refused by name,
+// the way a wrong TEXCOORD_0 is: a half-read basis is worse than none.
+@test fn a_short_tangent_accessor_is_refused_by_name() {
+    mut doc := gltf.load("tests/fixtures/tangent_triangle.glb")
+    assert(doc.ok)
+    doc.json_text = r#"{"asset":{"version":"2.0"},"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TANGENT":1}}]}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+                     {"bufferView":1,"componentType":5126,"count":1,"type":"VEC4"}],
+        "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":16}],
+        "buffers":[{"byteLength":52}]}"#
+    mesh := gltf.load_mesh(&doc)
+    assert(!mesh.ok && mesh.error == "invalid TANGENT accessor")
 }
 
 @test fn rejects_garbage() {
@@ -113,14 +173,22 @@ fn append_u32(out: &mut []u8, value: u32) {
     }
     // Expanded through the 36 indices, not the 24 vertices.
     stream := gltf.interleave(&mesh)
-    assert(stream.len == 36 * 8)
-    assert(stream[0] == mesh.positions[mesh.indices[0] * 3])
-    assert(stream[3] == mesh.normals[mesh.indices[0] * 3])
-    assert(stream[8] == mesh.positions[mesh.indices[1] * 3])
-    // Box.glb has no TEXCOORD_0: every uv is (0, 0).
-    assert(mesh.uvs.len == 0)
+    assert(stream.len == 36 * gfx.VERTEX_FLOATS)
+    first := gfx.vertex_at(&stream, 0)
+    second := gfx.vertex_at(&stream, gfx.VERTEX_FLOATS)
+    assert(first.x == mesh.positions[mesh.indices[0] * 3])
+    assert(first.nx == mesh.normals[mesh.indices[0] * 3])
+    assert(second.x == mesh.positions[mesh.indices[1] * 3])
+    // Box.glb has no TEXCOORD_0 and no TANGENT: every uv is (0, 0), and each
+    // of the six faces gets the frame its own normal gives -- a unit tangent
+    // across the normal (so the basis is never degenerate), w = +1.
+    assert(mesh.uvs.len == 0 && mesh.tangents.len == 0)
     for i in 0..36 {
-        assert(stream[i * 8 + 6] == 0.0 && stream[i * 8 + 7] == 0.0)
+        at := gfx.vertex_at(&stream, i * gfx.VERTEX_FLOATS)
+        assert(at.u == 0.0 && at.v == 0.0)
+        dot := at.tx * at.nx + at.ty * at.ny + at.tz * at.nz
+        length := (at.tx * at.tx + at.ty * at.ty + at.tz * at.tz).sqrt()
+        assert(dot.abs() < 0.00001 && (length - 1.0).abs() < 0.00001 && at.tw == 1.0)
     }
 }
 
@@ -139,19 +207,25 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(mesh.normals.len == 0)
     assert(mesh.uvs.len == 464 * 2)
     stream := gltf.interleave(&mesh)
-    assert(stream.len == 1728 * 8)
+    assert(stream.len == 1728 * gfx.VERTEX_FLOATS)
     // index[0] = 0, index[1] = 1, index[2] = 2 in the file.
-    assert(stream[0] == mesh.positions[0] && stream[8] == mesh.positions[3])
+    first := gfx.vertex_at(&stream, 0)
+    second := gfx.vertex_at(&stream, gfx.VERTEX_FLOATS)
+    assert(first.x == mesh.positions[0] && second.x == mesh.positions[3])
     // The padded normal, and the uv that the old stream threw away.
-    assert(stream[3] == 0.0 && stream[4] == 1.0 && stream[5] == 0.0)
-    assert(stream[6] == f32(0.5287119746) && stream[7] == f32(0.6785519719))
-    assert(stream[14] == f32(0.5454170108) && stream[15] == f32(0.6760320067))
-    // Every uv is finite and inside the image.
+    assert(first.nx == 0.0 && first.ny == 1.0 && first.nz == 0.0)
+    assert(first.u == f32(0.5287119746) && first.v == f32(0.6785519719))
+    assert(second.u == f32(0.5454170108) && second.v == f32(0.6760320067))
+    // The file has no NORMAL, so every triangle's frame is derived from uv
+    // alone against the (0, 1, 0) fallback normal: the tangent lies in the
+    // xz plane, is a unit vector, and is never zero.
     mut k := 0
     while k < 1728 {
-        u := stream[k * 8 + 6]
-        v := stream[k * 8 + 7]
-        assert(u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0)
+        at := gfx.vertex_at(&stream, k * gfx.VERTEX_FLOATS)
+        assert(at.u >= 0.0 && at.u <= 1.0 && at.v >= 0.0 && at.v <= 1.0)
+        assert(at.ty.abs() < 0.00001 && (at.tw == 1.0 || at.tw == -1.0))
+        length := (at.tx * at.tx + at.ty * at.ty + at.tz * at.tz).sqrt()
+        assert((length - 1.0).abs() < 0.0001)
         k = k + 1
     }
 }
@@ -170,19 +244,22 @@ fn append_u32(out: &mut []u8, value: u32) {
     asset := gltf.asset(&doc).unwrap()
     assert(asset.parts.len == 2)
     first := &asset.parts[0]
-    assert(first.name == "Head" && first.material_name == "Petal" && first.vertices.len == 24)
+    assert(first.name == "Head" && first.material_name == "Petal" && first.vertices.len == 3 * gfx.VERTEX_FLOATS)
     assert(first.metallic == f32(0.1) && first.roughness == f32(0.6) && first.color[3] == 0.75)
     assert(first.color[0] == f32(0.2) && first.color[1] == 0.5 && first.color[2] == 1.0)
     // Mirroring swaps the second and third corners after baking the ancestor's translation.
-    assert(first.vertices[0] == 2.0 && first.vertices[1] == 3.0 && first.vertices[2] == 1.0)
-    assert(first.vertices[8] == 2.0 && first.vertices[9] == 4.0 && first.vertices[16] == 4.0)
+    // Read through the contract: x of the first, second and third corner.
+    assert(gfx.vertex_at(&first.vertices, 0).x == 2.0 && gfx.vertex_at(&first.vertices, 0).y == 3.0)
+    assert(gfx.vertex_at(&first.vertices, 0).z == 1.0)
+    assert(gfx.vertex_at(&first.vertices, gfx.VERTEX_FLOATS).x == 2.0 && gfx.vertex_at(&first.vertices, gfx.VERTEX_FLOATS).y == 4.0)
+    assert(gfx.vertex_at(&first.vertices, 2 * gfx.VERTEX_FLOATS).x == 4.0)
     assert(asset.parts[1].name == "Head" && asset.parts[1].color[0] == 1.0 && asset.parts[1].roughness == 1.0)
 }
 
 @test fn khronos_box_keeps_its_named_red_material_and_indexed_stream() {
     doc := gltf.load("tests/fixtures/Box.glb")
     asset := gltf.asset(&doc).unwrap()
-    assert(asset.parts.len == 1 && asset.parts[0].vertices.len == 36 * 8)
+    assert(asset.parts.len == 1 && asset.parts[0].vertices.len == 36 * gfx.VERTEX_FLOATS)
     p := &asset.parts[0]
     assert(p.name == "Mesh" && p.material_name == "Red")
     assert(p.color[0] == f32(0.8) && p.color[1] == 0.0 && p.metallic == 0.0)
@@ -202,7 +279,7 @@ fn append_u32(out: &mut []u8, value: u32) {
     doc.bin.push(0); doc.bin.push(1); doc.bin.push(8)
     assert(gltf.asset(&doc).is_err())
     doc.bin[38] = 2
-    assert(gltf.asset(&doc).unwrap().parts[0].vertices.len == 24)
+    assert(gltf.asset(&doc).unwrap().parts[0].vertices.len == 3 * gfx.VERTEX_FLOATS)
 }
 
 // FoxFixed.glb has one image, a 1024x1024 PNG in a bufferView, and one

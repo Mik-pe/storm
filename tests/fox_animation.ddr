@@ -571,7 +571,10 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
     bind := world.graph.vertices(upper)
     // The lowest thigh vertex belongs to the open seam ring.
     mut ring := 0
-    for i in 0..bind.len / 8 { if bind[i * 8 + 1] < bind[ring + 1] { ring = i * 8 } }
+    for i in 0..bind.len / gfx.VERTEX_FLOATS {
+        at := i * gfx.VERTEX_FLOATS
+        if bind[at + 1] < bind[ring + 1] { ring = at }
+    }
     mut thigh := -1
     mut shin := -1
     mut other := -1
@@ -579,8 +582,8 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
         if d.entity.index == upper.index { thigh = d.mesh_index }
         if world.graph.name(d.entity) != "ShinFL_Foxglove" { continue }
         lower := world.graph.vertices(d.entity)
-        for k in 0..lower.len / 8 {
-            j := k * 8
+        for k in 0..lower.len / gfx.VERTEX_FLOATS {
+            j := k * gfx.VERTEX_FLOATS
             if (lower[j] - bind[ring]).abs() + (lower[j + 1] - bind[ring + 1]).abs() +
                 (lower[j + 2] - bind[ring + 2]).abs() < 0.00001 {
                 shin = d.mesh_index; other = j; break
@@ -594,7 +597,9 @@ struct TailMesh { node: ecs.Entity, vertices: []f32 }
         if t % 3 != 0 { continue }
         view.sync(&mut world, &s, true)
         world.graph.pose_meshes(&mut meshes)
-        for k in 0..6 {
+        // The whole corner: a split mesh repeats a vertex, and pose_meshes
+        // deforms every copy from the same glTF vertex (skinning.deform).
+        for k in 0..gfx.VERTEX_FLOATS {
             assert((meshes[thigh].vertices[ring + k] - meshes[shin].vertices[other + k]).abs() < 0.001)
         }
     }

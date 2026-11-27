@@ -3,25 +3,36 @@ import ..src.gfx as gfx
 @test fn cube_emits_twelve_triangles_with_face_normals_and_uvs() {
     mut v: []f32 = []
     gfx.cube(&mut v, 0.5)
-    assert(v.len == 36 * 8)
+    // Twelve floats a vertex: position, normal, uv, tangent.
+    assert(gfx.VERTEX_FLOATS == 12 && gfx.VERTEX_BYTES == 48)
+    assert(v.len == 36 * gfx.VERTEX_FLOATS)
     assert(v.len % gfx.VERTEX_FLOATS == 0)
     assert(gfx.VERTEX_BYTES == u32(gfx.VERTEX_FLOATS * 4))
+    // The offsets are the fields' order, with nothing between them.
+    assert(gfx.NORMAL_OFFSET == 12 && gfx.UV_OFFSET == 24 && gfx.TANGENT_OFFSET == 32)
     // First vertex is the +Z face's bottom-left corner: normal (0,0,1),
     // z = +0.5, and uv (0,1): v = 0 is the image's top edge (glTF convention).
-    assert(v[3] == 0.0 && v[4] == 0.0 && v[5] == 1.0)
-    assert(v[2] == 0.5)
-    assert(v[6] == 0.0 && v[7] == 1.0)
+    first := gfx.vertex_at(&v, 0)
+    assert(first.nx == 0.0 && first.ny == 0.0 && first.nz == 1.0)
+    assert(first.z == 0.5)
+    assert(first.u == 0.0 && first.v == 1.0)
     // Second vertex is the bottom-right corner: u runs along +x.
-    assert(v[8] == 0.5 && v[9] == -0.5 && v[14] == 1.0 && v[15] == 1.0)
+    second := gfx.vertex_at(&v, gfx.VERTEX_FLOATS)
+    assert(second.x == 0.5 && second.y == -0.5 && second.u == 1.0 && second.v == 1.0)
+    // The offsets are bytes (what a vertex layout takes); vertex_at reads the
+    // floats at offset/4. Both name the same floats.
+    assert(i32(gfx.NORMAL_OFFSET) / 4 == 3 && i32(gfx.UV_OFFSET) / 4 == 6 && i32(gfx.TANGENT_OFFSET) / 4 == 8)
+    assert(v[3] == first.nx && v[6] == first.u && v[8] == first.tx)
     // Count normals pointing along each axis.
     mut plus_z := 0
     mut minus_y := 0
     mut i := 0
     while i < v.len {
-        if v[i + 5] == 1.0 { plus_z = plus_z + 1 }
-        if v[i + 4] == -1.0 { minus_y = minus_y + 1 }
+        at := gfx.vertex_at(&v, i)
+        if at.nz == 1.0 { plus_z = plus_z + 1 }
+        if at.ny == -1.0 { minus_y = minus_y + 1 }
         // Every uv is inside the unit square: a face maps the whole image once.
-        assert(v[i + 6] >= 0.0 && v[i + 6] <= 1.0 && v[i + 7] >= 0.0 && v[i + 7] <= 1.0)
+        assert(at.u >= 0.0 && at.u <= 1.0 && at.v >= 0.0 && at.v <= 1.0)
         i = i + gfx.VERTEX_FLOATS
     }
     assert(plus_z == 6 && minus_y == 6)
@@ -30,60 +41,121 @@ import ..src.gfx as gfx
 @test fn plane_is_two_upward_triangles() {
     mut v: []f32 = []
     gfx.plane(&mut v, 4.0)
-    assert(v.len == 6 * 8)
-    assert(v[4] == 1.0 && v[12] == 1.0 && v[20] == 1.0)
+    assert(v.len == 6 * gfx.VERTEX_FLOATS)
+    for k in 0..6 {
+        assert(gfx.vertex_at(&v, k * gfx.VERTEX_FLOATS).ny == 1.0)
+    }
     // uv is a function of position: u = (x + e) / 2e, v = (z + e) / 2e.
     // First vertex (-4, 0, -4) is (0,0); the far corner (4, 0, 4) is (1,1).
-    assert(v[0] == -4.0 && v[2] == -4.0 && v[6] == 0.0 && v[7] == 0.0)
-    assert(v[8] == 4.0 && v[10] == 4.0 && v[14] == 1.0 && v[15] == 1.0)
-    assert(v[16] == 4.0 && v[18] == -4.0 && v[22] == 1.0 && v[23] == 0.0)
+    a := gfx.vertex_at(&v, 0)
+    b := gfx.vertex_at(&v, gfx.VERTEX_FLOATS)
+    c := gfx.vertex_at(&v, 2 * gfx.VERTEX_FLOATS)
+    assert(a.x == -4.0 && a.z == -4.0 && a.u == 0.0 && a.v == 0.0)
+    assert(b.x == 4.0 && b.z == 4.0 && b.u == 1.0 && b.v == 1.0)
+    assert(c.x == 4.0 && c.z == -4.0 && c.u == 1.0 && c.v == 0.0)
 }
 
 @test fn vertex_and_triangle_helpers_agree() {
     mut v: []f32 = []
     gfx.push_vertex(&mut v, gfx.vertex(1.0, 2.0, 3.0, 0.0, 1.0, 0.0, 0.25, 0.75))
     assert(v.len == gfx.VERTEX_FLOATS)
-    assert(v[0] == 1.0 && v[5] == 0.0 && v[6] == 0.25 && v[7] == 0.75)
+    // push_vertex writes what the Vertex carries; vertex_at reads it back.
+    one := gfx.vertex_at(&v, 0)
+    assert(one.x == 1.0 && one.nz == 0.0 && one.u == 0.25 && one.v == 0.75)
     v.clear()
-    a := gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)
-    b := gfx.vertex(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0)
-    c := gfx.vertex(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0)
-    gfx.push_triangle(&mut v, a, b, c)
+    gfx.push_triangle(&mut v, gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+        gfx.vertex(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0), gfx.vertex(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0))
     assert(v.len == 3 * gfx.VERTEX_FLOATS)
-    // The stream is the vertex fields in the order layout.vertex_input() declares:
-    // b.x lands at float 8, c.z at float 18, and b's u = 1 at float 14.
+    // The stream is the vertex fields in the order the layout declares:
+    // b.x lands at float 12, c.z at float 26, and c's v = 1 at float 31.
     assert(v[0] == 0.0 && v[3] == 0.0 && v[6] == 0.0)
-    assert(v[8] == 1.0 && v[13] == 0.0 && v[14] == 1.0)
-    assert(v[18] == 1.0 && v[23] == 1.0)
+    assert(v[gfx.VERTEX_FLOATS] == 1.0 && v[gfx.VERTEX_FLOATS + 5] == 0.0 && v[gfx.VERTEX_FLOATS + 6] == 1.0)
+    assert(v[2 * gfx.VERTEX_FLOATS + 2] == 1.0 && v[2 * gfx.VERTEX_FLOATS + 7] == 1.0)
 }
 
 // Every triangle's winding agrees with its normal: (B - A) x (C - A) points
 // along the normal the triangle carries. That is what makes back-face culling
 // correct on any backend: a face is front-facing exactly when its normal
 // faces the viewer, so both backends cull with the same front-face rule
-// (counter-clockwise on screen, where y points down).
+// (counter-clockwise on screen, where y points down). The corners are read
+// with the contract's reader, so the stride is never a number of this test.
 @test fn every_triangle_is_wound_consistently_with_its_normal() {
     mut v: []f32 = []
     gfx.cube(&mut v, 1.0)
     gfx.plane(&mut v, 2.0)
     mut i := 0
     while i < v.len {
-        ax := v[i]
-        ay := v[i + 1]
-        az := v[i + 2]
-        ux := v[i + 8] - ax
-        uy := v[i + 9] - ay
-        uz := v[i + 10] - az
-        wx := v[i + 16] - ax
-        wy := v[i + 17] - ay
-        wz := v[i + 18] - az
+        a := gfx.vertex_at(&v, i)
+        b := gfx.vertex_at(&v, i + gfx.VERTEX_FLOATS)
+        c := gfx.vertex_at(&v, i + 2 * gfx.VERTEX_FLOATS)
+        ux := b.x - a.x
+        uy := b.y - a.y
+        uz := b.z - a.z
+        wx := c.x - a.x
+        wy := c.y - a.y
+        wz := c.z - a.z
         cx := uy * wz - uz * wy
         cy := uz * wx - ux * wz
         cz := ux * wy - uy * wx
-        agreement := cx * v[i + 3] + cy * v[i + 4] + cz * v[i + 5]
+        agreement := cx * a.nx + cy * a.ny + cz * a.nz
         assert(agreement > 0.0)
         i = i + 3 * gfx.VERTEX_FLOATS
     }
+}
+
+// The tangent frame a hand-built triangle derives (glTF 2.0 §3.7.2.1, the
+// spec's SHOULD): t is the unit vector along +u, in the triangle's plane;
+// cross(n, t) * w is +v. On a mirrored uv island (u decreasing where the
+// face's u axis increases) the frame is left-handed, which is w = -1 -- the
+// fact a normal map needs that a winding-derived basis cannot carry.
+@test fn a_triangle_derives_its_tangent_frame() {
+    mut v: []f32 = []
+    // The floor seen from above: x is u, z is v, the normal is +y.
+    gfx.push_triangle(&mut v, gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+        gfx.vertex(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0), gfx.vertex(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0))
+    for k in 0..3 {
+        t := gfx.vertex_at(&v, k * gfx.VERTEX_FLOATS)
+        assert(t.tx == 1.0 && t.ty == 0.0 && t.tz == 0.0 && t.tw == -1.0)
+    }
+    // u runs along z and v along -x: the tangent follows +u, wherever it points.
+    v.clear()
+    gfx.push_triangle(&mut v, gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+        gfx.vertex(0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 2.0, 0.0), gfx.vertex(-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0))
+    mut t := gfx.vertex_at(&v, 0)
+    assert(t.tx == 0.0 && t.ty == 0.0 && t.tz == 1.0 && t.tw == -1.0)
+    // A mirrored island: v runs along +x, so the frame is left-handed.
+    v.clear()
+    gfx.push_triangle(&mut v, gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
+        gfx.vertex(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0), gfx.vertex(0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, -1.0))
+    t = gfx.vertex_at(&v, 0)
+    assert(t.tx == 1.0 && t.ty == 0.0 && t.tz == 0.0 && t.tw == 1.0)
+    // Every cube face: the tangent is a unit vector in the face's plane.
+    v.clear()
+    gfx.cube(&mut v, 1.0)
+    mut i := 0
+    while i < v.len {
+        at := gfx.vertex_at(&v, i)
+        dot := at.tx * at.nx + at.ty * at.ny + at.tz * at.nz
+        length := (at.tx * at.tx + at.ty * at.ty + at.tz * at.tz).sqrt()
+        assert(dot.abs() < 0.00001 && (length - 1.0).abs() < 0.00001 && (at.tw == 1.0 || at.tw == -1.0))
+        i = i + gfx.VERTEX_FLOATS
+    }
+    // A vertex pushed on its own is not in a triangle: it keeps the frame
+    // its normal gives (cross of +y and +x is -z), never a zero vector a
+    // normal map would divide by, and never one parallel to the normal.
+    v.clear()
+    gfx.push_vertex(&mut v, gfx.vertex(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+    alone := gfx.vertex_at(&v, 0)
+    assert(alone.tx == 0.0 && alone.ty == 0.0 && alone.tz == -1.0 && alone.tw == 1.0)
+    // +x and +y normals take the other branch (+y crossed with +z is +x),
+    // and the writer's twelve floats are the reader's twelve.
+    steep := gfx.normal_tangent(1.0, 0.0, 0.0)
+    assert(steep[0] == 0.0 && steep[1] == 0.0 && steep[2] == 1.0 && steep[3] == 1.0)
+    mut moved := alone
+    moved.u = 0.25; moved.v = 0.75; moved.tx = 0.5
+    gfx.put_vertex(&mut v, 0, &moved)
+    back := gfx.vertex_at(&v, 0)
+    assert(back.u == 0.25 && back.v == 0.75 && back.tx == 0.5 && back.tz == -1.0 && back.x == 1.0)
 }
 
 @test fn input_reports_held_and_newly_pressed_keys_separately() {

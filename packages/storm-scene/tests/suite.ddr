@@ -310,7 +310,7 @@ import .animation as _
     moving := g.create_root(core.vec3(4.0, 0.0, 0.0))
     g.set_scale(moving, core.vec3(3.0, 1.0, 1.0))
     mut data: []f32 = []
-    for _ in 0..3 { for v in [1.0, 0.0, 0.0, 0.70710678, 0.70710678, 0.0, 0.2, 0.7] { data.push(f32(v)) } }
+    for _ in 0..3 { gfx.push_vertex(&mut data, gfx.vertex(1.0, 0.0, 0.0, 0.70710678, 0.70710678, 0.0, 0.2, 0.7)) }
     assert(g.set_mesh(source, move data))
     instance := g.create_root(origin)
     assert(g.share_mesh(instance, source))
@@ -323,11 +323,11 @@ import .animation as _
     skin := draws[1].mesh_index
     assert(bind != skin && streams[bind].vertices[0] == 1.0)
     for i in 0..3 {
-        k := i * 8
-        v := &streams[skin].vertices
-        assert((v[k] - 4.0).abs() < 0.00001)
-        assert((v[k + 3] - 0.4472136).abs() < 0.00001 && (v[k + 4] - 0.8944272).abs() < 0.00001)
-        assert(v[k + 6] == 0.2 && v[k + 7] == 0.7)
+        v := gfx.vertex_at(&streams[skin].vertices, i * gfx.VERTEX_FLOATS)
+        assert((v.x - 4.0).abs() < 0.00001)
+        assert((v.nx - 0.4472136).abs() < 0.00001 && (v.ny - 0.8944272).abs() < 0.00001)
+        // The frame rides along through the deformation: uv as bound.
+        assert(v.u == 0.2 && v.v == 0.7)
     }
     revision := g.geometry_revision()
     g.set_position(moving, origin)

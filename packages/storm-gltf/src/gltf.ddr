@@ -20,6 +20,7 @@ pub struct Mesh {
     positions: []f32,
     normals: []f32,
     uvs: []f32,
+    tangents: []f32,
     indices: []i32,
     index_count: i32,
     vertex_count: i32,
@@ -39,7 +40,7 @@ fn fail(move message: string) -> Document {
 }
 
 pub fn empty_mesh() -> Mesh {
-    Mesh { ok: false, error: "", positions: [], normals: [], uvs: [], indices: [], index_count: 0, vertex_count: 0 }
+    Mesh { ok: false, error: "", positions: [], normals: [], uvs: [], tangents: [], indices: [], index_count: 0, vertex_count: 0 }
 }
 
 // ---- GLB container ----
@@ -246,6 +247,11 @@ fn primitive_mesh(doc: &Document, j: &json.Doc, primitive: i32) -> Mesh {
     uv := i32(j.get_i64(attrs, "TEXCOORD_0").unwrap_or(-1))
     uvs := if uv >= 0 { read_accessor_f32(doc, j, uv, "VEC2") } else { [] }
     if j.field(attrs, "TEXCOORD_0") >= 0 && uvs.len != vertex_count * 2 { return rejected("invalid TEXCOORD_0 accessor") }
+    // The file's tangent basis (xyz, w = sign of the bitangent), four a
+    // vertex; absent, the stream derives it per triangle (interleave).
+    tan := i32(j.get_i64(attrs, "TANGENT").unwrap_or(-1))
+    tangents := if tan >= 0 { read_accessor_f32(doc, j, tan, "VEC4") } else { [] }
+    if j.field(attrs, "TANGENT") >= 0 && tangents.len != vertex_count * 4 { return rejected("invalid TANGENT accessor") }
     mut indices: []i32 = []
     if j.field(primitive, "indices") >= 0 {
         indices = read_accessor_i32(doc, j, i32(j.get_i64(primitive, "indices").unwrap_or(-1)))
@@ -258,7 +264,7 @@ fn primitive_mesh(doc: &Document, j: &json.Doc, primitive: i32) -> Mesh {
     if indices.len % 3 != 0 { return rejected("triangle index count must be divisible by three") }
     index_count := indices.len
     Mesh {
-        ok: true, error: "", positions: positions, normals: normals, uvs: uvs, indices: indices,
+        ok: true, error: "", positions: positions, normals: normals, uvs: uvs, tangents: tangents, indices: indices,
         index_count: index_count, vertex_count: vertex_count,
     }
 }
@@ -441,39 +447,65 @@ pub fn asset_from_json(doc: &Document, j: &json.Doc) -> Result<Asset,string> {
 }
 
 // Expand the mesh through its index buffer into Storm's unindexed
-// [x,y,z,nx,ny,nz,u,v] f32 stream, one vertex per index. A glTF index buffer
-// is what ties the triangles together; ignoring it draws every triangle from
-// consecutive vertices, which turns any indexed model (Khronos's Damaged
-// Helmet, the Fox) into a cloud of shards. A primitive without TEXCOORD_0
-// (Khronos's Box) gets uv (0, 0), the same choice Filament makes: a missing
-// attribute is not an error, the material decides whether it is sampled.
+// [x,y,z,nx,ny,nz,u,v,tx,ty,tz,tw] f32 stream, one vertex per index. A glTF
+// index buffer is what ties the triangles together; ignoring it draws every
+// triangle from consecutive vertices, which turns any indexed model
+// (Khronos's Damaged Helmet, the Fox) into a cloud of shards. A primitive
+// without TEXCOORD_0 (Khronos's Box) gets uv (0, 0), the same choice
+// Filament makes: a missing attribute is not an error, the material decides
+// whether it is sampled.
+//
+// The tangent comes from the file when it has TANGENT (glTF 2.0 §3.7.2.1:
+// the bitangent is cross(normal, tangent.xyz) * tangent.w, and a file's w is
+// -sign(det) per triangle, which a winding-derived basis cannot see on a
+// mirrored UV island), and is derived per triangle from the UV Jacobian
+// when it does not -- the spec's SHOULD (Lengyel, w = -sign(det)), the same
+// `gfx.triangle_tangent` a hand-built surface gets. `push_triangle` writes
+// the frame on every corner of its triangle.
 pub fn interleave(mesh: &Mesh) -> []f32 {
     mut out: []f32 = []
-    out.reserve(mesh.index_count * 8)
-    for k in 0..mesh.index_count {
-        i := mesh.indices[k]
-        if i < 0 || i >= mesh.vertex_count { continue }
-        out.push(mesh.positions[i * 3])
-        out.push(mesh.positions[i * 3 + 1])
-        out.push(mesh.positions[i * 3 + 2])
-        if mesh.normals.len >= (i + 1) * 3 {
-            out.push(mesh.normals[i * 3])
-            out.push(mesh.normals[i * 3 + 1])
-            out.push(mesh.normals[i * 3 + 2])
+    out.reserve(mesh.index_count * gfx.VERTEX_FLOATS)
+    for t in 0..mesh.index_count / 3 {
+        ia := mesh.indices[t * 3]
+        ib := mesh.indices[t * 3 + 1]
+        ic := mesh.indices[t * 3 + 2]
+        if mesh.tangents.len > 0 {
+            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ia), file_tangent(mesh, ia)))
+            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ib), file_tangent(mesh, ib)))
+            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ic), file_tangent(mesh, ic)))
         } else {
-            out.push(0.0)
-            out.push(1.0)
-            out.push(0.0)
-        }
-        if mesh.uvs.len >= (i + 1) * 2 {
-            out.push(mesh.uvs[i * 2])
-            out.push(mesh.uvs[i * 2 + 1])
-        } else {
-            out.push(0.0)
-            out.push(0.0)
+            gfx.push_triangle(&mut out, mesh_vertex(mesh, ia), mesh_vertex(mesh, ib), mesh_vertex(mesh, ic))
         }
     }
     out
+}
+
+// One vertex of a primitive: position, normal (0, 1, 0 when the file has
+// none), uv (0, 0 when it has none).
+fn mesh_vertex(mesh: &Mesh, index: i32) -> gfx.Vertex {
+    if index < 0 || index >= mesh.vertex_count { return gfx.vertex(0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0) }
+    has_normal := mesh.normals.len >= (index + 1) * 3
+    has_uv := mesh.uvs.len >= (index + 1) * 2
+    gfx.vertex(mesh.positions[index * 3], mesh.positions[index * 3 + 1], mesh.positions[index * 3 + 2],
+        if has_normal { mesh.normals[index * 3] } else { 0.0 },
+        if has_normal { mesh.normals[index * 3 + 1] } else { 1.0 },
+        if has_normal { mesh.normals[index * 3 + 2] } else { 0.0 },
+        if has_uv { mesh.uvs[index * 2] } else { 0.0 },
+        if has_uv { mesh.uvs[index * 2 + 1] } else { 0.0 })
+}
+
+// The file's tangent of vertex `index`: xyz, and w = the sign of the bitangent.
+fn file_tangent(mesh: &Mesh, index: i32) -> [f32; 4] {
+    [mesh.tangents[index * 4], mesh.tangents[index * 4 + 1], mesh.tangents[index * 4 + 2], mesh.tangents[index * 4 + 3]]
+}
+
+// A vertex carrying a tangent frame.
+fn with_tangent(mut move p: gfx.Vertex, t: [f32; 4]) -> gfx.Vertex {
+    p.tx = t[0]
+    p.ty = t[1]
+    p.tz = t[2]
+    p.tw = t[3]
+    p
 }
 
 // Storm's procedural rigs already supply bind-to-world joint matrices for baked mesh positions.
