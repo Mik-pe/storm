@@ -15,7 +15,7 @@ hur man bygger och provspelar en bana står i [spel.md](spel.md).
 
 Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
 
-**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). Kvar i 3d, i ordningen: occlusion → normal (3e). Se avsnitt 3d.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). **3d, steg 3 är landat (2026-11-27, `4ec8d3a`):** occlusion — `occlusionTexture` (linjärt, R-kanalen) läses och `occlusionTexture.strength` (default 1,0) förs genom kedjan som en egen push-rad `vec4 occlusion` (ord 48–51, pushen 192 → 208 byte; en ensam float kan inte ligga i std430); formeln är specens `1 + strength × (occ − 1)` på det indirekta ljuset. Bevis: DamagedHelmet 8 765 px (8 516 mörkare, 217 ljusare — en tonemappning som svarar på mindre indirekt ljus), allt i hjälmen; sex scener utan karta bit-identiska. Kvar i 3d: normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (82 prototyper + `load()`; `vkResetDescriptorPool`
@@ -570,14 +570,16 @@ filens egna tangenter.
    från mesh-passet — det enda stället som har himlen varje frame, för
    skuggpasset är valfritt (den första capturen utan skuggor var en
    himmelslös scen: `set_light` i `shadow.begin` skrevs aldrig). Push är
-   **192 byte**: mvp 0–63, model 64–127, base_color 128–143, params
-   144–159, camera_pos 160–175, emissive_factor 176–191 — **64 byte
-   luft** under taket. Kvar där som tekniskt är per-pass men utan
+   **208 byte** (2026-11-27; 192 när detta skrevs): mvp 0–63, model
+   64–127, base_color 128–143, params 144–159, camera_pos 160–175,
+   emissive_factor 176–191, occlusion 192–207 — **48 byte
+   luft** under enhetens 256 (fynd 25; 32 under det beprövade 240). Kvar där som tekniskt är per-pass men utan
    hook: kamerans läge och skuggflaggan (`params.w`); de stannar tills
    kontraktet får en per-frame-hook (§7). `set_light` är nu per draw
    (en 144-byte-kopia, samma pris som när värdena låg i push) och blir
-   per frame med hooken. `normalScale`/`aoStrength` (båda 1.0 i alla
-   elva filer) ryms nu i pushen när en fil ber om dem; en per-yta-
+   per frame med hooken. `aoStrength` är i pushen sedan steg 3
+   (`occlusion.x`; 1.0 i alla elva filer), `normalScale` ryms i `occlusion.y`
+   när en fil ber om det; en per-yta-
    uniform (§7) är fortfarande rätt form när de blir fler.
 4. **Tangentbas: läs `TANGENT` när filen har den, MikkTSpace annars —
    och shadern räknar `b = cross(n, t)·w`.** (Omskrivet 2026-11-27;
@@ -677,7 +679,8 @@ storm-vulkan 20, storm-gltf 14.
 fyra vägras) och strength (default 1,0). Shadern adderar
 `texel(emissive) * factor.rgb * factor.w` till `albedo * params.z`:
 handgjorda ytor är oförändrade (vit fallback × noll). Push-constants
-192 byte, `Light` 144 byte (beslut 3). `set_material` på en befintlig
+208 byte (192 när emissive landade; occlusion tog de sista 16), `Light`
+144 byte (beslut 3). `set_material` på en befintlig
 yta kopierade fält för fält och tappade tyst det nya fältet; nu är
 hela raden `Pool.insert` (test:
 `an_emissive_material_keeps_its_factor_through_set_material`). Bevis mot
@@ -688,8 +691,48 @@ alla i lyktans glas, 22×67 px vid (698–719, 471–537), +316 pixlar R>200 —
 lyktan är tänd. Bygge 18,3 s; tester: rot 67 egna `@test`, storm-gltf
 18, storm-scene 24.
 
+**Landat i 3d, steg 3 (2026-11-27, `4ec8d3a`):** `gfx.Backend::mesh` tar
+`occlusion: f32` — `occlusionTexture.strength`, en siffra om materialet
+(kontraktet säger vad som är sant, inte hur en backend lägger det i
+minnet); varje backend bär den som en egen push-rad `vec4 occlusion`
+(yzw = 0, reserverade för `normalTexture.scale` i 3e). `scene.Material` bär
+`occlusion: f32`, `occlusion_strength(surface, strength)` sätter den  (samma form som
+`emissive_factor`), och
+`scene.material`/`emissive_material` börjar på 1,0 — specens default, som
+med den vita fallbacken lämnar en yta utan karta orörd. storm-gltf läser
+`occlusionTexture` (samma `TextureInfo`-väg: bild, egen sampler, −1 =
+saknas; linjärt, för kartan är en mask) och `strength` ur
+texture-infot (den är medlem där, inte i materialet), och vägrar en
+styrka utanför [0,1] med namn (§3.9.3). Shadern (GLSL och Metal, samma
+formel; GLSL läser `vertex_occlusion.x` via `in`, Metal `push.occlusion.x`):
+`occluded = 1.0 + strength * (occlusion_texture(uv).r - 1.0)`,
+multiplicerad in i `(diffuse_ambient + specular_ambient) * ambient_occlusion`
+— bara det indirekta ljuset (beslut 5), `direct`, `fill` och emissivt är
+orörda. Det som gav platsen: push-blocket växte med en egen `vec4` från
+192 till 208 byte (ord 48–51; `MESH_FLOATS` 48 → 52) i stället för
+`camera_pos.w` (ord 43, ledig men kamerans — en materialegenskap i en
+kameravektor är två begrepp i ett värde) eller en tolfte positionell
+skalär; 208 byte ligger under det beprövade taket på 240 (fynd 25).
+Fixture: `tests/fixtures/occluded_triangle.glb` (genererad av
+`make_occlusion_fixture.py` bredvid den — en triangel, `occlusionTexture`
+med strength 0,6 och egen sampler 9729/33071; talen lästa tillbaka ur
+filen med Python). Tester: storm-gltf +3 (kartan och styrkan, Box utan
+karta = −1/1,0, strength 1,5 vägras), storm-scene +1 (`set_material`
+behåller styrkan, båda konstruktorerna default), rot +1
+(`tests/executor.ddr`: inspelaren får kartan och styrkan genom
+`record_list`; test-backenden följde kontraktet — och det var *den*
+som avslöjade att `dunder check` i ett paket inte når dess svit, se
+dogfood 94:s uppföljning). Bevis mot baslinjer från `75ff019` (samma
+kompilator, trädet rent): DamagedHelmet 8 765 ändrade pixlar, bbox
+x563–715 y558–748 (bara hjälmen), 8 516 mörkare och 217 ljusare på
+kanalsumman; spelscenen, `--studio`, Box, Fox, Avokado och Lantern 0
+pixlar (ingen occlusion-karta: vit × 1,0). Ingen av de elva filerna sätter
+`strength`, så styrkans väg är bevisad av kontrakts- och kedjetesten, och
+kartans av pixlarna. Bygge 9,7 s; tester: rot 120 egna `@test`,
+storm-gltf 21, storm-scene 26.
+
 **Kvar i 3d efter besluten:** `TANGENT` som vertexattribut + MikkTSpace
-(3e), `normalScale`/`aoStrength` (ryms nu i pushen, beslut 3), `texCoord`
+(3e), `normalTexture.scale` (platsen finns: `occlusion.yzw`), `texCoord`
 ≠ 0 (ingen fil använder det; beslut 1 i
 3c:s research gäller: Storm läser `TEXCOORD_0`).
 

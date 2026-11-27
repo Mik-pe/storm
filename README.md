@@ -127,10 +127,11 @@ från RGBA8-pixlar: `encoding` säger om texeln är sRGB (en basfärg) eller
 linjär (en Metallic/Roughness-, normal- eller occlusion-karta), och mipkedjan
 byggs av backenden.
 
-- **På Vulkan** går konstanterna med push constants: 192 byte i meshpasset
-  (två matriser, material, kamera och himmelsljus), och ljusmatrisen ligger i
-  en uniform buffer. Storm kontrollerar enhetens `maxPushConstantsSize` när
-  den väljer GPU.
+- **På Vulkan** går konstanterna med push constants: 208 byte i meshpasset
+  (två matriser, basfärg och parametrar, kamera, emissiv faktor och
+  occlusion-styrka — ett tal, `state.MESH_FLOATS`, storleken härledd ur det),
+  och ljusmatrisen ligger i en uniform buffer. Storm kontrollerar enhetens
+  `maxPushConstantsSize` när den väljer GPU.
 - **På Metal** är samma byte ett struct i adressrymden `constant`, som bundits
   per draw med `setVertexBytes:`/`setFragmentBytes:` (högst 4 KB), så att
   fragmentsteget läser direkt ur det i stället för genom en varying.
