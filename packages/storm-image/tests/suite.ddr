@@ -9,8 +9,8 @@ import std.path as path
 import std.text as text
 import sys
 
-import .jpeg as jpeg
-import .png as png
+import .jpeg as _
+import .png as _
 
 fn sample() -> []u8 {
     mut data := bytes.from_text("P6\n2 1\n255\n")
@@ -59,7 +59,7 @@ unsafe fn decoded_first_row(png: &[]u8, width: i32) -> []u8 {
     _ := dl.close(library)
     assert(length == u64(pixels.len) && pixels[0] == 1)
     for i in 4..pixels.len {
-        pixels[i] = u8((i32(pixels[i]) + i32(pixels[i-3])) % 256)
+        pixels[i] = u8((i32(pixels[i]) + i32(pixels[i - 3])) % 256)
     }
     mut row: []u8 = []
     bytes.extend_range(&mut row, &pixels, 1, pixels.len)
@@ -103,7 +103,7 @@ unsafe fn decoded_first_row(png: &[]u8, width: i32) -> []u8 {
     assert(bytes.u32_be(&png, 16) == 768 && bytes.u32_be(&png, 20) == 1)
     unsafe {
         row := decoded_first_row(&png, 768)
-        for x in 0..768 { assert(row[x*3] == 128 && row[x*3+1] == 15 && row[x*3+2] == 20) }
+        for x in 0..768 { assert(row[x * 3] == 128 && row[x * 3 + 1] == 15 && row[x * 3 + 2] == 20) }
     }
 }
 

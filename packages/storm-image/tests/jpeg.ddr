@@ -1,13 +1,8 @@
 capability filesystem, stdio
 
 import ..src.image as image
+import .png as png
 import sys
-
-fn fixture(name: string) -> []u8 {
-    read := sys.read_u8("tests/fixtures/" + name)
-    assert(read.ok)
-    read.value
-}
 
 fn refusal(result: &Result<image.Image, string>) -> string {
     match result { .Ok(_) => "decoded", .Err(s) => s.clone() }
@@ -25,7 +20,7 @@ fn refusal(result: &Result<image.Image, string>) -> string {
 // upsampling model gives a mean of 5 and worst 50+, a wrong one on a 512^2
 // photograph a mean of 62).
 fn near(decoded: &image.Image, name: string, tolerance: i32) {
-    expected := image.decode_png(&fixture(name + ".png")).unwrap()
+    expected := image.decode_png(&png.fixture(name + ".png")).unwrap()
     assert(decoded.width == expected.width)
     assert(decoded.height == expected.height)
     mut worst := 0
@@ -48,7 +43,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 
 // tiny1x1.jpg: one pixel, three components 1x1 — Huffman, DC, DCT, YCbCr.
 @test fn tiny() {
-    decoded := image.decode_jpeg(&fixture("tiny1x1.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("tiny1x1.jpg")).unwrap()
     assert(decoded.width == 1 && decoded.height == 1)
     expected: []u8 = [10, 20, 231, 255]
     for i in 0..4 { assert(decoded.pixels[i] == expected[i]) }
@@ -56,34 +51,34 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 
 // gray8x8.jpg: one grey block, a gradient in both directions (AC coefficients).
 @test fn grey_block() {
-    decoded := image.decode_jpeg(&fixture("gray8x8.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("gray8x8.jpg")).unwrap()
     assert(decoded.width == 8 && decoded.height == 8)
     near(&decoded, "gray8x8", 1)
 }
 
 // rgb16x16_444.jpg: three full-resolution components, four quadrants of colour.
 @test fn ycbcr_444() {
-    decoded := image.decode_jpeg(&fixture("rgb16x16_444.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("rgb16x16_444.jpg")).unwrap()
     assert(decoded.width == 16 && decoded.height == 16)
     near(&decoded, "rgb16x16_444", 1)
 }
 
 // rgb16x16_420.jpg: chroma subsampled 2x2 — the common case, and DamagedHelmet's.
 @test fn ycbcr_420() {
-    decoded := image.decode_jpeg(&fixture("rgb16x16_420.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("rgb16x16_420.jpg")).unwrap()
     near(&decoded, "rgb16x16_420", 1)
 }
 
 // rgb16x16_422.jpg: chroma subsampled 2x1.
 @test fn ycbcr_422() {
-    decoded := image.decode_jpeg(&fixture("rgb16x16_422.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("rgb16x16_422.jpg")).unwrap()
     near(&decoded, "rgb16x16_422", 1)
 }
 
 // odd9x9_420.jpg: dimensions that leave an incomplete MCU at the right and
 // bottom edges, with subsampling: the padding blocks are decoded and dropped.
 @test fn incomplete_mcu() {
-    decoded := image.decode_jpeg(&fixture("odd9x9_420.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("odd9x9_420.jpg")).unwrap()
     assert(decoded.width == 9 && decoded.height == 9)
     near(&decoded, "odd9x9_420", 1)
 }
@@ -91,7 +86,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 // gray32x32_restart.jpg: a restart interval of 2 MCUs — predictors reset and
 // the reader resynchronises at each RSTn marker.
 @test fn restart_markers() {
-    decoded := image.decode_jpeg(&fixture("gray32x32_restart.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("gray32x32_restart.jpg")).unwrap()
     near(&decoded, "gray32x32_restart", 1)
 }
 
@@ -104,7 +99,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 // thousand of 786 432 channels by one more than the exact sums (measured:
 // worst 3, 2 384 over 1, mean 0.14), so the tolerance is 3.
 @test fn damaged_helmet_base_color() {
-    decoded := image.decode_jpeg(&fixture("helmet_512.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("helmet_512.jpg")).unwrap()
     near(&decoded, "helmet_512_ref", 3)
 }
 
@@ -114,7 +109,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 // but writes no AC coefficient at all, so it is not evidence for AC decoding
 // on its own. The references are what Pillow (libjpeg-turbo) reads back.
 @test fn progressive16() {
-    decoded := image.decode_jpeg(&fixture("progressive16.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("progressive16.jpg")).unwrap()
     assert(decoded.width == 16)
     assert(decoded.height == 16)
     near(&decoded, "progressive16", 1)
@@ -124,7 +119,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 // one (helmet_512, worst 3): the only difference between the two is the order
 // the coefficients arrive in.
 @test fn progressive_helmet() {
-    decoded := image.decode_jpeg(&fixture("helmet_mr_256.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("helmet_mr_256.jpg")).unwrap()
     assert(decoded.width == 256)
     assert(decoded.height == 256)
     near(&decoded, "helmet_mr_256", 3)
@@ -135,7 +130,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 // jdphuff.c process_restart), per scan. helmet_prog_restart has DRI = 4, so
 // each of its ten scans is cut into 256 segments.
 @test fn progressive_restart() {
-    decoded := image.decode_jpeg(&fixture("helmet_prog_restart.jpg")).unwrap()
+    decoded := image.decode_jpeg(&png.fixture("helmet_prog_restart.jpg")).unwrap()
     assert(decoded.width == 256)
     assert(decoded.height == 256)
     near(&decoded, "helmet_prog_restart_ref", 3)
@@ -149,7 +144,7 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 @test fn progressive_cut_after_each_scan() {
     for n in 1..11 {
         name := "helmet_cut_" + (if n < 10 { "0" + n.str() } else { n.str() }) + ".jpg"
-        decoded := image.decode_jpeg(&fixture(name)).unwrap()
+        decoded := image.decode_jpeg(&png.fixture(name)).unwrap()
         assert(decoded.width == 256)
         assert(decoded.height == 256)
         if n == 10 { near(&decoded, "helmet_mr_256", 3) }
@@ -163,9 +158,9 @@ fn near(decoded: &image.Image, name: string, tolerance: i32) {
 
 // decode(): the format is known by the bytes, not by a declared mime type.
 @test fn decode_sniffs_the_format() {
-    from_jpeg := image.decode(&fixture("tiny1x1.jpg")).unwrap()
+    from_jpeg := image.decode(&png.fixture("tiny1x1.jpg")).unwrap()
     assert(from_jpeg.pixels[2] == 231)
-    from_png := image.decode(&fixture("rgba22.png")).unwrap()
+    from_png := image.decode(&png.fixture("rgba22.png")).unwrap()
     assert(from_png.pixels[0] == 255 && from_png.pixels[1] == 0)
     neither: []u8 = [71, 73, 70, 56, 57, 97]
     refused := image.decode(&neither)

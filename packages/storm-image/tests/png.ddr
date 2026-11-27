@@ -8,7 +8,9 @@ capability filesystem, stdio
 import ..src.image as image
 import sys
 
-fn fixture(name: string) -> []u8 {
+// The one fixture reader for this suite: jpeg.ddr imports it too, so a
+// second copy could not drift from the first.
+pub fn fixture(name: string) -> []u8 {
     read := sys.read_u8("tests/fixtures/" + name)
     assert(read.ok)
     read.value
