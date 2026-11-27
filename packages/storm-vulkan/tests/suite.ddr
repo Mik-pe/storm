@@ -282,6 +282,36 @@ fn setup_steps() -> [state.SetupStep; 17] {
     assert(records.device_rank(99) == 1)
 }
 
+// The combined access masks are sums the registry owns, not arithmetic at a
+// call site: the mip chain's last barrier reads and writes the same image,
+// and the scene pass waits for the colour and depth writes and the depth it
+// reads. Pinned so a generator that drops a bit is red here, not in a frame.
+@test fn combined_access_masks_sum_the_registry_bits() {
+    assert(enums.access(.TransferReadWrite) == enums.access(.TransferRead).bit_or(enums.access(.TransferWrite)))
+    assert(enums.access(.TransferReadWrite) == 6144)
+    assert(enums.access(.ColorDepthWriteDepthRead) == enums.access(.ColorDepthWrite).bit_or(enums.access(.DepthStencilAttachmentRead)))
+    assert(enums.access(.ColorDepthWriteDepthRead) == 1792)
+}
+
+// A transition carries its layouts, accesses and stages as enums, and the one
+// number in it is the presentation layout: an extension constant the registry
+// numbers and no ImageLayout variant holds. The swapchain's barrier is the
+// only one that needs it, and it reads it from here.
+@test fn a_transition_is_enums_except_for_the_presentation_layout() {
+    present := records.to_present()
+    assert(i32(present.old_layout) == i32(enums.ImageLayout.ColorAttachmentOptimal))
+    assert(present.new_layout == enums.IMAGE_LAYOUT_PRESENT_SRC_KHR)
+    assert(present.new_layout == 1000001002)
+    assert(i32(present.src_access) == i32(enums.Access.ColorAttachmentWrite))
+    assert(i32(present.dst_access) == i32(enums.Access.None))
+    assert(i32(present.src_stage) == i32(enums.PipelineStage.ColorAttachmentOutput))
+    assert(i32(present.dst_stage) == i32(enums.PipelineStage.BottomOfPipe))
+    upload := records.transition(.Undefined, .TransferDstOptimal, .None, .TransferWrite, .TopOfPipe, .Transfer)
+    assert(upload.new_layout == enums.image_layout(.TransferDstOptimal))
+    assert(upload.new_layout == 7)
+    assert(i32(upload.src_access) == i32(enums.Access.None))
+}
+
 // fail() is the one place a Vulkan code becomes a setup failure: it must hand
 // back the step it was given (the step is the return value, not a field) and
 // record the code for describe(). Every step takes the same path, so check all.
