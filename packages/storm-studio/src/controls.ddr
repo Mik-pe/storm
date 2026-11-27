@@ -1,0 +1,75 @@
+import text
+import ui
+import ui.widgets as widgets
+
+pub enum Action { Idle, TogglePause, Step, Restart, Studio }
+
+pub fn draw(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas, p: &widgets.Pointer,
+    width: f32, height: f32, title: string, tick: i64, paused: bool, has_player: bool,
+    has_goal: bool, won: bool) -> Action {
+    t := widgets.theme()
+    chrome := ui.rgb(0.077, 0.082, 0.092)
+    narrow := width < 560.0
+    bar: f32 = if narrow { 88.0 } else { 48.0 }
+    controls.begin()
+    c.rect(0.0, 0.0, width, bar, &chrome)
+    c.rect(0.0, bar - 1.0, width, 1.0, &t.border)
+    mut action := Action.Idle
+    back_w: f32 = if narrow { 64.0 } else { 103.0 }
+    if controls.button(&mut c, atlas, 1, p, 12.0, 10.0, back_w, 27.0, if narrow { "Studio" } else { "Back to studio" }, &t) {
+        action = .Studio
+    }
+
+    title_x := 12.0 + back_w + 17.0
+    group_x: f32 = if narrow { 12.0 } else { width - 218.0 }
+    title_end := if narrow { width - 12.0 } else { group_x - 16.0 }
+    c.text(atlas, title, title_x, 11.0, 0.79, &t.ink)
+    if ui.Canvas::text_width(atlas, title, 0.79) > title_end - title_x {
+        c.rect(title_end - 16.0, 0.0, width - title_end + 16.0, 44.0, &chrome)
+        c.text(atlas, "...", title_end - 16.0, 11.0, 0.79, &t.ink_dim)
+    }
+
+    y: f32 = if narrow { 49.0 } else { 10.0 }
+    if controls.button(&mut c, atlas, 2, p, group_x, y, 72.0, 27.0, if paused { "Resume" } else { "Pause" }, &t) {
+        action = .TogglePause
+    }
+    if paused {
+        if controls.button(&mut c, atlas, 3, p, group_x + 78.0, y, 55.0, 27.0, "Step", &t) { action = .Step }
+    } else {
+        c.rounded_rect(group_x + 78.0, y, 55.0, 27.0, 5.0, &t.fill)
+        tw := ui.Canvas::text_width(atlas, "Step", 0.61)
+        c.text(atlas, "Step", group_x + 78.0 + (55.0 - tw) * 0.5, y + 5.5, 0.61, &ui.rgb(0.48, 0.49, 0.51))
+    }
+    if controls.button(&mut c, atlas, 4, p, group_x + 139.0, y, 67.0, 27.0, "Restart", &t) { action = .Restart }
+
+    bottom := height - 32.0
+    c.rect(0.0, bottom, width, 32.0, &chrome)
+    c.rect(0.0, bottom, width, 1.0, &t.border)
+    status := if won { "Goal reached" } else if has_player && has_goal { "Reach the goal" } else if has_player { "Free play" } else { "Physics preview" }
+    c.rounded_rect(16.0, bottom + 13.0, 7.0, 7.0, 3.5, &if won { t.knob } else { t.ink_dim })
+    c.text(atlas, status, 31.0, bottom + 7.0, 0.60, &if won { t.knob } else { t.ink })
+    clock := "Tick " + tick.str()
+    clock_x := width - 16.0 - ui.Canvas::text_width(atlas, clock, 0.57)
+    goal_end := 31.0 + ui.Canvas::text_width(atlas, status, 0.60)
+    if clock_x > goal_end + 12.0 {
+        c.text(atlas, clock, clock_x, bottom + 7.0, 0.57, &t.ink_dim)
+    }
+    help := if has_player { "WASD  move     Space  jump     Q  pause     R  restart" } else { "Q  pause     R  restart" }
+    help_w := ui.Canvas::text_width(atlas, help, 0.56)
+    help_x := (width - help_w) * 0.5
+    if help_x > goal_end + 16.0 && help_x + help_w < clock_x - 16.0 {
+        c.text(atlas, help, help_x, bottom + 7.0, 0.56, &t.ink_dim)
+    }
+    controls.end(p)
+    action
+}
+
+pub fn reload_error(c: &mut ui.Canvas, a: &text.Atlas, width: f32) {
+    y: f32 = if width < 560.0 { 94.0 } else { 54.0 }
+    message := "Scene reload failed"
+    w := ui.Canvas::text_width(a, message, 0.62) + 24.0
+    c.rounded_rect(12.0, y, w, 28.0, 5.0, &ui.rgb(0.21, 0.12, 0.08))
+    c.text(a, message, 24.0, y + 5.0, 0.62, &ui.rgb(1.0, 0.78, 0.55))
+}
+
+// Open one petal for each fifth of the bouquet.

@@ -1,49 +1,25 @@
 capability stdio, filesystem
-
-import std.io as io
 import std.json as json
 import image
 import play
 import .tools
+import .protocol
 
-const VERSION: string = "2025-11-25"
-
-enum Phase { New, Negotiated, Ready }
-
-pub struct Server {
-    phase: Phase,
-    render: fn(&play.Session, string) -> Result<(), string>,
-    catalog: json.Doc,
+struct Level {
     session: play.Session,
+    render: fn(&play.Session, string) -> Result<(), string>,
 }
+pub struct Server { rpc: protocol.Protocol, level: Level }
 
 pub fn new(render: fn(&play.Session, string) -> Result<(), string>) -> Server {
-    initial := play.empty("Untitled")
-    Server { phase: .New, render: render, catalog: json.Doc::parse_text(tools.catalog()), session: play.start(&initial) }
+    return Server { rpc: protocol.new("storm", tools.catalog()), level: Level { session: play.start(&play.empty("Untitled")), render: render } }
 }
-
-fn result(id: string, value: string) -> string {
-    "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + value + "}"
-}
-
-fn rpc_error(id: string, code: i32, message: string) -> string {
-    "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + code.str() + ",\"message\":" + json.quote(message) + "}}"
-}
-
-fn tool_error(id: string, message: string) -> string {
-    result(id, "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":" + json.quote(message) + "}]}")
-}
-
-fn tool_result(id: string, data: string) -> string {
-    result(id, "{\"structuredContent\":" + data + ",\"content\":[{\"type\":\"text\",\"text\":" + json.quote(data) + "}]}")
-}
-
-fn restart(server: &mut Server) {
+fn restart(server: &mut Level) {
     fresh := play.start(&server.session.scene)
     server.session = fresh
 }
 
-fn invoke(server: &mut Server, name: string, d: &json.Doc, args: i32) -> Result<string, string> {
+fn invoke(server: &mut Level, name: string, d: &json.Doc, args: i32) -> Result<string, string> {
     if name == "storm_new" {
         mut scene := if d.get_str(args, "template").unwrap_or("empty") == "demo" { play.demo() } else { play.empty("Untitled") }
         if d.field(args, "name") >= 0 {
@@ -90,95 +66,12 @@ fn invoke(server: &mut Server, name: string, d: &json.Doc, args: i32) -> Result<
     .Ok(play.state_json(&server.session))
 }
 
+fn preview(level: &Level) -> Result<string, string> { image.preview(&level.session, level.render) }
+
 pub fn handle(server: &mut Server, line: string) -> string {
-    d := json.Doc::parse_text(line)
-    if !d.ok { return rpc_error("null", -32700, "Parse error") }
-    root := d.root
-    if d.kind(root) != .Object || d.get_str(root, "jsonrpc").unwrap_or_default() != "2.0" {
-        return rpc_error("null", -32600, "Expected a JSON-RPC 2.0 request")
-    }
-    node := d.field(root, "id")
-    if node >= 0 && d.kind(node) != .String && d.as_i64(node).is_none() && d.as_u64(node).is_none() {
-        return rpc_error("null", -32600, "Request ID must be a string or an integer")
-    }
-    id := if node < 0 { "null" } else { d.raw_json(node) }
-    method := match d.get_str(root, "method") {
-        .Some(name) => name,
-        .None => { return rpc_error(id, -32600, "Expected a method name") },
-    }
-    if node < 0 {
-        if method == "notifications/initialized" && server.phase == .Negotiated { server.phase = .Ready }
-        return ""
-    }
-    params := d.field(root, "params")
-    if params >= 0 && d.kind(params) != .Object { return rpc_error(id, -32602, "Expected an object for params") }
-    if method == "ping" { return result(id, "{}") }
-    if method == "initialize" {
-        if server.phase != .New { return rpc_error(id, -32600, "Session already initialized") }
-        requested := d.get_str(params, "protocolVersion").unwrap_or_default()
-        info := d.field(params, "clientInfo")
-        if requested.len == 0 || d.kind(d.field(params, "capabilities")) != .Object ||
-            d.get_str(info, "name").is_none() || d.get_str(info, "version").is_none() {
-            return rpc_error(id, -32602, "Expected protocolVersion, clientInfo with name and version, and capabilities")
-        }
-        version := if requested == "2025-06-18" { requested } else { VERSION }
-        server.phase = .Negotiated
-        return result(id, "{\"protocolVersion\":" + json.quote(version) +
-            ",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"storm\",\"version\":\"0.1.0\"}," +
-            "\"instructions\":\"Create or load a scene, edit bodies, then step and inspect the shared 60 Hz simulation. Save the scene and launch it with storm --scene <path>.\"}")
-    }
-    if server.phase != .Ready { return rpc_error(id, -32002, "Initialization incomplete") }
-    if method == "tools/list" {
-        if d.field(params, "cursor") >= 0 { return rpc_error(id, -32602, "Unknown cursor") }
-        return result(id, server.catalog.raw_json(server.catalog.root))
-    }
-    if method != "tools/call" { return rpc_error(id, -32601, "Method not found") }
-    name := d.get_str(params, "name").unwrap_or_default()
-    schema := tools.schema(&server.catalog, name)
-    if schema < 0 { return rpc_error(id, -32602, "Unknown tool: " + name) }
-    args := d.field(params, "arguments")
-    error := tools.validate(&server.catalog, schema, &d, args, "arguments")
-    if error.len > 0 { return tool_error(id, error) }
-    if name == "storm_preview" {
-        match image.preview(&server.session, server.render) {
-            .Ok(png) => { return result(id, "{\"content\":[{\"type\":\"image\",\"mimeType\":\"image/png\",\"data\":" + json.quote(png) + "}]}") },
-            .Err(message) => { return tool_error(id, message) },
-        }
-    }
-    match invoke(&mut server, name, &d, args) {
-        .Ok(data) => tool_result(id, data),
-        .Err(message) => tool_error(id, message),
-    }
+    protocol.handle(&mut server.rpc, &mut server.level, line, invoke, preview)
 }
 
 pub fn serve(render: fn(&play.Session, string) -> Result<(), string>) -> i32 {
-    mut server := new(render)
-    mut input := io.BufReader<io.Stdin>::new(io.stdin())
-    mut output := io.stdout()
-    while true {
-        reply := match input.read_line_limit(4194304) {
-            .Ok(line) => match line {
-                .Data(message) => handle(&mut server, message),
-                .Eof => { return 0 },
-            },
-            .Err(error) => {
-                if error == .TooLarge {
-                    // Discard only this frame. The next client request can still succeed.
-                    mut chunk: []u8 = []
-                    while true {
-                        chunk.clear()
-                        match input.read_until_limit(10, &mut chunk, 65536) {
-                            .Ok(_) => { break },
-                            .Err(e) => { if e != .TooLarge { return 1 } },
-                        }
-                    }
-                    rpc_error("null", -32600, "Request exceeds the 4 MiB frame limit")
-                } else if error == .InvalidUtf8 {
-                    rpc_error("null", -32700, "Expected a UTF-8 JSON message")
-                } else { return 1 }
-            },
-        }
-        if reply.len > 0 && output.write_str(reply + "\n").is_err() { return 1 }
-    }
-    0
+    protocol.serve(new(render), handle)
 }

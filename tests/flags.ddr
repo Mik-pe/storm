@@ -8,7 +8,7 @@ import std.fs as fs
 import std.text as text
 import sys
 
-import ..src.args as args
+import studio.args as args
 
 // Does `line` start with `word` once its indentation is skipped?
 fn opens_with(line: string, word: string) -> bool {
@@ -51,16 +51,15 @@ fn contains(xs: &[]string, needle: &string) -> bool {
 }
 
 @test fn every_flag_in_the_source_has_its_help_line_and_every_line_a_flag() {
-    names := match fs.list_dir("src") {
-        .Ok(items) => items,
-        .Err(e) => { _ := sys.eprint("could not list src/: errno " + e.code().str()); assert(false); return },
-    }
     mut read: []string = []
-    for name in &names {
-        if !text.ends_with(name, ".ddr") { continue }
-        source := sys.read_text("src/" + name)
-        if !source.ok { _ := sys.eprint("could not read src/" + name + ": errno " + source.error.str()); assert(false); return }
-        for flag in &literals(source.value) { read.push(flag.clone()) }
+    for dir in ["src", "packages/storm-studio/src"] {
+        names := fs.list_dir(dir).unwrap()
+        for name in &names {
+            if !text.ends_with(name, ".ddr") { continue }
+            source := sys.read_text(dir + "/" + name)
+            assert(source.ok)
+            for flag in &literals(source.value) { read.push(flag.clone()) }
+        }
     }
     // The reader sees the program's flags at all (a scanner that finds nothing
     // would pass every comparison below against an empty table).
@@ -83,7 +82,7 @@ fn contains(xs: &[]string, needle: &string) -> bool {
 }
 
 @test fn help_shows_every_flag_with_its_arguments_in_one_column() {
-    usage := args.usage()
+    usage := args.usage("storm", "Storm Studio", &args.flags())
     // The column every description starts in: measured on the first row, and
     // every other row must start there too (never a number written by hand).
     mut column := -1
@@ -105,19 +104,19 @@ fn contains(xs: &[]string, needle: &string) -> bool {
 // Every known flag with a value, and -h, read as "nothing unknown".
 @test fn an_unknown_flag_is_named_and_every_known_one_is_not() {
     mut good: []string = ["--glb", "Fox.glb", "--frames", "5", "--capture", "a.ppm", "--eye", "1", "2", "3", "-h"]
-    assert(args.unknown(&good) == "")
-    assert(args.unknown(&[]) == "")
+    assert(args.unknown(&good, &args.flags()) == "")
+    assert(args.unknown(&[], &args.flags()) == "")
     for f in &args.flags() {
         mut one: []string = [f.name.clone()]
-        assert(args.unknown(&one) == "")
+        assert(args.unknown(&one, &args.flags()) == "")
     }
     mut typo: []string = ["--glb", "Fox.glb", "--bogus", "--frames", "5"]
-    assert(args.unknown(&typo) == "--bogus")
+    assert(args.unknown(&typo, &args.flags()) == "--bogus")
     // The first unknown word is the one named: fix one, see the next.
     mut two: []string = ["--zzz", "--aaa"]
-    assert(args.unknown(&two) == "--zzz")
+    assert(args.unknown(&two, &args.flags()) == "--zzz")
     // A short dash-word is a value or a mistake for something else, not a
     // flag this test speaks about; only "--x" is judged.
     mut short: []string = ["--", "-x", "a--b"]
-    assert(args.unknown(&short) == "")
+    assert(args.unknown(&short, &args.flags()) == "")
 }

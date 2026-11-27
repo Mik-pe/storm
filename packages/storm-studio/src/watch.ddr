@@ -1,8 +1,4 @@
 // Watch the path, not an open file descriptor: agent saves can replace it atomically.
-capability filesystem
-
-import play
-
 enum Failure { Clear, Content(string), Read(string) }
 
 pub struct Watch { path: string, accepted: string, failure: Failure, next_check: f64 }
@@ -15,10 +11,10 @@ pub fn failed(w: &Watch) -> bool {
     match w.failure { .Clear => false, _ => true }
 }
 
-pub fn poll(w: &mut Watch, now: f64) -> Result<Option<play.Scene>, string> {
+pub fn poll<S>(w: &mut Watch, now: f64, read: fn(string) -> Result<string, string>, decode: fn(string) -> Result<S, string>) -> Result<Option<S>, string> {
     if !now.is_finite() || now < w.next_check { return .Ok(.None) }
     w.next_check = now + 0.5
-    source := match play.read_source(w.path) {
+    source := match read(w.path) {
         .Ok(text) => text,
         .Err(err) => {
             repeated := match w.failure { .Read(old) => old == err, _ => false }
@@ -33,7 +29,7 @@ pub fn poll(w: &mut Watch, now: f64) -> Result<Option<play.Scene>, string> {
     }
     repeated := match w.failure { .Content(old) => old == source, _ => false }
     if repeated { return .Ok(.None) }
-    match play.decode(source) {
+    match decode(source) {
         .Ok(scene) => {
             w.accepted = source
             w.failure = .Clear

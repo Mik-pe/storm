@@ -90,25 +90,8 @@
   validerat mot sin egen katalog) på `play` och `image` och tar
   renderaren som **funktionspekare** `fn(&play.Session, string) ->
   Result<(), string>` — sammansättningsroten (`src/main.ddr: preview`) är
-  den enda som vet vilken backend som står bakom den. `src/woodland.ddr`
-  bygger Blomsterskogen ur inbäddade Blender-glTF:er (`art_asset.ddr`),
-  `src/play_view.ddr` avbildar simuleringens poser på scengrafer och
-  rör aldrig fysikvärlden, `src/play_ui.ddr` ritar HUD och pausmeny,
-  `src/scene_file.ddr` bevakar en banfil (sökvägen, inte en öppen
-  deskriptor — agentens sparande byter ut filen atomärt).
-- **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
-  och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
-  Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. **361 egna `@test`** (räknade 2026-11-27 med
-  regexen `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över listan: 138 i
-  roten, 19 filer, och 223 i de 16 paketen, 19 filer), alla gröna,
-  varje svit lika många som den har `@test` (Skrifts två följer med som
-  PASS-rader i de tre sviter som når `storm-text` — roten, `storm-text`,
-  `storm-ui` — så `N passed` blir 367). 17 sviter körs med `dunder test` i
-  roten och i varje `packages/*`. Föregående kontroll (`9e487b5`, Dunder
-  0.12.0, låst session) gav 318 — siffran åldras med varje test som landar;
-  det som inte åldras är regeln: *antalet `@test` i sviten är det antal som
-  ska passera, räknat per (svit, fil)*.
+  den enda som vet vilken backend som står bakom den. Spelprojekt väljer sitt scenformat och levererar sin scengraf genom `studio.Project`. Scenbevakaren i `storm-studio` följer filens sökväg även efter ett atomärt filbyte.
+- **Ett gränssnitt, två implementationer.** Materialstudien och provspelningen använder samma renderingskod på macOS och Linux. Varje paketsvit körs från sin egen rot och kontrolleras mot antalet egna `@test`.
   **En rot som inget av dem når är ett program under `tools/`, `examples/`
   eller `packages/*/tools/`** (mätt: `dunder check` utan argument =
   `src/main.ddr`, `--tests` = sviten, `--example` = manifestets exempel, i
@@ -193,48 +176,7 @@ växte, inte en ny uppgift som lagts i fel lager.
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│src/main.ddr — sammansättningens rot: väljer backend, ger storm-mcp   │
-│                renderaren som funktion, startar app eller --mcp      │
-├──────────────────────────────────────────────────────────────────────┤
-│src/app.ddr — EN generisk modul över B: gfx.Backend (9 fn):           │
-│                run_session, upload_model_textures, record_list …     │
-├──────────────────────────────────────────────────────────────────────┤
-│19 moduler utan B, i tre sorter (§2.1):                               │
-│  kontraktet   gallery · game · play_view · cozy_control · particles  │
-│               woodland · paw_contact · fox_expression · walk_surface │
-│  spelvärdet   play_ui · editor · scene_file · args · art_asset       │
-│               model · fox_animation · canopy · woodland_ground       │
-├──────────────────────┬───────────────────────────────────────────────┴
-│storm-ui · storm-text · storm-gltf · storm-scene · storm-ecs          │
-├──────────────────────┼───────────────────────────────────────────────┤
-│storm-gfx — kontraktet: Frame, Input, Sky, Vertex, trait Backend      │
-├──────────────────────┴────────────────────────────────────────────────┬
-│storm-vulkan (Linux, SDL)              │ storm-metal (macOS, AppKit)  │
-└──────────────────────┴────────────────────────────────────────────────┘
-```
-
-Tre sorter kod står i `src/` ovanför kontraktet, och skillnaden är
-värd att se, för designen tappade bort två av dem. **Mätt 2026-11-27** med
-`grep -c '<B: gfx.Backend>' src/*.ddr` och importerna per modul:
-
-- **En modul är generisk över `B`: `src/app.ddr`** (9 funktioner). Den är
-  den enda som håller ett fönster: `run_session` öppnar det, översätter
-  rendergrafens pass till `gfx.Backend` och stänger det. Inget annat i
-  `src/` kan fråga efter en backend, och det är hela poängen med princip 7.
-- **Nio moduler talar med kontraktet utan `B`** — de bygger data *åt* det:
-  `gallery`, `game`, `play_view`, `cozy_control`, `particles`,
-  `woodland`, `paw_contact`, `fox_expression`, `walk_surface` importerar
-  `gfx` för `Sky`, `Input`, `Textures`, `Texture`, `Vertex` — värden, aldrig
-  en `Window`. De är testbara med en test-backend eller utan fönster.
-- **Tio moduler är backend-fria** (ingen `gfx`-import alls): `play_ui`
-  (text och widgets från `storm-ui`), `editor` (paneler och pekarinteraktion
-  på `storm-ui`), `scene_file`, `args`, `art_asset`, `model`,
-  `fox_animation`, `canopy`, `woodland_ground` — de arbetar på
-  `play.Session`, scengrafen och glTF:t — och `main.ddr`, som är den
-  nittonde utan `B`: den importerar *backenden*, inte kontraktet, och är
-  den enda som gör det (två rader: `metal`, `vulkan`).
+Varje programs `src/main.ddr` väljer plattformens backend och ger MCP samma renderare som fönstret. `storm-studio` äger rendergrafen, materialstudien och GPU-resurserna. Storms exempelprogram implementerar `studio.Project` för fysikbanan First light. Ett separat spel kan implementera samma gränssnitt med egen simulering, kamera, grafik och HUD. [Blomsterskogen](https://github.com/Mik-pe/blomsterskogen) använder motorn på det sättet.
 
 Under kontraktet gäller det samma som förut: `storm-physics`, `storm-play`,
 `storm-mcp` och `storm-image` känner varken backend eller fönster: en
@@ -283,66 +225,9 @@ Vad som skiljer backends åt, och var det får synas:
 | Tangentkoder: SDL-scancodes / macOS key codes | en tabell per backend, parar kod med namngiven `gfx.Key` |
 | Musknappar: SDL:s nummer (vänster 1, mitten 2, höger 3) / AppKits händelser | en tabell per backend (`sdl.ddr: sdl_button`, `appkit.ddr: button_of`), parar med namngiven `gfx.Button` — biten (1, 2, 4) ägs av kontraktet, inte av plattformen |
 
-### 2.1. Nästa söm: `run_session` är tre uppstarter och tre grenar
+### 2.1. Spelprojekt och Studio
 
-Bilden ovan säger att `src/app.ddr` är den enda generiska modulen. Det är
-sant, och det är också problemet: *allt* som behöver ett fönster hamnar där,
-så modellen är en funktion på **468 rader med 116 lokala variabler**
-(mätt 2026-11-27: `app.ddr:497–964`, `grep -c ':='` på blocket). Dogfood
-fynd 100 kallade den, med rätt, *spelloopen, dvs. hela appen* — sant om
-vad den når (961 av trädets funktioner), inte om varför den är en funktion.
-Innehållet, mätt rad för rad:
-
-| Del | Rader | Vad den gör | När den körs |
-|---|---|---|---|
-| Studio-uppstart | 517–566, 581–593, 613–652 | galleri, `--texture`, `--glb`, `--font`, atlas | bara `!playing`/`!exporting` |
-| Speluppstart | 519, 530–553 | `game_view`, `cozy`, `--mood`/`--cam`/`--compass` | alltid (också i studion) |
-| Loopen | 663–960 | tre grenar: `playing && blossom` (37 rader), `playing && !blossom` (7), `!playing` (34), plus UI-grenen för Blomsterskogen (37) | varje frame |
-
-Tre saker har olika livslängd och olika ägare och ligger ändå i samma
-funktion: studion (`editor.State`, `gallery.Study`, `study.hub`), spelet
-(`Transport`, `play.Session`, `game_view`) och Blomsterskogens
-"cozy"-lager (`cozy_control.CozyControl`, 32 fält, som äger kamera, humör,
-kompass, stroll, toasts och options). Grenen `playing && blossom` räknar
-ut fotens underlag (`canopy.surface_below`, rad 752 — loopen gör det, inte
-`cozy_control`), anropar `cozy_control.update` och ger dess `play.Input`
-till `play.step/advance`; den andra spelgrenen anropar `play.step/advance`
-direkt med `play_view.controls`. Samma transport, två vägar till den.
-
-**Vad som inte är problemet:** grafen styr redan (`plan.steps` är det enda
-som bestämmer vad som körs, rad 849–945), `Transport` äger spelets anrop
-(`tests/transport.ddr`), och `record_list`/`gather` är testbara utan fönster.
-Sömmen är inte "app.ddr är stor" — det är att *uppstarten* av tre olika
-saker och *loopen* över dem inte har någon form.
-
-**Avgränsat nästa steg, i tre commit:ar, var och en AE = 0 på game, studio,
-Fox och `--texture`:**
-
-1. **En post per värld.** `pub struct Studio { study: gallery.Study,
-   editor: editor.State, glass_visible: bool, score: i32, total: i32 }`
-   och `pub struct Game { view: play_view.View, cozy: cozy_control.CozyControl,
-   hud: widgets.State, cozy_hud: widgets.State, action: play_ui.Action,
-   cozy_action: play_ui.CozyAction }`, vardera med sin `new(argv, graph,
-   window)` som gör uppstarten ur `run_session` och sina fält samlade. De är
-   värden, inte moduler: ingenting flyttar ut ur `app.ddr`, men loopen läser
-   `studio.editor.focus` i stället för sju lösa namn. `Transport` stannar
-   som den är — den är redan rätt form.
-2. **En funktion per gren i loopen.** `fn studio_frame(...) -> StudioFrame`
-   (kamera, muslook, R/F/T/G/E, hubrotation, orber), `fn blossom_frame(...)`
-   (cozy-uppdateringen, `Tick`, humör, guide) och `fn plain_frame(...)`
-   (`Tick`, `sync`). Alla tre returnerar `view_camera` och `frame_sky`; ingen
-   tar `B`. Det som är kvar i `run_session` är poll, fps, watcher,
-   gather, plan och exekveringen — den yttre formen, samma i alla tre fall.
-3. **`cozy_action`-matchen (15 rader) blir en metod på `CozyControl`:**
-   `cozy_control.apply(&mut cozy, &mut session, cozy_action)` — matchen
-   är en tabell över `CozyAction` och hör hemma hos den typ den vänder sig
-   till, inte i fönstrets funktion.
-
-Det som **inte** ska göras: att dra `cozy_control` in i `storm-play` (den
-läser kameran och fönstermätten, det är vy-kod), eller att ge
-`run_session` en `trait` med tre implementationer (tre världar är inte tre
-backends: de delar fönstret, transporten och grafen, och en trait skulle
-dölja det). Formen är poster och funktioner, inte polymorfi.
+`storm-studio` väljer bildpass, läser fönstrets indata och hanterar paus, omstart och ensteg. Projektets `update` tar emot tickbeslutet och ger tillbaka kameran. Projektet levererar även scengraf, ljus, siktlinje, etiketter för textatlasen och sin HUD. Samma kodväg används för förhandsbilder från MCP och för spel i fönster. När en nivå ersätts ogiltigförklaras geometrins cache.
 
 ## 3. Enums i FFI-lagret
 
@@ -486,19 +371,19 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 ## 5b. Editorn och scenen, som den står
 
-Materialstudien byggs i `src/gallery.ddr`. `src/editor.ddr` äger paneler, objektval och pekarinteraktion. Både fönsterkoordinater och klickytor mäts i punkter. Ett smalt fönster använder samma paneler en i taget. `src/game.ddr` hanterar insamlingen och `src/args.ddr` startkameran.
+Materialstudien byggs i `packages/storm-studio/src/gallery.ddr`. `packages/storm-studio/src/editor.ddr` äger paneler, objektval och pekarinteraktion. Både fönsterkoordinater och klickytor mäts i punkter. Ett smalt fönster använder samma paneler en i taget. `packages/storm-studio/src/game.ddr` hanterar insamlingen och `packages/storm-studio/src/args.ddr` startkameran.
 
 ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrin ändras. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
 
-I Blomsterskogen får stammar, trädkronor och annan skogsrekvisita ärva markeringen `sightline_occluder` i scenträdet. `gfx.MeshView` beskriver siktlinjen från kameran till rävmodellens visade position. I färgpasset öppnar renderaren en mjukt avtonad passage genom förgrunden. Alla lager använder samma skärmfasta pixelmönster så att Vallmo syns även genom flera överlappande kronor. Skuggpasset ritar hela geometrin.
+Ett projekt kan märka upp förgrundsgeometri med `sightline_occluder` på en scennod. Barnen ärver markeringen. Med `gfx.MeshView` kan projektet ange en siktlinje från kameran till sitt motiv. Färgpasset tonar ut blockerande fragment med ett gemensamt skärmfast pixelmönster för alla lager. Skuggpasset använder hela geometrin.
 
-`src/app.ddr` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
+`storm-studio` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
 
 `begin_scene(filtered)` väljer färgmål för himmel, ogenomskinlig geometri och transparens. När FXAA eller färgtoning och glöd är aktiva skriver scenen till `scene_color`, en åttabitars färgtextur i bildens upplösning. `post_process` läser scenfärgen och skriver till slutbilden i ett fullskärmspass. HUD och editor ritas sedan ovanpå slutbilden i skärmens pixeltäthet. När båda filtren är avstängda skriver scenen direkt till slutbilden. Fönstret, filcapture och MCP-förhandsvisningen kör samma rendergraf.
 
-`storm-play` äger spelets startscen och det föränderliga tillståndet under en provspelning. Varje tick tar samma indata från fönstret eller MCP. Fysikpaketet löser kontakterna. Spelmodulen håller reda på blommorna, bonusfjärilarna, målsensorerna och rävens gångfas. Molnplattformarnas ovansida bär spelaren vid landning. Fysiken rapporterar vilken plattform foten träffade och spelmodulen ger Vallmo en uppåthastighet om plattformen är ett studsmoln. Samma landnings- och plocktick styr de visuella effekterna i fönster och agentbilder. `src/play_view.ddr` översätter kropparnas positioner till scennoder. I Blomsterskogen använder rävmodellens leder, insektsvingarna och kronbladen simuleringens klocka. Flera exemplar av samma form delar vertexdata och kan ha olika material. Fönstret interpolerar mellan två tick. Vid paus, ensteg och bildexport används den exakta positionen för aktuell tick.
+`storm-play` äger den neutrala exempelbanan och dess fasta speltick. `src/play_view.ddr` avbildar kropparnas positioner på scennoder. Fönstret interpolerar mellan två tick. Vid paus, ensteg och bildexport används den exakta positionen.
 
-`scene.animation` samplar glesa nyckelspår för position, rotation och skala. Splinespåren behåller hastigheten genom mellanposer och runt loopsömmen. Ett klipp kan också stanna i ändposen. Vallmos kropp och molnens fjädring delar klippmotorn.
+`scene.animation` samplar glesa nyckelspår för position, rotation och skala. Splinespåren behåller hastigheten genom mellanposer och runt loopsömmen. Ett klipp kan också stanna i ändposen. Externa spel kan använda samma klippmotor för figurer och rekvisita.
 
 Fysiken registrerar spelarens färdväg, riktning och kontakt med underlaget vid fast tick. Presentationen samplar samma historik på bildrutans tidpunkt. Varje tass får en stödpunkt i världen och benen hittar dit med tvåleds-IK. Stödets höjd hämtas ur gläntans trianglar eller det deformerade molnets yta. Ledernas placering och tassarnas sula och tå följer med från Blender i GLB-filens scendata. [Klippsampling och IK](../packages/storm-scene/src/animation.ddr) · [Rävens poser](../src/fox_animation.ddr) · [Steghistorik](../packages/storm-play/src/stride.ddr)
 

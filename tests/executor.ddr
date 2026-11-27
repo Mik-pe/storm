@@ -10,7 +10,7 @@ import gltf
 import gltf.textures as textures
 import render
 import scene as scenegraph
-import ..src.app as app
+import studio as app
 
 // One mesh draw as the contract states it. `stream` is how many floats the
 // backend was given, not a copy: what matters is which stream it was.

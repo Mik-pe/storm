@@ -11,13 +11,9 @@ Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
 Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
 av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexport.
 
-**Blomsterskogen** är Storms basspel. Hjälp räven Vallmo att plocka tio blommor till en bukett i körsbärsgläntan. Ovanför stigen finns tolv moln (fyra rosa studsmoln) och fem frivilliga bonusfjärilar. Studsmolnen lyfter Vallmo ända upp till Kronbalkongen. [Se molnhoppet i spelet](docs/molnhopp.mp4)
+Storm startar i **Studio**, där du kan arbeta med scenträdet, ljuset och materialen. **First light** är en liten fysikbana för provspelning. Räven Vallmo och hennes glänta utvecklas som ett eget spel i [Blomsterskogen](https://github.com/Mik-pe/blomsterskogen).
 
-När en stam, en trädkrona eller annan skogsrekvisita skymmer Vallmo tonas den delen av förgrunden ut. Öppningen följer henne även när du vrider kameran.
-
-![Vallmo bland körsbärsträden i Blomsterskogen, renderad av Storm på macOS](docs/blomsterskogen.png)
-
-Öppna **Studio** i spelet för att arbeta med scenträdet, positioner och material. Materialstudien har en mässingsring, en keramikvas och en porslinskula på ett roterande podium. [Studion på macOS](docs/materialstudie-macos.jpg) · [Studion på Linux](docs/materialstudie-linux.jpg)
+![Materialstudien på macOS](docs/materialstudie-macos.jpg)
 
 ## Förutsättningar
 
@@ -36,8 +32,8 @@ När en stam, en trädkrona eller annan skogsrekvisita skymmer Vallmo tonas den 
 - Editorn använder Arial på macOS och söker efter DejaVu Sans och Liberation Sans på Linux. `--font sökväg` väljer ett eget typsnitt.
 
 ```sh
-dunder run                      # spela Blomsterskogen
-dunder run -- --studio          # öppna materialstudien
+dunder run                      # öppna Storm Studio
+dunder run -- --play            # provspela First light
 dunder run -- --frames 120      # rita 120 bildrutor och avsluta
 dunder run -- --capture a.ppm   # en bildruta utan tangentbord
 dunder run --example scene      # ECS + glTF + textlayout, utan fönster
@@ -46,7 +42,7 @@ dunder test                     # rotpaketets tester
 
 ## Spela och bygg med en agent
 
-Styr Vallmo med **WASD** eller **piltangenterna**. Gå intill blommorna för att plocka dem. Den tionde fullbordar buketten och vinner spelet. Du kan fortsätta upp bland molnen efteråt. Tryck **mellanslag** för att hoppa och håll en riktning även i luften. Landa på det rosa molnet och styr åt höger i studsen för att nå den översta fjärilen. **Q** pausar och **R** börjar om. I pausläget flyttar **Ett steg** fram simuleringen en tick.
+I First light styr du spelaren med WASD eller piltangenterna och hoppar med mellanslag. Q pausar och R börjar om.
 
 ```sh
 dunder build -o build/storm
@@ -54,21 +50,7 @@ dunder build -o build/storm
 ./build/storm --scene bana.storm.json --watch
 ```
 
-Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporoten. En agent kan bygga en bana, provspela bestämda indata och få både positioner och en PNG från GPU:n. Med `--watch` syns nästa sparade banändring i samma fönster. [Scenformat och en provkörning från start till mål](docs/spel.md)
-
-### Redigera modellerna i Blender
-
-Räven, gläntan och smådjuren har redigerbara Blender-original. [Räven](assets/blomsterskogen/vallmo.blend) · [Gläntan](assets/blomsterskogen/glade.blend) · [Blomman och insekterna](assets/blomsterskogen/creatures.blend)
-
-Molnbanan har en egen Blenderfil med separata scener för det vita molnet, det rosa studsmolnet och bonusfjärilen. De exporteras till `cloud.glb`, `boost_cloud.glb` och `super_butterfly.glb`. [Molnbanans Blender-original](assets/blomsterskogen/canopy.blend)
-
-Vallmo travar med diagonala tasspar. Skuldrorna tar emot vikten och svansens vita spets följer efter när hon vänder. Stanna ett steg framför en blomma så lutar hon sig fram och nosar två gånger. På den öppna stigen sträcker hon på sig efter en stunds vila. När hon plockar en blomma höjer hon hakan och kisar. [Jämför rörelsen med den förra versionen](docs/vallmos-steg.mp4) · [Se Vallmo nosa på Smörblomman](docs/vallmo-vid-blomman.mp4) · [Trav och hopp](src/fox_animation.ddr) · [Vila och blomgester](src/fox_expression.ddr)
-
-I `vallmo.blend` står Vallmo på bildruta 1 och sitter på bildruta 35. Riggen **Vallmo · rigg** har 24 leder. Modellarket finns bland de packade bilderna. Kör **Exportera till Storm.py** i Blenders textredigerare för att skriva `vallmo.glb` bredvid Blenderfilen. Exporten använder viloposen och sparar riggens ledpunkter och tassarnas kontaktpunkter.
-
-I `creatures.blend` finns en separat scen för varje figur. Redigera geometri och Principled BSDF-material i Blender, välj figurens scen och exportera som **glTF Binary (.glb)** med **Active Scene** och **+Y Up**. Behåll mesharnas prefix för rörliga delar, exempelvis `WingL_` och `WingR_`. Storm animerar dem kring modellens leder.
-
-Granska exportens geometri och material direkt med `./build/storm --glb assets/blomsterskogen/vallmo.glb`. För att använda en ny export i basspelet, ersätt motsvarande GLB och bygg Storm igen. Modellerna följer med i binären och Mac-appen.
+Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporoten. En agent kan bygga en bana, provspela bestämda indata och få både positioner och en PNG från GPU:n. Med `--watch` syns nästa sparade banändring i samma fönster. En sparad bana kan öppnas igen med `--scene`.
 
 ## Paket
 
@@ -86,16 +68,15 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och propagering till `WorldTransform`. Modulen `animation` samplar och blandar nyckelposer för position, rotation och skala. | `core`, `ecs`, `gfx` |
 | [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
-| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning, studsmoln, bonusfjärilar och målsensorer. | `core`, `physics` |
+| [`packages/storm-studio`](packages/storm-studio) | Fönsterloop, materialstudio, scenbevakning och det gemensamma spelgränssnittet `Project`. | `gfx`, scen- och UI-paketen |
+| [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
 | [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt JPEG (baseline och progressivt; 4:4:4, 4:2:2, 4:2:0, grå, restart-markörer) som RGBA8, valt på filens signatur — 12-bitars JPEG, bitdjup 16 i PNG och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
 
-`src/main.ddr` väljer backend. Allt annat i `src/` (editorn, spelet, exekutorn som mappar varje
-`PassKind` till backendanrop) är skrivet mot `gfx.Backend` och är samma kod
-på båda backends.
+`src/main.ddr` väljer backend. Paketet `storm-studio` kör rendergrafens pass genom `gfx.Backend`. Samma exekutor ritar Studio, provspelningen och förhandsbilderna från MCP.
 
 ## Fönstret
 
@@ -166,7 +147,7 @@ skärmgradient.
 
 När kantutjämning eller färgeffekter används ritas scenen först till en färgtextur. Ett fullskärmspass läser texturen och jämnar ut diagonala kanter med FXAA, färgtonar bilden och ger ljusa partier en mjuk glöd enligt de valda inställningarna. Därefter ritas HUD och text i skärmens egen upplösning. Med båda inställningarna avstängda ritas scenen direkt till slutbilden. [Jämför kantutjämningen](docs/kantutjamning.png)
 
-FXAA är på från start i både spelet och Studio. Färgtoning och glöd är på i Blomsterskogen och av i materialstudien och banor utan blomskogstemat. **E** växlar färgtoning och glöd under körning. `--no-aa` stänger av kantutjämningen vid start. `--no-post` stänger av färgtoning och glöd vid start, medan `--effects` slår på dem — i Blomsterskogen, där de redan är på, ändrar `--effects` därför ingenting (capture **AE = 0** mot standard), och i studion är skillnaden 2 421 pixlar av 1 024 000: tonen är avsiktligt diskret (±0,03–0,09 i linjärt rum, `post.frag`). Ange `--no-aa --no-post` för att jämföra med direktrendering.
+FXAA är på från start. **E** växlar färgtoning och glöd, `--effects` aktiverar dem vid start och `--no-aa` stänger av kantutjämningen.
 
 ```dunder
 mut schedule := render.Graph::new()
@@ -182,7 +163,7 @@ for step in 0..plan.steps.len { kind := plan.steps[step].kind; _ := kind }
 
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
 är tie-breaker och cykler kan inte uppstå. Grafen äger ordning och existens; den
-vet inte vad en backend är. Det är `app.ddr` som mappar varje `PassKind` till
+vet inte vad en backend är. Det är `storm-studio` som mappar varje `PassKind` till
 anrop på `gfx.Backend` och öppnar huvudpasset lat vid första passet som inte har
 ett eget (skuggpasset har sitt eget).
 

@@ -1,0 +1,121 @@
+capability stdio
+import std.io as io
+import std.json as json
+import .schema
+
+const VERSION: string = "2025-11-25"
+enum Phase { New, Negotiated, Ready }
+pub struct Protocol { phase: Phase, catalog: json.Doc, name: string }
+pub fn new(name: string, catalog: string) -> Protocol {
+    Protocol { phase: .New, catalog: json.Doc::parse_text(catalog), name: name.clone() }
+}
+
+fn result(id: string, value: string) -> string {
+    "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + value + "}"
+}
+
+fn rpc_error(id: string, code: i32, message: string) -> string {
+    "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + code.str() + ",\"message\":" + json.quote(message) + "}}"
+}
+
+fn tool_error(id: string, message: string) -> string {
+    result(id, "{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":" + json.quote(message) + "}]}")
+}
+
+fn tool_result(id: string, data: string) -> string {
+    result(id, "{\"structuredContent\":" + data + ",\"content\":[{\"type\":\"text\",\"text\":" + json.quote(data) + "}]}")
+}
+
+pub fn handle<S>(server: &mut Protocol, state: &mut S, line: string,
+    invoke: fn(&mut S, string, &json.Doc, i32) -> Result<string, string>, preview: fn(&S) -> Result<string, string>) -> string {
+    d := json.Doc::parse_text(line)
+    if !d.ok { return rpc_error("null", -32700, "Parse error") }
+    root := d.root
+    if d.kind(root) != .Object || d.get_str(root, "jsonrpc").unwrap_or_default() != "2.0" {
+        return rpc_error("null", -32600, "Expected a JSON-RPC 2.0 request")
+    }
+    node := d.field(root, "id")
+    if node >= 0 && d.kind(node) != .String && d.as_i64(node).is_none() && d.as_u64(node).is_none() {
+        return rpc_error("null", -32600, "Request ID must be a string or an integer")
+    }
+    id := if node < 0 { "null" } else { d.raw_json(node) }
+    method := match d.get_str(root, "method") {
+        .Some(name) => name,
+        .None => { return rpc_error(id, -32600, "Expected a method name") },
+    }
+    if node < 0 {
+        if method == "notifications/initialized" && server.phase == .Negotiated { server.phase = .Ready }
+        return ""
+    }
+    params := d.field(root, "params")
+    if params >= 0 && d.kind(params) != .Object { return rpc_error(id, -32602, "Expected an object for params") }
+    if method == "ping" { return result(id, "{}") }
+    if method == "initialize" {
+        if server.phase != .New { return rpc_error(id, -32600, "Session already initialized") }
+        requested := d.get_str(params, "protocolVersion").unwrap_or_default()
+        info := d.field(params, "clientInfo")
+        if requested.len == 0 || d.kind(d.field(params, "capabilities")) != .Object ||
+            d.get_str(info, "name").is_none() || d.get_str(info, "version").is_none() {
+            return rpc_error(id, -32602, "Expected protocolVersion, clientInfo with name and version, and capabilities")
+        }
+        version := if requested == "2025-06-18" { requested } else { VERSION }
+        server.phase = .Negotiated
+        return result(id, "{\"protocolVersion\":" + json.quote(version) +
+            ",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":" + json.quote(server.name) + ",\"version\":\"0.1.0\"}," +
+            "\"instructions\":\"Create or load a scene, edit bodies, then step and inspect the shared 60 Hz simulation. Launch a saved scene with the --scene option.\"}")
+    }
+    if server.phase != .Ready { return rpc_error(id, -32002, "Initialization incomplete") }
+    if method == "tools/list" {
+        if d.field(params, "cursor") >= 0 { return rpc_error(id, -32602, "Unknown cursor") }
+        return result(id, server.catalog.raw_json(server.catalog.root))
+    }
+    if method != "tools/call" { return rpc_error(id, -32601, "Method not found") }
+    name := d.get_str(params, "name").unwrap_or_default()
+    spec := schema.schema(&server.catalog, name)
+    if spec < 0 { return rpc_error(id, -32602, "Unknown tool: " + name) }
+    args := d.field(params, "arguments")
+    error := schema.validate(&server.catalog, spec, &d, args, "arguments")
+    if error.len > 0 { return tool_error(id, error) }
+    if name == "storm_preview" {
+        match preview(state) {
+            .Ok(png) => { return result(id, "{\"content\":[{\"type\":\"image\",\"mimeType\":\"image/png\",\"data\":" + json.quote(png) + "}]}") },
+            .Err(message) => { return tool_error(id, message) },
+        }
+    }
+    match invoke(&mut state, name, &d, args) {
+        .Ok(data) => tool_result(id, data),
+        .Err(message) => tool_error(id, message),
+    }
+}
+
+pub fn serve<S>(move initial: S, handle: fn(&mut S, string) -> string) -> i32 {
+    mut server := move initial
+    mut input := io.BufReader<io.Stdin>::new(io.stdin())
+    mut output := io.stdout()
+    while true {
+        reply := match input.read_line_limit(4194304) {
+            .Ok(line) => match line {
+                .Data(message) => handle(&mut server, message),
+                .Eof => { return 0 },
+            },
+            .Err(error) => {
+                if error == .TooLarge {
+                    // Discard only this frame. The next client request can still succeed.
+                    mut chunk: []u8 = []
+                    while true {
+                        chunk.clear()
+                        match input.read_until_limit(10, &mut chunk, 65536) {
+                            .Ok(_) => { break },
+                            .Err(e) => { if e != .TooLarge { return 1 } },
+                        }
+                    }
+                    rpc_error("null", -32600, "Request exceeds the 4 MiB frame limit")
+                } else if error == .InvalidUtf8 {
+                    rpc_error("null", -32700, "Expected a UTF-8 JSON message")
+                } else { return 1 }
+            },
+        }
+        if reply.len > 0 && output.write_str(reply + "\n").is_err() { return 1 }
+    }
+    0
+}

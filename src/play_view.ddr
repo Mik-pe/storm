@@ -5,26 +5,18 @@ import gfx
 import input
 import play
 import scene
-import .args
-import .canopy
-import .cozy_control
-import .particles
-import .woodland
-import std.math as _
+import studio.args as args
 
 pub struct View {
     graph: scene.Graph,
     nodes: []ecs.Entity,
-    cast: woodland.Cast,
-    course: canopy.Course,
-    cozy_fx: particles.CozyEffects,
     has_goal: bool,
     player_node: i32,
     center: core.Vec3,
     extent: core.Vec3,
 }
 
-// Lower the sphere tessellation on dense levels to keep both passes in the initial allocation.
+// Reserve enough vertex space for two passes even in a level made entirely of spheres.
 pub fn sphere_geometry(scene: &play.Scene) -> []f32 {
     mut count := 0
     for item in scene.entities { if item.shape == .Sphere { count += 1 } }
@@ -32,7 +24,7 @@ pub fn sphere_geometry(scene: &play.Scene) -> []f32 {
     return gfx.sphere(16, 6)
 }
 
-pub fn build(session: &play.Session) -> Result<View, string> {
+pub fn build(session: &play.Session) -> View {
     mut graph := scene.Graph::new()
     mut nodes: []ecs.Entity = []
     mut goal := false
@@ -55,7 +47,7 @@ pub fn build(session: &play.Session) -> Result<View, string> {
         node := graph.create_root(pos)
         nodes.push(node)
         _ := graph.set_name(node, item.name.clone())
-        if item.role == .Collider || canopy.modeled(item.role) || (session.scene.theme == .Blossom && (item.role == .Player || item.role == .Flower)) { continue }
+        if item.role == .Collider { continue }
         sphere := item.shape == .Sphere
         _ := graph.set_shape(node, if sphere { scene.Shape.Sphere } else { scene.Shape.Cube })
         // Built-in boxes span 1.2 world units, spheres span two.
@@ -66,74 +58,18 @@ pub fn build(session: &play.Session) -> Result<View, string> {
         _ := graph.set_material(node, scene.emissive_material(c.x, c.y, c.z, 1.0,
             if sphere { 0.38 } else { 0.10 }, if sphere { 0.27 } else { 0.62 }, if is_goal { 0.22 } else { 0.0 }))
     }
-    cast := if session.scene.theme == .Blossom { woodland.build(&mut graph, session, &nodes)? } else { woodland.empty() }
-    course := canopy.build(&mut graph, session, &nodes)?
-    cozy_fx := if session.scene.theme == .Blossom { particles.build_cozy(&mut graph) } else { particles.empty_cozy() }
     graph.propagate()
-    .Ok(View {
-        course: move course, cast: move cast, cozy_fx: move cozy_fx, graph: move graph, nodes: move nodes, has_goal: goal, player_node: player_node,
-        center: core.scale(core.add(lo, hi), 0.5), extent: core.scale(core.sub(hi, lo), 0.5)
-    })
+    View { graph: move graph, nodes: move nodes, has_goal: goal, player_node: player_node,
+        center: core.scale(core.add(lo, hi), 0.5), extent: core.scale(core.sub(hi, lo), 0.5) }
 }
 
 pub fn sync(view: &mut View, session: &play.Session, exact: bool) {
-    idle := cozy_control.GuideVisual { active: false, target: core.vec3(0.0, 0.0, 0.0), age: 0.0 }
-    sync_guide(&mut view, session, exact, &idle)
-}
-
-pub fn is_snoozing(cozy: &play.CozyState, motion: &play.PlayerMotion, rest: &play.Rest) -> bool {
-    (cozy.sitting && cozy.sit_age >= 4.5) || (motion.grounded && motion.run_weight < 0.1 && rest.age >= 14.0)
-}
-
-pub fn sync_guide(view: &mut View, session: &play.Session, exact: bool, guide: &cozy_control.GuideVisual) {
     for i in 0..view.nodes.len {
-        if session.scene.entities[i].role == .Flower {
-            view.graph.set_visible(view.nodes[i], !session.collected[i])
-        }
         if session.scene.entities[i].mass == 0.0 { continue }
         pos := if exact { play.position(session, i) } else { play.render_position(session, i) }
         view.graph.set_position(view.nodes[i], pos)
     }
-    woodland.animate(&mut view.graph, &view.cast, session, view.player_node, exact, &view.course)
-    canopy.animate(&mut view.graph, &view.course, session, exact)
-    if session.scene.theme == .Blossom && view.player_node >= 0 {
-        fox_pos := if exact { play.position(session, view.player_node) } else { play.render_position(session, view.player_node) }
-        radius := session.scene.entities[view.player_node].size.y * 0.5
-        support_y := canopy.surface_below(&view.course, session, fox_pos.x, fox_pos.y - radius + 0.08, fox_pos.z)
-        motion := play.render_motion(session, exact)
-        rest := play.render_rest(session, exact)
-        cozy := play.render_cozy(session, exact)
-        snoozing := is_snoozing(&cozy, &motion, &rest)
-        cue := particles.CozyCue {
-            fox: fox_pos,
-            support_y: support_y,
-            grounded: motion.grounded,
-            landing_age: motion.landing_age,
-            landing_strength: motion.landing_strength,
-            pet_age: cozy.pet_age,
-            emote_age: cozy.emote_age,
-            snoozing: snoozing,
-            won: session.won,
-            guide_active: guide.active,
-            guide_pos: guide.target,
-            guide_age: guide.age,
-            boost_pos: canopy.boost_cloud_pos(&view.course, session),
-        }
-        particles.animate_cozy(&mut view.graph, &view.cozy_fx, motion.seconds, &cue)
-    }
     view.graph.propagate()
-}
-
-// The synced node holds the interpolated position during play and the exact
-// position in paused frames and previews. Size follows the rig scale.
-pub fn mesh_view(view: &View, session: &play.Session, eye: core.Vec3) -> gfx.MeshView {
-    mut camera := gfx.mesh_view([eye.x, eye.y, eye.z])
-    if session.scene.theme != .Blossom || view.player_node < 0 { return camera }
-    size := session.scene.entities[view.player_node].size.y
-    body := view.graph.local(view.nodes[view.player_node]).position
-    camera.to_focus = [body.x - eye.x, body.y + 0.55 * size - eye.y, body.z - eye.z]
-    camera.radius = 2.15 * size
-    camera
 }
 
 pub fn controls(keys: &gfx.Input) -> play.Input {
@@ -146,7 +82,7 @@ pub fn controls(keys: &gfx.Input) -> play.Input {
     play.Input { x: x, z: z, jump: keys.hit(.Space) }
 }
 
-pub struct Framing { center: core.Vec3, extent: core.Vec3, forest: bool, climb: f32 }
+pub struct Framing { center: core.Vec3, extent: core.Vec3 }
 
 fn follow(center: f32, player: f32, room: f32) -> f32 {
     if player < center - room { return player + room }
@@ -154,29 +90,13 @@ fn follow(center: f32, player: f32, room: f32) -> f32 {
     center
 }
 
-fn lerp3(a: f32, b: f32, c: f32, t: f32) -> f32 {
-    if t <= 0.0 { return a }
-    if t >= 2.0 { return c }
-    if t <= 1.0 { return a + (b - a) * t }
-    b + (c - b) * (t - 1.0)
-}
-
 pub fn framing(view: &View, session: &play.Session, exact: bool) -> Framing {
-    mut area := Framing { center: view.center, extent: view.extent, forest: session.scene.theme == .Blossom, climb: 0.0 }
+    mut area := Framing { center: view.center, extent: view.extent }
     if view.player_node < 0 { return area }
     if area.extent.x > 10.0 { area.extent.x = 10.0 }
     if area.extent.y > 6.0 { area.extent.y = 6.0 }
     if area.extent.z > 8.0 { area.extent.z = 8.0 }
     player := if exact { play.position(session, view.player_node) } else { play.render_position(session, view.player_node) }
-    if area.forest {
-        height := player.y - session.scene.entities[view.player_node].position.y
-        lift := if height <= 0.0 { f32(0.0) } else if height >= 3.0 { f32(1.0) } else { height / 3.0 }
-        area.climb = lift * lift * (3.0 - 2.0 * lift)
-        // Follow Vallmo 1:1 across the entire expanded glade and up into the tall multi-route canopy.
-        area.center = core.vec3(player.x, 0.88 + height * (0.42 + 0.58 * area.climb), player.z - 0.65)
-        area.extent = core.vec3(6.0, 2.5, 5.0)
-        return area
-    }
     area.center = core.vec3(follow(view.center.x, player.x, 1.0 + area.extent.x * 0.65),
         follow(view.center.y, player.y, 1.4 + area.extent.y * 0.36),
         follow(view.center.z, player.z, 1.0 + area.extent.z * 0.55))
@@ -184,73 +104,19 @@ pub fn framing(view: &View, session: &play.Session, exact: bool) -> Framing {
 }
 
 pub fn camera(view: &Framing, aspect: f32) -> input.Camera {
-    camera_cozy(view, aspect, 0.0, 1.0)
-}
-
-// Orbit and zoom around the current framing target without changing its look-at focus.
-pub fn camera_cozy(view: &Framing, aspect: f32, yaw_offset: f32, zoom: f32) -> input.Camera {
-    camera_blend(view, aspect, 1.0, yaw_offset, zoom)
-}
-
-// Discrete camera preset helper (Close / Normal / Explore) combined with orbit and zoom.
-pub fn camera_preset(view: &Framing, aspect: f32, mode: cozy_control.CameraMode, yaw_offset: f32, zoom: f32) -> input.Camera {
-    camera_blend(view, aspect, cozy_control.camera_preset_value(mode), yaw_offset, zoom)
-}
-
-// Smoothly interpolate across Close (0.0), Normal (1.0), and Explore (2.0) camera presets.
-pub fn camera_blend(view: &Framing, aspect: f32, preset_t: f32, yaw_offset: f32, zoom: f32) -> input.Camera {
+    // Fit the authored bounds in the usable viewport, including the play controls.
     half_height := view.extent.y * 0.85 + view.extent.z * 0.53
     mut reach := half_height
     horizontal := view.extent.x / aspect
     if horizontal > reach { reach = horizontal }
     if reach < 1.3 { reach = 1.3 }
     distance := reach * 2.96 + view.extent.z * 0.85 + view.extent.y * 0.53
-    mut offset := core.vec3(0.0, distance * 0.53, distance * 0.85)
-    mut target := view.center
-    mut fov: f32 = 0.85
-    if view.forest {
-        fit: f32 = if aspect < 1.15 { 1.15 / aspect } else { 1.0 }
-        base_y := lerp3(1.18 + 0.55 * view.climb, 2.25 + 1.00 * view.climb, 5.20 + 1.55 * view.climb, preset_t)
-        base_z := lerp3(3.90 + 0.45 * view.climb, 7.55 + 0.80 * view.climb, 12.60 + 1.35 * view.climb, preset_t)
-        offset = core.scale(core.vec3(0.0, base_y, base_z), fit)
-        fov = lerp3(0.68, 0.76, 0.84, preset_t)
-        if preset_t < 1.0 {
-            clamped := if preset_t < 0.0 { f32(0.0) } else { preset_t }
-            w := f32(1.0) - clamped
-            // In Close mode, pull look-at cleanly onto Vallmo's fluffy head and chest.
-            target = core.add(target, core.vec3(0.0, -0.14 * w, 0.48 * w))
-        } else if preset_t > 1.0 {
-            clamped := if preset_t > 2.0 { f32(2.0) } else { preset_t }
-            w := clamped - f32(1.0)
-            // In Explore mode, cast look-at gently ahead along the active camera direction.
-            ahead := 0.65 * w
-            target = core.add(target, core.vec3(ahead * yaw_offset.sin(), 0.25 * w, -ahead * yaw_offset.cos()))
-        }
-    }
-    safe_zoom := if zoom < 0.25 { f32(0.25) } else { zoom }
-    if yaw_offset != 0.0 {
-        c := yaw_offset.cos()
-        s := yaw_offset.sin()
-        offset = core.vec3(offset.x * c - offset.z * s, offset.y, offset.x * s + offset.z * c)
-    }
-    if safe_zoom != 1.0 { offset = core.scale(offset, safe_zoom) }
-    eye := core.add(target, offset)
-    aim := args.look_at(eye, target)
+    eye := core.add(view.center, core.vec3(0.0, distance * 0.53, distance * 0.85))
+    aim := args.look_at(eye, view.center)
     mut cam := input.Camera::new(eye)
     cam.yaw = aim.yaw
     cam.pitch = aim.pitch
-    cam.fov = fov
-    if distance * safe_zoom > 100.0 { cam.far_clip = distance * safe_zoom * 4.0 }
+    cam.fov = 0.85
+    if distance > 100.0 { cam.far_clip = distance * 4.0 }
     cam
-}
-
-// Compute a crisp shadow frustum radius covering the active view without edge cutoff.
-pub fn shadow_radius(view: &Framing, preset_t: f32, zoom: f32) -> f32 {
-    if !view.forest { return 4.0 + core.length(view.extent) }
-    base := lerp3(11.5, 15.5, 22.5, preset_t)
-    z := if zoom < 0.85 { f32(0.85) } else if zoom > 1.35 { f32(1.35) } else { zoom }
-    radius := base * z + view.climb * 2.5
-    if radius < 11.0 { return 11.0 }
-    if radius > 28.0 { return 28.0 }
-    radius
 }

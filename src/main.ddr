@@ -2,7 +2,9 @@
 capability stdio
 
 import .app
-import .args
+import studio
+import studio.args as args
+import studio.watch as watch
 import mcp
 import play
 import metal
@@ -10,30 +12,40 @@ import vulkan
 import sys
 
 fn preview(session: &play.Session, path: string) -> Result<(), string> {
-    if target_is("macos") { return app.preview<metal.Renderer>(metal.open_preview, session, path) }
-    return app.preview<vulkan.Window>(vulkan.open_preview, session, path)
+    argv: []string = []
+    project := app.project(session.clone(), watch.new("", ""))?
+    if target_is("macos") { return studio.run<metal.Renderer, app.Game>(metal.open_preview, "Storm", &argv, move project, .Preview, path) }
+    else { return studio.run<vulkan.Window, app.Game>(vulkan.open_preview, "Storm", &argv, move project, .Preview, path) }
 }
 
 fn main() -> i32 {
     argv := args.from_process()
+    flags := args.flags()
     if args.flag(&argv, "--help") || args.flag(&argv, "-h") {
-        print(args.usage())
+        print(args.usage("storm", "Open Storm Studio, load a model, or playtest an authored scene.", &flags))
         return 0
     }
     // A flag the program does not read is a typo, never a default: refuse
     // it by name instead of rendering a picture of something else.
-    bad := args.unknown(&argv)
+    bad := args.unknown(&argv, &flags)
     if bad.len > 0 {
         _ := sys.eprint("storm: unknown option " + bad)
-        print(args.usage())
+        print(args.usage("storm", "Open Storm Studio, load a model, or playtest an authored scene.", &flags))
         return 2
     }
     if args.flag(&argv, "--mcp") { return mcp.serve(preview) }
     capture := args.flag(&argv, "--capture")
+    project := match app.load(&argv) {
+        .Ok(p) => p, .Err(message) => { _ := sys.eprint(message); return 1 },
+    }
+    launch := studio.launch_mode(&argv, .Studio)
+    shot := args.value(&argv, "--capture")
     result := if target_is("macos") {
-        if capture { app.run<metal.Renderer>(metal.open_preview, &argv) } else { app.run<metal.Renderer>(metal.open, &argv) }
+        open := if capture { metal.open_preview } else { metal.open }
+        studio.run<metal.Renderer, app.Game>(open, "Storm", &argv, move project, launch, shot)
     } else {
-        if capture { app.run<vulkan.Window>(vulkan.open_preview, &argv) } else { app.run<vulkan.Window>(vulkan.open, &argv) }
+        open := if capture { vulkan.open_preview } else { vulkan.open }
+        studio.run<vulkan.Window, app.Game>(open, "Storm", &argv, move project, launch, shot)
     }
     match result {
         .Ok => 0,

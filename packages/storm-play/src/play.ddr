@@ -2,208 +2,68 @@
 capability filesystem
 
 import .codec
-import .stride
 import core
 import physics
 import std.fs as fs
 import std.json as json
-import std.math as math
 import sys
 
 pub const MAX_ENTITIES: i32 = 128
 pub const TICK_RATE: i32 = 60
 pub const TICK_SECONDS: f64 = 1.0 / 60.0
 const MAX_CATCHUP: i32 = 8
-const RUN_SPEED: f32 = 4.5
-const BOOST_SPEED: f32 = 8.2
-const TAU: f32 = 6.2831853
-pub const STRIDE_LENGTH: f32 = stride.LENGTH
 
 pub enum Shape { Box, Sphere }
-pub enum Role { Prop, Player, Goal, Flower, Collider, Cloud, BoostCloud, SuperButterfly }
-pub enum Theme { Plain, Blossom }
+pub enum Role { Prop, Player, Goal, Collider }
 pub struct Bounds { min_x: f32, min_z: f32, max_x: f32, max_z: f32 }
-struct Sensor { entity_index: i32, body: physics.Body }
 
 pub struct Entity {
     name: string, shape: Shape, role: Role, position: core.Vec3, size: core.Vec3,
     velocity: core.Vec3, mass: f32, restitution: f32, friction: f32, color: core.Vec3,
 }
 
-pub struct Scene { name: string, gravity: core.Vec3, theme: Theme, bounds: Option<Bounds>, entities: []Entity }
+pub struct Scene { name: string, gravity: core.Vec3, bounds: Option<Bounds>, entities: []Entity }
 pub struct Input { x: f32, z: f32, jump: bool }
-pub struct StrideAnchor { position: core.Vec3, heading: f32, run_weight: f32, distance: f32 }
-pub struct PlayerMotion {
-    seconds: f32, heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, vertical_velocity: f32,
-    // Positive bank leans into a right turn. Positive drive loads the rear feet during acceleration.
-    bank: f32, drive: f32,
-    takeoff_age: f32, landing_age: f32, boost_age: f32, landing_strength: f32,
-}
-pub struct CozyState {
-    sitting: bool, sit_weight: f32, sit_age: f32, pet_age: f32, emote_age: f32, flower_age: f32, butterfly_age: f32,
-}
-struct MotionTick {
-    heading: f32, walk_phase: f32, run_weight: f32, grounded: bool, platform: i32, vertical_velocity: f32,
-    bank: f32, drive: f32,
-    takeoff_tick: i64, landing_tick: i64, boost_tick: i64, rest_tick: i64, rest_weight: f32, landing_strength: f32,
-}
 pub struct Session {
     scene: Scene, tick: i64, won: bool, contacts: i32, player: i32,
-    bodies: []physics.Body, body_indices: []i32, sensors: []Sensor,
-    collected: []bool, flowers: i32, total_flowers: i32, last_flower: i32, picked_tick: i64,
-    butterflies: i32, total_butterflies: i32, last_butterfly: i32, butterfly_tick: i64,
-    last_cloud: i32, cloud_tick: i64, cloud_origin: core.Vec3, body_entities: []i32, has_goal: bool,
-    heading: f32, walk_phase: f32, walking: bool,
-    motion: MotionTick, previous_motion: MotionTick, forward_speed: f32, trail: stride.Trail,
+    bodies: []physics.Body, body_indices: []i32, sensors: []physics.Body,
     previous: []core.Vec3, accumulator: f64, jump_pending: bool,
-    cozy_sitting: bool, sit_tick: i64, sit_weight: f32, prev_sit_weight: f32, pet_tick: i64, emote_tick: i64,
 }
 
 pub fn validate_name(name: string) -> Result<(), string> { codec.validate_name(name) }
 
 pub fn empty(name: string) -> Scene {
-    Scene { name: name.clone(), gravity: core.vec3(0.0, -9.81, 0.0), theme: .Plain, bounds: .None, entities: [] }
+    Scene { name: name.clone(), gravity: core.vec3(0.0, -9.81, 0.0), bounds: .None, entities: [] }
 }
 
 fn entity(name: string, shape: Shape, role: Role, p: core.Vec3, size: core.Vec3, mass: f32, color: core.Vec3) -> Entity {
-    Entity {
-        name: name.clone(), shape: shape, role: role, position: p, size: size, mass: mass,
-        velocity: core.vec3(0.0, 0.0, 0.0), restitution: 0.0, friction: 0.6, color: color
-    }
-}
-
-fn cloud(name: string, role: Role, top: core.Vec3, width: f32, depth: f32, color: core.Vec3) -> Entity {
-    entity(name, .Box, role, core.sub(top, core.vec3(0.0, 0.14, 0.0)), core.vec3(width, 0.28, depth), 0.0, color)
+    Entity { name: name.clone(), shape: shape, role: role, position: p, size: size, mass: mass,
+        velocity: core.vec3(0.0, 0.0, 0.0), restitution: 0.0, friction: 0.6, color: color }
 }
 
 pub fn demo() -> Scene {
-    mut scene := empty("Blomsterskogen")
-    scene.theme = .Blossom
-    scene.bounds = .Some(Bounds { min_x: -13.5, min_z: -11.5, max_x: 13.5, max_z: 11.5 })
-    scene.entities.push(entity("Ängen", .Box, .Prop, core.vec3(0.0, -0.5, 0.0), core.vec3(56.0, 1.0, 52.0),
-        0.0, core.vec3(0.39, 0.65, 0.30)))
-    scene.entities.push(entity("Vallmo", .Sphere, .Player, core.vec3(0.0, 0.4, 2.0), core.vec3(0.8, 0.8, 0.8),
-        1.0, core.vec3(0.95, 0.31, 0.075)))
-
-    // Ten named Swedish wildflowers: eight across every ground zone plus two on scenic low clouds.
-    names := [
-        "Smörblomma", "Blåklocka", "Prästkrage", "Skogsviol", "Förgätmigej",
-        "Linnea", "Gullviva", "Klöverblomma", "Skogsstjärna", "Smultronblomma",
-    ]
-    positions := [
-        core.vec3(-2.15, 0.45, 2.35), core.vec3(2.60, 0.45, 0.70),
-        core.vec3(-6.15, 0.45, 5.10), core.vec3(-9.10, 0.45, -2.50),
-        core.vec3(0.40, 0.45, -9.10), core.vec3(9.20, 0.45, -1.60),
-        core.vec3(8.40, 0.45, 5.10), core.vec3(-0.40, 0.45, 7.90),
-        core.vec3(-6.70, 2.91, -1.60), core.vec3(5.50, 1.99, 2.80),
-    ]
-    colors := [
-        core.vec3(0.98, 0.72, 0.16), core.vec3(0.36, 0.46, 0.94),
-        core.vec3(0.99, 0.95, 0.84), core.vec3(0.68, 0.36, 0.86),
-        core.vec3(0.40, 0.76, 0.98), core.vec3(0.98, 0.56, 0.74),
-        core.vec3(0.99, 0.58, 0.20), core.vec3(0.96, 0.46, 0.62),
-        core.vec3(1.00, 0.96, 0.78), core.vec3(1.00, 0.72, 0.82),
-    ]
-    for i in 0..names.len {
-        scene.entities.push(entity(names[i], .Sphere, .Flower, positions[i], core.vec3(0.64, 0.64, 0.64), 0.0, colors[i]))
-    }
-
-    // Eighteen blossom tree trunks framing the clearing, groves, brook, and border meadows.
-    trunks := [
-        core.vec3(-3.80, 1.30, -1.50), core.vec3(3.90, 1.30, -1.10),
-        core.vec3(-4.40, 1.30, 4.60), core.vec3(4.20, 1.30, 5.20),
-        core.vec3(-10.80, 1.40, 3.60), core.vec3(-11.40, 1.30, 8.20),
-        core.vec3(-5.60, 1.30, 9.20), core.vec3(-11.80, 1.40, -1.20),
-        core.vec3(-10.60, 1.30, -6.20), core.vec3(-7.40, 1.30, -8.40),
-        core.vec3(-4.40, 1.40, -10.20), core.vec3(4.80, 1.40, -10.00),
-        core.vec3(8.60, 1.30, -8.40), core.vec3(11.60, 1.30, -5.60),
-        core.vec3(11.80, 1.40, -0.40), core.vec3(11.60, 1.30, 4.20),
-        core.vec3(9.40, 1.30, 8.80), core.vec3(4.40, 1.30, 9.40),
-    ]
-    for i in 0..trunks.len {
-        grand := i == 4 || i == 7 || i == 10 || i == 11 || i == 14
-        size := if grand { core.vec3(0.76, 2.80, 0.76) } else { core.vec3(0.64, 2.60, 0.64) }
-        scene.entities.push(entity("Stam " + (i + 1).str(), .Box, .Collider, trunks[i], size,
-            0.0, core.vec3(0.0, 0.0, 0.0)))
-    }
-
-    // Landmark colliders: bridge railings (deck stays open), picnic basket, toadstools, stump, signpost, boulder.
-    landmark_names := [
-        "Broräcke Väst", "Broräcke Öst", "Picknickkorg", "Storsvampen",
-        "Svampklunga", "Mosstubben", "Vägvisaren", "Ängsstenen",
-    ]
-    landmark_pos := [
-        core.vec3(-1.65, 0.55, -4.80), core.vec3(1.65, 0.55, -4.80),
-        core.vec3(-9.60, 0.42, 5.90), core.vec3(-10.50, 0.90, -3.40),
-        core.vec3(-8.40, 0.55, -4.60), core.vec3(10.10, 0.70, 5.60),
-        core.vec3(-2.10, 0.95, -1.90), core.vec3(-2.40, 0.50, 8.60),
-    ]
-    landmark_sizes := [
-        core.vec3(0.34, 1.10, 2.60), core.vec3(0.34, 1.10, 2.60),
-        core.vec3(0.72, 0.84, 0.64), core.vec3(0.86, 1.80, 0.86),
-        core.vec3(0.74, 1.10, 0.74), core.vec3(1.20, 1.40, 1.10),
-        core.vec3(0.36, 1.90, 0.36), core.vec3(1.10, 1.00, 0.95),
-    ]
-    for i in 0..landmark_names.len {
-        scene.entities.push(entity(landmark_names[i], .Box, .Collider, landmark_pos[i], landmark_sizes[i],
-            0.0, core.vec3(0.0, 0.0, 0.0)))
-    }
-
-    // Western gentle stepping-cloud staircase climbing cleanly to Kronbalkongen without boosts.
-    scene.entities.push(cloud("Daggmolnet", .Cloud, core.vec3(-3.20, 0.88, 1.30), 1.80, 1.50, core.vec3(0.88, 0.93, 1.00)))
-    scene.entities.push(cloud("Körsbärsmolnet", .Cloud, core.vec3(-5.10, 1.68, 0.10), 1.80, 1.50, core.vec3(0.99, 0.88, 0.94)))
-    scene.entities.push(cloud("Svampmolnet", .Cloud, core.vec3(-6.70, 2.46, -1.60), 1.90, 1.60, core.vec3(0.96, 0.90, 1.00)))
-    scene.entities.push(cloud("Västra vilan", .Cloud, core.vec3(-5.10, 3.24, -3.40), 1.90, 1.60, core.vec3(0.90, 0.93, 1.00)))
-    scene.entities.push(cloud("Sidenmolnet", .Cloud, core.vec3(-2.70, 4.02, -4.70), 1.85, 1.55, core.vec3(0.93, 0.89, 1.00)))
-
-    // Eastern playful bouncy strawberry-cloud expressway plus sunny low flower perch.
-    scene.entities.push(cloud("Solmolnet", .Cloud, core.vec3(3.40, 0.88, 1.50), 1.80, 1.50, core.vec3(1.00, 0.94, 0.86)))
-    scene.entities.push(cloud("Honungsmolnet", .Cloud, core.vec3(5.50, 1.54, 2.80), 1.85, 1.55, core.vec3(1.00, 0.92, 0.82)))
-    scene.entities.push(cloud("Hallonstudsen", .BoostCloud, core.vec3(5.70, 1.15, 0.40), 1.80, 1.60, core.vec3(0.98, 0.34, 0.62)))
-    scene.entities.push(cloud("Bärterassen", .Cloud, core.vec3(5.80, 3.25, -2.40), 2.10, 1.80, core.vec3(0.98, 0.90, 0.96)))
-    scene.entities.push(cloud("Östra utsikten", .Cloud, core.vec3(8.10, 3.85, -3.50), 1.90, 1.65, core.vec3(1.00, 0.93, 0.88)))
-    scene.entities.push(cloud("Smultronstudsen", .BoostCloud, core.vec3(3.30, 2.75, -4.10), 1.75, 1.55, core.vec3(0.98, 0.32, 0.58)))
-
-    // Mid-canopy brook shortcut and cross-clouds linking west and east skyways.
-    scene.entities.push(cloud("Bäckmolnet", .BoostCloud, core.vec3(1.85, 1.15, -2.10), 1.75, 1.55, core.vec3(0.99, 0.38, 0.66)))
-    scene.entities.push(cloud("Molnbron", .Cloud, core.vec3(0.00, 3.10, -4.30), 2.10, 1.70, core.vec3(0.88, 0.95, 1.00)))
-
-    // Converging crown balcony and secret starlight high perch above Lyktängen.
-    scene.entities.push(cloud("Kronbalkongen", .Cloud, core.vec3(0.00, 4.80, -5.80), 2.60, 2.20, core.vec3(0.95, 0.93, 1.00)))
-    scene.entities.push(cloud("Stjärnstudsen", .BoostCloud, core.vec3(1.60, 4.45, -7.80), 1.75, 1.55, core.vec3(0.96, 0.36, 0.72)))
-    scene.entities.push(cloud("Stjärngläntan", .Cloud, core.vec3(-0.60, 6.55, -9.40), 2.40, 2.00, core.vec3(0.92, 0.94, 1.00)))
-
-    // Five luminous super-butterflies perched across west, east, crown, and starlight branches.
-    wings := ["Guldvinge", "Sidenvinge", "Solvinge", "Kronvinge", "Stjärnvinge"]
-    perches := [
-        core.vec3(-5.10, 4.00, -3.40), core.vec3(-2.70, 4.80, -4.70),
-        core.vec3(8.10, 4.62, -3.50), core.vec3(0.00, 5.58, -5.80),
-        core.vec3(-0.60, 7.34, -9.40),
-    ]
-    wing_colors := [
-        core.vec3(1.00, 0.72, 0.20), core.vec3(0.58, 0.40, 0.96),
-        core.vec3(0.86, 0.46, 0.62), core.vec3(0.18, 0.84, 0.76),
-        core.vec3(0.42, 0.76, 1.00),
-    ]
-    for i in 0..wings.len {
-        scene.entities.push(entity(wings[i], .Sphere, .SuperButterfly, perches[i], core.vec3(0.60, 0.60, 0.60), 0.0, wing_colors[i]))
-    }
+    mut scene := empty("First light")
+    scene.entities.push(entity("Slate platform", .Box, .Prop, core.vec3(0.0, -0.25, 0.0), core.vec3(8.6, 0.5, 4.4),
+        0.0, core.vec3(0.18, 0.25, 0.29)))
+    scene.entities.push(entity("Runner", .Sphere, .Player, core.vec3(-2.7, 0.4, 0.0), core.vec3(0.8, 0.8, 0.8),
+        1.0, core.vec3(0.04, 0.50, 0.42)))
+    scene.entities.push(entity("Hurdle", .Box, .Prop, core.vec3(0.0, 0.31, 0.0), core.vec3(0.45, 0.62, 2.4),
+        0.0, core.vec3(0.60, 0.35, 0.18)))
+    scene.entities.push(entity("Beacon", .Sphere, .Goal, core.vec3(2.7, 0.65, 0.0), core.vec3(1.0, 1.0, 1.0),
+        0.0, core.vec3(1.0, 0.62, 0.12)))
+    scene.entities.push(entity("Crate", .Box, .Prop, core.vec3(-1.5, 1.1, -1.4), core.vec3(0.7, 0.7, 0.7),
+        1.4, core.vec3(0.70, 0.46, 0.26)))
     scene
 }
 
 fn role_name(role: Role) -> string {
-    match role {
-        .Player => "player", .Goal => "goal", .Flower => "flower", .Collider => "collider", .Prop => "prop",
-        .Cloud => "cloud", .BoostCloud => "boost_cloud", .SuperButterfly => "super_butterfly"
-    }
+    match role { .Prop => "prop", .Player => "player", .Goal => "goal", .Collider => "collider" }
 }
 
 fn read_role(value: string) -> Result<Role, string> {
     match value {
-        "prop" => .Ok(.Prop), "player" => .Ok(.Player), "goal" => .Ok(.Goal), "flower" => .Ok(.Flower),
-        "collider" => .Ok(.Collider), "cloud" => .Ok(.Cloud), "boost_cloud" => .Ok(.BoostCloud),
-        "super_butterfly" => .Ok(.SuperButterfly),
-        _ => .Err("role must be prop, player, goal, flower, collider, cloud, boost_cloud or super_butterfly"),
+        "prop" => .Ok(.Prop), "player" => .Ok(.Player), "goal" => .Ok(.Goal), "collider" => .Ok(.Collider),
+        _ => .Err("unknown role in a Studio level: " + value),
     }
 }
 
@@ -228,9 +88,8 @@ fn read_entity(doc: &json.Doc, node: i32) -> Result<Entity, string> {
     if mass < 0.0 || (mass > 0.0 && mass < 0.001) { return .Err("mass must be zero or at least 0.001") }
     if mass == 0.0 && (velocity.x != 0.0 || velocity.y != 0.0 || velocity.z != 0.0) { return .Err("a static entity cannot have initial velocity") }
     if role == .Collider && mass != 0.0 { return .Err("a collider must have zero mass") }
-    if (role == .Cloud || role == .BoostCloud) && (mass != 0.0 || shape != .Box) { return .Err("a cloud requires a static box") }
     if role == .Player && mass == 0.0 { return .Err("a player requires positive mass") }
-    if (role == .Goal || role == .Flower || role == .SuperButterfly) && mass != 0.0 { return .Err("a sensor must have zero mass") }
+    if (role == .Goal) && mass != 0.0 { return .Err("a sensor must have zero mass") }
     if color.x < 0.0 || color.y < 0.0 || color.z < 0.0 || color.x > 1.0 || color.y > 1.0 || color.z > 1.0 { return .Err("color components must be in [0,1]") }
     if friction < 0.0 || friction > 1.0 || restitution < 0.0 || restitution > 1.0 { return .Err("friction and restitution must be in [0,1]") }
     .Ok(Entity {
@@ -294,10 +153,8 @@ pub fn decode(source: string) -> Result<Scene, string> {
     name := codec.name(&doc, root)?
     mut scene := empty(name)
     scene.gravity = codec.vector(&doc, root, "gravity", scene.gravity)?
-    if doc.field(root, "theme") >= 0 {
-        scene.theme = match doc.get_str(root, "theme").unwrap_or_default() {
-            "blossom" => Theme.Blossom, "plain" => Theme.Plain, _ => { return .Err("theme must be plain or blossom") },
-        }
+    if doc.field(root, "theme") >= 0 && doc.get_str(root, "theme").unwrap_or_default() != "plain" {
+        return .Err("this scene uses a game-specific theme; open it in its game")
     }
     scene.bounds = read_bounds(&doc, root)?
     items := doc.field(root, "entities")
@@ -341,7 +198,6 @@ pub fn encode(scene: &Scene) -> string {
     w.object()
     w.key("version"); w.integer(1)
     w.key("name"); w.string(scene.name)
-    w.key("theme"); w.string(if scene.theme == .Blossom { "blossom" } else { "plain" })
     match scene.bounds {
         .Some(b) => {
             w.key("bounds"); w.array()
@@ -369,8 +225,7 @@ pub fn save(scene: &Scene, path: string) -> Result<(), string> {
 
 fn make_body(e: &Entity) -> physics.Body {
     mut body := if e.shape == .Sphere { physics.sphere(e.position, e.size.x * 0.5, e.mass) }
-    else { physics.box_body(e.position, core.scale(e.size, 0.5), e.mass) }
-    body.one_way = e.role == .Cloud || e.role == .BoostCloud
+        else { physics.box_body(e.position, core.scale(e.size, 0.5), e.mass) }
     body.velocity = e.velocity
     body.friction = e.friction
     body.restitution = e.restitution
@@ -378,55 +233,29 @@ fn make_body(e: &Entity) -> physics.Body {
 }
 
 pub fn start(scene: &Scene) -> Session {
-    rest := MotionTick {
-        heading: 0.35, walk_phase: 0.0, run_weight: 0.0, bank: 0.0, drive: 0.0,
-        grounded: false, platform: -1, vertical_velocity: 0.0,
-        takeoff_tick: -1, landing_tick: -1, boost_tick: -1, rest_tick: 0, rest_weight: 1.0, landing_strength: 0.0
-    }
     mut session := Session {
         scene: scene.clone(), tick: 0, won: false, contacts: 0, player: -1, previous: [],
         bodies: [], body_indices: [], sensors: [], accumulator: 0.0, jump_pending: false,
-        collected: [], flowers: 0, total_flowers: 0, last_flower: -1, picked_tick: -1,
-        butterflies: 0, total_butterflies: 0, last_butterfly: -1, butterfly_tick: -1,
-        last_cloud: -1, cloud_tick: -1, cloud_origin: core.vec3(0.0, 0.0, 0.0), body_entities: [], has_goal: false,
-        heading: rest.heading, walk_phase: 0.0, walking: false, motion: rest, previous_motion: rest, forward_speed: 0.0,
-        trail: stride.start(core.vec3(0.0, 0.0, 0.0), rest.heading, 0.0),
-        cozy_sitting: false, sit_tick: -1, sit_weight: 0.0, prev_sit_weight: 0.0, pet_tick: -1, emote_tick: -1,
     }
-    for i in 0..scene.entities.len {
-        item := &scene.entities[i]
-        body := make_body(item)
+    for item in scene.entities {
+        body := make_body(&item)
         session.previous.push(item.position)
-        session.collected.push(false)
-        if item.role == .Flower { session.total_flowers += 1 }
-        if item.role == .SuperButterfly { session.total_butterflies += 1 }
-        if item.role == .Goal { session.has_goal = true }
-        if item.role == .Goal || item.role == .Flower || item.role == .SuperButterfly {
+        if item.role == .Goal {
             session.body_indices.push(-1)
-            session.sensors.push(Sensor { entity_index: i, body: body })
+            session.sensors.push(body)
         } else {
             if item.role == .Player { session.player = session.bodies.len }
             session.body_indices.push(session.bodies.len)
-            session.body_entities.push(i)
             session.bodies.push(body)
         }
     }
     if session.player >= 0 {
-        p := session.player
         for i in 0..session.bodies.len {
-            if i != p && physics.supported_by(&session.bodies[p], &session.bodies[i]) {
-                session.bodies[p].grounded = true
-                if session.bodies[i].one_way {
-                    session.bodies[p].platform = i
-                    session.motion.platform = session.body_entities[i]
-                }
+            if i != session.player && physics.supported_by(&session.bodies[session.player], &session.bodies[i]) {
+                session.bodies[session.player].grounded = true
                 break
             }
         }
-        session.motion.grounded = session.bodies[p].grounded
-        session.motion.vertical_velocity = session.bodies[p].velocity.y
-        session.previous_motion = session.motion
-        session.trail = stride.start(session.bodies[p].position, rest.heading, 0.0)
     }
     session
 }
@@ -440,128 +269,6 @@ pub fn position(s: &Session, index: i32) -> core.Vec3 {
 pub fn render_position(s: &Session, index: i32) -> core.Vec3 {
     before := s.previous[index]
     core.add(before, core.scale(core.sub(position(s, index), before), f32(s.accumulator)))
-}
-
-pub fn render_tick_offset(s: &Session, exact: bool) -> f32 {
-    if exact || s.tick == 0 { return 0.0 }
-    f32(s.accumulator - 1.0)
-}
-
-// Recover the player centre and orientation at a planted paw's touchdown.
-// A new ground path starts at spawn, teleport or landing. In flight there is
-// no ground contact and the requested distance clamps to zero.
-pub fn stride_anchor(s: &Session, exact: bool, distance_back: f32) -> StrideAnchor {
-    at_tick := exact || s.tick == 0
-    grounded := if at_tick { s.motion.grounded } else { s.previous_motion.grounded }
-    if !grounded || s.player < 0 {
-        m := render_motion(s, exact)
-        mut p := core.vec3(0.0, 0.0, 0.0)
-        if s.player >= 0 {
-            index := s.body_entities[s.player]
-            p = if at_tick { position(s, index) } else { render_position(s, index) }
-        }
-        return StrideAnchor { position: p, heading: m.heading, run_weight: m.run_weight, distance: 0.0 }
-    }
-    support_anchor(s, if at_tick { f64(1.0) } else { s.accumulator }, distance_back)
-}
-
-pub fn last_support_anchor(s: &Session, distance_back: f32) -> StrideAnchor {
-    support_anchor(s, 1.0, distance_back)
-}
-
-fn support_anchor(s: &Session, fraction: f64, distance_back: f32) -> StrideAnchor {
-    p := stride.sample(&s.trail, fraction, distance_back)
-    StrideAnchor { position: p.position, heading: p.heading, run_weight: p.weight, distance: f32(p.along) }
-}
-
-// Platform entity on the same discrete boundary as render_motion().grounded.
-pub fn render_platform(s: &Session, exact: bool) -> i32 {
-    if exact || s.tick == 0 { s.motion.platform } else { s.previous_motion.platform }
-}
-
-fn approach(from: f32, to: f32, limit: f32) -> f32 {
-    if to > from + limit { return from + limit }
-    if to < from - limit { return from - limit }
-    to
-}
-
-fn event_age(tick: i64, event: i64, fraction: f64) -> f32 {
-    if event < 0 { return -1.0 }
-    f32((f64(tick - event) + fraction) * TICK_SECONDS)
-}
-
-pub struct Rest { age: f32, weight: f32 }
-
-// A short tap can interrupt an ongoing gesture. Rewind it only after it has completely faded.
-pub fn render_rest(s: &Session, exact: bool) -> Rest {
-    if exact || s.tick == 0 { return Rest { age: event_age(s.tick, s.motion.rest_tick, 0.0), weight: s.motion.rest_weight } }
-    Rest {
-        age: event_age(s.tick - 1, s.previous_motion.rest_tick, s.accumulator),
-        weight: s.previous_motion.rest_weight + f32(s.accumulator) * (s.motion.rest_weight - s.previous_motion.rest_weight)
-    }
-}
-
-pub fn pet(s: &mut Session) { s.pet_tick = s.tick }
-
-pub fn emote(s: &mut Session) { s.emote_tick = s.tick }
-
-pub fn toggle_sit(s: &mut Session) {
-    if s.cozy_sitting {
-        s.cozy_sitting = false
-        s.sit_tick = -1
-        return
-    }
-    if s.player >= 0 && s.bodies[s.player].grounded {
-        s.cozy_sitting = true
-        s.sit_tick = s.tick
-    }
-}
-
-pub fn render_cozy(s: &Session, exact: bool) -> CozyState {
-    at_tick := exact || s.tick == 0
-    tick := if at_tick { s.tick } else { s.tick - 1 }
-    fraction := if at_tick { f64(0.0) } else { s.accumulator }
-    weight := if at_tick { s.sit_weight }
-    else { s.prev_sit_weight + f32(s.accumulator) * (s.sit_weight - s.prev_sit_weight) }
-    CozyState {
-        sitting: s.cozy_sitting,
-        sit_weight: weight,
-        sit_age: event_age(tick, s.sit_tick, fraction),
-        pet_age: event_age(tick, s.pet_tick, fraction),
-        emote_age: event_age(tick, s.emote_tick, fraction),
-        flower_age: event_age(tick, s.picked_tick, fraction),
-        butterfly_age: event_age(tick, s.butterfly_tick, fraction),
-    }
-}
-
-pub fn stride_stop(s: &Session, exact: bool, index: i32) -> Option<stride.Stop> {
-    stride.resting(&s.trail, exact || s.tick == 0, f32(s.accumulator), index)
-}
-
-// Continuous values share the position interpolation clock. Contacts and impulses
-// become visible at their fixed-tick boundary, including in multi-tick frames.
-pub fn render_motion(s: &Session, exact: bool) -> PlayerMotion {
-    current := s.motion
-    at_tick := exact || s.tick == 0
-    from := if at_tick { current } else { s.previous_motion }
-    tick := if at_tick { s.tick } else { s.tick - 1 }
-    fraction := if at_tick { f64(0.0) } else { s.accumulator }
-    t := f32(fraction)
-    // An impulse is instantaneous. Keep sampling the incoming trajectory until
-    // the first sample at the tick that registered the impact or takeoff.
-    impulse := current.takeoff_tick == s.tick || current.landing_tick == s.tick
-    dy := if !impulse { current.vertical_velocity - from.vertical_velocity }
-    else if from.grounded { f32(0.0) } else { s.scene.gravity.y * f32(TICK_SECONDS) }
-    PlayerMotion {
-        seconds: f32((f64(tick) + fraction) * TICK_SECONDS),
-        heading: from.heading + stride.near_angle(from.heading, current.heading) * t,
-        walk_phase: from.walk_phase + stride.near_angle(from.walk_phase, current.walk_phase) * t,
-        run_weight: from.run_weight + (current.run_weight - from.run_weight) * t,
-        bank: from.bank + (current.bank - from.bank) * t, drive: from.drive + (current.drive - from.drive) * t,
-        grounded: from.grounded, vertical_velocity: from.vertical_velocity + dy * t,
-        takeoff_age: event_age(tick, from.takeoff_tick, fraction), landing_age: event_age(tick, from.landing_tick, fraction),
-        boost_age: event_age(tick, from.boost_tick, fraction), landing_strength: from.landing_strength,
-    }
 }
 
 fn axis(value: f32) -> f32 {
@@ -578,134 +285,30 @@ fn stay_in_bounds(body: &mut physics.Body, bounds: &Bounds) {
     if body.position.z > bounds.max_z { body.position.z = bounds.max_z; body.velocity.z = 0.0 }
 }
 
-fn update_stride(s: &mut Session, dx: f32, dz: f32, grounded: bool) {
-    dt := f32(TICK_SECONDS)
-    distance := (dx * dx + dz * dz).sqrt()
-    s.walking = distance > 0.00001 && grounded
-    if distance > 0.00001 { s.heading = f32(math.atan2(f64(dx), f64(dz))) }
-    if s.walking {
-        s.walk_phase += distance * (TAU / STRIDE_LENGTH)
-        if s.walk_phase >= TAU { s.walk_phase -= (s.walk_phase / TAU).floor() * TAU }
-    }
-    s.motion.walk_phase = s.walk_phase
-    turn := approach(0.0, stride.near_angle(s.motion.heading, s.heading), 16.0 * dt)
-    s.motion.heading = stride.near_angle(0.0, s.motion.heading + turn)
-    weight := if s.walking { axis(distance / (RUN_SPEED * dt)) } else { f32(0.0) }
-    // Bank into the yaw actually covered while travelling. Forward acceleration
-    // shifts weight relative to the direction the body is currently facing.
-    bank := (turn / (16.0 * dt)) * weight * s.motion.run_weight
-    forward := axis((dx * s.motion.heading.sin() + dz * s.motion.heading.cos()) / (RUN_SPEED * dt))
-    drive := if grounded { axis(forward - s.forward_speed) } else { f32(0.0) }
-    s.forward_speed += (forward - s.forward_speed) * (8.0 * dt)
-    s.motion.bank += (bank - s.motion.bank) * (14.0 * dt)
-    s.motion.drive += (drive - s.motion.drive) * (18.0 * dt)
-    s.motion.run_weight = approach(s.motion.run_weight, weight, 8.0 * dt)
-}
-
-fn update_player(s: &mut Session, before: core.Vec3) {
-    match s.scene.bounds { .Some(b) => { stay_in_bounds(&mut s.bodies[s.player], &b) }, .None => {} }
-    player := s.bodies[s.player]
-    was_moving := s.walking || !s.previous_motion.grounded
-    update_stride(&mut s, player.position.x - before.x, player.position.z - before.z, player.grounded)
-    resting := player.grounded && !s.walking
-    if resting && was_moving && s.motion.rest_weight <= 0.0 { s.motion.rest_tick = s.tick }
-    s.motion.rest_weight = if resting { approach(s.motion.rest_weight, 1.0, f32(TICK_SECONDS) / 0.30) }
-    else { approach(s.motion.rest_weight, 0.0, f32(TICK_SECONDS) / 0.22) }
-    support := player.grounded || s.motion.boost_tick == s.tick
-    stride.record(&mut s.trail, before, player.position, s.motion.heading, s.motion.run_weight, s.previous_motion.grounded, support, f32(TICK_SECONDS))
-    s.motion.platform = if player.platform >= 0 { s.body_entities[player.platform] } else { -1 }
-    s.motion.grounded = player.grounded
-    s.motion.vertical_velocity = player.velocity.y
-    if s.won && s.butterflies == s.total_butterflies { return }
-    mut at_goal := false
-    for i in 0..s.sensors.len {
-        sensor := &s.sensors[i]
-        index := sensor.entity_index
-        if s.collected[index] || !physics.overlap(&player, &sensor.body) { continue }
-        role := s.scene.entities[index].role
-        if role == .Goal { at_goal = true }
-        else if role == .SuperButterfly {
-            s.collected[index] = true
-            s.butterflies += 1
-            s.last_butterfly = index
-            s.butterfly_tick = s.tick
-        } else {
-            s.collected[index] = true
-            s.flowers += 1
-            s.last_flower = index
-            s.picked_tick = s.tick
-        }
-    }
-    if !s.won {
-        if s.has_goal || s.total_flowers > 0 {
-            s.won = s.flowers == s.total_flowers && (!s.has_goal || at_goal)
-        } else { s.won = s.total_butterflies > 0 && s.butterflies == s.total_butterflies }
-    }
-}
-
 pub fn step(s: &mut Session, input: Input) {
-    s.previous_motion = s.motion
-    s.prev_sit_weight = s.sit_weight
     for i in 0..s.body_indices.len { s.previous[i] = position(&s, i) }
-    x := axis(input.x)
-    z := axis(input.z)
-    if x != 0.0 || z != 0.0 || input.jump || s.jump_pending || (s.player >= 0 && !s.bodies[s.player].grounded) {
-        s.cozy_sitting = false
-        s.sit_tick = -1
-    }
-    mut before := core.vec3(0.0, 0.0, 0.0)
-    mut old_platform := -1
     if s.player >= 0 {
-        old_platform = s.bodies[s.player].platform
-        before = s.bodies[s.player].position
+        x := axis(input.x)
+        z := axis(input.z)
         length := (x * x + z * z).sqrt()
-        speed := if length > 1.0 { RUN_SPEED / length } else { RUN_SPEED }
+        speed := if length > 1.0 { f32(4.5) / length } else { f32(4.5) }
         s.bodies[s.player].velocity.x = x * speed
         s.bodies[s.player].velocity.z = z * speed
         if (input.jump || s.jump_pending) && s.bodies[s.player].grounded {
             s.bodies[s.player].velocity.y = 5.6
-            s.motion.takeoff_tick = s.tick + 1
         }
     }
     s.jump_pending = false
     s.contacts = physics.step(&mut s.bodies, s.scene.gravity, f32(TICK_SECONDS))
-    s.tick += 1
     if s.player >= 0 {
-        if !s.previous_motion.grounded && s.bodies[s.player].grounded {
-            s.motion.landing_tick = s.tick
-            speed := -(s.previous_motion.vertical_velocity + s.scene.gravity.y * f32(TICK_SECONDS))
-            s.motion.landing_strength = if speed > 0.0 { axis(speed / BOOST_SPEED) } else { f32(0.0) }
-        }
-        support := s.bodies[s.player].platform
-        // A spring under the spawn point releases on the first physics tick.
-        spawn_boost := s.tick == 1 && support >= 0 && s.scene.entities[s.body_entities[support]].role == .BoostCloud
-        if support >= 0 && (support != old_platform || spawn_boost) {
-            index := s.body_entities[support]
-            s.last_cloud = index
-            s.cloud_tick = s.tick
-            s.cloud_origin = s.bodies[s.player].landing_point
-            if s.scene.entities[index].role == .BoostCloud {
-                s.bodies[s.player].velocity.y = BOOST_SPEED
-                s.bodies[s.player].grounded = false
-                s.motion.boost_tick = s.tick
-                s.motion.takeoff_tick = s.tick
-            }
-        }
-        update_player(&mut s, before)
-        if !s.bodies[s.player].grounded {
-            s.cozy_sitting = false
-            s.sit_tick = -1
-        }
-        s.sit_weight = if s.cozy_sitting && s.bodies[s.player].grounded {
-            approach(s.sit_weight, 1.0, f32(TICK_SECONDS) / 0.42)
-        } else {
-            approach(s.sit_weight, 0.0, f32(TICK_SECONDS) / 0.22)
-        }
-    } else {
-        s.cozy_sitting = false
-        s.sit_tick = -1
-        s.sit_weight = approach(s.sit_weight, 0.0, f32(TICK_SECONDS) / 0.22)
+        match s.scene.bounds { .Some(b) => stay_in_bounds(&mut s.bodies[s.player], &b), .None => {} }
     }
+    if s.player >= 0 && !s.won {
+        for i in 0..s.sensors.len {
+            if physics.overlap(&s.bodies[s.player], &s.sensors[i]) { s.won = true; break }
+        }
+    }
+    s.tick += 1
 }
 
 // The accumulator is in ticks. Preserve sub-tick time and a jump edge until a tick consumes it.
@@ -729,26 +332,11 @@ pub fn state_json(s: &Session) -> string {
     w.key("tick"); w.integer(s.tick)
     w.key("won"); w.boolean(s.won)
     w.key("contacts"); w.integer(i64(s.contacts))
-    w.key("flowers"); w.integer(i64(s.flowers))
-    w.key("total_flowers"); w.integer(i64(s.total_flowers))
-    w.key("last_flower"); w.integer(i64(s.last_flower))
-    w.key("picked_tick"); w.integer(s.picked_tick)
-    w.key("butterflies"); w.integer(i64(s.butterflies))
-    w.key("total_butterflies"); w.integer(i64(s.total_butterflies))
-    w.key("last_butterfly"); w.integer(i64(s.last_butterfly))
-    w.key("butterfly_tick"); w.integer(s.butterfly_tick)
-    w.key("last_cloud"); w.integer(i64(s.last_cloud))
-    w.key("cloud_tick"); w.integer(s.cloud_tick)
-    codec.vector_field(&mut w, "cloud_origin", s.cloud_origin)
-    w.key("heading"); w.decimal(f64(s.heading))
-    w.key("walk_phase"); w.decimal(f64(s.walk_phase))
-    w.key("walking"); w.boolean(s.walking)
     w.key("entities"); w.array()
     for i in 0..s.body_indices.len {
         body := s.body_indices[i]
         w.object()
         w.key("name"); w.string(s.scene.entities[i].name)
-        w.key("collected"); w.boolean(s.collected[i])
         codec.vector_field(&mut w, "position", position(s, i))
         velocity := if body < 0 { core.vec3(0.0, 0.0, 0.0) } else { s.bodies[body].velocity }
         codec.vector_field(&mut w, "velocity", velocity)

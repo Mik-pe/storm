@@ -7,13 +7,7 @@ styr, glTF-laddning och ECS-frågor (avsnitt 0e), och **gränssnittet och den
 andra backenden** (avsnitt 0f): samma editor och spelloop på Vulkan (Linux)
 och Metal (macOS), genom `storm-gfx`.
 
-Sedan kom **Blomsterskogen** (`77d9b0c`): ett spelbart basspel med fyra egna
-paket under kontraktet — `storm-physics`, `storm-play` (fast tick, 60 Hz),
-`storm-image` och `storm-mcp` (agentens verktyg på stdio) — som känner
-ingen backend. Hur det står i arkitekturen beskriver design.md §1–2;
-hur man bygger och provspelar en bana står i [spel.md](spel.md).
-
-Blomsterskogen har nu två provspelade rutter. Fem blommor fullbordar buketten. En frivillig molnbana leder via Studsmolnet till tre bonusfjärilar. Tester spelar båda rutterna med samma indata som en agent kan skicka. [Rutter och slutlägen](spel.md) · [Molnhoppet](molnhopp.mp4)
+Storm Studio och fysikbanan First light kan köras direkt ur motorrepot. Spelprojekt använder `storm-studio` och väljer själva regler, kamera, HUD och tillgångar. [Blomsterskogen och spelets provspelade rutter](https://github.com/Mik-pe/blomsterskogen/blob/main/docs/spel.md)
 
 **3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). **3d, steg 3 är landat (2026-11-27, `4ec8d3a`):** occlusion — `occlusionTexture` (linjärt, R-kanalen) läses och `occlusionTexture.strength` (default 1,0) förs genom kedjan som en egen push-rad `vec4 occlusion` (ord 48–51, pushen 192 → 208 byte; en ensam float kan inte ligga i std430); formeln är specens `1 + strength × (occ − 1)` på det indirekta ljuset. Bevis: DamagedHelmet 8 765 px (8 516 mörkare, 217 ljusare — en tonemappning som svarar på mindre indirekt ljus), allt i hjälmen; sex scener utan karta bit-identiska. Kvar i 3d: normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
@@ -59,13 +53,7 @@ Tabellens kluster är slut; pipelines (10 handtag som `vulkan.ddr` binder i
 varje draw) är orchestringens, inte ett kluster, och stannar (design.md §3b).
 Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
-**Appens söm (design.md §2.1, mätt 2026-11-27):** `src/app.ddr` är den enda
-modul i `src/` som är generisk över `B` (9 fn), och allt som behöver ett
-fönster hamnar där: `run_session` är 468 rader med 116 lokaler — studio-
-uppstart, speluppstart och en loop med tre grenar (studio, spel, Blomsters-
-kogens cozy-lager). Nästa steg är tre commit:ar med AE = 0: en post per
-värld (`Studio`, `Game`), en funktion per loop-gren, och `cozy_action`-
-matchen som metod på `CozyControl`. Det som *inte* ska göras står i §2.1.
+Fönsterloopen och materialstudien finns i paketet `storm-studio`. Projektgränssnittet för externa spel beskrivs i [designen](design.md#21-spelprojekt-och-studio).
 
 ## Byggtid på Mikparchy
 
@@ -901,8 +889,8 @@ materials/scenes nedan) och byggtiden (fynd 56: den är kompilatorns, och budget
 
 `storm-gfx` är kontraktet: `Frame`, `Input` med `Key`, `Sky`, `trait Backend`
 med `Result` för anrop som kan fallera, och geometrihjälparna som äger
-vertexformatet. `src/app.ddr` kör rendergrafen genom `B: gfx.Backend`.
-`src/editor.ddr` äger panelerna, `src/game.ddr` spellogiken och `src/gallery.ddr` materialstudien.
+vertexformatet. `storm-studio` kör rendergrafen genom `B: gfx.Backend`.
+Paketets moduler `editor`, `game` och `gallery` äger panelerna, studions interaktion och materialstudien.
 `src/main.ddr` väljer backend för fönster och bildexport.
 `storm-input` tar ett `Input`-värde och importerar ingen backend.
 `storm-metal` är den andra implementationen: AppKit-fönster och `CAMetalLayer`
@@ -974,7 +962,7 @@ början (`button_of`).
 
 ## 9. Klart – fast speltick
 
-`storm-play` driver fysik och spelregler vid 60 Hz. Fönstret ackumulerar förfluten tid och interpolerar positioner mellan uppdateringarna. Agenten kan stega samma session exakt en tick och läsa resultatet. [Spel och agentverktyg](spel.md)
+`storm-play` driver fysik och spelregler vid 60 Hz. Fönstret ackumulerar förfluten tid och interpolerar positioner mellan uppdateringarna. Agenten kan stega samma session exakt en tick och läsa resultatet. [Spel och agentverktyg](https://github.com/Mik-pe/blomsterskogen/blob/main/docs/spel.md)
 
 ## Klart: headless capture
 

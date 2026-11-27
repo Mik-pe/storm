@@ -1,8 +1,8 @@
 // The frame executor's scene gather, without a window: what the frame's
 // passes are handed, and when the mesh copy is taken.
-import ..src.app as app
-import ..src.editor as editor
-import ..src.gallery as gallery
+import studio as app
+import studio.editor as editor
+import studio.gallery as gallery
 import core
 import ecs
 import gfx

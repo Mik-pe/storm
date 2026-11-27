@@ -52,8 +52,7 @@ pub fn flag(args: &[]string, name: string) -> bool { find(args, &name) >= 0 }
 // the program rendered its default picture (QA 2026-11-26): the table is the
 // truth about what is read, so a word the table does not know is refused by
 // name. Values never begin with "--" (see value), so every such word is a flag.
-pub fn unknown(args: &[]string) -> string {
-    known := flags()
+pub fn unknown(args: &[]string, known: &[]Flag) -> string {
     for i in 0..args.len {
         if args[i].len < 3 || args[i][0..2] != "--" { continue }
         if args[i] == "--help" || args[i] == "-h" { continue }
@@ -84,9 +83,9 @@ pub struct Flag { name: string, args: string, text: string }
 pub fn flags() -> []Flag {
     [
         Flag { name: "--help", args: "(-h)", text: "print this and exit" },
-        Flag { name: "--studio", args: "", text: "open the material studio (default with --glb; otherwise Blomsterskogen is played)" },
+        Flag { name: "--studio", args: "", text: "open the material studio" },
         Flag { name: "--glb", args: "MODEL.glb", text: "load a model into the studio (fitted to the view, standing on the plinth)" },
-        Flag { name: "--play", args: "", text: "play even with --glb" },
+        Flag { name: "--play", args: "", text: "run the playable scene" },
         Flag { name: "--scene", args: "FILE", text: "load a level from a scene file" },
         Flag { name: "--watch", args: "", text: "with --scene: reload when the file is saved" },
         Flag { name: "--mcp", args: "", text: "serve the agent's game tools on stdio instead of opening a window" },
@@ -103,28 +102,24 @@ pub fn flags() -> []Flag {
         Flag { name: "--no-aa", args: "", text: "start without anti-aliasing" },
         Flag { name: "--no-post", args: "", text: "start without colour grading and glow" },
         Flag { name: "--effects", args: "", text: "start with colour grading and glow (--no-post wins)" },
-        Flag { name: "--mood", args: "NAME", text: "Blomsterskogen sky mood: cherry, golden or twilight" },
-        Flag { name: "--cam", args: "MODE", text: "Blomsterskogen camera preset: close, normal or explore" },
-        Flag { name: "--compass", args: "", text: "start Blomsterskogen with the Vägvisare compass on" },
-        Flag { name: "--options", args: "", text: "start Blomsterskogen with the Alternativ card open" },
         Flag { name: "--trace", args: "", text: "print each step of a frame" },
     ]
 }
 
 // The text --help prints: one line per flag, every flag in the program.
-pub fn usage() -> string {
-    mut out := "storm [--studio | --glb MODEL.glb | --play | --scene FILE [--watch] | --mcp] [options]\n"
-    out = out + "Play Blomsterskogen, open the material studio, load a level, or serve the game tools on stdio.\n\n"
+pub fn usage(program: string, description: string, known: &[]Flag) -> string {
+    mut out := program + " [--studio | --glb MODEL.glb | --play | --scene FILE [--watch] | --mcp] [options]\n"
+    out = out + description + "\n\n"
     out = out + "options:\n"
     // The descriptions start in one column: the widest name and arguments,
     // then two spaces.
     mut widest := 0
-    for f in &flags() {
+    for f in known {
         mut left := f.name.len
         if f.args.len > 0 { left = left + 1 + f.args.len }
         if left > widest { widest = left }
     }
-    for f in &flags() {
+    for f in known {
         mut left := f.name.clone()
         if f.args.len > 0 { left = left + " " + f.args }
         while left.len < widest + 2 { left = left + " " }

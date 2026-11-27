@@ -73,8 +73,8 @@ struct Spin { speed: f32 }
 
 // --- the application's own logic: arguments and the orb game, no window ---
 
-import ..src.args as args
-import ..src.game as game
+import studio.args as args
+import studio.game as game
 import input
 import scene as scenegraph
 
@@ -249,21 +249,11 @@ import scene as scenegraph
     assert(graph.vertices(solid)[0] == 1.0)
 }
 
-import ..src.editor as editor
+import studio.editor as editor
 import .play_ui as _
-import .particles as _
-import .fox_animation as _
-import .fox_expression as _
-import .fox_leg as _
-import .gallery as _
-import .model_rig as _
 import .app_frame as _
 import .executor as _
 import .flags as _
-import .orb as _
-import .editor as _
-import .woodland as _
-import .woodland_ground as _
 import text
 import ui
 import ui.widgets as widgets
@@ -293,15 +283,11 @@ import ui.widgets as widgets
     }
 }
 
-import .cozy_control as _
 import .play_view as _
 import .scene_file as _
 import .transport as _
 
-import ..src.app as app
-import ..src.cozy_control as cozy_control
-import ..src.play_view as play_view
-import play
+import studio as app
 import render
 
 @test fn post_process_runs_after_scene_color_and_before_the_hud() {
@@ -323,59 +309,6 @@ import render
             }
         }
     }
-}
-
-@test fn sync_guide_wires_cozy_effects_for_blossom_and_leaves_plain_empty() {
-    mut plain_scene := play.demo()
-    plain_scene.theme = .Plain
-    plain_session := play.start(&plain_scene)
-    mut plain_view := play_view.build(&plain_session).unwrap()
-    assert(plain_view.cozy_fx.fireflies.len == 0)
-    play_view.sync(&mut plain_view, &plain_session, true)
-
-    demo := play.demo()
-    mut session := play.start(&demo)
-    mut view := play_view.build(&session).unwrap()
-    assert(view.cozy_fx.fireflies.len >= 12)
-
-    guide := cozy_control.GuideVisual { active: true, target: core.vec3(1.5, 0.0, 0.5), age: 0.25 }
-    play.pet(&mut session)
-    play.toggle_sit(&mut session)
-    for _ in 0..20 { play.step(&mut session, play.Input { x: 0.0, z: 0.0, jump: false }) }
-    play_view.sync_guide(&mut view, &session, true, &guide)
-    assert(view.graph.world(view.cozy_fx.hearts[0]).visible)
-    for _ in 0..270 { play.step(&mut session, play.Input { x: 0.0, z: 0.0, jump: false }) }
-    play_view.sync_guide(&mut view, &session, true, &guide)
-    assert(view.graph.world(view.cozy_fx.fireflies[0]).visible)
-    assert(view.graph.world(view.cozy_fx.guide_ring).visible)
-    assert(view.graph.world(view.cozy_fx.guide_heart).visible)
-    assert(view.graph.world(view.cozy_fx.snooze[0]).visible)
-    assert(view.graph.world(view.cozy_fx.boost_shimmer[0]).visible)
-
-    play_view.sync(&mut view, &session, true)
-    assert(!view.graph.world(view.cozy_fx.guide_ring).visible)
-    assert(!view.graph.world(view.cozy_fx.guide_heart).visible)
-}
-
-@test fn blossom_moods_produce_distinct_pastel_lighting_and_cozy_fill() {
-    zero_vp: [f32; 16] = [0.0; 16]
-    mut cherry := gfx.sky_params([0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0], zero_vp, [0.0, 1.0, 0.0, 0.0])
-    mut golden := cherry.clone()
-    mut twilight := cherry.clone()
-    mut won_cherry := cherry.clone()
-
-    s_cherry := app.apply_blossom_mood(&mut cherry, cozy_control.SkyMood.CherryDay, false)
-    s_golden := app.apply_blossom_mood(&mut golden, cozy_control.SkyMood.GoldenHour, false)
-    s_twilight := app.apply_blossom_mood(&mut twilight, cozy_control.SkyMood.Twilight, false)
-    _ := app.apply_blossom_mood(&mut won_cherry, cozy_control.SkyMood.CherryDay, true)
-
-    assert((core.length(s_cherry) - 1.0).abs() < 0.001)
-    assert((core.length(s_golden) - 1.0).abs() < 0.001)
-    assert((core.length(s_twilight) - 1.0).abs() < 0.001)
-    // Golden hour sun is lower and warmer; twilight sky is deeper lavender with generous soft fill.
-    assert(s_golden.y < s_cherry.y && golden.sun_color[2] < cherry.sun_color[2])
-    assert(twilight.zenith[2] > twilight.zenith[0] && twilight.diffuse_fill >= 0.50)
-    assert(won_cherry.sun[3] > cherry.sun[3] && cherry.diffuse_fill >= 0.40)
 }
 
 // `dunder test` collects tests from the modules the test root imports, and

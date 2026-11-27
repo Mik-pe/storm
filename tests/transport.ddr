@@ -1,7 +1,8 @@
 // The game's transport, without a window: what each frame's keys and HUD
 // action do to the level's mode, and the one simulation call that follows.
-import ..src.app as app
-import ..src.play_ui as hud
+import studio as app
+import studio.controls as hud
+import ..src.play_view as view
 import gfx
 import play
 
@@ -14,7 +15,7 @@ fn keys(pressed: gfx.Key, held: gfx.Key) -> gfx.Input {
     input
 }
 
-fn pressed(key: gfx.Key) -> gfx.Input { keys(key, .A) }
+fn pressed(key: gfx.Key) -> gfx.Input { keys(key, key) }
 
 // One frame's worth of elapsed seconds. `play.advance` runs at most eight
 // ticks per call (its catch-up cap), so a test frame is one tick long.
@@ -22,9 +23,11 @@ const FRAME: f64 = 1.0 / 60.0
 
 // Apply one frame and run the tick it asks for, the way the frame loop does.
 fn frame(t: &mut app.Transport, input: &gfx.Input, action: hud.Action, s: &mut play.Session, dt: f64, capturing: bool) {
-    match t.apply(input, action, &mut s, dt, capturing) {
-        .Step(controls) => play.step(&mut s, controls),
-        .Advance(seconds, controls) => { _ := play.advance(&mut s, seconds, controls) },
+    if t.playing() && (action == .Restart || input.hit(.R)) { s = play.start(&s.scene) }
+    controls := view.controls(input)
+    match t.apply(input, action, false, dt, capturing) {
+        .Step => play.step(&mut s, controls),
+        .Advance(seconds) => { _ := play.advance(&mut s, seconds, controls) },
         .None => {},
     }
 }
@@ -74,15 +77,14 @@ fn idle() -> hud.Action { hud.Action.Idle }
     mut s := play.start(&level)
     mut t := app.Transport::new(.Running, .None)
     none := gfx.Input::empty()
-    // Walk left to the first flower (the demo's are at negative x), so
-    // there is progress to lose.
+    start := play.position(&s, s.player).x
     walking := keys(.D, .A)
     for _ in 0..120 { frame(&mut t, &walking, idle(), &mut s, FRAME, false) }
-    assert(s.tick == 120 && s.flowers > 0)
+    assert(s.tick == 120 && play.position(&s, s.player).x < start)
     // R restarts from the keyboard. Like resuming, the frame that restarts
     // runs: the new session has advanced one tick when the frame is over.
     frame(&mut t, &pressed(.R), idle(), &mut s, FRAME, false)
-    assert(s.tick == 1 && s.flowers == 0 && t.mode() == .Running)
+    assert(s.tick == 1 && play.position(&s, s.player).x == start && t.mode() == .Running)
     // Pause, then the Restart button: both restart and leave the game running.
     frame(&mut t, &pressed(.Q), idle(), &mut s, 0.0, false)
     assert(t.paused())
@@ -128,24 +130,21 @@ fn idle() -> hud.Action { hud.Action.Idle }
 
 @test fn grading_follows_the_theme_until_e_chooses() {
     mut plain := play.demo()
-    plain.theme = .Plain
-    mut blossom := play.demo()
-    blossom.theme = .Blossom
     mut s := play.start(&plain)
     mut t := app.Transport::new(.Running, .None)
     // No choice: each level's theme decides.
-    assert(!t.graded(plain.theme == .Blossom) && t.graded(blossom.theme == .Blossom))
+    assert(!t.graded(false) && t.graded(true))
     // E flips from what the frame would have been graded with, and sticks
     // across levels of either theme.
     frame(&mut t, &pressed(.E), idle(), &mut s, 0.0, false)
-    assert(t.graded(plain.theme == .Blossom) && t.graded(blossom.theme == .Blossom))
+    assert(t.graded(false) && t.graded(true))
     frame(&mut t, &pressed(.E), idle(), &mut s, 0.0, false)
-    assert(!t.graded(plain.theme == .Blossom) && !t.graded(blossom.theme == .Blossom))
+    assert(!t.graded(false) && !t.graded(true))
     // A flag's choice is a choice, not the theme's.
     mut forced := app.Transport::new(.Running, .Some(true))
-    assert(forced.graded(plain.theme == .Blossom) && forced.graded(blossom.theme == .Blossom))
+    assert(forced.graded(false) && forced.graded(true))
     // The studio does not read E: its effects are the editor's own.
     mut studio := app.Transport::new(.Studio, .None)
     frame(&mut studio, &pressed(.E), idle(), &mut s, 0.0, false)
-    assert(!studio.graded(plain.theme == .Blossom) && studio.graded(blossom.theme == .Blossom))
+    assert(!studio.graded(false) && studio.graded(true))
 }

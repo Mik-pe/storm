@@ -7,9 +7,9 @@ import sys
 import text
 import ui
 import ui.widgets as widgets
-import ..src.editor as editor
-import ..src.gallery as gallery
-import ..src.game as game
+import studio.editor as editor
+import studio.gallery as gallery
+import studio.game as game
 
 fn transforms() {
     mut world := scene.Graph::new()

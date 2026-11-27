@@ -1,0 +1,60 @@
+import std.json as json
+
+pub fn schema(catalog: &json.Doc, name: string) -> i32 {
+    tools := catalog.field(catalog.root, "tools")
+    for i in 0..catalog.count(tools) {
+        entry := catalog.at(tools, i)
+        if catalog.get_str(entry, "name").unwrap_or_default() == name { return catalog.field(entry, "inputSchema") }
+    }
+    -1
+}
+
+// Validate the vocabulary used by the catalog. Path-specific errors give an
+// agent enough information to correct a call without changing the session.
+pub fn validate(c: &json.Doc, s: i32, d: &json.Doc, n: i32, path: string) -> string {
+    ty := c.get_str(s, "type").unwrap_or_default()
+    kind := d.kind(n)
+    if ty == "object" {
+        if n >= 0 && kind != .Object { return path + " must be an object" }
+        properties := c.field(s, "properties")
+        required := c.field(s, "required")
+        for i in 0..c.count(required) {
+            key := c.as_str(c.at(required, i)).unwrap_or_default()
+            if d.field(n, key) < 0 { return path + "." + key + " is required" }
+        }
+        if kind != .Object { return "" }
+        for i in 0..d.count(n) {
+            key := d.key_at(n, i).unwrap_or_default()
+            field := c.field(properties, key)
+            if field < 0 { return path + "." + key + " is not recognized" }
+            error := validate(&c, field, &d, d.val_at(n, i), path + "." + key)
+            if error.len > 0 { return error }
+        }
+    } else if ty == "array" {
+        if kind != .Array { return path + " must be an array" }
+        length := i64(d.count(n))
+        if length < c.get_i64(s, "minItems").unwrap_or(0) || length > c.get_i64(s, "maxItems").unwrap_or(length) {
+            return path + " has an invalid length"
+        }
+        for i in 0..d.count(n) {
+            error := validate(&c, c.field(s, "items"), &d, d.at(n, i), path + "[" + i.str() + "]")
+            if error.len > 0 { return error }
+        }
+    } else if ty == "string" {
+        if kind != .String { return path + " must be a string" }
+        value := d.as_str(n).unwrap_or_default()
+        if value.len == 0 && c.field(s, "minLength") >= 0 { return path + " must not be empty" }
+        options := c.field(s, "enum")
+        if options >= 0 {
+            for i in 0..c.count(options) { if c.as_str(c.at(options, i)).unwrap_or_default() == value { return "" } }
+            return path + " must be one of " + c.raw_json(options)
+        }
+    } else if ty == "boolean" {
+        if kind != .Bool { return path + " must be a boolean" }
+    } else {
+        if ty == "integer" && d.as_i64(n).is_none() { return path + " must be an integer" }
+        num := match d.as_f64(n) { .Some(value) => value, .None => { return path + " must be a number" } }
+        if num < c.get_f64(s, "minimum").unwrap_or(num) || num > c.get_f64(s, "maximum").unwrap_or(num) { return path + " is outside its allowed range" }
+    }
+    ""
+}
