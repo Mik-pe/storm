@@ -59,6 +59,14 @@ Tabellens kluster är slut; pipelines (10 handtag som `vulkan.ddr` binder i
 varje draw) är orchestringens, inte ett kluster, och stannar (design.md §3b).
 Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
+**Appens söm (design.md §2.1, mätt 2026-11-27):** `src/app.ddr` är den enda
+modul i `src/` som är generisk över `B` (9 fn), och allt som behöver ett
+fönster hamnar där: `run_session` är 468 rader med 116 lokaler — studio-
+uppstart, speluppstart och en loop med tre grenar (studio, spel, Blomsters-
+kogens cozy-lager). Nästa steg är tre commit:ar med AE = 0: en post per
+värld (`Studio`, `Game`), en funktion per loop-gren, och `cozy_action`-
+matchen som metod på `CozyControl`. Det som *inte* ska göras står i §2.1.
+
 ## Byggtid på Mikparchy
 
 Senaste mätning: **9 648 och 9 633 ms** på `8cc9859` (två `tools/build-time.ddr` + en `dunder build --timings`, 2026-11-27), Dunder **0.13.1**, Mikparchy: `compiler=` 8 482 / 8 459 ms, `module_load_lex_resolve` 902 / 893 ms, **1 608 funktioner och 355 061 MIR-operationer**. Budgeten är 20 s. Trädet är detsamma som mätte 18,4–19,8 s under 0.12.0 (512 017 operationer, fynd 98): kompilatorn halverade tiden och tog bort 157 000 operationer — inget i Storm ändrades för det. **Alla siffror nedanför i det här avsnittet och i "Kvar i 3c" (18 557 → 18 776 ms, 94 % av budgeten) är 0.12.0-mätningar**: de är jämförbara med varandra, inte med ett 0.13.1-bygge, och det som är sant av dem är fortfarande det *relativa* (PNG kostade 1 100 ms och JPEG 220 ms när de nådde `main`; under 0.13.1 mätte fynd 98 PNG till 42 ms och JPEG till 27). En ny mätning skriver alltid kompilatorversionen vid talet.

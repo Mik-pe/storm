@@ -1,8 +1,10 @@
 # Storm — design från första principer
 
-> Status: **levande dokument** — uppmätt 2026-11-25 mot trädet efter
-> `storm-gfx`, Metal-backenden, Blomsterskogen, materialtexturerna (3b) och
-> glTF-bilderna med samplare per textur (3c). Skrevs efter djupbufferten, av en
+> Status: **levande dokument** — uppmätt 2026-11-27 mot trädet efter
+> `storm-gfx`, Metal-backenden, Blomsterskogen, materialtexturerna (3b),
+> glTF-bilderna med samplare per textur (3c) och de linjära texturerna (3d,
+> steg 1–3). §2:s bild mättes om mot `src/` samma dag: en modul är generisk
+> över `B`, nitton är det inte, och `run_session` är nästa söm (§2.1). Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
 > heltalen för hand och läste tabellen baklänges. Det här dokumentet
@@ -193,37 +195,60 @@ växte, inte en ny uppgift som lagts i fel lager.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ src/main.ddr — sammansättningens rot: väljer backend, ger storm-mcp   │
-│                 renderaren som funktion, startar app eller --mcp     │
+│src/main.ddr — sammansättningens rot: väljer backend, ger storm-mcp   │
+│                renderaren som funktion, startar app eller --mcp      │
 ├──────────────────────────────────────────────────────────────────────┤
-│ src/app.ddr · editor.ddr · gallery.ddr · play_view.ddr · play_ui.ddr │  generiskt över B: gfx.Backend
-│ woodland.ddr · scene_file.ddr · art_asset.ddr                        │  (ritar, bygger scenen, äger ingen backend)
-├──────────────┬───────────────────────────────┬───────────────────────┤
-│ storm-mcp    │ storm-ui · storm-text · gltf  │ storm-input           │  paket ovanför kontraktet
-│ storm-image  │ storm-scene · storm-ecs       │                       │  (känner ingen backend)
-│ storm-play   │ storm-render · storm-core      │                       │
-│ storm-physics│                               │                       │
-├──────────────┴───────────────────────────────┴───────────────────────┤
-│ storm-gfx — kontraktet: Frame, Input, Sky, Vertex, trait Backend     │  nämner ingen backend
-├────────────────────────────────────────┬─────────────────────────────┤
-│ storm-vulkan (Linux, SDL)              │ storm-metal (macOS, AppKit) │  de två implementationerna
-└────────────────────────────────────────┴─────────────────────────────┘
+│src/app.ddr — EN generisk modul över B: gfx.Backend (9 fn):           │
+│                run_session, upload_model_textures, record_list …     │
+├──────────────────────────────────────────────────────────────────────┤
+│19 moduler utan B, i tre sorter (§2.1):                               │
+│  kontraktet   gallery · game · play_view · cozy_control · particles  │
+│               woodland · paw_contact · fox_expression · walk_surface │
+│  spelvärdet   play_ui · editor · scene_file · args · art_asset       │
+│               model · fox_animation · canopy · woodland_ground       │
+├──────────────────────┬───────────────────────────────────────────────┴
+│storm-ui · storm-text · storm-gltf · storm-scene · storm-ecs          │
+├──────────────────────┼───────────────────────────────────────────────┤
+│storm-gfx — kontraktet: Frame, Input, Sky, Vertex, trait Backend      │
+├──────────────────────┴────────────────────────────────────────────────┬
+│storm-vulkan (Linux, SDL)              │ storm-metal (macOS, AppKit)  │
+└──────────────────────┴────────────────────────────────────────────────┘
 ```
 
-Två sorters kod står ovanför kontraktet, och skillnaden är värd att se.
-`src/app.ddr` och de moduler den kör är generiska över `B: gfx.Backend`
-och ritar. `storm-physics`, `storm-play`, `storm-mcp` och `storm-image`
-känner varken backend eller fönster: en `play.Session` stegas med
-`TICK_RATE` 60 Hz ur ett `play.Input`-värde och testas utan display;
-`storm-mcp` tar renderaren som funktion `fn(&play.Session, string) ->
-Result<(), string>`, och `storm-image.preview<T>` är det enda som behöver
-veta att det finns något att rendera med. `src/play_view.ddr` är bron:
-den avbildar en sessions poser på scengrafer och skriver aldrig tillbaka
-till fysiken. Beroendena är de manifests förklarar: `storm-physics ->
-core`, `storm-play -> physics, core`, `storm-mcp -> play, image`,
-`storm-image -> stdlib`, `storm-input -> core, gfx`, och de två backends
-`-> core, gfx`. Inget av dem importerar `storm-vulkan` eller
-`storm-metal`; det gör bara `src/main.ddr` (fyra rader).
+Tre sorter kod står i `src/` ovanför kontraktet, och skillnaden är
+värd att se, för designen tappade bort två av dem. **Mätt 2026-11-27** med
+`grep -c '<B: gfx.Backend>' src/*.ddr` och importerna per modul:
+
+- **En modul är generisk över `B`: `src/app.ddr`** (9 funktioner). Den är
+  den enda som håller ett fönster: `run_session` öppnar det, översätter
+  rendergrafens pass till `gfx.Backend` och stänger det. Inget annat i
+  `src/` kan fråga efter en backend, och det är hela poängen med princip 7.
+- **Nio moduler talar med kontraktet utan `B`** — de bygger data *åt* det:
+  `gallery`, `game`, `play_view`, `cozy_control`, `particles`,
+  `woodland`, `paw_contact`, `fox_expression`, `walk_surface` importerar
+  `gfx` för `Sky`, `Input`, `Textures`, `Texture`, `Vertex` — värden, aldrig
+  en `Window`. De är testbara med en test-backend eller utan fönster.
+- **Tio moduler är backend-fria** (ingen `gfx`-import alls): `play_ui`
+  (text och widgets från `storm-ui`), `editor` (paneler och pekarinteraktion
+  på `storm-ui`), `scene_file`, `args`, `art_asset`, `model`,
+  `fox_animation`, `canopy`, `woodland_ground` — de arbetar på
+  `play.Session`, scengrafen och glTF:t — och `main.ddr`, som är den
+  nittonde utan `B`: den importerar *backenden*, inte kontraktet, och är
+  den enda som gör det (två rader: `metal`, `vulkan`).
+
+Under kontraktet gäller det samma som förut: `storm-physics`, `storm-play`,
+`storm-mcp` och `storm-image` känner varken backend eller fönster: en
+`play.Session` stegas med `TICK_RATE` 60 Hz ur ett `play.Input`-värde och
+testas utan display; `storm-mcp` tar renderaren som funktion
+`fn(&play.Session, string) -> Result<(), string>`, och
+`storm-image.preview<T>` är det enda som behöver veta att det finns något
+att rendera med. `src/play_view.ddr` är bron: den avbildar en sessions poser
+på scengrafer och skriver aldrig tillbaka till fysiken. Beroendena är de
+manifests förklarar: `storm-physics -> core`, `storm-play -> physics, core`,
+`storm-mcp -> play, image`, `storm-image -> stdlib`, `storm-input -> core,
+gfx`, och de två backends `-> core, gfx`. Inget av dem importerar
+`storm-vulkan` eller `storm-metal`; det gör bara `src/main.ddr` (två
+rader).
 
 Det här står. Kvar till målbilden:
 
@@ -257,6 +282,67 @@ Vad som skiljer backends åt, och var det får synas:
 | Hur en yta skapas: SDL / AppKit + `CAMetalLayer` | `storm-vulkan/sdl.ddr`, `storm-metal/appkit.ddr` |
 | Tangentkoder: SDL-scancodes / macOS key codes | en tabell per backend, parar kod med namngiven `gfx.Key` |
 | Musknappar: SDL:s nummer (vänster 1, mitten 2, höger 3) / AppKits händelser | en tabell per backend (`sdl.ddr: sdl_button`, `appkit.ddr: button_of`), parar med namngiven `gfx.Button` — biten (1, 2, 4) ägs av kontraktet, inte av plattformen |
+
+### 2.1. Nästa söm: `run_session` är tre uppstarter och tre grenar
+
+Bilden ovan säger att `src/app.ddr` är den enda generiska modulen. Det är
+sant, och det är också problemet: *allt* som behöver ett fönster hamnar där,
+så modellen är en funktion på **468 rader med 116 lokala variabler**
+(mätt 2026-11-27: `app.ddr:497–964`, `grep -c ':='` på blocket). Dogfood
+fynd 100 kallade den, med rätt, *spelloopen, dvs. hela appen* — sant om
+vad den når (961 av trädets funktioner), inte om varför den är en funktion.
+Innehållet, mätt rad för rad:
+
+| Del | Rader | Vad den gör | När den körs |
+|---|---|---|---|
+| Studio-uppstart | 517–566, 581–593, 613–652 | galleri, `--texture`, `--glb`, `--font`, atlas | bara `!playing`/`!exporting` |
+| Speluppstart | 519, 530–553 | `game_view`, `cozy`, `--mood`/`--cam`/`--compass` | alltid (också i studion) |
+| Loopen | 663–960 | tre grenar: `playing && blossom` (37 rader), `playing && !blossom` (7), `!playing` (34), plus UI-grenen för Blomsterskogen (37) | varje frame |
+
+Tre saker har olika livslängd och olika ägare och ligger ändå i samma
+funktion: studion (`editor.State`, `gallery.Study`, `study.hub`), spelet
+(`Transport`, `play.Session`, `game_view`) och Blomsterskogens
+"cozy"-lager (`cozy_control.CozyControl`, 32 fält, som äger kamera, humör,
+kompass, stroll, toasts och options). Grenen `playing && blossom` räknar
+ut fotens underlag (`canopy.surface_below`, rad 752 — loopen gör det, inte
+`cozy_control`), anropar `cozy_control.update` och ger dess `play.Input`
+till `play.step/advance`; den andra spelgrenen anropar `play.step/advance`
+direkt med `play_view.controls`. Samma transport, två vägar till den.
+
+**Vad som inte är problemet:** grafen styr redan (`plan.steps` är det enda
+som bestämmer vad som körs, rad 849–945), `Transport` äger spelets anrop
+(`tests/transport.ddr`), och `record_list`/`gather` är testbara utan fönster.
+Sömmen är inte "app.ddr är stor" — det är att *uppstarten* av tre olika
+saker och *loopen* över dem inte har någon form.
+
+**Avgränsat nästa steg, i tre commit:ar, var och en AE = 0 på game, studio,
+Fox och `--texture`:**
+
+1. **En post per värld.** `pub struct Studio { study: gallery.Study,
+   editor: editor.State, glass_visible: bool, score: i32, total: i32 }`
+   och `pub struct Game { view: play_view.View, cozy: cozy_control.CozyControl,
+   hud: widgets.State, cozy_hud: widgets.State, action: play_ui.Action,
+   cozy_action: play_ui.CozyAction }`, vardera med sin `new(argv, graph,
+   window)` som gör uppstarten ur `run_session` och sina fält samlade. De är
+   värden, inte moduler: ingenting flyttar ut ur `app.ddr`, men loopen läser
+   `studio.editor.focus` i stället för sju lösa namn. `Transport` stannar
+   som den är — den är redan rätt form.
+2. **En funktion per gren i loopen.** `fn studio_frame(...) -> StudioFrame`
+   (kamera, muslook, R/F/T/G/E, hubrotation, orber), `fn blossom_frame(...)`
+   (cozy-uppdateringen, `Tick`, humör, guide) och `fn plain_frame(...)`
+   (`Tick`, `sync`). Alla tre returnerar `view_camera` och `frame_sky`; ingen
+   tar `B`. Det som är kvar i `run_session` är poll, fps, watcher,
+   gather, plan och exekveringen — den yttre formen, samma i alla tre fall.
+3. **`cozy_action`-matchen (15 rader) blir en metod på `CozyControl`:**
+   `cozy_control.apply(&mut cozy, &mut session, cozy_action)` — matchen
+   är en tabell över `CozyAction` och hör hemma hos den typ den vänder sig
+   till, inte i fönstrets funktion.
+
+Det som **inte** ska göras: att dra `cozy_control` in i `storm-play` (den
+läser kameran och fönstermätten, det är vy-kod), eller att ge
+`run_session` en `trait` med tre implementationer (tre världar är inte tre
+backends: de delar fönstret, transporten och grafen, och en trait skulle
+dölja det). Formen är poster och funktioner, inte polymorfi.
 
 ## 3. Enums i FFI-lagret
 
