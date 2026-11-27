@@ -174,16 +174,17 @@ pub fn launch_mode(argv: &[]string, fallback: Launch) -> Launch {
 // studio and GPU resources. The renderer takes geometry from the active graph.
 pub trait Project {
     fn graph(&self) -> &scenegraph.Graph from self
-    fn sphere_geometry(&self) -> []f32
-    fn labels(&self) -> []string
-    fn reload(&mut self, now: f64) -> Result<bool, string>
-    fn restart(&mut self)
-    fn graded(&self) -> bool
     fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: Tick, paused: bool, capturing: bool,
         camera: input.Camera, custom_eye: bool, sky: &mut gfx.Sky) -> input.Camera
-    fn mesh_view(&self, eye: core.Vec3) -> gfx.MeshView
+
+    fn sphere_geometry(&self) -> []f32 { gfx.sphere(24, 12) }
+    fn labels(&self) -> []string { [] }
+    fn reload(&mut self, now: f64) -> Result<bool, string> { .Ok(false) }
+    fn restart(&mut self) {}
+    fn graded(&self) -> bool { false }
+    fn mesh_view(&self, eye: core.Vec3) -> gfx.MeshView { gfx.mesh_view([eye.x, eye.y, eye.z]) }
     fn hud(&mut self, controls: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas,
-        pointer: &widgets.Pointer, width: f32, height: f32, paused: bool, exact: bool) -> controls.Action
+        pointer: &widgets.Pointer, width: f32, height: f32, paused: bool, exact: bool) -> controls.Action { .Idle }
 }
 
 // The game's transport: whether the level is being edited, run, or run one

@@ -56,7 +56,6 @@ impl studio.Project for Game {
     fn restart(&mut self) {
         self.session = play.start(&self.session.scene)
     }
-    fn graded(&self) -> bool { false }
     fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: studio.Tick, paused: bool, capturing: bool,
         camera: input.Camera, custom_eye: bool, sky: &mut gfx.Sky) -> input.Camera {
         aspect := f32(frame.width) / f32(frame.height)
@@ -75,7 +74,6 @@ impl studio.Project for Game {
         sky.light_dir_c = [sun.x, sun.y, sun.z, core.dot(area.center, sun) + radius * 1.6]
         if custom_eye { camera } else { play_view.camera(&area, aspect) }
     }
-    fn mesh_view(&self, eye: core.Vec3) -> gfx.MeshView { gfx.mesh_view([eye.x, eye.y, eye.z]) }
     fn hud(&mut self, hud: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, pointer: &widgets.Pointer,
         width: f32, height: f32, paused: bool, exact: bool) -> controls.Action {
         _ := exact

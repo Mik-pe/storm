@@ -1,0 +1,28 @@
+import ..src.studio
+import core
+import gfx
+import input
+import scene
+
+struct BareProject { world: scene.Graph }
+
+impl studio.Project for BareProject {
+    fn graph(&self) -> &scene.Graph from self { &self.world }
+    fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: studio.Tick, paused: bool, capturing: bool,
+        camera: input.Camera, custom_eye: bool, sky: &mut gfx.Sky) -> input.Camera { camera }
+}
+
+fn basic_project_defaults<P: studio.Project>(project: &mut P) {
+    assert(project.graph().len() == 0)
+    assert(project.sphere_geometry().len > 0)
+    assert(project.labels().len == 0)
+    assert(!project.reload(1.0).unwrap() && !project.graded())
+    view := project.mesh_view(core.vec3(1.0, 2.0, 3.0))
+    assert(view.eye[0] == 1.0 && view.eye[1] == 2.0 && view.eye[2] == 3.0 && view.radius == 0.0)
+    project.restart()
+}
+
+@test fn a_project_only_needs_a_scene_and_an_update() {
+    mut project := BareProject { world: scene.Graph::new() }
+    basic_project_defaults(&mut project)
+}
