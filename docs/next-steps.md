@@ -447,18 +447,76 @@ inga av de fyra och påverkas inte.
 behöver ett tangentbasrum (T, B, N) per vertex. Storms vertexformat är
 åtta floats (position, normal, uv) — **ingen tangent**, och ingen rad i
 Storm läser `TANGENT`. Avokado, Lantern och Tiger har `TANGENT` i filen,
-DamagedHelmet har den inte (och ingen av de elva har spegglade UV:s).
+DamagedHelmet har den inte. **Spegglade UV:er finns** (mätt på
+triangelns UV-Jacobian `det = (u1−u0)(v2−v0) − (u2−u0)(v1−v0)`, per fil
+med `TANGENT` och per triangel i Helmet): Lantern har 128 av 5 394
+trianglar med `det > 0` och Tiger 3 av 27 386, Avokado 0 av 682;
+DamagedHelmet har **7 783 av 15 452** med `det > 0` mot 7 659 med
+`det < 0` — dess vänsterhalva (tyngdpunkt x = −0,40) är en spegling av
+högerhalvan (x = +0,40) som delar samma UV-ö, plus 10 degenererade
+UV-trianglar (`det = 0`). Den tidigare meningen här, "ingen av de elva
+har spegglade UV:s", var ett antagande och var fel.
 
-Specen: *"When tangents are not specified, client implementations SHOULD
-calculate tangents using default MikkTSpace algorithms"*. MikkTSpace
-kräver **oindexerad** geometri och måste indexeras om efteråt — en
-lastningsalgoritm, inte en shader. Khronos referensshader
-(`material_info.glsl`), Filament och Cesium gör i stället en
-skärmderiverad bas (`dFdx`/`dFdy` av position och uv) när `TANGENT`
-saknas; den är per-fragment och bryter vid UV-sömmar (som referensens
-egna issue #466 visar för anisotropi), men den är vad DamagedHelmet-filen
-är authorad för. Tre.js valde MikkTSpace (PR #23802) efter samma
-kvalitetsproblem.
+Vad filens `TANGENT` egentligen innehåller, mätt i f64 mot geometrin
+(Lengyel per triangel: `t ∝ (e1·dv2 − e2·dv1)/det`, `b ∝ (e2·du1 −
+e1·du2)/det`, dvs. `t = +dp/du` och `b = +dp/dv`):
+
+- Filens `t` är `+dp/du` i praktiskt alla hörn (vinkeln mellan filens
+  `t` och den per triangel deriverade `+dp/du`: median 1,8°/2,3°/1,8°
+  och 99:e percentil 13,8°/17,1°/22,0° för Avokado/Lantern/Tiger —
+  skillnaden är smoothning över sömmen, inte riktning).
+- Filens bitangent enligt specen, `b = cross(n, t)·w`, pekar längs
+  **`+dp/dv` där `det < 0` och `−dp/dv` där `det > 0`** — mätt per
+  hörnförekomst (en vertex räknas en gång per triangel den tillhör):
+  `+` på 2 043 av 2 043, 15 780 av 15 780 och 81 938 av 82 149 med
+  `det < 0`, `−` på 3 av 3, 384 av 384 och 9 av 9 med `det > 0` —
+  dvs. `w = −sign(det)`. Per vertex: Lantern har `w = −1` på exakt
+  de 104 vertexar som tillhör `det > 0`-trianglarna (384
+  hörnförekomster) och på ingen annan (0 av 2 359); Tiger har 43
+  sådana (3 på `det > 0`, 42 på `det < 0` — en liten blandad ö),
+  Avokado 0. `sign(+det)` summerad per vertex mot filens `w` stämmer
+  på 1 av 406, 0 av 4 145 och 42 av 15 133. **Ingen triangel i någon av de tre filerna
+  har blandat `w`** (0 av 33 462), för exportören har splittat
+  vertexarna vid sömmen — så filens `w` är en funktion av *triangeln*,
+  och en per-triangel-derivation kan återge den exakt.
+- `(t, +dp/dv, n)` är rätthänt oberoende av `det` (mätt: `(t ×
+  dp/dv)·n = +0,111 = n·(e1×e2)` på Lanterns trianglar), så
+  `cross(n, t) = +dp/dv` **alltid** — även på en speglad triangel.
+  En bas byggd enbart på winding (`b = cross(ng, t)`, Khronos
+  referensform) är därför filens ram där `det < 0` och **motsatsen**
+  där `det > 0`: den kan inte se speglingen, för den läser varken
+  UV-orienteringen eller `w`. Samma gäller Katlas generator
+  (`compile.rs:225–232`: `sign = −1 om cross(n,t)·b_uv < 0`, dvs.
+  `b = +dp/dv` alltid), som dessutom aggregerar per *vertex* utan att
+  splitta vid en sömm — så Katla lyfter inte filens `w` utan sin
+  egen. Mätt med referensformeln (`t_ = (dv2·e1 − dv1·e2)/det`, `t = normalize(t_ −
+  ng·dot(ng,t_))`, `b = cross(ng, t)`): överens med filens `b` på 2 043
+  av 2 043, 15 780 av 15 780 och 82 055 av 82 149 hörnförekomster där
+  `det < 0`, och **på 0 av 3, 0 av 384 och 6 av 9** där `det > 0`.
+  (De 94 på Tiger där `det < 0` och ändå motsats är hörn där filens
+  `t` är smoothad mer än 90° från sin egen triangels — en UV-sömm,
+  inte en spegling.) Det är inte en konventionsskillnad — det är
+  exakt vad en speglad ö är.
+
+Specen (§3.7.2.1): *"When tangents are not specified, client
+implementations SHOULD calculate tangents using default MikkTSpace
+algorithms"*, *"Vertices of the same triangle SHOULD have the same
+tangent.w value… its tangent space is considered undefined"* och *"The
+bitangent vectors MUST be computed by… `cross(normal.xyz, tangent.xyz) *
+tangent.w`"*. MikkTSpace kräver **oindexerad** geometri och måste
+indexeras om efteråt — en lastningsalgoritm, inte en shader. Khronos
+referensshader (`material_info.glsl`), Filament och Cesium gör i stället
+en skärmderiverad bas (`dFdx`/`dFdy` av position och uv) när `TANGENT`
+saknas; den är per-fragment, följer alltid winding och kan därför inte
+se en spegling, men det är vad DamagedHelmet är authorad för (filen
+har ingen tangent och Khronos referensbild är renderad med den).
+Tre.js valde MikkTSpace (PR #23802) efter samma kvalitetsproblem.
+Katla (`katla_app/src/mesh_asset/compile.rs:181–241`) läser `TANGENT`
+och genererar med exakt Lengyel-receptet när den saknas, men aggregerar
+per *vertex* utan att splittra vid en sömm — det fungerar för
+DamagedHelmet (ingen sömm i Katlas pipeline: den genererar om allt) och
+är rätt grund för Storm att låna, med skillnaden att Storm behåller
+filens egna tangenter.
 
 **Beslut:**
 
@@ -521,20 +579,39 @@ kvalitetsproblem.
    per frame med hooken. `normalScale`/`aoStrength` (båda 1.0 i alla
    elva filer) ryms nu i pushen när en fil ber om dem; en per-yta-
    uniform (§7) är fortfarande rätt form när de blir fler.
-4. **Tangentbas: shadern deriverar, och `TANGENT` läses inte in än.**
-   Beslutet är *avgränsat*: referensshaderns form
-   (`t = normalize(t_ − ng·dot(ng, t_))`, `b = cross(ng, t)`) är tolv
-   rader GLSL och
-   Metal, kräver ingen vertexändring och fungerar för DamagedHelmet
-   (authorad utan tangenter) lika bra som för referensshadern. MikkTSpace
-   är rätt slutmål för kvalitet vid UV-sömmar och speglingar, men det är
-   en lastningsalgoritm (oindexera, beräkna, indexera om) plus ett
-   **fjärde vertexattribut** (`TANGENT`, 4 floats: `gfx.Vertex` 8 → 12
-   floats, 32 → 48 byte) genom `vertex_input()` → `interleave` → båda
-   shaders — inte en timme.
-   Det blir 3e. Innan dess: en fil med `TANGENT` får samma deriverade
-   bas som en utan, och den mäts i en capture mot en referensbild
-   (Khronos referensviewer är målbilden för Avokado/Lantern).
+4. **Tangentbas: läs `TANGENT` när filen har den, MikkTSpace annars —
+   och shadern räknar `b = cross(n, t)·w`.** (Omskrivet 2026-11-27;
+   det tidigare beslutet, "shadern deriverar och `TANGENT` läses inte
+   in än", vilade på att ingen fil hade spegglade UV:er, vilket
+   mätningen ovan motbevisar.) Fakta: en winding-deriverad bas
+   (`b = cross(ng, t)`) är filens ram på alla `det < 0`-hörn och
+   **motsatsen på varenda `det > 0`-hörn** (Lanterns speglade del:
+   128 trianglar, 104 av 2 463 vertexar = 4,2 % av lyktans kropp) —
+   normalmappens G-kanal vänder tecken där, och belysningen på den
+   delen blir inverterad, inte lite fel. Filens `w` är `−sign(det)`
+   per triangel och exportören har splittat vid sömmen, så en
+   lastningsalgoritm som räknar per triangel återger `w` exakt:
+   MikkTSpace för en fil utan `TANGENT` (specens SHOULD), filens egna
+   för en med (Katlas recept, `compile.rs:181–241`, är referensen för
+   Lengyel-steget — med skillnaden att Storm splittar vid en sömm
+   istället för att aggregera per vertex).
+   **Shaderns form är densamma i båda fallen** — tolv rader GLSL
+   och Metal, `t = normalize(in_t − n·dot(n, in_t))`, `b = cross(n, t)
+   * w` — och inget i den vet var `t` och `w` kom ifrån. Det gör
+   frågan "derivera eller läsa" till en fråga om *vilket vertexattribut
+   som matas in*, inte om två shaderformer. Kostnaden är det
+   **fjärde vertexattributet** (`TANGENT`, 4 floats: `gfx.Vertex` 8 →
+   12 floats, 32 → 48 byte) genom `vertex_input()` → `interleave` →
+   båda shaders. Det blir 3e, i tre steg: (a) `gfx.Vertex` får
+   `tx ty tz tw` och båda backenders vertexlayout följer (AE = 0 på
+   en scen utan normalmapp: attributet lämnas oanvänt av shadern);
+   (b) `storm-gltf` läser `TANGENT` och MikkTSpace-genererar när den
+   saknas, med filens `w = −sign(det)` som test på Lantern
+   (384 hörn, exakt de på `det > 0`); (c) shadern läser normalmappen
+   genom `b = cross(n, t)·w` och det mäts i en capture mot
+   Khronos referensbild (Avokado/Lantern) — Lanterns speglade del är
+   proben: med en winding-deriverad bas lyser den inverterad, med
+   `w` rätt inte.
 5. **Occlusion påverkar bara indirekt ljus**, som specen säger: `ao` skalas
    med `strength` och multiplicerar `diffuse_ambient` och
    `specular_ambient`, inte `direct`. Shaderns befintliga
