@@ -1,9 +1,12 @@
 // storm-scene: loads a glTF file, drives it from the ECS, and reports the text
 // layout Storm would draw. Runs without a window so it can be verified anywhere:
 //
-//   storm run --example scene -- model.glb
+//   dunder run --example scene                    # no model: zero vertices
+//   dunder run --example scene -- model.glb       # a model from the glTF scene
 //
-// With no argument it uses the built-in triangle, so the example always runs.
+// The ECS part is a query: an entity is drawn only when it has all three
+// components, and `ecs.join3` finds those entities the same way the game loop
+// does (src/game.ddr).
 capability stdio
 import core
 import ecs
@@ -34,7 +37,9 @@ fn main() -> i32 {
         print(f"gltf: {path} vertices={mesh.vertex_count} indices={mesh.index_count}")
     }
 
-    // ECS: one entity per model, plus a rotating camera marker.
+    // ECS: one entity per model, plus a rotating camera marker. The marker has
+    // a Transform and a Spin but no MeshRef, so no query for drawable entities
+    // ever returns it.
     mut allocator := ecs.EntityAllocator::new()
     mut transforms := ecs.Pool<Transform>::new()
     mut spins := ecs.Pool<Spin>::new()
@@ -43,21 +48,24 @@ fn main() -> i32 {
     _ := transforms.insert(model, Transform { position: core.vec3(0.0, 0.0, 0.0), rotation: 0.0 })
     _ := spins.insert(model, Spin { speed: 0.5 })
     _ := meshes.insert(model, MeshRef { first_vertex: 0, vertex_count: mesh.vertex_count })
+    marker := allocator.create()
+    _ := transforms.insert(marker, Transform { position: core.vec3(0.0, 4.0, 8.0), rotation: 0.0 })
+    _ := spins.insert(marker, Spin { speed: 0.0 })
 
-    // Simulate a second of frames at 60 Hz and integrate the spin system.
+    // Simulate a second of frames at 60 Hz and integrate the spin system over
+    // every entity that has all three components.
     mut frame := 0
     while frame < 60 {
-        for i in 0..spins.len() {
-            e := spins.entities()[i]
-            if transforms.contains(e) {
-                speed := spins.values()[i].speed
-                transforms.get_mut(e).rotation = transforms.get(e).rotation + speed / 60.0
-            }
+        rows := ecs.join3(&spins, &transforms, &meshes)
+        for row in &rows {
+            speed := spins.at(row.a).speed
+            transforms.at_mut(row.b).rotation = transforms.at(row.b).rotation + speed / 60.0
         }
         frame = frame + 1
     }
     entity := transforms.entities()[0]
-    print("ecs: entities=" + allocator.len().str() + " rotation=" + transforms.get(entity).rotation.str())
+    print("ecs: entities=" + allocator.len().str() + " drawable=" + ecs.join3(&spins, &transforms, &meshes).len.str() +
+        " rotation=" + transforms.get(entity).rotation.str())
 
     // Text: build an atlas for a status line and lay it out.
     face := text.load_font(24.0)
