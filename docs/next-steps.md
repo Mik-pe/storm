@@ -171,7 +171,7 @@ Matematiken (kubytornas baser, projektionen och BRDF-integralen) ligger i
 
 En vertexström delas av kuber, plan, glTF-modeller och skuggpasset. Sedan
 3a äger `storm-gfx` vertexformatet. Vulkan beskriver det med `layout.vertex_input()` (post med en binding
-och tre attribut, `VERTEX_FLOATS = 8`, `VERTEX_BYTES = 32`) och
+och fyra attribut, `VERTEX_FLOATS = 12`, `VERTEX_BYTES = 48`) och
 `enums.apply_vertex_input` skriver dess enum-fält; `pipeline.ddr` och
 `shadow.ddr` deklarerar samma post, och `mesh_pass`/`shadow.mesh` validerar
 `len % VERTEX_FLOATS`. Stride, offset och format finns inte på någon annan
@@ -183,7 +183,7 @@ plats i paketet.
   hålls lika "för hand". `pipeline.ddr`:s `Vertices` namnger layouten en
   pipeline deklarerar (`.Mesh`, `.Ui(stride)` eller ingen), och `describe`
   skriver varje forms post från en enda fabrik + skribent per layout
-  (`vk.vertex_input` + `enums.apply_vertex_input` för meshens tre attribut,
+  (`vk.vertex_input` + `enums.apply_vertex_input` för meshens fyra attribut,
   `vk.ui_vertices` + `enums.apply_ui_vertices` för UI:ts två); `shadow.ddr`
   deklarerar `.Mesh` som alla andra (shadern läser bara location 0, men
   pipelinen måste fortfarande deklarera allt bufferten innehåller — annars
@@ -218,7 +218,7 @@ plats i paketet.
 
 ### 3a. Klart: ett vertexformat — position, normal, uv
 
-Åtta floats per vertex, 32 byte; `gfx.cube`/`plane` bygger sina ytor med
+Tolv floats per vertex, 48 byte sedan 3e(a) (position, normal, uv, tangentram); `gfx.cube`/`plane` bygger sina ytor med
 `gfx.vertex`/`push_quad` och bär uv (0,0)..(1,1) per yta (v = 0 är
 bildens överkant, glTF-konventionen — ingen flip i shadern), `gltf.interleave`
 läser `TEXCOORD_0` och ger `(0,0)` när primitiven saknar den, `mesh.vert`
@@ -618,10 +618,38 @@ filens egna tangenter.
    (b) `storm-gltf` läser `TANGENT` och MikkTSpace-genererar när den
    saknas, med filens `w = −sign(det)` som test på Lantern
    (384 hörn, exakt de på `det > 0`); (c) shadern läser normalmappen
-   genom `b = cross(n, t)·w` och det mäts i en capture mot
-   Khronos referensbild (Avokado/Lantern) — Lanterns speglade del är
-   proben: med en winding-deriverad bas lyser den inverterad, med
-   `w` rätt inte.
+**Landat i 3e, steg (a) (2026-11-27):** `gfx.Vertex` är 12 floats
+   (`tx ty tz tw` efter `u v`; `VERTEX_FLOATS = 12`, `VERTEX_BYTES = 48`),
+   offsets ägda på ett ställe i `storm-gfx`. En triangel som byggs med
+   `push_triangle` härleder sin ram ur uv-jacobianen (Lengyel: `t = dp/du`
+   ortogonaliserad mot facenormalen, `w = −sign(det)`), och när determinanten
+   är 0 (`gfx.vertex(…)`, en ytplan utan uv) står `gfx.normal_tangent(n)`
+   (Frisvad) för ramen — ingenstans finns ett `(1,0,0,1)`-standardvärde kvar.
+   `storm-gltf` läser filens `TANGENT` när den finns (`with_tangent`) och
+   `nodes.bake` transformerar den med matrisens linjära del, renormaliserad.
+   `storm-vulkan` deklarerar fyra attribut ur posten (`records.vertex_attributes()`,
+   inte en siffra) och `mesh.vert` tar `location = 3` utan att läsa den;
+   `storm-metal` har `[[attribute(3)]]` på samma sätt. Kontraktet har nu en
+   enda läsare och en enda skrivare av formatet — `gfx.vertex_at`/`put_vertex`
+   — och de sex handskrivna formatläsarna i trädet (`particles.ddr`,
+   `nodes.bake`, `orb.ddr`, `model_rig.ddr`, `app_frame.ddr`:s slab,
+   `scene.bind_skin`, `skinning.deform`, `fox_animation.ddr`:s söm) går
+   genom dem. Bevis: 0 ändrade pixlar på åtta captures (spel, studio, Fox,
+   Box, utan efterbehandling, utan skuggor, FoxFixed, `--texture`), räknade
+   i Python, inte med `magick`-AE. **Kvar i 3e:** (b) två saker —
+   `skinning.deform` för tangenten *oförändrad* genom leden (som uv; att böja
+   den med jointen är en egen timme, och ingen pixel beror på det förrän
+   shadern läser den), och MikkTSpace-generering när filen saknar `TANGENT`
+   (idag: per triangel ur uv:n, vilket är rätt på plan men inte på en
+   sammanfogad söm); (c) shadern läser `b = cross(n, t)·w` mot Khronos
+   referensbild. `INITIAL_VERTEX_BYTES` är 6 MiB (5 898 240 byte för en
+   full nivå av 480 sfärer × 48 byte × 2 × 128; budgeten läses av testet
+   från kontraktet, inte som en siffra). Bygge 9,7 s; tester 359 egna.
+   Slarv kvar efter samma mönster, i ett annat format: `storm-ui`:s canvas
+   (`ui.ddr`: `x y u v r g b a`, `vertex_count = len / 8`, och `i * 8` i sex
+   testrader) är ett eget format och inte en läsare av `gfx.Vertex` — men
+   dess stride är lika namnlös som meshens var. En konstant i `storm-ui`
+   (`CANVAS_FLOATS`) är en egen liten städcommit.
 5. **Occlusion påverkar bara indirekt ljus**, som specen säger: `ao` skalas
    med `strength` och multiplicerar `diffuse_ambient` och
    `specular_ambient`, inte `direct`. Shaderns befintliga
