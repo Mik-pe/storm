@@ -11,7 +11,7 @@ Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
 Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
 av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexport.
 
-**Blomsterskogen** är Storms basspel. Hjälp räven Vallmo att plocka fem blommor till en bukett i körsbärsgläntan. Ovanför stigen finns sex moln och tre frivilliga bonusfjärilar. Det rosa studsmolnet lyfter Vallmo ända upp till Kronbalkongen. [Se molnhoppet i spelet](docs/molnhopp.mp4)
+**Blomsterskogen** är Storms basspel. Hjälp räven Vallmo att plocka tio blommor till en bukett i körsbärsgläntan. Ovanför stigen finns tolv moln (fyra rosa studsmoln) och fem frivilliga bonusfjärilar. Studsmolnen lyfter Vallmo ända upp till Kronbalkongen. [Se molnhoppet i spelet](docs/molnhopp.mp4)
 
 ![Vallmo bland körsbärsträden i Blomsterskogen, renderad av Storm på macOS](docs/blomsterskogen.png)
 
@@ -19,7 +19,7 @@ av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexp
 
 ## Förutsättningar
 
-- `dunder` 0.12.0 eller senare; senast verifierad med 0.12.0. `layout.ddr` använder
+- `dunder` 0.13.1 eller senare; senast verifierad med 0.13.1. `layout.ddr` använder
   ett fält som är en fast array av en annan `@c_layout`-post (`VkImageBlit` med
   `[Offset3D; 2]`), en konstruktion som är mätt på 0.12.0 men inte på 0.11.3.
 - Git i `PATH` och nätåtkomst vid första bygget. Dunder hämtar de låsta revisionerna av `dunder-skrift` och dess zlib-beroende automatiskt.
@@ -44,7 +44,7 @@ dunder test                     # rotpaketets tester
 
 ## Spela och bygg med en agent
 
-Styr Vallmo med **WASD** eller **piltangenterna**. Gå intill blommorna för att plocka dem. Den femte fullbordar buketten och vinner spelet. Du kan fortsätta upp bland molnen efteråt. Tryck **mellanslag** för att hoppa och håll en riktning även i luften. Landa på det rosa molnet och styr åt höger i studsen för att nå den översta fjärilen. **Q** pausar och **R** börjar om. I pausläget flyttar **Ett steg** fram simuleringen en tick.
+Styr Vallmo med **WASD** eller **piltangenterna**. Gå intill blommorna för att plocka dem. Den tionde fullbordar buketten och vinner spelet. Du kan fortsätta upp bland molnen efteråt. Tryck **mellanslag** för att hoppa och håll en riktning även i luften. Landa på det rosa molnet och styr åt höger i studsen för att nå den översta fjärilen. **Q** pausar och **R** börjar om. I pausläget flyttar **Ett steg** fram simuleringen en tick.
 
 ```sh
 dunder build -o build/storm
@@ -77,7 +77,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
 | [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture`, `Textures` (materialets fem platser), `Encoding` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, encoding, &sampler)`/`mesh(…, &textures, surface)`, och geometrihjälparna (`cube`, `plane`, `sphere`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
-| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (82 prototyper + `load()`), `layout.ddr` (71 C-poster ur registret + fyra par-poster) och `enums.ddr` (36 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
+| [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (82 prototyper + `load()`), `layout.ddr` (77 C-poster ur registret + fyra par-poster) och `enums.ddr` (36 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx`, `vk` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer, PBR-material med `baseColorTexture` (bilder som bytes + samplern som `gfx.Sampler`). | `core`, `gfx` |
@@ -86,7 +86,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
 | [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll, blomplockning, studsmoln, bonusfjärilar och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
-| [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt baseline-JPEG (4:4:4, 4:2:2, 4:2:0, grå, restart-markörer; progressivt vägras) som RGBA8, valt på filens signatur — bitdjup 16 och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
+| [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt JPEG (baseline och progressivt; 4:4:4, 4:2:2, 4:2:0, grå, restart-markörer) som RGBA8, valt på filens signatur — 12-bitars JPEG, bitdjup 16 i PNG och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |

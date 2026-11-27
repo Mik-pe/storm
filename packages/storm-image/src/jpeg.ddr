@@ -1,13 +1,11 @@
-// JPEG decoding in pure Dunder: baseline (SOF0) Huffman-coded 8-bit images,
-// every sampling factor up to 2x2 (4:4:4, 4:2:2, 4:2:0, 4:4:0 and grey), with
-// or without restart intervals. The output is the form a backend uploads:
-// 8-bit RGBA, rows top to bottom, no padding (ITU-T T.81).
+// JPEG decoding in pure Dunder: baseline (SOF0) and progressive (SOF2)
+// Huffman-coded 8-bit images, every sampling factor up to 2x2 (4:4:4, 4:2:2,
+// 4:2:0, 4:4:0 and grey), with or without restart intervals. The output is the
+// form a backend uploads: 8-bit RGBA, rows top to bottom, no padding (ITU-T T.81).
 //
-// What is refused with a message rather than decoded halfway: progressive
-// (SOF2) and the other SOF processes, 12-bit precision, more than four
-// components, and arithmetic coding. Of the eleven Katla and Khronos files,
-// DamagedHelmet's five images are the only JPEGs — four baseline 4:2:0 and one
-// progressive — so the progressive one is still refused by name.
+// What is refused with a message rather than decoded halfway: the other SOF
+// processes, 12-bit precision, more than four components, and arithmetic
+// coding.
 //
 // Two facts of the format the code is built around:
 // - The quantisation table is stored in zigzag order, and so is the
