@@ -452,9 +452,10 @@ inga av de fyra och påverkas inte.
   Katla-kartorna har medel (127,127,255) = platt +Z, som förväntat.
 
 **Tangenter är den stora frågan, och mätningen avgör den.** En normal-karta
-behöver ett tangentbasrum (T, B, N) per vertex. Storms vertexformat är
-åtta floats (position, normal, uv) — **ingen tangent**, och ingen rad i
-Storm läser `TANGENT`. Avokado, Lantern och Tiger har `TANGENT` i filen,
+behöver ett tangentbasrum (T, B, N) per vertex. Vid mättillfället var
+Storms vertexformat åtta floats (position, normal, uv) utan tangent och
+ingen rad läste `TANGENT`; sedan 3e(a) (`39b74dd`, 2026-11-27) är den tolv
+och `interleave` läser filens tangent. Avokado, Lantern och Tiger har `TANGENT` i filen,
 DamagedHelmet har den inte. **Spegglade UV:er finns** (mätt på
 triangelns UV-Jacobian `det = (u1−u0)(v2−v0) − (u2−u0)(v1−v0)`, per fil
 med `TANGENT` och per triangel i Helmet): Lantern har 128 av 5 394
@@ -877,8 +878,9 @@ pixlar (ingen occlusion-karta: vit × 1,0). Ingen av de elva filerna sätter
 kartans av pixlarna. Bygge 9,7 s; tester: rot 120 egna `@test`,
 storm-gltf 21, storm-scene 26.
 
-**Kvar i 3d efter besluten:** `TANGENT` som vertexattribut + MikkTSpace
-(3e), `normalTexture.scale` (platsen finns: `occlusion.yzw`), `texCoord`
+**Kvar i 3d efter besluten:** MikkTSpace-generering och shadern som läser
+tangenten (3e b och c; attributet är landat, 3e(a)), `normalTexture.scale`
+(platsen finns: `occlusion.yzw`), `texCoord`
 ≠ 0 (ingen fil använder det; beslut 1 i
 3c:s research gäller: Storm läser `TEXCOORD_0`).
 
@@ -983,10 +985,11 @@ början (`button_of`).
 - Djupbuffert finns men inget reverserar det: glaset skriver inte djup, så två
   glaspaneler som överlappar varandra blandas i sorteringsordning, inte per pixel.
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
-- Vertexbufferten börjar på 4 MiB (`gfx.INITIAL_VERTEX_BYTES`) och växer med
+- Vertexbufferten börjar på 6 MiB (`gfx.INITIAL_VERTEX_BYTES`) och växer med
   50 % över högsta använda mängden (`gfx.frame_vertex_capacity`); den är
   mappad permanent och rymmer en mesh-ström per draw.
-- Meshpasset skickar 240 byte konstanter per draw. På Vulkan är de push
+- Meshpasset skickar 208 byte konstanter per draw (`state.MESH_PUSH_BYTES`).
+  På Vulkan är de push
   constants och enhetsvalet kontrollerar `maxPushConstantsSize`; på Metal är
   de ett block per stage (`setVertexBytes:`/`setFragmentBytes:`, högst 4 KB
   var).

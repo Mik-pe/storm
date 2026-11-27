@@ -246,7 +246,9 @@ pub trait Backend {
 
     fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string>
 
-    // Vertices are interleaved [x, y, z, nx, ny, nz, u, v] f32 (32 bytes); the
+    // Vertices are interleaved [x, y, z, nx, ny, nz, u, v, tx, ty, tz, tw] f32
+    // (48 bytes, VERTEX_FLOATS/VERTEX_BYTES; the last four are the tangent
+    // frame, w = sign of the bitangent); the
     // helpers below are the only way Storm makes them. `textures.base`
     // multiplies the base colour where the surface has uv, and the linear
     // maps scale `params` as glTF says: metallic = params.x * mr.b,
