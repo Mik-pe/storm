@@ -56,7 +56,9 @@ Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 ## Byggtid på Mikparchy
 
-Senaste mätning: **18 509 och 18 513 ms** på `460c428` (post- och capture-flyttarna) och **18 540 ms** på `6a4e683` (`gfx.Button`) — tre `tools/build-time.ddr` på morgonen 2026-11-26, Dunder 0.12.0, Mikparchy. Innan det: **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen (två mätningar samma kväll; 18 200 och 18 244 ms på `9f879c9`, 18 996 ms samma kväll under belastning). Det är 16,4 s → 18,4 s sedan `decode_png` + zlib nås från `main` (avsnitt 3c, fynd 82). Före det: **16 249 ms** på trädet med `depth.Depth` och 16 197–16 523 ms på `1a7f0e2`. Budgeten är 20 s.
+Senaste mätning: **9 648 och 9 633 ms** på `8cc9859` (två `tools/build-time.ddr` + en `dunder build --timings`, 2026-11-27), Dunder **0.13.1**, Mikparchy: `compiler=` 8 482 / 8 459 ms, `module_load_lex_resolve` 902 / 893 ms, **1 608 funktioner och 355 061 MIR-operationer**. Budgeten är 20 s. Trädet är detsamma som mätte 18,4–19,8 s under 0.12.0 (512 017 operationer, fynd 98): kompilatorn halverade tiden och tog bort 157 000 operationer — inget i Storm ändrades för det. **Alla siffror nedanför i det här avsnittet och i "Kvar i 3c" (18 557 → 18 776 ms, 94 % av budgeten) är 0.12.0-mätningar**: de är jämförbara med varandra, inte med ett 0.13.1-bygge, och det som är sant av dem är fortfarande det *relativa* (PNG kostade 1 100 ms och JPEG 220 ms när de nådde `main`; under 0.13.1 mätte fynd 98 PNG till 42 ms och JPEG till 27). En ny mätning skriver alltid kompilatorversionen vid talet.
+
+Historik under 0.12.0 (för jämförelse med äldre commits, inte med dagens träd): **18 509 och 18 513 ms** på `460c428`, **18 540 ms** på `6a4e683`, 18 385/18 395 ms på `e264590`, 18 200/18 244 ms på `9f879c9`, 16 249 ms med `depth.Depth`, 16 197–16 523 ms på `1a7f0e2`.
 
 Med molnbanan, animationssystemet och den riggade räven byggde `a9c8087` på **15,245 s** med Dunder 0.11.3 på Mikparchy. Mätningen gjordes i en ren klon med beroendena hämtade och föregående binär borttagen. Trädet på `a84ade9` med Dunder 0.12.0: **14 926–15 076 ms** (`--timings`: 1 238 emitterade funktioner, 386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av 14,6 s).
 
@@ -76,9 +78,11 @@ Beslut tills vidare:
   stubb-`main` med alla femton paket bygger på 207 ms. Kostnaden kommer
   när `app.ddr` kallar det. Nästa funktion som drar in ett helt subsystem
   i bildrutan mäts med `tools/build-time.ddr` före och efter.
-- **Växer trädet förbi 18 s är nästa steg i Dunder-repot, inte här.**
-  `--timings` räknar funktioner och operationer för hela bygget, inte per
-  modul eller funktion (fynd 70–71); utan den siffran är varje sänkning en
+- **Växer trädet förbi 16 s (80 % av budgeten) är nästa steg i Dunder-repot,
+  inte här.** Det hände en gång: 0.12.0 tog trädet till 19,8 s och pushen
+  stannade (fynd 98); 0.13.1 gav det tillbaka till 9,6 s. `--timings`
+  räknar funktioner och operationer för hela bygget, inte per modul eller
+  funktion (fynd 70–71, 98); utan den siffran är varje sänkning en
   bisektion. Rekommendationen står i dogfood.md.
 - **`--incremental` är inte vägen runt.** Budgeten gäller från-scratch, och
   den är definierad som kompilatorns väggklocka på Mikparchy.

@@ -86,65 +86,66 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. Den senaste kontrollen på Mikparchy (`9e487b5`, Dunder
-  0.12.0, låst session) omfattade **318 egna `@test`** — 112 i roten
-  och 206 i de 16 paketen, räknade med `^@test fn` (en `@test` inuti en
-  sträng räknas inte) — alla gröna, varje
-  svit lika många som den har `@test` (Skrifts två följer med som PASS-rader
-  i de tre sviter som når `storm-text` — roten, `storm-text`, `storm-ui` — så
-  `N passed` blir 324). 17 sviter
-  kördes med `dunder test` i roten och i varje `packages/*`. **En rot som
-  inget av dem når är ett program under `tools/`, `examples/` eller
-  `packages/*/tools/`** (mätt: `dunder check` utan argument = `src/main.ddr`,
-  `--tests` = sviten, `--example` = manifestets exempel, i ett paket = dess
-  `root`) — och `storm-metal/tools/selftest.ddr` låg trasigt på main i 26
-  timmar (`496d59b` 11-25 07:28 → rättat 11-26 09:50; första felet
-  `E3099 enum variant needs a type` när `mesh` fick sina texturer, det
-  andra `E2002 unknown local 'plain'` sedan `5361964`) under **45
-  committer** som alla låg inom `dunder check`:s gröna. Sedan 2026-11-26
-  vaktar `tools/check.ddr` dem: den härleder rötterna ur katalogerna (ingen
-  tabell), typkontrollerar varje och sig själv, och fallerar med namnet
-  (utgång 1; 2 när den inte kan lista eller kompilatorn inte startar;
-  kontraktet bevisat i fyra fall). Ramens exektor (`app.gather`,
-  `load_model`) är testbar utan fönster: vad ett pass får, när
-  mesh-kopian tas (bara när geometrin revideras — och aldrig från en
+  delade vertexströmmen. **331 egna `@test`** på `8cc9859` (räknade
+  2026-11-27 med `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över
+  listan: 119 i roten, 17 filer, och 212 i de 16 paketen), alla gröna,
+  varje svit lika många som den har `@test` (Skrifts två följer med som
+  PASS-rader i de tre sviter som når `storm-text` — roten, `storm-text`,
+  `storm-ui` — så `N passed` blir 337). 17 sviter körs med `dunder test` i
+  roten och i varje `packages/*`. Föregående kontroll (`9e487b5`, Dunder
+  0.12.0, låst session) gav 318 — siffran åldras med varje test som landar;
+  det som inte åldras är regeln: *antalet `@test` i sviten är det antal som
+  ska passera, räknat per (svit, fil)*.
+  **En rot som inget av dem når är ett program under `tools/`, `examples/`
+  eller `packages/*/tools/`** (mätt: `dunder check` utan argument =
+  `src/main.ddr`, `--tests` = sviten, `--example` = manifestets exempel, i
+  ett paket = dess `root`) — och `storm-metal/tools/selftest.ddr` låg
+  trasigt på main i 26 timmar (`496d59b` 11-25 07:28 → rättat 11-26 09:50;
+  första felet `E3099 enum variant needs a type` när `mesh` fick sina
+  texturer, det andra `E2002 unknown local 'plain'` sedan `5361964`) under
+  **45 committer** som alla låg inom `dunder check`:s gröna. Sedan
+  2026-11-26 vaktar `tools/check.ddr` dem: den härleder rötterna ur
+  katalogerna (ingen tabell), typkontrollerar varje och sig själv, och
+  fallerar med namnet (utgång 1; 2 när den inte kan lista eller kompilatorn
+  inte startar; kontraktet bevisat i fyra fall). Ramens exektor
+  (`app.gather`, `load_model`) är testbar utan fönster: vad ett pass får,
+  när mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
   per instans (`tests/app_frame.ddr`). Spelets transport (`app.Transport`)
   är det med: paus, steg, omstart, studio och färgkorrigering besvaras med
   den enda `play`-anropet ramen ska göra (`tests/transport.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
-  mätte **18 385 och 18 395 ms** på `e264590` + `--help`-tabellen, Dunder 0.12.0 (två
-  mätningar samma kväll, efter femtexturkedjan), 18 996 ms på `9f879c9` — 16,4 s innan `decode_png` + zlib nås från `main`
-  (fynd 82), och **16 249 ms** på trädet med `depth.Depth`, **16 241 ms** på
-  `1a7f0e2` (16 197–16 523 ms över
-  tre mätningar samma kväll). Trädet på
-  `a84ade9` gav 14 900–15 100 ms med samma kompilator (`--timings`: 1 238 funktioner,
-  386 871 MIR-operationer; `--profile-compiler`: `mir_pipeline` 10,4 s av
-  14,6 s), `54214f3` 6 850 ms med Dunder 0.11.0 och 9 100–10 300 ms med
-  0.11.3, och `77d9b0c` 15 100–15 700 ms med 0.11.3 (1 176 funktioner,
-  346 512 operationer) — skillnaden sedan igår är hälften kompilator, hälften
-  spelet (fynd 70), och 0.12.0 tar +62 funktioner och +40 k operationer utan
-  att väggklockan flyttar. En stubb-`main` med hela manifestet bygger på
-  207 ms och `shader.ddr`s inbäddade SPIR-V-ord kostar 70 ms, så nästa
+  mätte **9 648 och 9 633 ms** på `8cc9859`, Dunder **0.13.1** (installerad
+  2026-11-26 19:13; `compiler=` 8 482–8 459 ms, `module_load_lex_resolve`
+  902–893 ms, **1 608 funktioner, 355 061 MIR-operationer**). Samma träd
+  under 0.12.0 var 18,4–19,8 s med 512 017 operationer (fynd 98): kompilatorn
+  halverade byggtiden, och med den försvann 157 000 operationer — det är
+  kompilatorns mått, inte Storms kod som ändrades. Historiken under 0.12.0
+  står i fynd 70, 82, 98 och 100 (`e264590` 18 385/18 395 ms; `9f879c9`
+  18 996 ms; `a84ade9` 14 900–15 100 ms med 1 238 funktioner; `54214f3`
+  6 850 ms med 0.11.0). En stubb-`main` med hela manifestet bygger på
+  207 ms och `shader.ddr`:s inbäddade SPIR-V-ord kostar 70 ms, så nästa
   budgetsänkning finns i koden `main` når, inte i de genererade arrayerna.
+  **En siffra i det här avsnittet är en mätning på en kompilator:** står
+  ingen version vid den gäller den inte.
 
-Registret är ett eget paket, **`storm-vk`** (2 063 rader, allt genererat ur
+Registret är ett eget paket, **`storm-vk`** (2 257 rader, allt genererat ur
 `vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (347:
-82 prototyper + `load()`), `layout.ddr` (1 285: 71 registriposter med
-`new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 34
+82 prototyper + `load()`), `layout.ddr` (1 479: 81 poster — 77 registriposter
+med `new()` + fyra par-poster, se §6), `enums.ddr` (431: 35 enums, 35
 konverterare, `result_name` och registrets konstanter). Det som är Storms
-val står i storm-vulkan `records.ddr` (158): vertexformaterna, `Blend` och
+val står i storm-vulkan `records.ddr` (158): vertexformaten, `Blend` och
 `apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
 vad ett swapchain-tal betyder Storm.
 
-Lagren i storm-vulkan (4 529 rader + 4 554 genererade i `shader.ddr`), räknade 2026-11-26:
+Lagren i storm-vulkan (4 514 rader + 4 554 genererade i `shader.ddr`), räknade 2026-11-27:
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 235 |
 | Storms värden ovanpå registret | `records.ddr` | 158 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 263 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 873 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 267 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 854 |
 
 `ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
 var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,
@@ -154,16 +155,21 @@ och storm-metal har samma två moduler som backend-tjänster (`ui.ddr`,
 kontraktet, som anropar `ui_atlas`/`ui_draw`/`post_process` och inte vet att
 modulerna finns.
 
-Lagren i storm-metal (2 455 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-26:
+Lagren i storm-metal (3 012 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-27:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| Runtingen | `objc.ddr` | 280 |
-| Ramverkens värden | `enums.ddr`, `records.ddr` | 201 |
-| Fönstret och input | `appkit.ddr` | 508 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 362 |
-| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 416 |
-| Orkestrering | `metal.ddr` | 688 |
+| Runtingen | `objc.ddr` | 728 |
+| Ramverkens värden | `enums.ddr`, `records.ddr` | 208 |
+| Fönstret och input | `appkit.ddr` | 498 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 369 |
+| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 427 |
+| Orkestrering | `metal.ddr` | 782 |
+
+`objc.ddr` var 280 rader när den räknades 2026-11-26 och är 728 nu
+(`9fa699c`, Mickes omskrivning): selektorer och klasser förregistreras,
+C-poster skickas per värde och bindningar batchas — det är runtingen som
+växte, inte en ny uppgift som lagts i fel lager.
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
@@ -289,11 +295,30 @@ Två gränser till har samma regel, om än inte enums:
 
 - `api.ddr`, `layout.ddr`, `enums.ddr` → `storm-vk` (**genomfört** 2026-11-25;
   Storms egen del av dem blev `storm-vulkan/records.ddr`).
-- `device.ddr`, `pipeline.ddr` → `Result` och ägda strukturer (kvar i
-  storm-vulkan; **genomfört i storm-metal**, som byggdes så från början:
-  `Renderer` med 38 fält, och en skapare och en förstörare per ägd resurs).
-- `vulkan.ddr`:s 17 setup-steg → en `Setup`-kedja med `Result` (kvar; på
-  kontraktets nivå är det klart: varje anrop är en `Result`).
+- `device.ddr`, `pipeline.ddr` → `Result` och ägda strukturer (ägda
+  strukturer: **genomfört i båda backends** — `storm-metal` byggdes så från
+  början med en skapare och en förstörare per ägd resurs, och Vulkan-sidans
+  sju kluster står i §3b; `Renderer` har **47 fält på Metal**, räknade
+  2026-11-27, och 61 på Vulkan).
+- **`SetupStep` stannar — "`Result` för setup-kedjan" är avskrivet som
+  mål (2026-11-27).** Punkten sa först "vulkan.ddr:s 17 setup-steg → en
+  `Setup`-kedja med `Result` (kvar)". Mätt mot koden är det målet fel
+  riktat. Vulkan och Metal har samma yttre kontrakt (`open` →
+  `Result<Window, string>` med *var* det föll i texten), men två inre
+  former: Metal:s `prepare` är `Result<(), string>` med `?` (tjugo steg på
+  lika många rader), Vulkan:s `initialize` är `SetupStep` — `step =
+  x.setup(&mut r)` plus `if step != .Ready { return step }`, **17 gånger i
+  tre filer** (`vulkan.ddr` 9, `device.ddr` 5, `pipeline.ddr` 3), för `?`
+  kräver `Result` (fynd 105). Det lockande är att ge Vulkan `Result` för
+  `?`:s skull. Det vore att välja språkets form framför problemets:
+  `SetupStep` bär två saker en sträng inte gör — *var* det föll, som en
+  enum med en exhaustiv `name()` (E3006 när ett steg läggs till utan namn;
+  17 namn pinnade i `setup_steps`), och `r.lastResult`, VkResult-koden,
+  som `describe` skriver bredvid namnet. Vad som är kvar av punkten är
+  inte en omskrivning av Vulkan utan en språklig sak: `?` på en enum vars
+  ena variant betyder "ingenting föll" (fynd 105). Tills dess är de två
+  raderna per steg det ärliga uttrycket, och de står här så att nästa
+  läsare inte "städar" dem till `Result` och tappar koden.
 - `ui.ddr` + `post.ddr` ur backend-lagret: **avskrivet som mål.** De skapar
   och förstör Vulkan-resurser och är backend-tjänster (se lagertabellen i
   §1); storm-metal har samma två. Det som steg 5 ville — att appen inte ska
@@ -484,9 +509,11 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
 - **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
   i `tests/suite.ddr` (`Depth` 24, `Atlas` 128, `Shadow` 120, `Environment`
-  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 6 240 byte — alla mätta, ingen räknad: en
-  storlek gissad i huvudet var fel två gånger av tre, och testet var rött
-  tills den var mätt). Registret allokerar `size_of(state.Renderer) + 8192`,
+  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 5 448 byte — alla
+  mätta, ingen räknad: en storlek gissad i huvudet var fel två gånger av tre,
+  och testet var rött tills den var mätt; `Renderer` var 6 240 på `e264590`
+  och 5 984 omedelbart före `66d248d`, som bytte den gissade `rest: [u64; 128]`
+  i `Properties` mot registrets 824 byte). Registret allokerar `size_of(state.Renderer) + 8192`,
   så nästa kluster som flyttar ändrar det talet — medvetet, i testet, inte
   genom att någon glömmer.
 - **Läsningarna utanför är gränsen, inte skälet.** Ett kluster med noll
