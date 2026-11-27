@@ -3,8 +3,8 @@
 > Status: **levande dokument** — uppmätt 2026-11-27 mot trädet efter
 > `storm-gfx`, Metal-backenden, Blomsterskogen, materialtexturerna (3b),
 > glTF-bilderna med samplare per textur (3c) och de linjära texturerna (3d,
-> steg 1–3). §2:s bild mättes om mot `src/` samma dag: en modul är generisk
-> över `B`, nitton är det inte, och `run_session` är nästa söm (§2.1). Skrevs efter djupbufferten, av en
+> steg 1–3) och efter uppdelningen av Studio, renderare och modellinläsning.
+> Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
 > heltalen för hand och läste tabellen baklänges. Det här dokumentet
@@ -176,7 +176,7 @@ växte, inte en ny uppgift som lagts i fel lager.
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
-Varje programs `src/main.ddr` väljer plattformens backend och ger MCP samma renderare som fönstret. `storm-studio` äger rendergrafen, materialstudien och GPU-resurserna. Storms exempelprogram implementerar `studio.Project` för fysikbanan First light. Ett separat spel kan implementera samma gränssnitt med egen simulering, kamera, grafik och HUD. [Blomsterskogen](https://github.com/Mik-pe/blomsterskogen) använder motorn på det sättet.
+Varje programs `src/main.ddr` väljer plattformens backend. `storm-gfx` beskriver fönsterytan, indata och ritkommandon. Simulering och fysik kan köras utan grafik. `storm-scene` äger noder, geometri och poser, medan `storm-render` översätter den färdiga scenen till bildpass genom `gfx.Backend`.
 
 Under kontraktet gäller det samma som förut: `storm-physics`, `storm-play`,
 `storm-mcp` och `storm-image` känner varken backend eller fönster: en
@@ -227,7 +227,10 @@ Vad som skiljer backends åt, och var det får synas:
 
 ### 2.1. Spelprojekt och Studio
 
-`storm-studio` väljer bildpass, läser fönstrets indata och hanterar paus, omstart och ensteg. Projektets `update` tar emot tickbeslutet och ger tillbaka kameran. Projektet levererar även scengraf, ljus, siktlinje, etiketter för textatlasen och sin HUD. Samma kodväg används för förhandsbilder från MCP och för spel i fönster. När en nivå ersätts ogiltigförklaras geometrins cache.
+- **`storm-studio`** driver fönsterloopen, materialstudien, scenbevakning och provspelningens paus, omstart och ensteg. Spelets `studio.Project` äger simuleringen och lämnar scengraf, kamera, ljus, siktlinje och HUD till värden. First light och Blomsterskogen använder samma projektgränssnitt. [Blomsterskogen](https://github.com/Mik-pe/blomsterskogen)
+- **`storm-render`** kan användas direkt med en egen loop. Anropa `render.frame.Renderer::draw_scene` med en propagerad `scene.Graph`, kameramatriser och ljus. `.Ready` betyder att den som vill kan rita skärm-UI med `gfx.Backend.ui_draw` och sedan avsluta bildrutan med `end`. `.Skipped` betyder att en ändrad fönsterstorlek gjorde att bildrutan inte kunde öppnas. Vid fel avslutar värden den aktuella renderingen.
+- **`storm-assets`** placerar glTF-modeller vid deras författade origo. Värden väljer placering och skala. Studio passar in dem på podiet. Texturer delas mellan material med samma bild, sampler och färgrymd. Uppladdningspaketet äger sina unika handtag och kan frigöras när scenen har slutat använda dem. Ett misslyckat anrop frigör de handtag det skapade.
+- **`storm-play` och scenverktygen i `storm-mcp`** ger en liten referens för scenformat och regler. Ett spel kan äga andra regler och exponera egna verktyg via `mcp.protocol`.
 
 ## 3. Enums i FFI-lagret
 
@@ -373,11 +376,11 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 Materialstudien byggs i `packages/storm-studio/src/gallery.ddr`. `packages/storm-studio/src/editor.ddr` äger paneler, objektval och pekarinteraktion. Både fönsterkoordinater och klickytor mäts i punkter. Ett smalt fönster använder samma paneler en i taget. `packages/storm-studio/src/game.ddr` hanterar insamlingen och `packages/storm-studio/src/args.ddr` startkameran.
 
-ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrin ändras. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
+ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrins revision ändras. Revisionen identifierar en bestämd version av geometrin inom processen. Det gör att renderaren kan växla mellan grafer och uppdatera poser genom samma anrop. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
 
 Ett projekt kan märka upp förgrundsgeometri med `sightline_occluder` på en scennod. Barnen ärver markeringen. Med `gfx.MeshView` kan projektet ange en siktlinje från kameran till sitt motiv. Färgpasset tonar ut blockerande fragment med ett gemensamt skärmfast pixelmönster för alla lager. Skuggpasset använder hela geometrin.
 
-`storm-studio` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
+`storm-render` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
 
 `begin_scene(filtered)` väljer färgmål för himmel, ogenomskinlig geometri och transparens. När FXAA eller färgtoning och glöd är aktiva skriver scenen till `scene_color`, en åttabitars färgtextur i bildens upplösning. `post_process` läser scenfärgen och skriver till slutbilden i ett fullskärmspass. HUD och editor ritas sedan ovanpå slutbilden i skärmens pixeltäthet. När båda filtren är avstängda skriver scenen direkt till slutbilden. Fönstret, filcapture och MCP-förhandsvisningen kör samma rendergraf.
 

@@ -1,4 +1,5 @@
 import ..src.graph as graph
+import .geometry as _
 
 fn names(c: &graph.Compiled) -> []string {
     mut out: []string = []

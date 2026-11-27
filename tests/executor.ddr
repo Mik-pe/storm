@@ -2,7 +2,9 @@
 // what it is asked to do: which stream each draw reads, with which
 // constants, in which pass, and what the texture uploader is handed.
 capability filesystem, stdio
+import render.frame as scene_renderer
 import sys
+import assets
 import core
 import ecs
 import gfx
@@ -114,6 +116,10 @@ fn sky() -> gfx.Sky {
     gfx.sky_params(a, b, c, d, light_vp.m, light_dir)
 }
 
+fn view(projection: core.Mat4, camera: &gfx.MeshView) -> scene_renderer.View {
+    scene_renderer.View { projection: projection, inverse_projection: core.identity(), mesh: camera.clone(), sky: sky() }
+}
+
 fn shape(graph: &mut scenegraph.Graph, shape: scenegraph.Shape, at: core.Vec3, alpha: f32) -> ecs.Entity {
     e := graph.create_root(at)
     if shape != .Mesh { _ := graph.set_shape(e, shape) }
@@ -158,13 +164,13 @@ const PLANE_STREAM: i32 = 48
     _ := world.set_shape(child, .Cube)
     _ := shape(&mut world, .Sphere, core.vec3(0.0, 0.0, 4.0), 1.0)
     world.propagate()
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     mut recorder := Recorder::new()
     camera := gfx.MeshView { eye: [0.0; 3], to_focus: [0.0, 0.0, 4.0], radius: 1.0 }
     for pass in [render.PassKind.Shadow, render.PassKind.Opaque] {
-        assert(app.record_list(&mut recorder, frame.meshes(), frame.solids(), cube_stream(), plane_stream(), sphere_stream(),
-            core.identity(), &camera, &sky(), true, pass).is_ok())
+        assert(scene_renderer.record_list(&mut recorder, frame.meshes(), frame.solids(), cube_stream(), plane_stream(), sphere_stream(),
+            &view(core.identity(), &camera), true, pass).is_ok())
     }
     assert(recorder.shadows.len == 2 && recorder.meshes.len == 2)
     assert(recorder.meshes[0].camera.radius == 1.0 && recorder.meshes[0].camera.to_focus[2] == 4.0)
@@ -174,16 +180,16 @@ const PLANE_STREAM: i32 = 48
 @test fn each_shape_is_drawn_from_its_own_stream_in_declaration_order() {
     mut world := scenegraph.Graph::new()
     scene(&mut world)
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     assert(frame.solids().len == 4)
 
     mut recorder := Recorder::new()
     sphere := sphere_stream()
     cube := cube_stream()
     plane := plane_stream()
-    drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Opaque)
+    drawn := scene_renderer.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0])), true, render.PassKind.Opaque)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 4 && recorder.shadows.len == 0)
     // Mesh from the snapshot, sphere, cube and plane from the caller's streams.
@@ -209,14 +215,14 @@ const PLANE_STREAM: i32 = 48
     maps := gfx.Textures { base: gfx.Texture { id: 3 }, metallic_roughness: gfx.no_texture(), normal: gfx.no_texture(), occlusion: gfx.no_texture(), emissive: gfx.Texture { id: 7 } }
     assert(world.set_material(lamp, scenegraph.emissive_mapped(scenegraph.mapped(scenegraph.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5), maps), [1.0, 0.9, 0.5, 3.5])))
     world.propagate()
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     mut recorder := Recorder::new()
     sphere := sphere_stream()
     cube := cube_stream()
     plane := plane_stream()
-    drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Opaque)
+    drawn := scene_renderer.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0])), true, render.PassKind.Opaque)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 1)
     lit := &recorder.meshes[0]
@@ -236,14 +242,14 @@ const PLANE_STREAM: i32 = 48
     maps := gfx.Textures { base: gfx.no_texture(), metallic_roughness: gfx.no_texture(), normal: gfx.no_texture(), occlusion: gfx.Texture { id: 5 }, emissive: gfx.no_texture() }
     assert(world.set_material(hull, scenegraph.occlusion_strength(scenegraph.mapped(scenegraph.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5), maps), 0.6)))
     world.propagate()
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     mut recorder := Recorder::new()
     sphere := sphere_stream()
     cube := cube_stream()
     plane := plane_stream()
-    drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Opaque)
+    drawn := scene_renderer.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0])), true, render.PassKind.Opaque)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 2)
     sealed := &recorder.meshes[0]
@@ -256,8 +262,8 @@ const PLANE_STREAM: i32 = 48
 @test fn glass_is_blended_without_shadows_and_the_shadow_pass_draws_only_solids() {
     mut world := scenegraph.Graph::new()
     scene(&mut world)
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     assert(frame.glass().len == 1 && frame.solids().len == 4)
 
     // The transparent pass: the glass list, as Blended, with the shadow flag
@@ -267,8 +273,8 @@ const PLANE_STREAM: i32 = 48
     sphere := sphere_stream()
     cube := cube_stream()
     plane := plane_stream()
-    drawn := app.record_list(&mut recorder, frame.meshes(), frame.glass(), &cube, &plane, &sphere,
-        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), false, render.PassKind.Transparent)
+    drawn := scene_renderer.record_list(&mut recorder, frame.meshes(), frame.glass(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0])), false, render.PassKind.Transparent)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 1 && recorder.meshes[0].blended && recorder.meshes[0].params[3] == 0.0)
     assert(recorder.meshes[0].color[3] < 1.0 && recorder.meshes[0].stream == CUBE_STREAM)
@@ -276,8 +282,8 @@ const PLANE_STREAM: i32 = 48
     // The shadow pass: every solid once, through shadow_mesh with its model
     // matrix, and nothing through mesh.
     mut shadows := Recorder::new()
-    cast := app.record_list(&mut shadows, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Shadow)
+    cast := scene_renderer.record_list(&mut shadows, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0])), true, render.PassKind.Shadow)
     assert(cast.is_ok())
     assert(shadows.meshes.len == 0 && shadows.shadows.len == 4)
     assert(shadows.shadows[0].stream == MESH_STREAM && shadows.shadows[1].stream == SPHERE_STREAM)
@@ -291,12 +297,12 @@ const PLANE_STREAM: i32 = 48
     _ := world.set_material(body, scenegraph.emissive_material(0.2, 0.4, 0.6, 1.0, 0.7, 0.3, 1.5))
     _ := world.set_material_value(body, scenegraph.MaterialField.BaseA, 1.0)
     world.propagate()
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
 
-    view := core.multiply(core.translation(0.0, 0.0, -5.0), core.identity())
+    view_projection := core.multiply(core.translation(0.0, 0.0, -5.0), core.identity())
     mut recorder := Recorder::new()
-    with_shadows := app.record_mesh(&mut recorder, cube_stream(), &frame.solids()[0], view, &gfx.mesh_view([1.0, 2.0, 3.0]), &sky(), true, render.PassKind.Opaque)
+    with_shadows := scene_renderer.record_mesh(&mut recorder, cube_stream(), &frame.solids()[0], &view(view_projection, &gfx.mesh_view([1.0, 2.0, 3.0])), true, render.PassKind.Opaque)
     assert(with_shadows.is_ok() && recorder.meshes.len == 1)
     draw := &recorder.meshes[0]
     // Colour is the base colour; params are (metallic, roughness, emissive,
@@ -310,7 +316,7 @@ const PLANE_STREAM: i32 = 48
 
     // Shadows off: the flag is 0 and nothing else changes.
     mut dark := Recorder::new()
-    _ := app.record_mesh(&mut dark, cube_stream(), &frame.solids()[0], view, &gfx.mesh_view([1.0, 2.0, 3.0]), &sky(), false, render.PassKind.Opaque)
+    _ := scene_renderer.record_mesh(&mut dark, cube_stream(), &frame.solids()[0], &view(view_projection, &gfx.mesh_view([1.0, 2.0, 3.0])), false, render.PassKind.Opaque)
     assert(dark.meshes[0].params[3] == 0.0 && dark.meshes[0].color[2] == 0.6)
 
     // A material's maps are the ones the graph holds, by handle and slot.
@@ -321,9 +327,9 @@ const PLANE_STREAM: i32 = 48
     maps.metallic_roughness = rough
     _ := world.set_material(body, scenegraph.mapped(world.material_at(body).clone(), maps))
     world.propagate()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     mut textured := Recorder::new()
-    _ := app.record_mesh(&mut textured, cube_stream(), &frame.solids()[0], view, &gfx.mesh_view([1.0, 2.0, 3.0]), &sky(), true, render.PassKind.Opaque)
+    _ := scene_renderer.record_mesh(&mut textured, cube_stream(), &frame.solids()[0], &view(view_projection, &gfx.mesh_view([1.0, 2.0, 3.0])), true, render.PassKind.Opaque)
     assert(same_maps(textured.meshes[0].textures, [42, 43, 0, 0, 0]))
 }
 
@@ -333,7 +339,7 @@ const PLANE_STREAM: i32 = 48
     sun := core.normalize(core.vec3(-0.72, 0.88, 0.58))
     center := core.vec3(3.0, 0.5, -2.0)
     radius: f32 = 7.5
-    light := app.shadow_view(sun, center, radius)
+    light := scene_renderer.shadow_view(sun, center, radius)
     // Every point of the framed sphere's bounding box lands inside [-1, 1]
     // on x and y, and the centre lands at the origin of the light's box.
     mut low: f32 = 1.0e9
@@ -370,22 +376,58 @@ const PLANE_STREAM: i32 = 48
 @test fn a_refused_draw_stops_the_list_and_hands_back_the_reason() {
     mut world := scenegraph.Graph::new()
     scene(&mut world)
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
 
     mut recorder := Recorder::new()
     recorder.fails = 1
     sphere := sphere_stream()
     cube := cube_stream()
     plane := plane_stream()
-    stopped := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), &gfx.mesh_view([0.0, 0.0, 0.0]), &sky(), true, render.PassKind.Opaque)
+    stopped := scene_renderer.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 0.0, 0.0])), true, render.PassKind.Opaque)
     assert(stopped.is_err() && stopped.unwrap_err() == "draw refused")
     // The refusal happens on the first draw; the other three never happen.
     assert(recorder.meshes.len == 1)
 }
 
 // --- model textures: one upload per distinct (image, sampler) pair ---------
+
+@test fn an_independent_renderer_draws_replaced_worlds_and_leaves_the_overlay_open() {
+    mut renderer := scene_renderer.Renderer::new()
+    mut backend := Recorder::new()
+    frame := backend.poll()
+    camera := view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]))
+    finish := gfx.PostProcess { antialias: true, strength: 0.0 }
+
+    mut first := scenegraph.Graph::new()
+    node := shape(&mut first, .Mesh, core.vec3(0.0, 1.0, 0.0), 1.0)
+    _ := first.set_mesh(node, filled(12, 1.0))
+    first.propagate()
+
+    second_origin := core.vec3(0.0, 0.0, 2.0)
+    mut second := scenegraph.Graph::new()
+    other := shape(&mut second, .Mesh, second_origin, 0.4)
+    _ := second.set_mesh(other, filled(24, 2.0))
+    second.propagate()
+
+    match renderer.draw_scene(&mut backend, &first, &frame, &camera, &[], true, &finish).unwrap() {
+        .Ready(count) => assert(count == 5),
+        .Skipped => assert(false),
+    }
+    assert(backend.shadows.len == 1 && backend.shadows[0].stream == 12)
+    assert(backend.meshes.len == 1 && backend.meshes[0].stream == 12 && !backend.meshes[0].blended)
+    assert(backend.ui_draw([], [1.0, 1.0]).is_ok() && backend.end().is_ok())
+
+    match renderer.draw_scene(&mut backend, &second, &frame, &camera, &[], true, &gfx.PostProcess { antialias: false, strength: 0.0 }).unwrap() {
+        .Ready(count) => assert(count == 4),
+        .Skipped => assert(false),
+    }
+    assert(backend.shadows.len == 1 && backend.posts == 1 && backend.skies == 2 && backend.began == 2)
+    assert(backend.filtered[0] && !backend.filtered[1])
+    assert(backend.meshes.len == 2 && backend.meshes[1].stream == 24 && backend.meshes[1].blended)
+    assert(backend.end().is_ok())
+}
 
 const PNG: string = "packages/storm-image/tests/fixtures/rgba22.png"
 
@@ -431,7 +473,7 @@ fn jpeg_and_png() -> []textures.Image {
     [textures.Image { mime: "image/jpeg", data: jpeg }, textures.Image { mime: "image/png", data: png() }]
 }
 
-fn reason(r: &Result<[]gfx.Textures, string>) -> string {
+fn reason(r: &Result<assets.ModelTextures, string>) -> string {
     match r { .Ok(_) => "", .Err(s) => s.clone() }
 }
 
@@ -445,9 +487,9 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     parts: []gltf.Part = [part("body", 0, gfx.sampler()), part("head", 0, gfx.sampler()), part("eye", -1, gfx.sampler()), part("tail", 0, nearest())]
     mut recorder := Recorder::new()
     model := asset(move parts, move images)
-    handles := app.upload_model_textures(&mut recorder, &model)
+    handles := assets.upload_model_textures(&mut recorder, &model)
     assert(handles.is_ok())
-    textures := handles.unwrap()
+    textures := handles.unwrap().parts
     assert(textures.len == 4)
     assert(recorder.uploads.len == 2)
     // Both PNG uploads were handed the decoded 2x2 image and its sampler.
@@ -467,11 +509,13 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     parts: []gltf.Part = [rough_part("skin", 0, 0), rough_part("scale", -1, 0)]
     model := asset(move parts, [textures.Image { mime: "image/png", data: png() }])
     mut recorder := Recorder::new()
-    handles := app.upload_model_textures(&mut recorder, &model).unwrap()
+    handles := assets.upload_model_textures(&mut recorder, &model).unwrap()
     assert(recorder.uploads.len == 2)
     assert(recorder.uploads[0].encoding == gfx.Encoding.Srgb && recorder.uploads[1].encoding == gfx.Encoding.Linear)
-    assert(handles[0].base.id == 1 && handles[0].metallic_roughness.id == 2)
-    assert(handles[1].base.id == 0 && handles[1].metallic_roughness.id == 2)
+    assert(handles.parts[0].base.id == 1 && handles.parts[0].metallic_roughness.id == 2)
+    assert(handles.parts[1].base.id == 0 && handles.parts[1].metallic_roughness.id == 2)
+    handles.release(&mut recorder)
+    assert(recorder.freed.len == 2 && recorder.freed[0] == 1 && recorder.freed[1] == 2)
 }
 
 // A metallic-roughness map naming an image the asset lacks is refused with
@@ -479,13 +523,13 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
 @test fn a_roughness_map_without_an_image_is_refused_by_name() {
     mut recorder := Recorder::new()
     wing := asset([rough_part("wing", -1, 2)], jpeg_and_png())
-    missing := app.upload_model_textures(&mut recorder, &wing)
+    missing := assets.upload_model_textures(&mut recorder, &wing)
     assert(reason(&missing) == "part wing: metallic-roughness map names image 2 which does not exist")
     assert(recorder.uploads.len == 0)
 
     mut jpeg_recorder := Recorder::new()
     helmet := asset([rough_part("helmet", -1, 0)], jpeg_and_png())
-    unreadable := app.upload_model_textures(&mut jpeg_recorder, &helmet)
+    unreadable := assets.upload_model_textures(&mut jpeg_recorder, &helmet)
     assert(reason(&unreadable) == "part helmet: metallic-roughness map: image 0 is not a readable image: JPEG has no scan")
     assert(jpeg_recorder.uploads.len == 0)
 }
@@ -495,22 +539,23 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
 @test fn a_bad_image_reference_or_format_is_refused_by_name() {
     mut recorder := Recorder::new()
     wing := asset([part("wing", 2, gfx.sampler())], jpeg_and_png())
-    missing := app.upload_model_textures(&mut recorder, &wing)
+    missing := assets.upload_model_textures(&mut recorder, &wing)
     assert(reason(&missing) == "part wing: base colour names image 2 which does not exist")
     assert(recorder.uploads.len == 0)
 
     mut jpeg_recorder := Recorder::new()
     helmet := asset([part("helmet", 0, gfx.sampler())], jpeg_and_png())
-    unreadable := app.upload_model_textures(&mut jpeg_recorder, &helmet)
+    unreadable := assets.upload_model_textures(&mut jpeg_recorder, &helmet)
     assert(reason(&unreadable) == "part helmet: base colour: image 0 is not a readable image: JPEG has no scan")
     assert(jpeg_recorder.uploads.len == 0)
 
     // The same asset with the JPEG part after a good one: the good one is
-    // uploaded, then the refusal comes -- and says which image.
+    // uploaded, then the refusal comes -- and rolls the earlier upload back.
     mut later := Recorder::new()
     visor := asset([part("skin", 1, gfx.sampler()), part("visor", 0, gfx.sampler())], jpeg_and_png())
-    mixed := app.upload_model_textures(&mut later, &visor)
+    mixed := assets.upload_model_textures(&mut later, &visor)
     assert(reason(&mixed) == "part visor: base colour: image 0 is not a readable image: JPEG has no scan" && later.uploads.len == 1)
+    assert(later.freed.len == 1 && later.freed[0] == 1)
 }
 
 // An image whose bytes are neither a PNG nor a JPEG file is refused by what
@@ -518,7 +563,7 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
 @test fn an_image_that_is_no_known_file_is_refused_by_name() {
     mut recorder := Recorder::new()
     wing := asset([part("wing", 0, gfx.sampler())], [textures.Image { mime: "image/png", data: [1, 2, 3, 4, 5, 6, 7, 8] }])
-    unreadable := app.upload_model_textures(&mut recorder, &wing)
+    unreadable := assets.upload_model_textures(&mut recorder, &wing)
     assert(reason(&unreadable) == "part wing: base colour: image 0 is not a readable image: neither a PNG nor a JPEG file")
     assert(recorder.uploads.len == 0)
 }
@@ -531,13 +576,13 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     parts: []gltf.Part = [part("fur", 0, gfx.sampler()), part("nose", -1, gfx.sampler())]
     model := asset(move parts, move images)
     mut recorder := Recorder::new()
-    handles := app.upload_model_textures(&mut recorder, &model).unwrap()
+    handles := assets.upload_model_textures(&mut recorder, &model).unwrap()
     mut world := scenegraph.Graph::new()
-    placed := app.place_model(&mut world, &model, "fox", ecs.Entity { index: -1, generation: 0 }, core.vec3(0.0, 0.0, 0.0), 1.0, &handles)
+    placed := app.place_model(&mut world, &model, "fox", ecs.Entity { index: -1, generation: 0 }, core.vec3(0.0, 0.0, 0.0), 1.0, &handles.parts)
     assert(placed.is_ok())
     world.propagate()
-    mut frame := app.FrameGeometry::new()
-    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     assert(frame.solids().len == 2)
     // Parts are placed and gathered in declaration order: fur first (the
     // textured part), nose second (plain colour, no_texture).

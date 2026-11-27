@@ -1,3 +1,5 @@
+capability unsafe
+
 // Storm scene: hierarchy, names, shapes and materials on top of the ECS.
 //
 // A node is an entity with a LocalTransform, optionally a Parent, and whatever
@@ -15,6 +17,7 @@
 //   world.propagate()
 //   list := world.drawables(core.vec3(0.0, 2.2, 9.5))
 import core
+import sys
 import ecs
 import .skinning
 import gfx
@@ -143,6 +146,17 @@ pub struct Graph {
     world_order_revision: i64,
     world_order: []TreeRow,
     materials: ecs.Pool<Material>,
+}
+
+// Empty geometry has revision zero. Every structural edit gets a fresh
+// revision, including edits to graphs cloned from the same scene.
+fn next_geometry_revision() -> i64 {
+    unsafe {
+        // A single naturally aligned, zero-initialized native slot.
+        previous := sys.atomic_fetch_add_i64(static_bytes("native", 8), 1)
+        assert(previous >= 0 && previous < 9223372036854775807)
+        previous + 1
+    }
 }
 
 pub fn matrix_for(local: &LocalTransform) -> core.Mat4 {
@@ -285,7 +299,7 @@ impl Graph {
         self.detach_mesh(dest)
         _ := self.meshes.insert(dest, Mesh { shape: .Mesh, vertices: [] })
         _ := self.instances.insert(dest, owner)
-        self.mesh_revision = self.mesh_revision + 1
+        self.mesh_revision = next_geometry_revision()
         true
     }
 
@@ -293,7 +307,7 @@ impl Graph {
         if !self.allocator.is_alive(entity) { return false }
         if self.meshes.contains(entity) && self.meshes.get(entity).shape == shape { return true }
         self.detach_mesh(entity)
-        self.mesh_revision = self.mesh_revision + 1
+        self.mesh_revision = next_geometry_revision()
         if self.meshes.contains(entity) {
             self.meshes.get_mut(entity).shape = shape
             return true
@@ -305,7 +319,7 @@ impl Graph {
     pub fn set_mesh(&mut self, entity: ecs.Entity, move vertices: []f32) -> bool {
         if !self.allocator.is_alive(entity) { return false }
         self.detach_mesh(entity)
-        self.mesh_revision = self.mesh_revision + 1
+        self.mesh_revision = next_geometry_revision()
         _ := self.meshes.insert(entity, Mesh { shape: .Mesh, vertices: vertices })
         true
     }
@@ -318,7 +332,7 @@ impl Graph {
         for joint in palette { if !self.is_alive(joint) { return false } }
         skin := match skinning.binding(move palette, move weights, &indices) { .Some(s) => s, .None => { return false } }
         _ := self.skins.insert(entity, move skin)
-        self.mesh_revision += 1
+        self.mesh_revision = next_geometry_revision()
         true
     }
 
@@ -358,7 +372,7 @@ impl Graph {
         self.detach_mesh(entity)
         match self.meshes.remove(entity) {
             .None => false,
-            .Some(_) => { self.mesh_revision = self.mesh_revision + 1; true },
+            .Some(_) => { self.mesh_revision = next_geometry_revision(); true },
         }
     }
 

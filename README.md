@@ -66,7 +66,8 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
 | [`packages/storm-gltf`](packages/storm-gltf) | glTF 2.0: GLB-container, accessors (float/index, normaliserade heltal), mesh-utplattning, interleaving. Scenval, nodtransformer, PBR-material med `baseColorTexture` (bilder som bytes + samplern som `gfx.Sampler`). | `core`, `gfx` |
 | [`packages/storm-scene`](packages/storm-scene) | Scengraf i ECS: `LocalTransform`, `Name`, `Shape`/`Mesh`, `Material`, förälderlänkar och propagering till `WorldTransform`. Modulen `animation` samplar och blandar nyckelposer för position, rotation och skala. | `core`, `ecs`, `gfx` |
-| [`packages/storm-render`](packages/storm-render) | Deklarativ rendergraph: `PassKind`, pass med resursläsningar/skrivningar, topologisk ordning och validering. Ren data, testbar utan GPU. | — |
+| [`packages/storm-render`](packages/storm-render) | Rendergraf och scenrenderare. Sorterar ritlistor, kör bildpass och lämnar plats för spelets HUD. | `core`, `gfx`, `scene` |
+| [`packages/storm-assets`](packages/storm-assets) | Placerar glTF-modeller i scenen och laddar deras materialtexturer genom grafikgränssnittet. | `core`, `ecs`, `gfx`, `gltf`, `image`, `scene` |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
 | [`packages/storm-studio`](packages/storm-studio) | Fönsterloop, materialstudio, scenbevakning och det gemensamma spelgränssnittet `Project`. | `gfx`, scen- och UI-paketen |
 | [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll och målsensorer. | `core`, `physics` |
@@ -76,7 +77,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
 
-`src/main.ddr` väljer backend. Paketet `storm-studio` kör rendergrafens pass genom `gfx.Backend`. Samma exekutor ritar Studio, provspelningen och förhandsbilderna från MCP.
+`src/main.ddr` väljer backend. Samma `storm-render` ritar Studio, provspelningen och förhandsbilderna från MCP. Spel kan använda `storm-studio` för fönsterloopen eller anropa `render.frame.Renderer` med egen loop. Se [paketgränserna](docs/design.md#21-spelprojekt-och-studio).
 
 ## Fönstret
 

@@ -2,3 +2,9 @@ name = "storm-render"
 version = "0.0.1"
 root = "src/graph.ddr"
 test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+gfx = { path = "../storm-gfx" }
+scene = { path = "../storm-scene", capabilities = ["unsafe"] }
+ecs = { path = "../storm-ecs" }

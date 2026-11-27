@@ -4,12 +4,13 @@ root = "src/studio.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
+assets = { path = "../storm-assets", capabilities = ["filesystem", "stdio", "unsafe"] }
 core = { path = "../storm-core" }
 gfx = { path = "../storm-gfx" }
 image = { path = "../storm-image", capabilities = ["filesystem", "unsafe"] }
 ecs = { path = "../storm-ecs" }
-scene = { path = "../storm-scene" }
-render = { path = "../storm-render" }
+scene = { path = "../storm-scene", capabilities = ["unsafe"] }
+render = { path = "../storm-render", capabilities = ["unsafe"] }
 input = { path = "../storm-input" }
 gltf = { path = "../storm-gltf", capabilities = ["filesystem", "stdio"] }
 ui = { path = "../storm-ui", capabilities = ["filesystem"] }

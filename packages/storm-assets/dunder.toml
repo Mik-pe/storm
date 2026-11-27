@@ -1,0 +1,12 @@
+name = "storm-assets"
+version = "0.0.1"
+root = "src/assets.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+ecs = { path = "../storm-ecs" }
+gfx = { path = "../storm-gfx" }
+gltf = { path = "../storm-gltf", capabilities = ["filesystem", "stdio"] }
+image = { path = "../storm-image", capabilities = ["filesystem", "unsafe"] }
+scene = { path = "../storm-scene", capabilities = ["unsafe"] }

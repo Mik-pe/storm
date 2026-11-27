@@ -1,0 +1,207 @@
+// Render a scene through the graphics contract. The caller owns the window,
+// simulation and optional overlay.
+import .graph
+import core
+import gfx
+import scene as scenegraph
+
+// A surface is transparent when its base colour has alpha. Opaque items rely
+// on the depth buffer; only transparent items are sorted back to front.
+pub fn is_transparent(material: &scenegraph.Material) -> bool { material.base.a < 0.999 }
+
+// Glass is blended, so it must be painted farthest first: descending depth
+// (squared distance), stable, so equal depths keep their declaration order.
+pub fn sort_back_to_front(items: &mut []scenegraph.Drawable) {
+    mut i := 1
+    while i < items.len {
+        mut j := i
+        while j > 0 && items[j - 1].depth < items[j].depth {
+            held := items[j - 1].clone()
+            items[j - 1] = items[j].clone()
+            items[j] = held
+            j = j - 1
+        }
+        i = i + 1
+    }
+}
+
+// Whether a drawable casts a shadow: everything opaque does, including the
+// ground and loaded meshes. Transparent items only blend into the main pass.
+pub fn casts_shadow(item: &scenegraph.Drawable) -> bool { !is_transparent(&item.material) }
+
+pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, settings: &View, shadows_on: bool, pass: graph.PassKind) -> Result<(), string> {
+    if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
+    mvp := core.multiply(settings.projection, item.model)
+    mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
+    mut shadow_flag: f32 = 0.0
+    if shadows_on { shadow_flag = 1.0 }
+    mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
+    mut view := settings.mesh.clone()
+    if !item.sightline_occluder { view.radius = 0.0 }
+    surface := if is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &view, &settings.sky, &item.material.textures, &item.material.emissive_factor, item.material.occlusion, surface)
+}
+
+// The backend reads owned streams. A globally unique geometry revision
+// lets static mesh data be reused across frames without a scene switch hook.
+pub struct FrameGeometry {
+    revision: i64,
+    meshes: []scenegraph.Mesh,
+    solids: []scenegraph.Drawable,
+    glass: []scenegraph.Drawable,
+}
+
+impl FrameGeometry {
+    pub fn new() -> Self { Self { revision: -1, meshes: [], solids: [], glass: [] } }
+    pub fn meshes(&self) -> &[]scenegraph.Mesh { &self.meshes }
+    pub fn solids(&self) -> &[]scenegraph.Drawable { &self.solids }
+    pub fn glass(&self) -> &[]scenegraph.Drawable { &self.glass }
+}
+
+pub fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
+    revision := world.geometry_revision()
+    if frame.revision != revision {
+        frame.meshes = world.mesh_snapshot()
+        frame.revision = revision
+    } else {
+        world.pose_meshes(&mut frame.meshes)
+    }
+    frame.solids.clear()
+    frame.glass.clear()
+    for item in world.drawables(eye) {
+        if casts_shadow(&item) { frame.solids.push(item) } else { frame.glass.push(item) }
+    }
+    sort_back_to_front(&mut frame.glass)
+}
+
+pub struct View {
+    projection: core.Mat4,
+    inverse_projection: core.Mat4,
+    mesh: gfx.MeshView,
+    sky: gfx.Sky,
+}
+
+struct Primitives { cube: []f32, plane: []f32 }
+
+impl Primitives {
+    fn new() -> Self {
+        mut cube: []f32 = []
+        mut plane: []f32 = []
+        gfx.cube(&mut cube, 0.6)
+        gfx.plane(&mut plane, 40.0)
+        Self { cube: move cube, plane: move plane }
+    }
+}
+
+pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
+    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: &View, shadows: bool, pass: graph.PassKind) -> Result<(), string> {
+    for item in items {
+        drawn := match item.shape {
+            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, shadows, pass),
+            .Sphere => record_mesh(&mut window, sphere, item, view, shadows, pass),
+            .Cube => record_mesh(&mut window, cube, item, view, shadows, pass),
+            .Plane => record_mesh(&mut window, plane, item, view, shadows, pass),
+        }
+        drawn?
+    }
+    .Ok
+}
+
+pub fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube: i32, plane: i32, sphere: i32) -> u64 {
+    mut total: u64 = 0
+    for item in items {
+        count := match item.shape { .Mesh => meshes[item.mesh_index].vertices.len, .Cube => cube, .Plane => plane, .Sphere => sphere }
+        total += u64(count) * 4
+    }
+    total
+}
+
+pub fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
+    eye := core.add(center, core.scale(sun, radius * 1.6))
+    view := core.look_at(eye, center, core.vec3(0.0, 1.0, 0.0))
+    projection := core.orthographic(-radius, radius, -radius, radius, 1.0, radius * 4.0)
+    core.multiply(projection, view)
+}
+
+pub fn frame_plan(shadows: bool, glass: bool, filtered: bool) -> graph.Compiled {
+    mut schedule := graph.Graph::new()
+    scene_color := if filtered { "scene_color" } else { "display" }
+    if shadows { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
+    _ := schedule.add_pass(.Sky, "sky", [scene_color.clone(), "depth"], [])
+    mut reads: []string = [scene_color.clone(), "depth"]
+    if shadows { reads.push("shadow_map") }
+    _ := schedule.add_pass(.Opaque, "opaque", [scene_color.clone(), "depth"], move reads)
+    if glass { _ := schedule.add_pass(.Transparent, "transparent", [scene_color.clone()], [scene_color.clone(), "depth"]) }
+    if filtered { _ := schedule.add_pass(.PostProcess, "post", ["display"], [scene_color.clone()]) }
+    _ := schedule.add_pass(.Ui, "ui", ["display"], ["display"])
+    schedule.compile()
+}
+
+pub enum Draw { Ready(i32), Skipped }
+
+pub struct Renderer {
+    geometry: FrameGeometry,
+    primitives: Primitives,
+    plan: graph.Compiled,
+    shadows: bool,
+    transparent: bool,
+    filtered: bool,
+}
+
+impl Renderer {
+    pub fn new() -> Self {
+        Self { geometry: FrameGeometry::new(), primitives: Primitives::new(),
+            plan: graph.Compiled { ok: true, error: "", steps: [] },
+            shadows: false, transparent: false, filtered: false }
+    }
+
+    // A Ready frame is open for an optional screen-space overlay. Submit
+    // that through Backend.ui_draw and finish with Backend.end. Skipped
+    // means the target changed size before the backend could begin.
+    pub fn draw_scene<B: gfx.Backend>(&mut self, window: &mut B, world: &scenegraph.Graph,
+        frame: &gfx.Frame, view: &View, sphere: &[]f32, shadows_enabled: bool,
+        finish: &gfx.PostProcess) -> Result<Draw, string> {
+        eye := core.vec3(view.mesh.eye[0], view.mesh.eye[1], view.mesh.eye[2])
+        gather(&mut self.geometry, world, eye)
+        shadows := shadows_enabled && self.geometry.solids.len > 0
+        transparent := self.geometry.glass.len > 0
+        filtered := finish.enabled()
+        if self.plan.steps.len == 0 || shadows != self.shadows || transparent != self.transparent || filtered != self.filtered {
+            plan := frame_plan(shadows, transparent, filtered)
+            if !plan.ok { return .Err(plan.error) }
+            self.plan = move plan
+            self.shadows = shadows
+            self.transparent = transparent
+            self.filtered = filtered
+        }
+
+        solids := vertex_bytes(&self.geometry.solids, &self.geometry.meshes, self.primitives.cube.len, self.primitives.plane.len, sphere.len)
+        glass := vertex_bytes(&self.geometry.glass, &self.geometry.meshes, self.primitives.cube.len, self.primitives.plane.len, sphere.len)
+        match window.begin_with_vertices(solids + glass + (if shadows { solids } else { u64(0) })) {
+            .Ok => {},
+            .Err(message) => {
+                if frame.resized { return .Ok(.Skipped) }
+                return .Err(message)
+            },
+        }
+
+        for step in &self.plan.steps {
+            match step.kind {
+                .Shadow => {
+                    window.shadow_begin(&view.sky)?
+                    record_list(&mut window, &self.geometry.meshes, &self.geometry.solids, &self.primitives.cube, &self.primitives.plane, sphere, view, true, .Shadow)?
+                    window.shadow_end()?
+                },
+                .Sky => {
+                    window.begin_scene(filtered)?
+                    window.sky(&view.inverse_projection.m, &view.sky.sun, &view.sky.zenith, &view.sky.horizon)?
+                },
+                .Opaque => record_list(&mut window, &self.geometry.meshes, &self.geometry.solids, &self.primitives.cube, &self.primitives.plane, sphere, view, shadows, .Opaque)?,
+                .Transparent => record_list(&mut window, &self.geometry.meshes, &self.geometry.glass, &self.primitives.cube, &self.primitives.plane, sphere, view, false, .Transparent)?,
+                .PostProcess => window.post_process(finish)?,
+                .Ui => return .Ok(.Ready(self.plan.steps.len)),
+            }
+        }
+        .Err("frame has no overlay stage")
+    }
+}

@@ -16,13 +16,14 @@ import .controls
 import .editor
 import .gallery
 import .game
+import assets
 import core
 import ecs
 import gfx
 import gltf
 import image
 import input
-import render
+import render.frame as scene_renderer
 import scene as scenegraph
 import sys
 import text
@@ -133,111 +134,8 @@ pub fn load_model(graph: &mut scenegraph.Graph, path: string, parent: ecs.Entity
 
 pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, parent: ecs.Entity, at: core.Vec3, scale: f32, textures: &[]gfx.Textures) -> Result<ecs.Entity, string> {
     b := bounds(model)
-    base := graph.create_child(parent, core.vec3(at.x - (b.lo.x + b.hi.x) * 0.5 * scale, at.y - b.lo.y * scale, at.z - (b.lo.z + b.hi.z) * 0.5 * scale))
-    _ := graph.set_name(base, path.clone())
-    graph.set_scale(base, core.vec3(scale, scale, scale))
-    for i in 0..model.parts.len {
-        part := &model.parts[i]
-        node := graph.create_child(base, core.vec3(0.0, 0.0, 0.0))
-        _ := graph.set_name(node, part.name.clone())
-        c := part.color.clone()
-        mut material := scenegraph.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness)
-        material = scenegraph.emissive_mapped(move material, part.emissive_factor.clone())
-        material = scenegraph.occlusion_strength(move material, part.occlusion_strength)
-        if i < textures.len { material = scenegraph.mapped(move material, textures[i].clone()) }
-        _ := graph.set_material(node, move material)
-        _ := graph.set_mesh(node, part.vertices.clone())
-    }
-    .Ok(base)
-}
-
-// One uploaded image of a model: which image it is, the sampler and the
-// encoding it was taken with. A texture is those three, so two parts that
-// use one image as base colour and as metallic-roughness map are two
-// uploads, and two parts that use it the same way share one.
-struct Upload { image: i32, sampler: gfx.Sampler, encoding: gfx.Encoding, texture: gfx.Texture }
-
-// The same, with the asset's images decoded and uploaded through `window`:
-// one Textures per part, in the order of the parts. A map a part does not
-// have is no_texture(). A JPEG is refused by name: one unsupported format is
-// a message, not a guess.
-//
-// Only this function is generic over the backend. Everything it reaches is
-// compiled once per generic function that reaches it (Storm dogfood 89), so
-// the deciding -- which image, which sampler, already uploaded or not, is it
-// a PNG -- lives in plain functions, and the one call that needs the backend
-// is written here.
-pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<[]gfx.Textures, string> {
-    mut uploads: []Upload = []
-    mut textures: []gfx.Textures = []
-    for part in &asset.parts {
-        base := upload_or_refused(&uploads, asset, part.name, "base colour", part.texture, &part.sampler, .Srgb)?
-        rough := upload_or_refused(&uploads, asset, part.name, "metallic-roughness map", part.metallic_roughness, &part.metallic_roughness_sampler, .Linear)?
-        // The emissive map is a colour the surface gives off: sRGB, like the base.
-        glow := upload_or_refused(&uploads, asset, part.name, "emissive map", part.emissive, &part.emissive_sampler, .Srgb)?
-        // The occlusion map is a mask, not a colour: linear, like the MR map.
-        sealed := upload_or_refused(&uploads, asset, part.name, "occlusion map", part.occlusion, &part.occlusion_sampler, .Linear)?
-        mut base_handle := base.handle
-        if base.decoded.pixels.len > 0 {
-            base_handle = window.upload_texture(base.decoded.pixels, base.decoded.width, base.decoded.height, base.encoding, &base.sampler)?
-            remember(&mut uploads, &base, base_handle)
-        }
-        mut rough_handle := rough.handle
-        if rough.decoded.pixels.len > 0 {
-            rough_handle = window.upload_texture(rough.decoded.pixels, rough.decoded.width, rough.decoded.height, rough.encoding, &rough.sampler)?
-            remember(&mut uploads, &rough, rough_handle)
-        }
-        mut glow_handle := glow.handle
-        if glow.decoded.pixels.len > 0 {
-            glow_handle = window.upload_texture(glow.decoded.pixels, glow.decoded.width, glow.decoded.height, glow.encoding, &glow.sampler)?
-            remember(&mut uploads, &glow, glow_handle)
-        }
-        mut sealed_handle := sealed.handle
-        if sealed.decoded.pixels.len > 0 {
-            sealed_handle = window.upload_texture(sealed.decoded.pixels, sealed.decoded.width, sealed.decoded.height, sealed.encoding, &sealed.sampler)?
-            remember(&mut uploads, &sealed, sealed_handle)
-        }
-        textures.push(gfx.Textures { base: base_handle, metallic_roughness: rough_handle, normal: gfx.no_texture(),
-            occlusion: sealed_handle, emissive: glow_handle })
-    }
-    .Ok(textures)
-}
-
-// What a map asks for: the handle it already has, or the decoded pixels
-// waiting for the backend. `map` names the slot the image is read in ("base
-// colour", "metallic-roughness map"), so a refusal says what was looked for.
-struct Pending { image: i32, sampler: gfx.Sampler, encoding: gfx.Encoding, decoded: image.Image, handle: gfx.Texture }
-
-fn upload_or_refused(uploads: &[]Upload, asset: &gltf.Asset, part_name: string, map: string, image_index: i32,
-    sampler: &gfx.Sampler, encoding: gfx.Encoding) -> Result<Pending, string> {
-    if image_index < 0 { return .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: image.empty(), handle: gfx.no_texture() }) }
-    if image_index >= asset.images.len { return .Err("part " + part_name + ": " + map + " names image " + image_index.str() + " which does not exist") }
-    for u in uploads {
-        if u.image == image_index && u.encoding == encoding && same_sampler(&u.sampler, sampler) {
-            return .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: image.empty(), handle: u.texture })
-        }
-    }
-    part_image := &asset.images[image_index]
-    // The bytes say what the image is; a glTF's mime type is only a claim
-    // about them, so the format is read from the file signature.
-    decoded := image.decode(&part_image.data)
-    match decoded {
-        .Err(message) => return .Err("part " + part_name + ": " + map + ": image " + image_index.str() + " is not a readable image: " + message),
-        .Ok(im) => .Ok(Pending { image: image_index, sampler: copy_sampler(sampler), encoding: encoding, decoded: im, handle: gfx.no_texture() }),
-    }
-}
-
-// After the backend took the pixels: the upload is known by its image,
-// sampler and encoding from now on.
-fn remember(uploads: &mut []Upload, pending: &Pending, handle: gfx.Texture) {
-    uploads.push(Upload { image: pending.image, sampler: copy_sampler(&pending.sampler), encoding: pending.encoding, texture: handle })
-}
-
-fn copy_sampler(s: &gfx.Sampler) -> gfx.Sampler { gfx.Sampler { mag: s.mag, min: s.min, mips: s.mips, wrap: s.wrap } }
-
-// Whether two samplers would sample the same way.
-fn same_sampler(a: &gfx.Sampler, b: &gfx.Sampler) -> bool {
-    a.mag == b.mag && a.min == b.min && a.mips == b.mips && a.wrap == b.wrap
+    origin := core.vec3(at.x - (b.lo.x + b.hi.x) * 0.5 * scale, at.y - b.lo.y * scale, at.z - (b.lo.z + b.hi.z) * 0.5 * scale)
+    .Ok(assets.place_model(&mut graph, model, path, parent, origin, scale, textures))
 }
 
 // load_model for the running app: reads, decodes, uploads, and places the
@@ -246,9 +144,9 @@ pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Gr
     at: core.Vec3, vp: &core.Mat4, view: &View, width: f32, height: f32) -> Result<ecs.Entity, string> {
     doc := gltf.load(path)
     asset := gltf.asset(&doc)?
-    textures := upload_model_textures(&mut window, &asset)?
+    textures := assets.upload_model_textures(&mut window, &asset)?
     scale := fit_scale(&bounds(&asset), at, vp, view, width, height)
-    place_model(&mut graph, &asset, path, parent, at, scale, &textures)
+    place_model(&mut graph, &asset, path, parent, at, scale, &textures.parts)
 }
 
 // A P6 capture as the ground texture, uploaded once; the backend owns the
@@ -259,99 +157,9 @@ fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Textu
     window.upload_texture(decoded.pixels, decoded.width, decoded.height, .Srgb, &sampler)
 }
 
-pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
-    camera: &gfx.MeshView, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
-    if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
-    mvp := core.multiply(view_projection, item.model)
-    mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
-    mut shadow_flag: f32 = 0.0
-    if shadows_on { shadow_flag = 1.0 }
-    mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
-    mut view := camera.clone()
-    if !item.sightline_occluder { view.radius = 0.0 }
-    surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &view, sky, &item.material.textures, &item.material.emissive_factor, item.material.occlusion, surface)
-}
-
-pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
-    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, camera: &gfx.MeshView, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
-    for index in 0..items.len {
-        item := &items[index]
-        drawn := match item.shape {
-            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, camera, sky, shadows, pass),
-            .Sphere => record_mesh(&mut window, sphere, item, view, camera, sky, shadows, pass),
-            .Cube => record_mesh(&mut window, cube, item, view, camera, sky, shadows, pass),
-            .Plane => record_mesh(&mut window, plane, item, view, camera, sky, shadows, pass),
-        }
-        drawn?
-    }
-    .Ok
-}
-
-// Bytes of f32 vertices the frame's draws read: what `begin_with_vertices`
-// is asked for. Each shape reads its own stream, so a shared mesh counts once
-// per instance that draws it.
-pub fn vertex_bytes(items: &[]scenegraph.Drawable, meshes: &[]scenegraph.Mesh, cube: i32, plane: i32, sphere: i32) -> u64 {
-    mut total: u64 = 0
-    for item in items {
-        count := match item.shape { .Mesh => meshes[item.mesh_index].vertices.len, .Cube => cube, .Plane => plane, .Sphere => sphere }
-        total += u64(count) * 4
-    }
-    total
-}
-
-// The scene as the frame's passes read it: a mesh copy taken when the geometry
-// last changed, and this frame's draws split into what casts shadows (and is
-// drawn opaque) and what is blended, sorted far to near.
-pub struct FrameGeometry {
-    revision: i64,
-    meshes: []scenegraph.Mesh,
-    solids: []scenegraph.Drawable,
-    glass: []scenegraph.Drawable,
-}
-
-impl FrameGeometry {
-    pub fn new() -> Self { Self { revision: -1, meshes: [], solids: [], glass: [] } }
-    pub fn meshes(&self) -> &[]scenegraph.Mesh { &self.meshes }
-    pub fn solids(&self) -> &[]scenegraph.Drawable { &self.solids }
-    pub fn glass(&self) -> &[]scenegraph.Drawable { &self.glass }
-    // Forget the mesh copy so the next gather takes a fresh one: a different
-    // world can have counted its revision to the same number as this one.
-    pub fn invalidate(&mut self) { self.revision = -1 }
-}
-
-pub fn gather(frame: &mut FrameGeometry, world: &scenegraph.Graph, eye: core.Vec3) {
-    if frame.revision != world.geometry_revision() {
-        frame.meshes = world.mesh_snapshot()
-        frame.revision = world.geometry_revision()
-    } else { world.pose_meshes(&mut frame.meshes) }
-    frame.solids.clear()
-    frame.glass.clear()
-    for item in world.drawables(eye) {
-        if game.casts_shadow(&item) { frame.solids.push(item) } else { frame.glass.push(item) }
-    }
-    game.sort_back_to_front(&mut frame.glass)
-}
-
+// Kept as the studio helper used by existing project adapters.
 pub fn shadow_view(sun: core.Vec3, center: core.Vec3, radius: f32) -> core.Mat4 {
-    eye := core.add(center, core.scale(sun, radius * 1.6))
-    view := core.look_at(eye, center, core.vec3(0.0, 1.0, 0.0))
-    projection := core.orthographic(-radius, radius, -radius, radius, 1.0, radius * 4.0)
-    core.multiply(projection, view)
-}
-
-pub fn frame_plan(shadows: bool, glass: bool, filtered: bool) -> render.Compiled {
-    mut schedule := render.Graph::new()
-    scene_color := if filtered { "scene_color" } else { "display" }
-    if shadows { _ := schedule.add_pass(.Shadow, "shadow", ["shadow_map"], []) }
-    _ := schedule.add_pass(.Sky, "sky", [scene_color.clone(), "depth"], [])
-    mut reads: []string = [scene_color.clone(), "depth"]
-    if shadows { reads.push("shadow_map") }
-    _ := schedule.add_pass(.Opaque, "opaque", [scene_color.clone(), "depth"], move reads)
-    if glass { _ := schedule.add_pass(.Transparent, "transparent", [scene_color.clone()], [scene_color.clone(), "depth"]) }
-    if filtered { _ := schedule.add_pass(.PostProcess, "post", ["display"], [scene_color.clone()]) }
-    _ := schedule.add_pass(.Ui, "ui", ["display"], ["display"])
-    schedule.compile()
+    scene_renderer.shadow_view(sun, center, radius)
 }
 
 pub enum Launch { Studio, Game, Preview }
@@ -363,8 +171,7 @@ pub fn launch_mode(argv: &[]string, fallback: Launch) -> Launch {
 }
 
 // Projects own simulation, level files and HUD. The host owns the window,
-// studio, GPU resources and frame passes. A reloaded graph invalidates the
-// mesh cache even if its revision happens to match the previous graph.
+// studio and GPU resources. The renderer takes geometry from the active graph.
 pub trait Project {
     fn graph(&self) -> &scenegraph.Graph from self
     fn sphere_geometry(&self) -> []f32
@@ -451,12 +258,7 @@ pub fn run<B: gfx.Backend, P: Project>(open: fn(string, i32, i32) -> Result<B, s
         if captured.is_err() { return stop(move window, captured.unwrap_err()) }
     }
 
-    // --- geometry ---
-    mut cube_vertices: []f32 = []
-    gfx.cube(&mut cube_vertices, 0.6)
     mut sphere_vertices := project.sphere_geometry()
-    mut plane_vertices: []f32 = []
-    gfx.plane(&mut plane_vertices, 40.0)
 
     mut graph := scenegraph.Graph::new()
     missing := ecs.Entity { index: -1, generation: 0 }
@@ -565,12 +367,7 @@ pub fn run<B: gfx.Backend, P: Project>(open: fn(string, i32, i32) -> Result<B, s
     mut canvas := ui.Canvas::new()
     mut fps: f32 = 0.0
 
-    mut plan := render.Compiled { ok: true, error: "", steps: [] }
-    mut planned_shadows := false
-    mut planned_glass := false
-    mut planned_filter := false
-    mut geometry := FrameGeometry::new()
-    mut mesh_world_is_game := false
+    mut renderer := scene_renderer.Renderer::new()
     mut frames: i64 = 0
     mut previous := 0.0
     mut running := true
@@ -598,7 +395,6 @@ pub fn run<B: gfx.Backend, P: Project>(open: fn(string, i32, i32) -> Result<B, s
                         if updated.is_err() { return stop(move window, updated.unwrap_err()) }
                         atlas = move fresh
                         sphere_vertices = project.sphere_geometry()
-                        geometry.invalidate()
                     }
                 },
                 .Err(message) => { _ := sys.eprint("storm: scene reload: " + message) },
@@ -653,96 +449,36 @@ pub fn run<B: gfx.Backend, P: Project>(open: fn(string, i32, i32) -> Result<B, s
             view_camera = camera
         }
         action = .Idle
-        view_projection := view_camera.view_projection(aspect)
-        inv_view_projection := input.inverse_view_projection(&view_camera, aspect)
-
-        // --- scene contents for this frame: everything the scene says is drawable ---
-        if mesh_world_is_game != playing { geometry.invalidate(); mesh_world_is_game = playing }
         eye := view_camera.position
         mesh_camera := if playing { project.mesh_view(eye) } else { gfx.mesh_view([eye.x, eye.y, eye.z]) }
-        if playing { gather(&mut geometry, project.graph(), eye) }
-        else { gather(&mut geometry, &graph, eye) }
-        shadows := studio.shadows && geometry.solids.len > 0
-        transparent := geometry.glass.len > 0
+        view := scene_renderer.View { projection: view_camera.view_projection(aspect),
+            inverse_projection: input.inverse_view_projection(&view_camera, aspect), mesh: mesh_camera, sky: frame_sky }
         grade := if playing { transport.graded(project.graded()) } else { studio.effects }
         finish := gfx.PostProcess { antialias: studio.antialias, strength: if grade { 1.0 } else { 0.0 } }
-        filtered := finish.enabled()
-        if plan.steps.len == 0 || shadows != planned_shadows || transparent != planned_glass || filtered != planned_filter {
-            plan = frame_plan(shadows, transparent, filtered)
-            if !plan.ok { return stop(move window, plan.error) }
-            planned_shadows = shadows
-            planned_glass = transparent
-            planned_filter = filtered
+        drawn := if playing {
+            renderer.draw_scene(&mut window, project.graph(), &frame, &view, &sphere_vertices, studio.shadows, &finish)
+        } else {
+            renderer.draw_scene(&mut window, &graph, &frame, &view, &sphere_vertices, studio.shadows, &finish)
+        }
+        passes := match drawn {
+            .Ok(.Ready(count)) => count,
+            .Ok(.Skipped) => { continue },
+            .Err(message) => { return stop(move window, message) },
         }
 
-        solid_bytes := vertex_bytes(&geometry.solids, &geometry.meshes, cube_vertices.len, plane_vertices.len, sphere_vertices.len)
-        glass_bytes := vertex_bytes(&geometry.glass, &geometry.meshes, cube_vertices.len, plane_vertices.len, sphere_vertices.len)
-        begun := window.begin_with_vertices(solid_bytes + glass_bytes + (if shadows { solid_bytes } else { u64(0) }))
-        if begun.is_err() {
-            // A frame lost to a resize is skipped, not an error.
-            if frame.resized { continue }
-            return stop(move window, begun.unwrap_err())
+        canvas.clear()
+        mouse := frame.input.mouse
+        pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.Button.Left), frame.input.button_down(gfx.Button.Left))
+        if playing {
+            paused := transport.paused()
+            action = project.hud(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height), paused, paused || capturing)
+        } else {
+            editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &pointer, mouse.scroll,
+                f32(frame.width), f32(frame.height), fps, passes, device, score, total)
         }
-
-        // --- execute: the schedule is the only thing that decides what runs ---
-        mut main_pass_open := false
-        for step in 0..plan.steps.len {
-            kind := plan.steps[step].kind
-            if kind == render.PassKind.Shadow {
-                // Lives in its own render pass, so the main pass must not be open.
-                match window.shadow_begin(&frame_sky) {
-                    .Ok => {},
-                    .Err(message) => { return stop(move window, message) },
-                }
-                drawn := record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices,
-                    view_projection, &mesh_camera, &frame_sky, studio.shadows, kind)
-                if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
-                match window.shadow_end() {
-                    .Ok => {},
-                    .Err(message) => { return stop(move window, message) },
-                }
-                continue
-            }
-            if !main_pass_open {
-                match window.begin_scene(filtered) {
-                    .Ok => { main_pass_open = true },
-                    .Err(message) => { return stop(move window, message) },
-                }
-            }
-            if kind == render.PassKind.Sky {
-                match window.sky(&inv_view_projection.m, &frame_sky.sun, &frame_sky.zenith, &frame_sky.horizon) {
-                    .Ok => {},
-                    .Err(message) => { return stop(move window, message) },
-                }
-            } else if kind == render.PassKind.Opaque || kind == render.PassKind.Transparent {
-                drawn := if kind == .Opaque {
-                    record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, &mesh_camera, &frame_sky, studio.shadows, kind)
-                } else {
-                    record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, &mesh_camera, &frame_sky, false, kind)
-                }
-                if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
-            } else if kind == render.PassKind.PostProcess {
-                match window.post_process(&finish) {
-                    .Ok => {},
-                    .Err(message) => { return stop(move window, message) },
-                }
-            } else if kind == render.PassKind.Ui {
-                canvas.clear()
-                mouse := frame.input.mouse
-                pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.Button.Left), frame.input.button_down(gfx.Button.Left))
-                if playing {
-                    paused := transport.paused()
-                    action = project.hud(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height), paused, paused || capturing)
-                } else {
-                    editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &pointer, mouse.scroll,
-                        f32(frame.width), f32(frame.height), fps, plan.steps.len, device, score, total)
-                }
-                quads := canvas.take()
-                match window.ui_draw(quads, [f32(frame.width), f32(frame.height)]) {
-                    .Ok => {},
-                    .Err(message) => { return stop(move window, message) },
-                }
-            }
+        match window.ui_draw(canvas.take(), [f32(frame.width), f32(frame.height)]) {
+            .Ok => {},
+            .Err(message) => { return stop(move window, message) },
         }
         ended := window.end()
         if ended.is_err() {

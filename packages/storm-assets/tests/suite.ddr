@@ -1,0 +1,17 @@
+import ..src.assets
+import core
+import gltf
+import scene
+
+@test fn the_authored_origin_and_the_parent_define_model_placement() {
+    model := gltf.asset(&gltf.load("../storm-gltf/tests/fixtures/Box.glb")).unwrap()
+    mut graph := scene.Graph::new()
+    parent := graph.create_root(core.vec3(10.0, 0.0, 0.0))
+    root := assets.place_model(&mut graph, &model, "Box", parent, core.vec3(3.0, 2.0, 1.0), 2.0, &[])
+    graph.propagate()
+    assert(graph.name(root) == "Box")
+    assert(graph.world(root).matrix.m[12] == 13.0 && graph.world(root).matrix.m[13] == 2.0 && graph.world(root).matrix.m[14] == 1.0)
+    draw := graph.drawables(core.vec3(0.0, 0.0, 0.0))[0]
+    assert(draw.model.m[0] == 2.0 && draw.model.m[12] == 13.0)
+    assert(draw.material.textures.base.id == 0)
+}

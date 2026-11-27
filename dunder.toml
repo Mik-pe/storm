@@ -4,6 +4,7 @@ root = "src/main.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
+assets = { path = "packages/storm-assets", capabilities = ["filesystem", "stdio", "unsafe"] }
 studio = { path = "packages/storm-studio", capabilities = ["filesystem", "stdio", "unsafe"] }
 mcp = { path = "packages/storm-mcp", capabilities = ["stdio", "filesystem", "unsafe"] }
 play = { path = "packages/storm-play", capabilities = ["filesystem"] }
@@ -11,8 +12,8 @@ core = { path = "packages/storm-core" }
 gfx = { path = "packages/storm-gfx" }
 image = { path = "packages/storm-image", capabilities = ["filesystem", "unsafe"] }
 ecs = { path = "packages/storm-ecs" }
-scene = { path = "packages/storm-scene" }
-render = { path = "packages/storm-render" }
+scene = { path = "packages/storm-scene", capabilities = ["unsafe"] }
+render = { path = "packages/storm-render", capabilities = ["unsafe"] }
 input = { path = "packages/storm-input" }
 vulkan = { path = "packages/storm-vulkan", capabilities = ["unsafe", "filesystem", "stdio"] }
 gltf = { path = "packages/storm-gltf", capabilities = ["filesystem", "stdio"] }

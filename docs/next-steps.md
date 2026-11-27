@@ -889,7 +889,7 @@ materials/scenes nedan) och byggtiden (fynd 56: den är kompilatorns, och budget
 
 `storm-gfx` är kontraktet: `Frame`, `Input` med `Key`, `Sky`, `trait Backend`
 med `Result` för anrop som kan fallera, och geometrihjälparna som äger
-vertexformatet. `storm-studio` kör rendergrafen genom `B: gfx.Backend`.
+vertexformatet. `storm-render` kör rendergrafen genom `B: gfx.Backend`.
 Paketets moduler `editor`, `game` och `gallery` äger panelerna, studions interaktion och materialstudien.
 `src/main.ddr` väljer backend för fönster och bildexport.
 `storm-input` tar ett `Input`-värde och importerar ingen backend.

@@ -1,4 +1,5 @@
 capability filesystem, stdio
+import render.frame as scene_renderer
 
 // Storm's root suite: exercises the packages the way an application uses them,
 // and runs each package's own suite through their manifests.
@@ -233,12 +234,12 @@ import scene as scenegraph
     eye := core.vec3(0.0, 2.2, 9.5)
     mut items := graph.drawables(eye)
     assert(items.len == 3)
-    assert(game.is_transparent(&items[0].material))
-    assert(!game.is_transparent(&items[2].material))
-    assert(!game.casts_shadow(&items[0]))
-    assert(game.casts_shadow(&items[2]))
+    assert(scene_renderer.is_transparent(&items[0].material))
+    assert(!scene_renderer.is_transparent(&items[2].material))
+    assert(!scene_renderer.casts_shadow(&items[0]))
+    assert(scene_renderer.casts_shadow(&items[2]))
 
-    game.sort_back_to_front(&mut items)
+    scene_renderer.sort_back_to_front(&mut items)
     // Descending distance: far glass, solid, near glass.
     assert(items[0].entity.index == far.index)
     assert(items[1].entity.index == solid.index)
@@ -287,7 +288,6 @@ import .play_view as _
 import .scene_file as _
 import .transport as _
 
-import studio as app
 import render
 
 @test fn post_process_runs_after_scene_color_and_before_the_hud() {
@@ -296,7 +296,7 @@ import render
             for smooth in [false, true] {
                 for strength in [0.0, 1.0] {
                     finish := gfx.PostProcess { antialias: smooth, strength: f32(strength) }
-                    plan := app.frame_plan(shadows, glass, finish.enabled())
+                    plan := scene_renderer.frame_plan(shadows, glass, finish.enabled())
                     assert(finish.valid() && plan.ok)
                     mut i := 0
                     if shadows { assert(plan.steps[i].kind == render.PassKind.Shadow); i += 1 }
