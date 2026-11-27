@@ -741,7 +741,8 @@ storm-gltf 21, storm-scene 26.
 Render-grafen äger nu ordningen (`PassKind`, `Compiled.steps`), skuggpasset är
 ett pass bland de andra och huvudpasset öppnas lat; editorn listar ECS:et,
 väljer, och skriver material/transform via sliders; åtta orber att plocka
-med poäng i HUD:en; `--glb` laddar en modell (autoskalad) in i scenen, och
+med poäng i HUD:en; `--glb` laddar en modell in i studion (på pallen,
+skalad så den fyller vyn), och
 parsern läser riktiga filer (fynd 59); ECS:t har frågor (`join2`/`join3` med
 dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
 `AGENTS.md` (bygget under 20 s, mätt med `tools/build-time.ddr`; bara main,
@@ -857,6 +858,16 @@ början (`button_of`).
 - Marktonen under horisonten är en fast gradient (ljusast vid horisonten), inte
   en rendering av golvet, så golvet syns inte i kuberna.
 - Valideringslager aktiveras inte automatiskt.
+- En modell laddad med `--glb` roterar med turntablen och visas som filen
+  pekar den: glTF §2.4 säger att +Z är fronten mot betraktaren, och en modell
+  vars bounds är längre i z än i x (Katla `Fox.glb`, `FoxFixed.glb`,
+  `FoxBlender.glb`: 155 × 79 × 25) visar ryggen först från studions kamera
+  på +z. Det är tillgångens konvention, inte motorens — att vända modellen
+  automatiskt vore en gissning per fil — och turntablen visar framsidan
+  efter ett halv varv.
+- Molnkanter i spelet visar radvis banding i captures (QA 2026-11-26 och
+  2026-11-27); inte utrett om det är ditheringen i efterbehandlingen eller
+  molnens alpha.
 - Fönsterläget (`--frames N` utan `--capture`) går på en **låst** session
   (`a919b02`, 10/10 och fem varianter à 20 frames, status 0) men syns inte
   där: skärmdump och `grim` blockeras av låsytan. Bilder tas därför med

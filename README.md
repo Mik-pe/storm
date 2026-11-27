@@ -209,8 +209,11 @@ för blendingens skull.
 - `--eye x y z` – starta kameran på en given punkt, vänd mot scenens mitt
   (`--at x y z` ändrar målet; `--yaw a`/`--pitch b` ger en egen vinkel). Utan
   `--eye` står kameran på baslinjen som varje pixeljämförelse mäter mot.
-- `--glb fil.glb` – ladda en modell in i scenen (autoskalad, stående på
-  marken mitt framför kameran)
+- `--glb fil.glb` – ladda en modell in i studion: den står på pallen mitt på
+  turntablen (och roterar med den), studiens egna tre pjäser viker, och
+  skalan är den största som håller modellen hel i bildens 3D-vy --
+  beräknad ur modellens hörn genom kamerans projektion (`app.fit_scale`),
+  så en räv 155 enheter lång och 25 bred fyller vyn som en kub gör
 - `--texture fil.ppm` – studions golv bär en Storm-capture (P6, läst med
   `image.read_rgba`); inget annat i scenen har textur. Utan flaggan är golvet
   `gfx.no_textures()`. I spelet (`--play`, en bana) vägras flaggan med en
