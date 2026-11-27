@@ -242,8 +242,12 @@ import ..src.ui as ui
 }
 
 // Every step the enum has, in enum order. `Ready` is left out: it is the
-// sentinel for "no step failed", not a step. A new variant that is not added
-// here leaves these two tests one step shorter than the enum.
+// sentinel for "no step failed", not a step. This list cannot check itself
+// against the enum (dogfood 106): Dunder has no count of an enum's variants,
+// and a number past the last one ends the process (status 108). A variant
+// added to `SetupStep` without a row here leaves `fail_hands_back_its_step…`
+// one step shorter with nothing red. `name()` is the half that is held: a
+// variant without a name is E3006.
 fn setup_steps() -> [state.SetupStep; 17] {
     [state.SetupStep.Window, .Instance, .PhysicalDevice, .QueueFamily, .Device, .Format, .Swapchain,
         .Shadow, .Pipeline, .PostProcess, .Ui, .DepthBuffer, .FrameSync, .VertexBuffer, .Environment, .CaptureTarget,
