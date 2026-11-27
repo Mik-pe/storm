@@ -47,11 +47,22 @@
 - **Enums är ett eget lager, och lagret är ett eget paket:** `storm-vk/enums.ddr`
   (genererad, §6) har 36 `pub enum`, 35 konverterare, `result_name` och tre
   konstanter — inget `unsafe`, ingen import, inget Storm. Storms skrivare av
-  C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`) och de
-  värden de skriver (`Blend`, `alpha_over`, `shadow_max`) står i
+  C-poster (`apply_blend`, `apply_vertex_input`, `apply_ui_vertices`,
+  `transition_image`) och de värden de skriver (`Blend`, `alpha_over`,
+  `shadow_max`, `Transition`, `to_present`) står i
   `storm-vulkan/records.ddr`. Inga namngivna `u32`-konstanter lever kvar i
   `layout.ddr`; allt är enums, och registret äger talen
-  (`tools/vk.ddr --check`).
+  (`tools/vk.ddr --check`). En image-barriär är ett `Transition`-värde —
+  layouter, accesstar och stadier som enums — och `transition_image` den
+  enda som spelar in en: sju handskrivna barriärposter i sex moduler (med
+  `u32`-parametrar som varje anropare fyllde med
+  `enums.x(.Variant)`) blev sju enradersanrop, och de två combined-maskerna
+  Storm adderade med `+`/`.bit_or()` på talen är namngivna varianter i
+  registret (`TransferReadWrite`, `ColorDepthWriteDepthRead`). Det enda
+  talet i ett `Transition` är presentationens layout, en
+  extensionskonstant registret numrerar utan att `ImageLayout` har den som
+  variant. Sex captures (spel, studio, Fox, utan efterbehandling, utan
+  skuggor, `--texture` genom blit-kedjan) AE = 0, räknade per pixel.
 - `state.ddr` `Renderer`: **61 fält** (121 före Renderer-uppdelningen; 72
   efter steg 3). Sju kluster ligger i en post hos sin ägare
   (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
@@ -86,12 +97,12 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. **338 egna `@test`** (räknade 2026-11-27 med
+  delade vertexströmmen. **340 egna `@test`** (räknade 2026-11-27 med
   regexen `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över listan: 120 i
-  roten, 17 filer, och 218 i de 16 paketen, 19 filer), alla gröna,
+  roten, 17 filer, och 220 i de 16 paketen, 19 filer), alla gröna,
   varje svit lika många som den har `@test` (Skrifts två följer med som
   PASS-rader i de tre sviter som når `storm-text` — roten, `storm-text`,
-  `storm-ui` — så `N passed` blir 344). 17 sviter körs med `dunder test` i
+  `storm-ui` — så `N passed` blir 346). 17 sviter körs med `dunder test` i
   roten och i varje `packages/*`. Föregående kontroll (`9e487b5`, Dunder
   0.12.0, låst session) gav 318 — siffran åldras med varje test som landar;
   det som inte åldras är regeln: *antalet `@test` i sviten är det antal som
@@ -135,23 +146,24 @@
   **En siffra i det här avsnittet är en mätning på en kompilator:** står
   ingen version vid den gäller den inte.
 
-Registret är ett eget paket, **`storm-vk`** (2 267 rader, allt genererat ur
+Registret är ett eget paket, **`storm-vk`** (2 269 rader, allt genererat ur
 `vk.xml` av `tools/vk.ddr`, noll import av `gfx`/`core`): `api.ddr` (347:
 82 prototyper + `load()`), `layout.ddr` (1 479: 81 poster — 77 registriposter
-med `new()` + fyra par-poster, se §6), `enums.ddr` (441: 36 enums, 35
+med `new()` + fyra par-poster, se §6), `enums.ddr` (443: 36 enums, 35
 konverterare, `result_name` och registrets konstanter). Det som är Storms
-val står i storm-vulkan `records.ddr` (158): vertexformaten, `Blend` och
-`apply_*`-skrivarna, `DisplayEncoding`/`FrameViewport`, descriptor-orden och
-vad ett swapchain-tal betyder Storm.
+val står i storm-vulkan `records.ddr` (225): vertexformaten, `Blend` och
+`apply_*`-skrivarna, `Transition` och image-barriären,
+`DisplayEncoding`/`FrameViewport`, descriptor-orden och vad ett
+swapchain-tal betyder Storm.
 
-Lagren i storm-vulkan (4 514 rader + 4 554 genererade i `shader.ddr`), räknade 2026-11-27:
+Lagren i storm-vulkan (4 491 rader + 4 554 genererade i `shader.ddr`), räknade 2026-11-27:
 
 | Lager | Moduler | Rader |
 |---|---|---|
 | FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 235 |
-| Storms värden ovanpå registret | `records.ddr` | 158 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 267 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 854 |
+| Storms värden ovanpå registret | `records.ddr` | 225 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 183 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 848 |
 
 `ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
 var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,

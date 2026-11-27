@@ -31,7 +31,7 @@ Ingen fil har en markör och ingen importerar `gfx` eller `core`;
 `dunder run` flaggan själv (`unknown option: --check`). Storms val ovanpå
 registret — vertexformaterna, `Blend` och `apply_*`, `DisplayEncoding`/
 `FrameViewport`, `binding_word`/`stages_word`, `is_success`/`is_out_of_date`,
-vilka display-format capture läser — bor i `storm-vulkan/records.ddr` (158
+vilka display-format capture läser — bor i `storm-vulkan/records.ddr` (225
 rader, handskrivna). Registrets tester (Khronos-tabellerna, C-ABI-storlekar,
 paren, `load()` mot riktiga libvulkan) följde med till `storm-vk/tests`.
 Kvar i storm-vk var `state.ddr`:s `MemoryProperties` (läst ur ett rått
