@@ -63,14 +63,15 @@ pub struct UiVertices {
     color: layout.VertexInputAttributeDescription,
 }
 
-// The UI layout, with zeroed format fields: `apply_ui_vertices` fills
-// them. `stride` is the vertex's byte size, which the caller owns since it is
-// the vertex it pushes.
-pub fn ui_vertices(stride: u32) -> UiVertices {
+// The binding and the two attributes the UI pipeline declares, with zeroed
+// format fields: `apply_ui_vertices` fills them. The stride and the colour's
+// offset are the contract's (`gfx.UI_BYTES`, `gfx.UI_COLOR_OFFSET`), as the
+// mesh's are above: a UI vertex is one layout, not a stride per caller.
+pub fn ui_vertices() -> UiVertices {
     UiVertices {
-        binding: layout.VertexInputBindingDescription { binding: 0, stride: stride, inputRate: 0 },
+        binding: layout.VertexInputBindingDescription { binding: 0, stride: gfx.UI_BYTES, inputRate: 0 },
         position: layout.VertexInputAttributeDescription { location: 0, binding: 0, format: 0, offset: 0 },
-        color: layout.VertexInputAttributeDescription { location: 1, binding: 0, format: 0, offset: 16 },
+        color: layout.VertexInputAttributeDescription { location: 1, binding: 0, format: 0, offset: gfx.UI_COLOR_OFFSET },
     }
 }
 

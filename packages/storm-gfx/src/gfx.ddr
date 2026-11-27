@@ -394,6 +394,41 @@ pub fn push_vertex(vertices: &mut []f32, p: Vertex) {
     vertices.push(p.tw)
 }
 
+// The stream `ui_draw` takes: a UI quad vertex is position and atlas uv at
+// location 0 and colour at location 1 -- two float4, eight f32. A solid
+// rectangle marks itself with u = -1 and the shader skips the lookup. The
+// contract owns the count and the colour's offset; `storm-ui` writes through
+// `push_ui_vertex` and a backend describes its layout from these, so there is
+// one stride and not one per layer.
+pub const UI_FLOATS: i32 = 8
+pub const UI_BYTES: u32 = 32
+pub const UI_COLOR_OFFSET: u32 = 16
+// The UI pipeline's push block: the window in points (xy), zw unused.
+pub const UI_PUSH_BYTES: u32 = 16
+
+pub struct UiVertex {
+    x: f32,
+    y: f32,
+    u: f32,
+    v: f32,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+}
+
+// The one writer of the UI format, as `push_vertex` is of the mesh's.
+pub fn push_ui_vertex(vertices: &mut []f32, p: &UiVertex) {
+    vertices.push(p.x)
+    vertices.push(p.y)
+    vertices.push(p.u)
+    vertices.push(p.v)
+    vertices.push(p.r)
+    vertices.push(p.g)
+    vertices.push(p.b)
+    vertices.push(p.a)
+}
+
 // The tangent of one triangle, Lengyel's form: t = +dp/du from the UV
 // Jacobian, orthogonalised against the face normal, and w = -sign(det) so
 // that cross(n, t) * w is the file's bitangent (glTF 2.0 §3.7.2.1:

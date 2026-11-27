@@ -2,6 +2,7 @@ capability unsafe, stdio
 
 import std.sys as sys
 import .device as device
+import gfx
 import vk.enums as enums
 import vk.layout as vk2
 import .pipeline as pipelines
@@ -36,7 +37,6 @@ pub struct Atlas {
     fragShader: ptr,
 }
 
-const FLOATS_PER_VERTEX: u32 = 8
 const ATLAS_SIZE: u32 = 1024
 
 // UI uses alpha-over blending. Colour and alpha are
@@ -107,10 +107,11 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     r.atlas.fragShader = frag_module
 
     // UI quads blend alpha-over over the frame, in frame coordinates, and
-    // never touch depth. One vertex is 8 floats: xy = position, zw = uv, rgba.
+    // never touch depth. One vertex is gfx.UI_FLOATS floats: xy = position,
+    // zw = uv, rgba.
     mut push_range: vk2.PushConstantRange = zeroed()
     push_range.stageFlags = enums.shader_stage(.Vertex)
-    push_range.size = 16
+    push_range.size = gfx.UI_PUSH_BYTES
     mut layout_info: vk2.PipelineLayoutCreateInfo = vk2.PipelineLayoutCreateInfo::new()
     layout_info.setLayoutCount = 1
     layout_info.pSetLayouts = addr(&mut r.atlas.texture.layout)
@@ -123,7 +124,7 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
         vertex: r.atlas.vertShader, fragment: r.atlas.fragShader,
         layout: r.atlas.pipelineLayout, pass: r.renderPass,
         cull: .None, depth: pipelines.depth_off(), blend: .Some(records.alpha_over()),
-        vertices: .Ui(FLOATS_PER_VERTEX * 4), viewport: .Frame, encoded: true,
+        vertices: .Ui, viewport: .Frame, encoded: true,
     }
     mut pipeline := ptr(0)
     code = pipelines.build(&r, &plan, addr(&mut pipeline))
@@ -257,10 +258,10 @@ pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) ->
     r.api.CmdBindPipeline(r.commands[slot], 0, r.atlas.pipeline)
     r.api.CmdBindDescriptorSets(r.commands[slot], 0, r.atlas.pipelineLayout, 0, 1, addr(&r.atlas.texture.set), 0, ptr(0))
     mut push := [screen[0], screen[1], 0.0, 0.0]
-    r.api.CmdPushConstants(r.commands[slot], r.atlas.pipelineLayout, enums.shader_stage(.Vertex), 0, 16, addr(&mut push[0]))
+    r.api.CmdPushConstants(r.commands[slot], r.atlas.pipelineLayout, enums.shader_stage(.Vertex), 0, gfx.UI_PUSH_BYTES, addr(&mut push[0]))
     mut offset: u64 = r.atlas.cursor
     r.api.CmdBindVertexBuffers(r.commands[slot], 0, 1, addr(&r.atlas.vertex.handle), addr(&mut offset))
-    count := i32(vertices.len) / i32(FLOATS_PER_VERTEX)
+    count := i32(vertices.len) / gfx.UI_FLOATS
     r.api.CmdDraw(r.commands[slot], u32(count), 1, 0, 0)
     r.atlas.cursor = r.atlas.cursor + bytes
     true

@@ -39,7 +39,14 @@
   `Sampler` och `Vertex`, `PostProcess`.
   `trait Backend` beskriver pass, ritning, texturer och bildexport i 22 metoder
   (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
-  returnerar `Result`. Geometrihjälparna äger vertexformatet. Nio tester, inga med fönster.
+  returnerar `Result`. Geometrihjälparna äger vertexformatet — meshens
+  (`Vertex`, `VERTEX_FLOATS`/`VERTEX_BYTES` och offsets, `vertex_at`/
+  `put_vertex`) och UI-strömmens (`UiVertex`, `UI_FLOATS`/`UI_BYTES`/
+  `UI_COLOR_OFFSET`/`UI_PUSH_BYTES`, `push_ui_vertex`): `storm-ui`:s canvas
+  skriver genom den ena, båda backendar beskriver sin layout från den andra,
+  och ingen av dem har en stride, ett attribut-offset eller ett antal floats
+  av sitt eget (var `8`/`16`/`32` i sju filer i tre paket, räknade
+  2026-11-28). Tio tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
   Vertexlayouten ägs av `records.vertex_input()` + `records.apply_vertex_input`
   och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. **0 råa

@@ -5,3 +5,4 @@ test_root = "tests/suite.ddr"
 
 [dependencies]
 text = { path = "../storm-text", capabilities = ["filesystem"] }
+gfx = { path = "../storm-gfx" }

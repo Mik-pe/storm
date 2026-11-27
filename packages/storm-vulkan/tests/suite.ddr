@@ -25,8 +25,10 @@ import ..src.ui as ui
 @test fn ui_vertex_attributes_are_contiguous() {
     assert(size_of(records.UiVertices) == 44)
     unsafe {
-        ui := records.ui_vertices(8)
+        ui := records.ui_vertices()
         assert(usize(addr(&ui.color)) - usize(addr(&ui.position)) == 16)
+        // The UI pipeline's push block is the contract's: the window in points.
+        assert(gfx.UI_PUSH_BYTES == 16)
     }
 }
 
@@ -552,29 +554,35 @@ fn setup_steps() -> [state.SetupStep; 17] {
         assert(d.scissor.extent.width == 1024 && d.scissor.extent.height == 1024)
         assert(d.blend_attachment.blendEnable == 1 && d.blend_attachment.colorBlendOp == enums.blend_op(.Max))
 
-        // The UI declares its own two attributes and nothing is culled.
+        // The UI declares its own two attributes and nothing is culled. Its
+        // stride is the contract's (gfx.UI_BYTES), like the mesh's.
         ui := pipelines.Plan {
             vertex: ptr(0), fragment: ptr(0), layout: ptr(0), pass: ptr(0),
             cull: .None, depth: pipelines.depth_off(), blend: .Some(records.alpha_over()),
-            vertices: .Ui(32), viewport: .Frame, encoded: false,
+            vertices: .Ui, viewport: .Frame, encoded: false,
         }
         pipelines.describe(&r, &ui, &mut d)
         assert(d.raster.cullMode == 0 && d.raster.frontFace == 1)
         assert(d.input.vertexBindingDescriptionCount == 1 && d.input.vertexAttributeDescriptionCount == 2)
-        assert(d.ui.binding.stride == 32 && d.ui.position.location == 0 && d.ui.color.location == 1)
-        assert(d.ui.color.offset == 16 && d.blend_attachment.blendEnable == 1)
+        assert(d.ui.binding.stride == gfx.UI_BYTES && d.ui.position.location == 0 && d.ui.color.location == 1)
+        assert(d.ui.color.offset == gfx.UI_COLOR_OFFSET && d.blend_attachment.blendEnable == 1)
     }
 }
 
 @test fn the_ui_vertex_layout_is_written_by_its_one_writer() {
     // The factory leaves the formats zero; the writer fills them, and the
     // words are the registry's: vec4 for position/uv and vec4 for colour.
+    // The stride and the colour's offset are read from the contract, so
+    // what the pipeline declares is what `storm-ui` writes -- and the
+    // contract's numbers are pinned here against what the layout means:
+    // two float4 (8 floats, 32 bytes), the colour at the second one.
     unsafe {
-        mut ui := records.ui_vertices(32)
+        assert(gfx.UI_FLOATS == 8 && gfx.UI_BYTES == 32 && gfx.UI_COLOR_OFFSET == 16)
+        mut ui := records.ui_vertices()
         records.apply_ui_vertices(&mut ui)
-        assert(ui.binding.stride == 32 && ui.binding.inputRate == 0)
+        assert(ui.binding.stride == gfx.UI_BYTES && ui.binding.inputRate == 0)
         assert(ui.position.location == 0 && ui.position.offset == 0 && ui.position.format == 109)
-        assert(ui.color.location == 1 && ui.color.offset == 16 && ui.color.format == 109)
+        assert(ui.color.location == 1 && ui.color.offset == gfx.UI_COLOR_OFFSET && ui.color.format == 109)
         // And the mesh's writer still writes vec3, vec3, vec2 (106, 106, 103).
         mut mesh := records.vertex_input()
         records.apply_vertex_input(&mut mesh)

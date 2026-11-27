@@ -740,11 +740,6 @@ saknar `TANGENT` (idag: per triangel ur uv:n med `w = −sign(det)`, vilket är
 rätt på plan men inte på en sammanfogad söm — och som redan har glTF:s
 teckenkonvention, så `mikktspace-wasm`:s `w *= −1` är samma vändning).
 
-   Slarv kvar efter samma mönster, i ett annat format: `storm-ui`:s canvas
-   (`ui.ddr`: `x y u v r g b a`, `vertex_count = len / 8`, och `i * 8` i sex
-   testrader) är ett eget format och inte en läsare av `gfx.Vertex` — men
-   dess stride är lika namnlös som meshens var. En konstant i `storm-ui`
-   (`CANVAS_FLOATS`) är en egen liten städcommit.
 5. **Occlusion påverkar bara indirekt ljus**, som specen säger: `ao` skalas
    med `strength` och multiplicerar `diffuse_ambient` och
    `specular_ambient`, inte `direct`. Shaderns befintliga
@@ -1001,8 +996,9 @@ början (`button_of`).
 - Vertexbufferten börjar på 6 MiB (`gfx.INITIAL_VERTEX_BYTES`) och växer med
   50 % över högsta använda mängden (`gfx.frame_vertex_capacity`); den är
   mappad permanent och rymmer en mesh-ström per draw.
-- Meshpasset skickar 208 byte konstanter per draw (`state.MESH_PUSH_BYTES`).
-  På Vulkan är de push
+- Meshpasset skickar 224 byte konstanter per draw (`state.MESH_PUSH_BYTES`:
+  56 ord, varav den sista raden bär occlusion-styrkan och `normal_scale`
+  sedan 3e). På Vulkan är de push
   constants och enhetsvalet kontrollerar `maxPushConstantsSize`; på Metal är
   de ett block per stage (`setVertexBytes:`/`setFragmentBytes:`, högst 4 KB
   var).

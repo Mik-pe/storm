@@ -185,11 +185,12 @@ unsafe fn vertex_layout(rt: &objc.Runtime, descriptor: ptr, vertices: Vertices) 
     second := attachment(rt, attributes, 1)
     mut stride := u64(gfx.VERTEX_BYTES)
     if vertices == .Ui {
-        // [x, y, u, v] then [r, g, b, a]: two float4, 32 bytes a vertex.
+        // [x, y, u, v] then [r, g, b, a]: two float4, gfx.UI_BYTES a vertex,
+        // the colour at gfx.UI_COLOR_OFFSET -- the contract's, as the mesh's.
         objc.tell_number(rt, first, rt.sel.set_format, enums.vertex_format(.Float4))
         objc.tell_number(rt, second, rt.sel.set_format, enums.vertex_format(.Float4))
-        objc.tell_number(rt, second, rt.sel.set_offset, 16)
-        stride = 32
+        objc.tell_number(rt, second, rt.sel.set_offset, u64(gfx.UI_COLOR_OFFSET))
+        stride = u64(gfx.UI_BYTES)
     } else {
         uv := attachment(rt, attributes, 2)
         objc.tell_number(rt, uv, rt.sel.set_format, enums.vertex_format(.Float2))

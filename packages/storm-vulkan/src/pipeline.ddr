@@ -234,11 +234,11 @@ pub fn depth_write() -> Depth { Depth { test: true, write: true, compare: .Less 
 pub fn depth_test_only() -> Depth { Depth { test: true, write: false, compare: .Less } }
 
 // Which vertex layout the pipeline declares: none (a fullscreen triangle),
-// the mesh stream (position, normal, uv — `layout.vertex_input`), or a UI
-// vertex (position/uv and colour — `layout.UiVertices`, byte size given by
-// the UI, which pushes the vertices). Each layout is its own record with its
-// own writer; a pipeline never declares part of another layout.
-pub enum Vertices { None, Mesh, Ui(u32) }
+// the mesh stream (position, normal, uv — `records.vertex_input`), or a UI
+// vertex (position/uv and colour — `records.ui_vertices`). Each layout is its
+// own record with its own writer, both describing the contract's stream; a
+// pipeline never declares part of another layout, and never a size of its own.
+pub enum Vertices { None, Mesh, Ui }
 
 // The viewport: the frame's extent, set dynamically per pass, or a fixed
 // square baked into the pipeline (the environment faces).
@@ -276,8 +276,8 @@ unsafe fn mesh_vertices() -> records.VertexInput {
     vertices
 }
 
-unsafe fn ui_vertices(stride: u32) -> records.UiVertices {
-    mut vertices: records.UiVertices = records.ui_vertices(stride)
+unsafe fn ui_vertices() -> records.UiVertices {
+    mut vertices: records.UiVertices = records.ui_vertices()
     records.apply_ui_vertices(&mut vertices)
     vertices
 }
@@ -332,8 +332,8 @@ pub unsafe fn describe(r: &state.Renderer, plan: &Plan, description: &mut Descri
             description.input.vertexAttributeDescriptionCount = records.vertex_attributes()
             description.input.pVertexAttributeDescriptions = addr(&description.mesh.attributes)
         },
-        .Ui(stride) => {
-            description.ui = ui_vertices(stride)
+        .Ui => {
+            description.ui = ui_vertices()
             description.input.vertexBindingDescriptionCount = 1
             description.input.pVertexBindingDescriptions = addr(&description.ui.binding)
             description.input.vertexAttributeDescriptionCount = 2

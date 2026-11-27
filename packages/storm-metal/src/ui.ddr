@@ -6,12 +6,12 @@
 capability unsafe
 
 import .device as device
+import gfx
 import .objc as objc
 import .pass as pass
 
 pub const ATLAS_SIZE: i32 = 1024
-// Eight f32 a vertex: x, y, u, v, r, g, b, a.
-pub const FLOATS_PER_VERTEX: i32 = 8
+// A vertex is the contract's gfx.UI_FLOATS floats: x, y, u, v, r, g, b, a.
 const VERTEX_CAPACITY: u64 = 1048576
 
 unsafe fn no_buffer() -> device.Buffer { device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 } }
@@ -69,7 +69,7 @@ pub unsafe fn upload(rt: &objc.Runtime, atlas: &Atlas, pixels: &[]u8, width: i32
 // Append the frame's quads and draw them. `screen` is the window in points.
 pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_state: ptr, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
     if vertices.len == 0 { return .Ok }
-    if vertices.len % FLOATS_PER_VERTEX != 0 { return .Err("UI vertices must be [x, y, u, v, r, g, b, a] tuples") }
+    if vertices.len % gfx.UI_FLOATS != 0 { return .Err("UI vertices must be [x, y, u, v, r, g, b, a] tuples") }
     offset := atlas.cursor
     slot := atlas.slot
     if !device.append(&atlas.vertices[slot], &mut atlas.cursor, u64(vertices.len * 4), addr(&vertices[0])) {
@@ -79,10 +79,10 @@ pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_sta
     objc.tell_to(rt, encoder, rt.sel.set_depth_state, depth_state)
     pass.vertex_buffer(rt, encoder, atlas.vertices[slot].handle, offset, 0)
     mut push := [screen[0], screen[1], 0.0, 0.0]
-    pass.vertex_bytes(rt, encoder, addr(&push[0]), 16, 1)
+    pass.vertex_bytes(rt, encoder, addr(&push[0]), u64(gfx.UI_PUSH_BYTES), 1)
     pass.fragment_texture(rt, encoder, atlas.texture, 0)
     pass.fragment_sampler(rt, encoder, atlas.sampler, 0)
-    pass.triangles(rt, encoder, u64(vertices.len / FLOATS_PER_VERTEX))
+    pass.triangles(rt, encoder, u64(vertices.len / gfx.UI_FLOATS))
     .Ok
 }
 

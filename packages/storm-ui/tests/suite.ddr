@@ -1,6 +1,7 @@
 import ..src.ui as ui
 import ..src.widgets as widgets
 import text
+import gfx
 
 @test fn solid_rect_emits_two_triangles() {
     mut canvas := ui.Canvas::new()
@@ -69,14 +70,14 @@ fn widget_atlas() -> text.Atlas {
     assert(canvas_a.vertex_count() > 0 && canvas_a.vertex_count() == canvas_b.vertex_count())
     va := canvas_a.vertices()
     vb := canvas_b.vertices()
-    // Each quad is six vertices of eight floats: x, y, u, v, r, g, b, a; the
+    // Each quad is six vertices of gfx.UI_FLOATS floats (x, y, u, v, r, g, b, a); the
     // first and last vertex sit on its left edge, the other four on its right.
-    for v in 0..va.len / 8 {
+    for v in 0..va.len / gfx.UI_FLOATS {
         corner := v % 6
-        x_a := va[v * 8]
-        y_a := va[v * 8 + 1]
-        x_b := vb[v * 8]
-        y_b := vb[v * 8 + 1]
+        x_a := va[v * gfx.UI_FLOATS]
+        y_a := va[v * gfx.UI_FLOATS + 1]
+        x_b := vb[v * gfx.UI_FLOATS]
+        y_b := vb[v * gfx.UI_FLOATS + 1]
         if corner == 0 || corner == 5 {
             // Where a glyph begins is pen + bearing: exact in both atlases.
             assert((x_a - x_b).abs() < 0.01)
@@ -89,7 +90,7 @@ fn widget_atlas() -> text.Atlas {
         }
         // Top and bottom likewise sit on whole raster pixels.
         assert((y_a - y_b).abs() < 1.5)
-        for field in 4..8 { assert(va[v * 8 + field] == vb[v * 8 + field]) }
+        for field in 4..8 { assert(va[v * gfx.UI_FLOATS + field] == vb[v * gfx.UI_FLOATS + field]) }
     }
     // An atlas with nothing in it has no raster size and draws nothing.
     mut empty := text.Atlas::new(16, 16)
@@ -177,8 +178,8 @@ fn rounded_spill(canvas: &ui.Canvas, x: f32, y: f32, w: f32, h: f32) -> f32 {
     vertices := canvas.vertices()
     mut worst: f32 = 0.0
     for i in 0..canvas.vertex_count() {
-        px := vertices[i * 8]
-        py := vertices[i * 8 + 1]
+        px := vertices[i * gfx.UI_FLOATS]
+        py := vertices[i * gfx.UI_FLOATS + 1]
         if x - px > worst { worst = x - px }
         if px - (x + w) > worst { worst = px - (x + w) }
         if y - py > worst { worst = y - py }
@@ -191,7 +192,7 @@ fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
     vertices := canvas.vertices()
     mut found := false
     for i in 0..canvas.vertex_count() {
-        if vertices[i * 8] == x && vertices[i * 8 + 1] == y { found = true }
+        if vertices[i * gfx.UI_FLOATS] == x && vertices[i * gfx.UI_FLOATS + 1] == y { found = true }
     }
     found
 }
@@ -214,10 +215,10 @@ fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
     // that corner's centre, so the arc is a circle and not an ellipse.
     vertices := canvas.vertices()
     for i in 18..66 {
-        cx: f32 = if vertices[i * 8] < 50.0 { 8.0 } else { 92.0 }
-        cy: f32 = if vertices[i * 8 + 1] < 20.0 { 8.0 } else { 32.0 }
-        dx := vertices[i * 8] - cx
-        dy := vertices[i * 8 + 1] - cy
+        cx: f32 = if vertices[i * gfx.UI_FLOATS] < 50.0 { 8.0 } else { 92.0 }
+        cy: f32 = if vertices[i * gfx.UI_FLOATS + 1] < 20.0 { 8.0 } else { 32.0 }
+        dx := vertices[i * gfx.UI_FLOATS] - cx
+        dy := vertices[i * gfx.UI_FLOATS + 1] - cy
         d := (dx * dx + dy * dy).sqrt()
         assert(d < 0.001 || (d - 8.0).abs() < 0.001)
     }
@@ -225,9 +226,9 @@ fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
     // left: the quarter is covered end to end.
     // The first corner's first triangle is (centre, top of circle, next on
     // the arc); its last triangle ends on the left of the circle.
-    assert(vertices[18 * 8] == 8.0 && vertices[18 * 8 + 1] == 8.0)
-    assert(vertices[19 * 8] == 8.0 && vertices[19 * 8 + 1] == 0.0)
-    assert(vertices[29 * 8] == 0.0 && vertices[29 * 8 + 1] == 8.0)
+    assert(vertices[18 * gfx.UI_FLOATS] == 8.0 && vertices[18 * gfx.UI_FLOATS + 1] == 8.0)
+    assert(vertices[19 * gfx.UI_FLOATS] == 8.0 && vertices[19 * gfx.UI_FLOATS + 1] == 0.0)
+    assert(vertices[29 * gfx.UI_FLOATS] == 0.0 && vertices[29 * gfx.UI_FLOATS + 1] == 8.0)
 }
 
 @test fn rounded_rect_clamps_its_radius_and_falls_back_to_a_rect() {
@@ -267,11 +268,11 @@ fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
     mut left: f32 = 10000.0
     mut right: f32 = -1.0
     for i in 0..canvas.vertex_count() {
-        assert(vertices[i * 8] == vertices[i * 8])
-        if vertices[i * 8 + 2] == -1.0 {
+        assert(vertices[i * gfx.UI_FLOATS] == vertices[i * gfx.UI_FLOATS])
+        if vertices[i * gfx.UI_FLOATS + 2] == -1.0 {
             shapes += 1
-            if vertices[i * 8] < left { left = vertices[i * 8] }
-            if vertices[i * 8] > right { right = vertices[i * 8] }
+            if vertices[i * gfx.UI_FLOATS] < left { left = vertices[i * gfx.UI_FLOATS] }
+            if vertices[i * gfx.UI_FLOATS] > right { right = vertices[i * gfx.UI_FLOATS] }
         }
     }
     // Track (3 strips + 4 corners = 66) + knob (66); the fill is zero wide.

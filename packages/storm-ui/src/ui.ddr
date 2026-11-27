@@ -4,6 +4,7 @@
 // Solid rectangles mark themselves with uv.x = -1 so the fragment shader can
 // skip the texture lookup.
 
+import gfx
 import text
 
 // Text is drawn at this many points when its scale is 1. The editor draws at
@@ -58,18 +59,16 @@ impl Canvas {
     pub fn take(&mut self) -> []f32 {
         replace(&mut self.vertices, [])
     }
-    pub fn vertex_count(&self) -> i32 { self.vertices.len / 8 }
+    pub fn vertex_count(&self) -> i32 { self.vertices.len / gfx.UI_FLOATS }
     pub fn is_empty(&self) -> bool { self.vertices.len == 0 }
 
+    // The contract's writer: a UI vertex is eight floats in the order
+    // `gfx.push_ui_vertex` lays them out, and this canvas never counts them
+    // itself.
     fn push_vertex(&mut self, x: f32, y: f32, u: f32, v: f32, color: &Color) {
-        self.vertices.push(x)
-        self.vertices.push(y)
-        self.vertices.push(u)
-        self.vertices.push(v)
-        self.vertices.push(color.r)
-        self.vertices.push(color.g)
-        self.vertices.push(color.b)
-        self.vertices.push(color.a)
+        gfx.push_ui_vertex(&mut self.vertices, &gfx.UiVertex {
+            x: x, y: y, u: u, v: v, r: color.r, g: color.g, b: color.b, a: color.a,
+        })
     }
 
     fn quad(&mut self, x: f32, y: f32, w: f32, h: f32, u0: f32, v0: f32, u1: f32, v1: f32, color: &Color) {
