@@ -636,15 +636,125 @@ filens egna tangenter.
    `scene.bind_skin`, `skinning.deform`, `fox_animation.ddr`:s söm) går
    genom dem. Bevis: 0 ändrade pixlar på åtta captures (spel, studio, Fox,
    Box, utan efterbehandling, utan skuggor, FoxFixed, `--texture`), räknade
-   i Python, inte med `magick`-AE. **Kvar i 3e:** (b) två saker —
-   `skinning.deform` för tangenten *oförändrad* genom leden (som uv; att böja
-   den med jointen är en egen timme, och ingen pixel beror på det förrän
-   shadern läser den), och MikkTSpace-generering när filen saknar `TANGENT`
-   (idag: per triangel ur uv:n, vilket är rätt på plan men inte på en
-   sammanfogad söm); (c) shadern läser `b = cross(n, t)·w` mot Khronos
-   referensbild. `INITIAL_VERTEX_BYTES` är 6 MiB (5 898 240 byte för en
-   full nivå av 480 sfärer × 48 byte × 2 × 128; budgeten läses av testet
-   från kontraktet, inte som en siffra). Bygge 9,7 s; tester 359 egna.
+   i Python, inte med `magick`-AE. `INITIAL_VERTEX_BYTES` är 6 MiB
+   (5 898 240 byte för en full nivå av 480 sfärer × 48 byte × 2 × 128;
+   budgeten läses av testet från kontraktet, inte som en siffra). Bygge
+   9,7 s; tester 359 egna.
+
+**Research inför 3e (b) och (c) (2026-11-27).** Fyra frågor ställdes till
+koden, till filerna och till andra motorer; det första svaret ändrar vad
+(b) är.
+
+1. *Vad kostar det att föra tangenten genom leden?* Fyra rader. Filament
+   skinar tangenten med **samma kofaktormatris som normalen**
+   (`shaders/src/surface_getters.vs`, `skinNormalTangent`:
+   `t = Σ wᵢ · mulBoneNormal(t, idsᵢ)`, där `mulBoneNormal` är
+   `normalize(cof · v)` — kofaktorn av jointens linjära del; PR #4939 gjorde
+   leden till en matris från en kvaternion just för att skevheten ska
+   följa med normalen). Storms `skinning.deform` räknar redan de tre
+   kolumnerna `co`, `cross(c, a)` och `cross(a, b)` för normalen; tangenten
+   är samma viktning av `(tx, ty, tz)`, renormaliserad, med `w` oförändrad.
+   Det är alltså **inte en egen timme** — det är fyra rader i en funktion
+   som redan har allt. `w` är en handedness och ingen riktning: den roteras
+   inte.
+2. *Vad ger MikkTSpace för `w`, och stämmer det med Storms `−sign(det)`?*
+   Ja, efter en teckenvändning. MikkTSpace returnerar
+   `fSign = bIsOrientationPreserving ? 1 : −1` med
+   `bitangent = fSign · cross(vN, tangent)` — det är MikkTSpaces egen
+   readme (citerad hel i FlaxEngine `6f16195b`). För glTF ska det negeras:
+   `mikktspace-wasm`:s readme säger *"you will want to flip the sign of the
+   tangents (`tangent.w *= -1`) before storing them in the glTF file"*, och
+   three.js `computeMikkTSpaceTangents(geometry, MikkTSpace, negateSign =
+   true)` negerar som standard — donmccurdy bekräftar i three.js #25263 att
+   *"the tangent inversion is correct"* för glTF. Storms befintliga
+   `w = −sign(det)` i `gfx.triangle_tangent` är därför *samma konvention*,
+   och det är den som mäts på filerna nedan. En implementation som glömmer
+   tecknet får en normalmapp som är inverterad på **varje** yta, inte bara
+   på de speglade — och det är ett test värt att pinnna: Lanterns 384 hörn.
+3. *Är `w = −sign(det)` filens regel eller exportörens?* Exportörens — och
+   den håller på 99,9 %. Ommätt på elfil med två läsare (en per triangel i
+   f64, en per hörnförekomst med `struct.unpack('<f')`; enligt överens på
+   vartenda tal sedan den andra rättats från `'<d'`):
+
+   | fil | `det > 0` | `det < 0` | `det = 0` | hörn `w ≠ −sign(det)` |
+   |---|---|---|---|---|
+   | Avokado | 1 | 681 | 0 | 3 |
+   | Lantern | 128 | 5 264 | 2 | 0 |
+   | Tiger | 3 | 27 383 | 0 | 48 |
+   | DamagedHelmet (inget `TANGENT`) | 7 783 | 7 659 | 10 | — |
+
+   De tre avvikelserna är varsin sak och ingen är en spegling. Avokado
+   triangel 550 har **geometrisk area 7,4·10⁻⁸** (en spets på avokadons
+   svarta prick) med `det = +1,3·10⁻⁵` och filens `w = +1`, men filens
+   `b = cross(n, t)·w` pekar **med** `+dp/dv` där (`−0,0000`): filen är
+   *internt konsistent* och det är bara regeln som inte håller på en
+   nålspets. Lanterns två `det = 0` är tre hörn på **samma punkt**
+   (stroppens topp, p = (0, 2,1653, 0), area 10⁻¹²) — inget att härleda.
+   Tigers 48 hörn (triangel 308, 622, …) är en **skarp kant**, där de tre
+   hörnens normaler pekar åt olika håll (n₀ = (0,67, 0,66, 0,34),
+   n₁ = (−0,70, −0,04, 0,71)) och exportörens smoothade tangent vänder —
+   en UV-söm, inte en spegling. **Slutsatsen för shadern är densamma i
+   alla tre fallen:** `b = cross(n, t)·w` med filens `w` är specens
+   MUST-form och fungerar, för den läser `w` och aldrig `det`. Regeln
+   `−sign(det)` hör hemma i *genereringen* (MikkTSpace-steg (b) och
+   `triangle_tangent`), aldrig i shadern.
+
+   En fjärde mätning väcker en fråga men kräver inget svar: **Fox har
+   `det > 0` på 576 av 576 trianglar** (FoxBlender och FoxFixed likadant) —
+   hela kroppen är UV-mappad med omvänd orientering mot Khronos övriga
+   modeller. Ingen av dem har normalmapp, så ingen pixel hänger på det
+   idag; men en framtida normalmapp för Fox måste bakas med filens UV
+   rakt av, och `triangle_tangent` ger då `w = −1` på vartenda hörn —
+   vilket är rätt om bakaren gjorde det.
+
+4. *Vad är kvar i kedjan när (b) är fyra rader?* Bara shadern — och det är
+   mätt, inte antaget. Dunder-sidan är klar: `storm-vulkan`:s
+   `texture.ddr` skriver **fem** deskriptorer till set 1 per draw
+   (`for b in 0..BINDINGS`, `ids` i bindingsordning) och ger `binding = 2`
+   den **platta normalen** `(127,127,255)` när kartan saknas
+   (`NORMAL_BINDING`, `live(…)`); `storm-metal`:s `metal.ddr:500` binder
+   samma fem ids till `texture(4..8)` (normal på 6) med samplers på
+   `2..6` (normal på 4). Det är shaderna som har luckan: `mesh.frag`
+   deklarerar set 1 `binding = 0, 1, 3, 4` och **inte 2**; `storm.metal`
+   deklarerar `texture(4, 5, 8, 7)` och **inte 6**, `sampler(2, 3, 6, 5)`
+   och **inte 4**. `gfx.Textures.normal` går genom kedjan sedan 3d steg 1,
+   och `mesh.vert` (`location = 3`) och `storm.metal` (`[[attribute(3)]]`)
+   tar emot tangenten utan att läsa den. Steg (c) är därför: deklarera
+   luckan (`layout(set = 1, binding = 2) uniform sampler2D normal_texture`
+   / `texture2d<float> normal_texture [[texture(6)]]`,
+   `sampler normal_sampler [[sampler(4)]]`) och tolv rader i varje
+   shader: `t = normalize(in_t − n·dot(n, in_t))`, `b = cross(n, t) · w`,
+   `n = normalize(t·nt.x + b·nt.y + n·nt.z)` med `nt = kartan · 2 − 1`
+   (OpenGL-konvention, +Y upp — båda Katla-kartorna har medel
+   (127,127,255) = platt +Z). Det är Filaments form
+   (`surface_shading_parameters.fs`: `b = cross(n, t) * sign(w)`,
+   `shading_tangentToWorld = mat3(t, b, n)`) och Khronos referensshaders
+   och Cesiums. MikkTSpaces readme vill att `t`, `b`, `n` **inte**
+   normaliseras efter interpolation i vertex-shadern (*"the most efficient
+   transformation … using the unnormalized interpolated tangent,
+   bitangent and vertex normal"*); Filament normaliserar `n` före
+   `mat3` men varken `t` eller `b`, och det är den formen som väljs.
+   **En konsekvens för beviset:** utan `TANGENT` får filen Frisvads ram
+   (`gfx.normal_tangent`) och en normalmapp utan genererade tangenter
+   avbildas i ett basrum som inte är kartans — så DamagedHelmet (har
+   normalmapp, saknar `TANGENT`) är **inte** ett bevis för (c) förrän
+   (b):s MikkTSpace har landat. Beviset för (c) är Lantern och Tiger
+   (båda har `TANGENT`).
+
+**Kvar i 3e, omskrivet efter researchen:** (b) `skinning.deform` väger
+`(tx, ty, tz)` med samma tre kofaktorkolumner som normalen, renormaliserar
+och låter `w` passera oförändrad (Filaments `skinNormalTangent`) — fyra
+rader; test: en tangent som står vinkelrätt mot leden roteras med den, en
+längs en ren vridningsaxel påverkas inte. Dessutom
+MikkTSpace-generering när filen saknar `TANGENT` (idag: per triangel ur
+uv:n med `w = −sign(det)`, vilket är rätt på plan men inte på en
+sammanfogad söm — och som redan har glTF:s teckenkonvention, så
+`mikktspace-wasm`:s `w *= −1` är samma vändning). (c) shadern läser
+`b = cross(n, t)·w` mot Khronos referensbild; bevis: Lantern från Khronos
+referenskamera och **en pixelmätning på den speglade delen** (128
+trianglar, 104 vertexar) som visar att G-kanalen vänder tecken där — det
+är den enda mätning som skiljer en läsande shader från en winding-deriverad.
+
    Slarv kvar efter samma mönster, i ett annat format: `storm-ui`:s canvas
    (`ui.ddr`: `x y u v r g b a`, `vertex_count = len / 8`, och `i * 8` i sex
    testrader) är ett eget format och inte en läsare av `gfx.Vertex` — men
