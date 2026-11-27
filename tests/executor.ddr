@@ -512,7 +512,7 @@ fn reason(r: &Result<[]gfx.Textures, string>) -> string {
     mut recorder := Recorder::new()
     handles := app.upload_model_textures(&mut recorder, &model).unwrap()
     mut world := scenegraph.Graph::new()
-    placed := app.place_model(&mut world, &model, "fox", core.vec3(0.0, 0.0, 0.0), &handles)
+    placed := app.place_model(&mut world, &model, "fox", ecs.Entity { index: -1, generation: 0 }, core.vec3(0.0, 0.0, 0.0), 1.0, &handles)
     assert(placed.is_ok())
     world.propagate()
     mut frame := app.FrameGeometry::new()

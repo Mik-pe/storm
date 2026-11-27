@@ -115,3 +115,45 @@ fn named(items: []scene.Drawable, g: &scene.Graph, name: string) -> i32 {
     // The screens are scaled cubes and own no vertices of their own.
     assert(graph.vertices(study.left).len == 0 && graph.vertices(study.right).len == 0)
 }
+
+// The plinth's top is a measurement of the built study, not a number the
+// loader is told: the footing (0.16) under the plinth (0.32). Pinned against
+// the piece's own world height, so a gallery edit moves the constant or
+// fails here.
+@test fn the_plinth_top_is_where_the_plinth_piece_ends() {
+    mut graph := scene.Graph::new()
+    _ := gallery.build(&mut graph)
+    graph.propagate()
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    plinth := items[named(items, &graph, "Limestone plinth")].entity
+    // The plinth's vertices are authored from y = 0 up to its height, and
+    // the piece stands on the footing's top.
+    vertices := graph.vertices(plinth)
+    mut top: f32 = -1.0e20
+    for v in 0..vertices.len / gfx.VERTEX_FLOATS {
+        y := core.transform_point(&graph.world(plinth).matrix, core.vec3(vertices[v * gfx.VERTEX_FLOATS], vertices[v * gfx.VERTEX_FLOATS + 1], vertices[v * gfx.VERTEX_FLOATS + 2])).y
+        if y > top { top = y }
+    }
+    assert((top - gallery.PLINTH_TOP).abs() < 0.0001)
+}
+
+// A loaded model takes the plinth: the gallery's three pieces are hidden
+// (still in the tree, so the inspector lists them), the footing and the
+// plinth stay (the model stands on them), and the room stays.
+@test fn clearing_the_pieces_hides_three_and_leaves_the_plinth_and_the_room() {
+    mut graph := scene.Graph::new()
+    study := gallery.build(&mut graph)
+    graph.propagate()
+    // Before: the three pieces are drawn, eight drawables in all.
+    before := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    assert(before.len == 8)
+    assert(named(before, &graph, "Brass torus") >= 0 && named(before, &graph, "Fluted ceramic") >= 0 && named(before, &graph, "Porcelain sphere") >= 0)
+    gallery.clear_pieces(&mut graph, &study)
+    graph.propagate()
+    assert(graph.len() == 9)
+    items := graph.drawables(core.vec3(0.0, 2.2, 9.5))
+    assert(items.len == 5)
+    assert(named(items, &graph, "Brass torus") == -1 && named(items, &graph, "Fluted ceramic") == -1 && named(items, &graph, "Porcelain sphere") == -1)
+    assert(named(items, &graph, "Basalt footing") >= 0 && named(items, &graph, "Limestone plinth") >= 0)
+    assert(named(items, &graph, "Glass / left") >= 0 && named(items, &graph, "Glass / right") >= 0 && named(items, &graph, "Studio floor") >= 0)
+}

@@ -104,12 +104,28 @@ fn cyclorama() -> []f32 {
     out
 }
 
+// The top of the plinth, where the turntable's pieces stand: the basalt
+// footing (0.16) under the limestone plinth (0.32).
+pub const PLINTH_TOP: f32 = 0.48
+
 pub struct Study {
     hub: ecs.Entity,
     floor: ecs.Entity,
     ring: ecs.Entity,
     left: ecs.Entity,
     right: ecs.Entity,
+    // The three pieces on the plinth, in the tree's order.
+    pieces: [ecs.Entity; 3],
+}
+
+// A loaded model is the studio's object of study, and the plinth is where
+// it stands: the gallery's own pieces step aside (they remain in the tree,
+// hidden, so the inspector still lists them) and the model takes the
+// turntable. The glass and the floor are the room, and stay.
+pub fn clear_pieces(graph: &mut scene.Graph, study: &Study) {
+    for piece in &study.pieces {
+        graph.set_visible(piece.clone(), false)
+    }
 }
 
 pub fn build(graph: &mut scene.Graph) -> Study {
@@ -123,7 +139,7 @@ pub fn build(graph: &mut scene.Graph) -> Study {
     _ := piece(&mut graph, hub, "Limestone plinth", core.vec3(0.0, 0.16, 0.0), disc(3.20, 0.32), scene.material(0.54, 0.43, 0.32, 1.0, 0.03, 0.78))
     brass := piece(&mut graph, hub, "Brass torus", core.vec3(0.42, 2.10, -0.54), ring(), scene.material(0.95, 0.48, 0.145, 1.0, 0.88, 0.24))
     graph.set_rotation(brass, -0.36)
-    _ := piece(&mut graph, hub, "Fluted ceramic", core.vec3(-1.52, 0.48, 0.54),
+    ceramic := piece(&mut graph, hub, "Fluted ceramic", core.vec3(-1.52, 0.48, 0.54),
         revolved([0.47, 0.56, 0.56, 0.53, 0.39, 0.38, 0.30, 0.29, 0.0],
             [0.0, 0.10, 1.31, 1.55, 1.72, 1.85, 1.85, 1.68, 1.68], 144, 0.045),
         scene.material(0.019, 0.135, 0.125, 1.0, 0.25, 0.32))
@@ -131,5 +147,5 @@ pub fn build(graph: &mut scene.Graph) -> Study {
     _ := graph.set_scale(pearl, core.vec3(0.58, 0.58, 0.58))
     left := screen(&mut graph, "Glass / left", -2.58, -2.75, -0.22)
     right := screen(&mut graph, "Glass / right", 2.41, -2.85, 0.38)
-    Study { hub: hub, floor: ground, ring: brass, left: left, right: right }
+    Study { hub: hub, floor: ground, ring: brass, left: left, right: right, pieces: [brass, ceramic, pearl] }
 }

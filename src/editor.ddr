@@ -7,8 +7,8 @@ import text
 import ui
 import ui.widgets as widgets
 
-const BAR: f32 = 48.0
-const FOOT: f32 = 32.0
+pub const BAR: f32 = 48.0
+pub const FOOT: f32 = 32.0
 const LEFT: f32 = 204.0
 const RIGHT: f32 = 236.0
 

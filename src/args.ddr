@@ -85,7 +85,7 @@ pub fn flags() -> []Flag {
     [
         Flag { name: "--help", args: "(-h)", text: "print this and exit" },
         Flag { name: "--studio", args: "", text: "open the material studio (default with --glb; otherwise Blomsterskogen is played)" },
-        Flag { name: "--glb", args: "MODEL.glb", text: "load a model into the studio (autoscaled, standing on the ground)" },
+        Flag { name: "--glb", args: "MODEL.glb", text: "load a model into the studio (fitted to the view, standing on the plinth)" },
         Flag { name: "--play", args: "", text: "play even with --glb" },
         Flag { name: "--scene", args: "FILE", text: "load a level from a scene file" },
         Flag { name: "--watch", args: "", text: "with --scene: reload when the file is saved" },

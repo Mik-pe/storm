@@ -100,42 +100,10 @@ fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
     .Err(message.clone())
 }
 
-// Loads a .glb into the scene as a node with its own vertex stream, scaled to
-// MODEL_SIZE units on its longest side and resting on y = 0, so any model
-// lands in view whatever units it was authored in.
-//
-// The size is the largest a model can be and still fit the studio's fixed
-// camera whole: eye (0, 4, 10.8), pitch -0.22, fov 0.85, the frame's own
-// aspect (the 3D view is the whole window; the panels are drawn over it),
-// viewport rows 48..767 under the top bar and above the status bar. A cube
-// -- the worst case, as deep as it is tall -- standing at MODEL_EDGE_Z
-// spans rows 528..759 at 1.3 (231 rows tall, 9 rows of floor above the
-// status bar). The table, measured through the camera's own projection
-// and confirmed on the capture's red pixels to a row: 1.4 ends on 765
-// (no floor left under it), 1.7 on 785 and the earlier 2.0 on 804, both
-// under the status bar -- Box.glb's front face was cut off (QA
-// 2026-11-27). `a_loaded_model_fits_the_studio_camera` pins both ends, so
-// the number cannot drift from the camera again.
-pub const MODEL_SIZE: f32 = 1.3
-// Where a loaded model stands in the studio: centred on x, on the floor, and
-// with its *nearest* side this far in front of the turntable. The plinth
-// reaches 3.2 out (gallery.ddr), so this is its edge plus the margin; the
-// model spreads away from the table, whatever its depth. A fixed centre
-// instead put a cube's back 0.2 into the plinth (QA 2026-11-26).
-pub const MODEL_EDGE_Z: f32 = 3.7
-// Place a GLB in the graph, scaled to MODEL_SIZE, centred on `at.x`, resting
-// on `at.y`, and with its nearest side at `at.z` -- it spreads towards +z,
-// away from whatever stands behind it. A model of any depth then clears the
-// same edge, instead of a depth its caller had to know in advance.
-// `textures[i]` is the uploaded base colour image of part i, or
-// `gfx.no_texture()` for a part that is only a colour.
-pub fn load_model(graph: &mut scenegraph.Graph, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
-    doc := gltf.load(path)
-    model := gltf.asset(&doc)?
-    place_model(&mut graph, &model, path, at, textures)
-}
+// The extent of a model's vertices, in its own units, before any scale.
+pub struct Bounds { lo: core.Vec3, hi: core.Vec3 }
 
-pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, at: core.Vec3, textures: &[]gfx.Textures) -> Result<(), string> {
+pub fn bounds(model: &gltf.Asset) -> Bounds {
     mut lo := core.vec3(0.0, 0.0, 0.0)
     mut hi := lo
     mut first := true
@@ -152,15 +120,82 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: strin
             first = false
         }
     }
-    span := core.sub(hi, lo)
-    mut extent := span.x
-    if span.y > extent { extent = span.y }
-    if span.z > extent { extent = span.z }
-    scale := if extent > 0.0 { MODEL_SIZE / extent } else { f32(1.0) }
-    // The root sits at the model's origin; its vertices reach from lo.z to
-    // hi.z around it. Putting the nearest side (lo.z * scale) on at.z means
-    // the root moves to at.z - lo.z * scale.
-    base := graph.create_root(core.vec3(at.x - (lo.x + hi.x) * 0.5 * scale, at.y - lo.y * scale, at.z - lo.z * scale))
+    Bounds { lo: lo, hi: hi }
+}
+
+// The part of the window a loaded model may fill: the 3D view is the whole
+// window under the top bar (editor.BAR) and above the status bar
+// (editor.FOOT), with the side panels drawn over it, so the picture's
+// edges are what clip -- a model keeps a margin inside them.
+pub struct View { left: f32, top: f32, right: f32, bottom: f32 }
+
+// The studio's view of a window `width` x `height`.
+pub fn view(width: f32, height: f32) -> View {
+    View { left: 16.0, top: editor.BAR + 8.0, right: width - 16.0, bottom: height - editor.FOOT - 8.0 }
+}
+
+// Where the pixel of a world point lands under `vp` on that window: NDC
+// mapped onto the width and height, Vulkan's y-down clip space (rows grow
+// downwards, as the capture does).
+pub fn pixel(vp: &core.Mat4, p: core.Vec3, width: f32, height: f32) -> core.Vec2 {
+    cx := vp.m[0] * p.x + vp.m[4] * p.y + vp.m[8] * p.z + vp.m[12]
+    cy := vp.m[1] * p.x + vp.m[5] * p.y + vp.m[9] * p.z + vp.m[13]
+    cw := vp.m[3] * p.x + vp.m[7] * p.y + vp.m[11] * p.z + vp.m[15]
+    core.vec2(width * 0.5 + (cx / cw) * width * 0.5, height * 0.5 + (cy / cw) * height * 0.5)
+}
+
+// Whether the model, placed at `at` with `scale`, keeps all eight corners
+// of its bounding box inside `view` under `vp` -- the question fit_scale
+// asks of every candidate.
+pub fn fits(model: &Bounds, at: core.Vec3, scale: f32, vp: &core.Mat4, view: &View, width: f32, height: f32) -> bool {
+    root := core.vec3(at.x - (model.lo.x + model.hi.x) * 0.5 * scale, at.y - model.lo.y * scale, at.z - (model.lo.z + model.hi.z) * 0.5 * scale)
+    for c in 0..8 {
+        x := if c.bit_and(1) == 0 { model.lo.x } else { model.hi.x }
+        y := if c.bit_and(2) == 0 { model.lo.y } else { model.hi.y }
+        z := if c.bit_and(4) == 0 { model.lo.z } else { model.hi.z }
+        q := pixel(vp, core.vec3(x * scale + root.x, y * scale + root.y, z * scale + root.z), width, height)
+        if q.x < view.left || q.x > view.right || q.y < view.top || q.y > view.bottom { return false }
+    }
+    true
+}
+
+// The largest scale at which the model, placed at `at`, is whole in the
+// picture: a binary search over the bounding box's corners through the
+// camera's own projection. The scale follows from the model and the
+// camera, so no model is too small to see or too large to fit, and a
+// change of camera moves every model with it. A model with no extent
+// (a single point) has the scale 1.0; the search starts at 1/1024 and
+// ends at 1024, which is 10 halvings per decade either way.
+pub fn fit_scale(model: &Bounds, at: core.Vec3, vp: &core.Mat4, view: &View, width: f32, height: f32) -> f32 {
+    span := core.sub(model.hi, model.lo)
+    if span.x < 1.0e-9 && span.y < 1.0e-9 && span.z < 1.0e-9 { return 1.0 }
+    mut lo: f32 = 0.0
+    mut hi: f32 = 1024.0
+    // A model that does not fit at 1/1024 is not made smaller: it fits at
+    // 0 by definition (a point), so the search runs from 0.
+    for _ in 0..40 {
+        mid := (lo + hi) * 0.5
+        if fits(model, at, mid, vp, view, width, height) { lo = mid } else { hi = mid }
+    }
+    lo
+}
+
+// Place a GLB in the graph at `scale` as a child of `parent` (a dead
+// entity makes it a root), centred on `at.x`, resting on `at.y`, and
+// centred on `at.z`: the model is the thing on show, so it stands where
+// it is put and spreads equally around that point -- under the studio's
+// camera the fit above is what keeps it whole, whatever its depth.
+// `textures[i]` is the uploaded base colour image of part i, or
+// `gfx.no_texture()` for a part that is only a colour.
+pub fn load_model(graph: &mut scenegraph.Graph, path: string, parent: ecs.Entity, at: core.Vec3, scale: f32, textures: &[]gfx.Textures) -> Result<ecs.Entity, string> {
+    doc := gltf.load(path)
+    model := gltf.asset(&doc)?
+    place_model(&mut graph, &model, path, parent, at, scale, textures)
+}
+
+pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, parent: ecs.Entity, at: core.Vec3, scale: f32, textures: &[]gfx.Textures) -> Result<ecs.Entity, string> {
+    b := bounds(model)
+    base := graph.create_child(parent, core.vec3(at.x - (b.lo.x + b.hi.x) * 0.5 * scale, at.y - b.lo.y * scale, at.z - (b.lo.z + b.hi.z) * 0.5 * scale))
     _ := graph.set_name(base, path.clone())
     graph.set_scale(base, core.vec3(scale, scale, scale))
     for i in 0..model.parts.len {
@@ -175,7 +210,7 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: strin
         _ := graph.set_material(node, move material)
         _ := graph.set_mesh(node, part.vertices.clone())
     }
-    .Ok
+    .Ok(base)
 }
 
 // One uploaded image of a model: which image it is, the sampler and the
@@ -267,12 +302,15 @@ fn same_sampler(a: &gfx.Sampler, b: &gfx.Sampler) -> bool {
     a.mag == b.mag && a.min == b.min && a.mips == b.mips && a.wrap == b.wrap
 }
 
-// load_model for the running app: reads, decodes, uploads, places.
-pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Graph, path: string, at: core.Vec3) -> Result<(), string> {
+// load_model for the running app: reads, decodes, uploads, and places the
+// model as a child of `parent` at the scale `fit_scale` finds for it.
+pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Graph, path: string, parent: ecs.Entity,
+    at: core.Vec3, vp: &core.Mat4, view: &View, width: f32, height: f32) -> Result<ecs.Entity, string> {
     doc := gltf.load(path)
     asset := gltf.asset(&doc)?
     textures := upload_model_textures(&mut window, &asset)?
-    place_model(&mut graph, &asset, path, at, &textures)
+    scale := fit_scale(&bounds(&asset), at, vp, view, width, height)
+    place_model(&mut graph, &asset, path, parent, at, scale, &textures)
 }
 
 // A P6 capture as the ground texture, uploaded once; the backend owns the
@@ -463,7 +501,9 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     playing := launch != .Studio
     exporting := launch == .Preview
     limit := args.frame_limit(argv)
-    mut window := open(TITLE, if exporting { 720 } else { 1280 }, if exporting { 450 } else { 800 })?
+    width: f32 = if exporting { 720.0 } else { 1280.0 }
+    height: f32 = if exporting { 450.0 } else { 800.0 }
+    mut window := open(TITLE, i32(width), i32(height))?
     window.set_trace(args.flag(argv, "--trace"))
     device := window.device_name()
     if !exporting { print("device=" + device) }
@@ -482,7 +522,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
 
     mut graph := scenegraph.Graph::new()
     missing := ecs.Entity { index: -1, generation: 0 }
-    mut study := gallery.Study { hub: missing, floor: missing, ring: missing, left: missing, right: missing }
+    mut study := gallery.Study { hub: missing, floor: missing, ring: missing, left: missing, right: missing, pieces: [missing, missing, missing] }
     if !exporting && (!playing || !capturing) {
         study = gallery.build(&mut graph)
         game.spawn_orbs(&mut graph)
@@ -511,12 +551,6 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     }
     if args.flag(argv, "--compass") { cozy.compass_on = true }
     if args.flag(argv, "--options") { cozy.options_open = true }
-    glb := args.value(argv, "--glb")
-    if glb.len > 0 {
-        match load_model_into(&mut window, &mut graph, glb, core.vec3(0.0, 0.0, MODEL_EDGE_Z)) {
-            .Ok => {}, .Err(err) => { return stop(move window, glb + ": " + err) },
-        }
-    }
     graph.propagate()
 
     // --- --texture FILE.ppm: a Storm capture as the studio floor's texture ---
@@ -537,6 +571,26 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     camera.yaw = start.yaw
     camera.pitch = start.pitch
     camera.fov = 0.85
+
+    // --- --glb MODEL: the model is the studio's object of study ---
+    // It stands on the plinth, centred over the turntable, as a child of the
+    // hub so it turns with it; the gallery's own pieces step aside. The scale
+    // is the one that keeps it whole in the picture the camera takes of the
+    // window it opened with, so every model fills the view whatever its
+    // proportions and units.
+    glb := args.value(argv, "--glb")
+    mut model_base := missing
+    if glb.len > 0 {
+        vp := camera.view_projection(width / height)
+        match load_model_into(&mut window, &mut graph, glb, study.hub, core.vec3(0.0, gallery.PLINTH_TOP, 0.0), &vp, &view(width, height), width, height) {
+            .Ok(base) => {
+                model_base = base
+                if !exporting && !playing { gallery.clear_pieces(&mut graph, &study) }
+            },
+            .Err(err) => { return stop(move window, glb + ": " + err) },
+        }
+    }
+    graph.propagate()
 
     // --- lighting: one sun, shared by the sky dome and every surface ---
     sun := core.normalize(core.vec3(-0.72, 0.88, 0.58))
@@ -560,7 +614,9 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
     enable_post := args.flag(argv, "--effects") && !disable_post
     grade: Option<bool> = if disable_post { .Some(false) } else if enable_post { .Some(true) } else { .None }
     mut transport := Transport::new(if playing { .Running } else { .Studio }, grade)
-    mut studio := editor.new(study.ring, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), enable_post)
+    // The inspector opens on the model when one is loaded, else on the ring.
+    selected := if graph.is_alive(model_base) { model_base } else { study.ring }
+    mut studio := editor.new(selected, !args.flag(argv, "--no-glass"), !args.flag(argv, "--no-shadows"), enable_post)
     studio.antialias = !args.flag(argv, "--no-aa")
     mut glass_visible := true
     mut score: i32 = 0
