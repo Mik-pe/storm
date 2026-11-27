@@ -241,7 +241,7 @@ fn post_frame(r: &mut metal.Renderer, sky: &gfx.Sky, settings: Option<gfx.PostPr
     // No material maps and glTF's emissive term off: the hand-made surface.
     plain: gfx.Textures = gfx.no_textures()
     unlit: [f32; 4] = [0.0; 4]
-    eye: [f32; 3] = [0.0, 0.0, 0.0]
+    eye := gfx.mesh_view([0.0, 0.0, 0.0])
     r.begin()?
     r.begin_scene(settings.is_some())?
     r.mesh(&mesh, &view, &view, &color, &emitting, &eye, sky, &plain, &unlit, 1.0, .Opaque)?
@@ -424,7 +424,7 @@ fn frame_checks(failures: &mut i32) {
     blue: [f32; 4] = [0.0, 0.0, 1.0, 1.0]
     // A green zenith over a red horizon, so which way is up is a colour.
     sky := gfx.sky_params(sun, white, green, red, view.clone(), nothing.clone())
-    origin: [f32; 3] = [0.0, 0.0, 0.0]
+    origin := gfx.mesh_view([0.0, 0.0, 0.0])
     // Not a metal, fully rough, glowing three times its colour, unshadowed:
     // the colour is the albedo, whatever the light.
     glowing: [f32; 4] = [0.0, 1.0, 3.0, 0.0]
@@ -532,6 +532,19 @@ fn frame_checks(failures: &mut i32) {
     near_first := read_capture()
     expect(&mut failures, "drawn near first, the near cube is still in front, so depth decides, not order: rgb " + rgb(under(&near_first, centre, middle, scale)),
         near_first.ok && is_red(under(&near_first, centre, middle, scale)))
+
+    // Use the same sightline on both cubes. Only the near face at z=0.1
+    // intersects it; the green face at z=0.5 is beyond its endpoint.
+    opening := gfx.MeshView { eye: [0.0; 3], to_focus: [0.0, 0.0, 0.45], radius: 0.28 }
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() &&
+        window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &opening, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() &&
+        window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &opening, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    worked(&mut failures, "a sightline through overlapping cubes is recorded", if drawn { .Ok } else { .Err("a step failed") })
+    worked(&mut failures, "and saved", window.save_capture(capture_path()))
+    revealed := read_capture()
+    expect(&mut failures, "the far cube shows through the centre and the near cube still covers the side",
+        revealed.ok && is_green(under(&revealed, centre, middle, scale)) &&
+        is_red(under(&revealed, centre + 0.11 * f32(WIDTH), middle, scale)))
 
     // Culling: the ground plane stands half a unit in front of the camera.
     // Turned to face the viewer it is drawn; turned away it is culled, and

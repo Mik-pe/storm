@@ -103,9 +103,7 @@ unsafe fn mesh_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     if code != 0 { return device.fail(&mut r, code, .Pipeline) }
     r.fragmentShader = fragment_shader
 
-    // mvp(64) model(64) base_color(16) params(16) camera(16) emissive(16) occlusion(16)
-    // sun_color(16) zenith(16) horizon(16) = 240 bytes. The light matrix lives
-    // in a uniform buffer because 320 exceeds what this pipeline layout accepts.
+    // The mesh stages share the per-draw block. Lighting is in a frame uniform.
     mut push_range: vk.PushConstantRange = zeroed()
     push_range.stageFlags = enums.shader_stage(.VertexFragment)
     push_range.offset = 0

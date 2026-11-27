@@ -21,11 +21,11 @@ pub struct Buffer {
 
 pub const FRAME_COUNT: i32 = 2
 // The mesh draw's push-constant block, in f32 words: mvp(16) model(16)
-// base_color(4) params(4) camera(4) emissive_factor(4) occlusion(4). One
+// base_color(4) params(4) camera(4) emissive_factor(4) occlusion(4) sightline(4). One
 // number for the array that is written and the size the driver is given —
 // a second copy is a "remember to" pair, and a mismatch reads past the
 // array inside the driver (finding 25: the crash names no line).
-pub const MESH_FLOATS: i32 = 52
+pub const MESH_FLOATS: i32 = 56
 
 pub const MESH_PUSH_BYTES: u32 = u32(MESH_FLOATS * 4)
 

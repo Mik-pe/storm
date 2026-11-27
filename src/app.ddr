@@ -322,27 +322,28 @@ fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Textu
 }
 
 pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, view_projection: core.Mat4,
-    camera_position: core.Vec3, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
+    camera: &gfx.MeshView, sky: &gfx.Sky, shadows_on: bool, pass: render.PassKind) -> Result<(), string> {
     if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
     mvp := core.multiply(view_projection, item.model)
     mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
     mut shadow_flag: f32 = 0.0
     if shadows_on { shadow_flag = 1.0 }
     mut params: [f32; 4] = [item.material.metallic, item.material.roughness, item.material.emissive, shadow_flag]
-    mut eye: [f32; 3] = [camera_position.x, camera_position.y, camera_position.z]
+    mut view := camera.clone()
+    if !item.sightline_occluder { view.radius = 0.0 }
     surface := if game.is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &eye, sky, &item.material.textures, &item.material.emissive_factor, item.material.occlusion, surface)
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &view, sky, &item.material.textures, &item.material.emissive_factor, item.material.occlusion, surface)
 }
 
 pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
-    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, eye: core.Vec3, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
+    cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: core.Mat4, camera: &gfx.MeshView, sky: &gfx.Sky, shadows: bool, pass: render.PassKind) -> Result<(), string> {
     for index in 0..items.len {
         item := &items[index]
         drawn := match item.shape {
-            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, eye, sky, shadows, pass),
-            .Sphere => record_mesh(&mut window, sphere, item, view, eye, sky, shadows, pass),
-            .Cube => record_mesh(&mut window, cube, item, view, eye, sky, shadows, pass),
-            .Plane => record_mesh(&mut window, plane, item, view, eye, sky, shadows, pass),
+            .Mesh => record_mesh(&mut window, &meshes[item.mesh_index].vertices, item, view, camera, sky, shadows, pass),
+            .Sphere => record_mesh(&mut window, sphere, item, view, camera, sky, shadows, pass),
+            .Cube => record_mesh(&mut window, cube, item, view, camera, sky, shadows, pass),
+            .Plane => record_mesh(&mut window, plane, item, view, camera, sky, shadows, pass),
         }
         drawn?
     }
@@ -822,8 +823,10 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
 
         // --- scene contents for this frame: everything the scene says is drawable ---
         if mesh_world_is_game != playing { geometry.invalidate(); mesh_world_is_game = playing }
-        if playing { gather(&mut geometry, &game_view.graph, view_camera.position) }
-        else { gather(&mut geometry, &graph, view_camera.position) }
+        eye := view_camera.position
+        mesh_camera := if playing { play_view.mesh_view(&game_view, &session, eye) } else { gfx.mesh_view([eye.x, eye.y, eye.z]) }
+        if playing { gather(&mut geometry, &game_view.graph, eye) }
+        else { gather(&mut geometry, &graph, eye) }
         shadows := studio.shadows && geometry.solids.len > 0
         transparent := geometry.glass.len > 0
         grade := if playing { transport.graded(session.scene.theme == .Blossom) } else { studio.effects }
@@ -857,7 +860,7 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                     .Err(message) => { return stop(move window, message) },
                 }
                 drawn := record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices,
-                    view_projection, view_camera.position, &frame_sky, studio.shadows, kind)
+                    view_projection, &mesh_camera, &frame_sky, studio.shadows, kind)
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
                 match window.shadow_end() {
                     .Ok => {},
@@ -878,9 +881,9 @@ fn run_session<B: gfx.Backend>(open: fn(string, i32, i32) -> Result<B, string>, 
                 }
             } else if kind == render.PassKind.Opaque || kind == render.PassKind.Transparent {
                 drawn := if kind == .Opaque {
-                    record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, studio.shadows, kind)
+                    record_list(&mut window, &geometry.meshes, &geometry.solids, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, &mesh_camera, &frame_sky, studio.shadows, kind)
                 } else {
-                    record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, view_camera.position, &frame_sky, false, kind)
+                    record_list(&mut window, &geometry.meshes, &geometry.glass, &cube_vertices, &plane_vertices, &sphere_vertices, view_projection, &mesh_camera, &frame_sky, false, kind)
                 }
                 if drawn.is_err() { return stop(move window, drawn.unwrap_err()) }
             } else if kind == render.PassKind.PostProcess {

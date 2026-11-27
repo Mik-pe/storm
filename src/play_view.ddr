@@ -124,6 +124,18 @@ pub fn sync_guide(view: &mut View, session: &play.Session, exact: bool, guide: &
     view.graph.propagate()
 }
 
+// The synced node holds the interpolated position during play and the exact
+// position in paused frames and previews. Size follows the rig scale.
+pub fn mesh_view(view: &View, session: &play.Session, eye: core.Vec3) -> gfx.MeshView {
+    mut camera := gfx.mesh_view([eye.x, eye.y, eye.z])
+    if session.scene.theme != .Blossom || view.player_node < 0 { return camera }
+    size := session.scene.entities[view.player_node].size.y
+    body := view.graph.local(view.nodes[view.player_node]).position
+    camera.to_focus = [body.x - eye.x, body.y + 0.55 * size - eye.y, body.z - eye.z]
+    camera.radius = 2.15 * size
+    camera
+}
+
 pub fn controls(keys: &gfx.Input) -> play.Input {
     mut x: f32 = 0.0
     mut z: f32 = 0.0

@@ -474,7 +474,7 @@ pub fn aim(head: core.Vec3, pivot: core.Vec3, nose: core.Vec3, parent: &core.Mat
     tip := core.sub(nose, pivot)
     mut local := scene.LocalTransform {
         position: pivot, scale: core.vec3(1.0, 1.0, 1.0),
-        rotation_x: 0.0, rotation_y: head.y, rotation_z: head.z, visible: true
+        rotation_x: 0.0, rotation_y: head.y, rotation_z: head.z, visible: true, sightline_occluder: false
     }
     for _ in 0..10 {
         mid := 0.5 * (lo + hi)

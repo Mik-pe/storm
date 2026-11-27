@@ -77,7 +77,8 @@ struct MeshPush {
     float4 params;          // metallic, roughness, emissive, shadows enabled
     float4 camera_pos;      // xyz = eye position in world space
     float4 emissive_factor; // rgb scales the emissive map, w = its strength
-    float4 occlusion;       // x = occlusionTexture.strength, yzw unused
+    float4 occlusion;       // x = occlusionTexture.strength
+    float4 sightline;       // xyz = eye to subject, w = outer radius at subject
 };
 
 // The frame's values, the same on every draw of a frame: the sun's
@@ -211,6 +212,23 @@ float shadow_factor(float3 world_pos, float3 normal, float ndl, constant Light& 
     return lit;
 }
 
+// A truncated cone covers a little extra foreground when the eye enters a
+// crown. All layers use the same pixel threshold so stacked leaves open
+// onto the same pixels, including their depth writes.
+bool clears_sightline(float3 offset, float3 axis, float radius, float2 pixel) {
+    if (radius <= 0.0) { return false; }
+    float span2 = dot(axis, axis);
+    if (span2 < 0.000001) { return false; }
+    float t = dot(offset, axis) / span2;
+    if (t <= 0.0 || t >= 1.0) { return false; }
+    float width = radius * mix(0.28, 1.0, t);
+    float radial = length(offset - t * axis);
+    float fade = 1.0 - smoothstep(0.66 * width, width, radial);
+    fade *= smoothstep(0.0, 0.24 * radius, (1.0 - t) * sqrt(span2));
+    float threshold = fract(52.9829189 * fract(dot(floor(pixel), float2(0.06711056, 0.00583715))));
+    return threshold < fade;
+}
+
 fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     constant MeshPush& push [[buffer(1)]],
     constant Light& light [[buffer(2)]],
@@ -235,6 +253,7 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     sampler metallic_roughness_sampler [[sampler(3)]],
     sampler emissive_sampler [[sampler(6)]],
     sampler occlusion_sampler [[sampler(5)]]) {
+    if (clears_sightline(in.world_position - push.camera_pos.xyz, push.sightline.xyz, push.sightline.w, in.position.xy)) { discard_fragment(); }
     float3 n = normalize(in.world_normal);
     float3 v = normalize(push.camera_pos.xyz - in.world_position);
     float3 l = normalize(light.sun_direction.xyz);

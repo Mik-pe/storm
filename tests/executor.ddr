@@ -20,7 +20,7 @@ struct MeshCall {
     model: [f32; 16],
     color: [f32; 4],
     params: [f32; 4],
-    camera: [f32; 3],
+    camera: gfx.MeshView,
     // The five map handles in binding order.
     textures: [i64; 5],
     // glTF's emissiveFactor (rgb) and emissive strength (w).
@@ -86,7 +86,7 @@ impl gfx.Backend for Recorder {
         .Ok
     }
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, surface: gfx.Surface) -> Result<(), string> {
         _ := sky.sun[0]
         self.meshes.push(MeshCall {
             stream: vertices.len, mvp: mvp.clone(), model: model.clone(), color: base_color.clone(),
@@ -150,6 +150,27 @@ const SPHERE_STREAM: i32 = 24
 const CUBE_STREAM: i32 = 288
 const PLANE_STREAM: i32 = 48
 
+@test fn only_scenery_uses_the_opening_and_it_still_casts_shadows() {
+    mut world := scenegraph.Graph::new()
+    parent := world.create_root(core.vec3(0.0, 0.0, 1.0))
+    world.set_sightline_occluder(parent, true)
+    child := world.create_child(parent, core.vec3(0.0, 0.0, 0.0))
+    _ := world.set_shape(child, .Cube)
+    _ := shape(&mut world, .Sphere, core.vec3(0.0, 0.0, 4.0), 1.0)
+    world.propagate()
+    mut frame := app.FrameGeometry::new()
+    app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut recorder := Recorder::new()
+    camera := gfx.MeshView { eye: [0.0; 3], to_focus: [0.0, 0.0, 4.0], radius: 1.0 }
+    for pass in [render.PassKind.Shadow, render.PassKind.Opaque] {
+        assert(app.record_list(&mut recorder, frame.meshes(), frame.solids(), cube_stream(), plane_stream(), sphere_stream(),
+            core.identity(), &camera, &sky(), true, pass).is_ok())
+    }
+    assert(recorder.shadows.len == 2 && recorder.meshes.len == 2)
+    assert(recorder.meshes[0].camera.radius == 1.0 && recorder.meshes[0].camera.to_focus[2] == 4.0)
+    assert(recorder.meshes[1].camera.radius == 0.0)
+}
+
 @test fn each_shape_is_drawn_from_its_own_stream_in_declaration_order() {
     mut world := scenegraph.Graph::new()
     scene(&mut world)
@@ -162,7 +183,7 @@ const PLANE_STREAM: i32 = 48
     cube := cube_stream()
     plane := plane_stream()
     drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), core.vec3(0.0, 5.0, 10.0), &sky(), true, render.PassKind.Opaque)
+        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Opaque)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 4 && recorder.shadows.len == 0)
     // Mesh from the snapshot, sphere, cube and plane from the caller's streams.
@@ -174,7 +195,7 @@ const PLANE_STREAM: i32 = 48
     // applied to it. (Node 3 sits at x = 4.)
     assert((recorder.meshes[2].model[12] - 4.0).abs() < 0.0001 && (recorder.meshes[2].mvp[12] - 4.0).abs() < 0.0001)
     // What every draw is told about the light and the eye.
-    assert(recorder.meshes[0].camera[0] == 0.0 && recorder.meshes[0].camera[1] == 5.0 && recorder.meshes[0].camera[2] == 10.0)
+    assert(recorder.meshes[0].camera.eye[0] == 0.0 && recorder.meshes[0].camera.eye[1] == 5.0 && recorder.meshes[0].camera.eye[2] == 10.0)
     assert(recorder.meshes[0].params[3] == 1.0)
 }
 
@@ -195,7 +216,7 @@ const PLANE_STREAM: i32 = 48
     cube := cube_stream()
     plane := plane_stream()
     drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), core.vec3(0.0, 5.0, 10.0), &sky(), true, render.PassKind.Opaque)
+        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Opaque)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 1)
     lit := &recorder.meshes[0]
@@ -222,7 +243,7 @@ const PLANE_STREAM: i32 = 48
     cube := cube_stream()
     plane := plane_stream()
     drawn := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), core.vec3(0.0, 5.0, 10.0), &sky(), true, render.PassKind.Opaque)
+        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Opaque)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 2)
     sealed := &recorder.meshes[0]
@@ -247,7 +268,7 @@ const PLANE_STREAM: i32 = 48
     cube := cube_stream()
     plane := plane_stream()
     drawn := app.record_list(&mut recorder, frame.meshes(), frame.glass(), &cube, &plane, &sphere,
-        core.identity(), core.vec3(0.0, 5.0, 10.0), &sky(), false, render.PassKind.Transparent)
+        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), false, render.PassKind.Transparent)
     assert(drawn.is_ok())
     assert(recorder.meshes.len == 1 && recorder.meshes[0].blended && recorder.meshes[0].params[3] == 0.0)
     assert(recorder.meshes[0].color[3] < 1.0 && recorder.meshes[0].stream == CUBE_STREAM)
@@ -256,7 +277,7 @@ const PLANE_STREAM: i32 = 48
     // matrix, and nothing through mesh.
     mut shadows := Recorder::new()
     cast := app.record_list(&mut shadows, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), core.vec3(0.0, 5.0, 10.0), &sky(), true, render.PassKind.Shadow)
+        core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]), &sky(), true, render.PassKind.Shadow)
     assert(cast.is_ok())
     assert(shadows.meshes.len == 0 && shadows.shadows.len == 4)
     assert(shadows.shadows[0].stream == MESH_STREAM && shadows.shadows[1].stream == SPHERE_STREAM)
@@ -275,21 +296,21 @@ const PLANE_STREAM: i32 = 48
 
     view := core.multiply(core.translation(0.0, 0.0, -5.0), core.identity())
     mut recorder := Recorder::new()
-    with_shadows := app.record_mesh(&mut recorder, cube_stream(), &frame.solids()[0], view, core.vec3(1.0, 2.0, 3.0), &sky(), true, render.PassKind.Opaque)
+    with_shadows := app.record_mesh(&mut recorder, cube_stream(), &frame.solids()[0], view, &gfx.mesh_view([1.0, 2.0, 3.0]), &sky(), true, render.PassKind.Opaque)
     assert(with_shadows.is_ok() && recorder.meshes.len == 1)
     draw := &recorder.meshes[0]
     // Colour is the base colour; params are (metallic, roughness, emissive,
     // shadow flag); the eye is the camera; no texture uploaded means id 0.
     assert(draw.color[0] == 0.2 && draw.color[1] == 0.4 && draw.color[2] == 0.6 && draw.color[3] == 1.0)
     assert(draw.params[0] == 0.7 && draw.params[1] == 0.3 && draw.params[2] == 1.5 && draw.params[3] == 1.0)
-    assert(draw.camera[0] == 1.0 && draw.camera[1] == 2.0 && draw.camera[2] == 3.0)
+    assert(draw.camera.eye[0] == 1.0 && draw.camera.eye[1] == 2.0 && draw.camera.eye[2] == 3.0)
     assert(no_maps(draw.textures) && !draw.blended)
     // mvp = view * model: the node's translation is applied first.
     assert((draw.mvp[14] - (-5.0)).abs() < 0.0001)
 
     // Shadows off: the flag is 0 and nothing else changes.
     mut dark := Recorder::new()
-    _ := app.record_mesh(&mut dark, cube_stream(), &frame.solids()[0], view, core.vec3(1.0, 2.0, 3.0), &sky(), false, render.PassKind.Opaque)
+    _ := app.record_mesh(&mut dark, cube_stream(), &frame.solids()[0], view, &gfx.mesh_view([1.0, 2.0, 3.0]), &sky(), false, render.PassKind.Opaque)
     assert(dark.meshes[0].params[3] == 0.0 && dark.meshes[0].color[2] == 0.6)
 
     // A material's maps are the ones the graph holds, by handle and slot.
@@ -302,7 +323,7 @@ const PLANE_STREAM: i32 = 48
     world.propagate()
     app.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
     mut textured := Recorder::new()
-    _ := app.record_mesh(&mut textured, cube_stream(), &frame.solids()[0], view, core.vec3(1.0, 2.0, 3.0), &sky(), true, render.PassKind.Opaque)
+    _ := app.record_mesh(&mut textured, cube_stream(), &frame.solids()[0], view, &gfx.mesh_view([1.0, 2.0, 3.0]), &sky(), true, render.PassKind.Opaque)
     assert(same_maps(textured.meshes[0].textures, [42, 43, 0, 0, 0]))
 }
 
@@ -358,7 +379,7 @@ const PLANE_STREAM: i32 = 48
     cube := cube_stream()
     plane := plane_stream()
     stopped := app.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
-        core.identity(), core.vec3(0.0, 0.0, 0.0), &sky(), true, render.PassKind.Opaque)
+        core.identity(), &gfx.mesh_view([0.0, 0.0, 0.0]), &sky(), true, render.PassKind.Opaque)
     assert(stopped.is_err() && stopped.unwrap_err() == "draw refused")
     // The refusal happens on the first draw; the other three never happen.
     assert(recorder.meshes.len == 1)

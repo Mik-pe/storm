@@ -45,6 +45,37 @@ fn settle(w: &mut view.View, s: &mut play.Session, ticks: i32) {
     }
 }
 
+@test fn sightline_follows_the_rendered_fox_and_only_scenery_opts_in() {
+    mut session := play.start(&play.demo())
+    mut world := view.build(&session).unwrap()
+    eye := core.vec3(-2.0, 3.0, 7.0)
+    _ := play.advance(&mut session, 0.025, play.Input { x: 1.0, z: 0.0, jump: false })
+    for exact in [false, true] {
+        view.sync(&mut world, &session, exact)
+        camera := view.mesh_view(&world, &session, eye)
+        body := if exact { play.position(&session, world.player_node) } else { play.render_position(&session, world.player_node) }
+        assert(camera.radius > 0.0)
+        assert((eye.x + camera.to_focus[0] - body.x).abs() < 0.0001)
+        assert((eye.z + camera.to_focus[2] - body.z).abs() < 0.0001)
+        assert(eye.y + camera.to_focus[1] > body.y)
+    }
+    mut checked := 0
+    for item in world.graph.drawables(eye) {
+        name := world.graph.name(item.entity)
+        if name == "Bark | hazel" || name == "Blossom | peony" {
+            assert(item.sightline_occluder)
+            checked += 1
+        }
+        if name == "Meadow | seafoam" || name == "Path | apricot" {
+            assert(!item.sightline_occluder)
+            checked += 1
+        }
+    }
+    assert(checked == 4)
+    assert(!world.graph.world(world.cast.foxes[0].head.hinge).sightline_occluder)
+    for pad in world.course.pads { assert(!world.graph.world(pad.node).sightline_occluder) }
+}
+
 @test fn idle_insects_circle_their_home_within_the_amplitude_the_animation_writes() {
     demo := play.demo()
     mut session := play.start(&demo)

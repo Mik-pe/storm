@@ -18,7 +18,8 @@ layout(push_constant, std430) uniform Push {
     vec4 params;          // metallic, roughness, emissive, shadows enabled
     vec4 camera_pos;      // xyz = eye position in world space
     vec4 emissive_factor; // rgb scales the emissive map, w = its strength
-    vec4 occlusion;       // x = occlusionTexture.strength, yzw unused
+    vec4 occlusion;       // x = occlusionTexture.strength
+    vec4 sightline;       // xyz = eye to subject, w = outer radius at subject
 } push;
 
 layout(set = 0, binding = 0) uniform sampler2D shadow_map;
@@ -154,7 +155,25 @@ float shadow_factor(vec3 world_pos, vec3 normal, float ndl) {
     return lit;
 }
 
+// A truncated cone covers a little extra foreground when the eye enters a
+// crown. All layers use the same pixel threshold so stacked leaves open
+// onto the same pixels, including their depth writes.
+bool clears_sightline(vec3 offset, vec3 axis, float radius, vec2 pixel) {
+    if (radius <= 0.0) { return false; }
+    float span2 = dot(axis, axis);
+    if (span2 < 0.000001) { return false; }
+    float t = dot(offset, axis) / span2;
+    if (t <= 0.0 || t >= 1.0) { return false; }
+    float width = radius * mix(0.28, 1.0, t);
+    float radial = length(offset - t * axis);
+    float fade = 1.0 - smoothstep(0.66 * width, width, radial);
+    fade *= smoothstep(0.0, 0.24 * radius, (1.0 - t) * sqrt(span2));
+    float threshold = fract(52.9829189 * fract(dot(floor(pixel), vec2(0.06711056, 0.00583715))));
+    return threshold < fade;
+}
+
 void main() {
+    if (clears_sightline(world_position - vertex_camera, push.sightline.xyz, push.sightline.w, gl_FragCoord.xy)) { discard; }
     vec3 n = normalize(world_normal);
     vec3 v = normalize(vertex_camera - world_position);
     vec3 l = normalize(sky_sun.xyz);

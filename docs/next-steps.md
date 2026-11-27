@@ -579,10 +579,10 @@ filens egna tangenter.
    från mesh-passet — det enda stället som har himlen varje frame, för
    skuggpasset är valfritt (den första capturen utan skuggor var en
    himmelslös scen: `set_light` i `shadow.begin` skrevs aldrig). Push är
-   **208 byte** (2026-11-27; 192 när detta skrevs): mvp 0–63, model
+   **224 byte**: mvp 0–63, model
    64–127, base_color 128–143, params 144–159, camera_pos 160–175,
-   emissive_factor 176–191, occlusion 192–207 — **48 byte
-   luft** under enhetens 256 (fynd 25; 32 under det beprövade 240). Kvar där som tekniskt är per-pass men utan
+   emissive_factor 176–191, occlusion 192–207 och motivets siktlinje 208–223 — **32 byte
+   luft** under enhetens 256 (fynd 25; 16 under det beprövade 240). Kvar där som tekniskt är per-pass men utan
    hook: kamerans läge och skuggflaggan (`params.w`); de stannar tills
    kontraktet får en per-frame-hook (§7). `set_light` är nu per draw
    (en 144-byte-kopia, samma pris som när värdena låg i push) och blir

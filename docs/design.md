@@ -99,12 +99,12 @@
 - **Ett gränssnitt, två implementationer.** Blomsterskogen, materialstudien
   och editorn kör samma kod på Apple M5 och Intel Iris Plus. Metal och
   Vulkan väntar på föregående GPU-läsning innan CPU:n återanvänder den
-  delade vertexströmmen. **359 egna `@test`** (räknade 2026-11-27 med
-  regexen `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över listan: 136 i
+  delade vertexströmmen. **361 egna `@test`** (räknade 2026-11-27 med
+  regexen `^\s*@test\s+(unsafe\s+)?fn` per fil och `sum()` över listan: 138 i
   roten, 19 filer, och 223 i de 16 paketen, 19 filer), alla gröna,
   varje svit lika många som den har `@test` (Skrifts två följer med som
   PASS-rader i de tre sviter som når `storm-text` — roten, `storm-text`,
-  `storm-ui` — så `N passed` blir 365). 17 sviter körs med `dunder test` i
+  `storm-ui` — så `N passed` blir 367). 17 sviter körs med `dunder test` i
   roten och i varje `packages/*`. Föregående kontroll (`9e487b5`, Dunder
   0.12.0, låst session) gav 318 — siffran åldras med varje test som landar;
   det som inte åldras är regeln: *antalet `@test` i sviten är det antal som
@@ -489,6 +489,8 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 Materialstudien byggs i `src/gallery.ddr`. `src/editor.ddr` äger paneler, objektval och pekarinteraktion. Både fönsterkoordinater och klickytor mäts i punkter. Ett smalt fönster använder samma paneler en i taget. `src/game.ddr` hanterar insamlingen och `src/args.ddr` startkameran.
 
 ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrin ändras. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
+
+I Blomsterskogen får stammar, trädkronor och annan skogsrekvisita ärva markeringen `sightline_occluder` i scenträdet. `gfx.MeshView` beskriver siktlinjen från kameran till rävmodellens visade position. I färgpasset öppnar renderaren en mjukt avtonad passage genom förgrunden. Alla lager använder samma skärmfasta pixelmönster så att Vallmo syns även genom flera överlappande kronor. Skuggpasset ritar hela geometrin.
 
 `src/app.ddr` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
 

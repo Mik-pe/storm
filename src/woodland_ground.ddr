@@ -6,12 +6,17 @@ import play
 
 pub struct Ground { meadow: walk_surface.Surface }
 pub fn empty() -> Ground { Ground { meadow: walk_surface.empty() } }
+const MEADOW_MATERIALS: []string = ["Meadow | seafoam", "Meadow | dapple", "Path | apricot",
+    "Quilt | buttercream", "Quilt | blush", "Quilt | lavender"]
+
+pub fn is_ground(material: string) -> bool {
+    for name in &MEADOW_MATERIALS { if name == material { return true } }
+    material == "Brook | bed" || material == "Brook | water"
+}
+
 pub fn build(glade: &gltf.Asset) -> Ground {
     Ground {
-        meadow: walk_surface.build(glade, &[
-            "Meadow | seafoam", "Meadow | dapple", "Path | apricot",
-            "Quilt | buttercream", "Quilt | blush", "Quilt | lavender",
-            ])
+        meadow: walk_surface.build(glade, &MEADOW_MATERIALS)
     }
 }
 

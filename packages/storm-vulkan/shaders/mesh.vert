@@ -12,7 +12,8 @@ layout(push_constant, std430) uniform Push {
     vec4 params;          // metallic, roughness, emissive, shadows enabled
     vec4 camera_pos;      // xyz = eye position in world space
     vec4 emissive_factor; // rgb scales the emissive map, w = its strength
-    vec4 occlusion;       // x = occlusionTexture.strength, yzw unused
+    vec4 occlusion;       // x = occlusionTexture.strength
+    vec4 sightline;       // xyz = eye to subject, w = outer radius at subject
 } push;
 
 layout(set = 0, binding = 1) uniform Light {

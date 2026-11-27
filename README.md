@@ -13,6 +13,8 @@ av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexp
 
 **Blomsterskogen** är Storms basspel. Hjälp räven Vallmo att plocka tio blommor till en bukett i körsbärsgläntan. Ovanför stigen finns tolv moln (fyra rosa studsmoln) och fem frivilliga bonusfjärilar. Studsmolnen lyfter Vallmo ända upp till Kronbalkongen. [Se molnhoppet i spelet](docs/molnhopp.mp4)
 
+När en stam, en trädkrona eller annan skogsrekvisita skymmer Vallmo tonas den delen av förgrunden ut. Öppningen följer henne även när du vrider kameran.
+
 ![Vallmo bland körsbärsträden i Blomsterskogen, renderad av Storm på macOS](docs/blomsterskogen.png)
 
 Öppna **Studio** i spelet för att arbeta med scenträdet, positioner och material. Materialstudien har en mässingsring, en keramikvas och en porslinskula på ett roterande podium. [Studion på macOS](docs/materialstudie-macos.jpg) · [Studion på Linux](docs/materialstudie-linux.jpg)
@@ -117,7 +119,7 @@ _ := window.end()
 Varje anrop som kan misslyckas säger varför i sitt `Result`. `mesh` tar tolv
 `f32` per vertex för position, normal, UV och tangentramen (`gfx.VERTEX_FLOATS`),
 en `Sky` (solen, himlen och ljusmatrisen, samlade i `gfx.sky_params`), kamerans
-position som `[f32; 3]`,
+position och eventuell siktlinje till motivet i `gfx.MeshView`,
 materialets fem texturer som **ett** värde `gfx.Textures` (`base`,
 `metallic_roughness`, `normal`, `occlusion`, `emissive`; `gfx.no_textures()`
 är fem gånger `no_texture()` och låter faktorerna stå), glTF:s
@@ -129,10 +131,9 @@ från RGBA8-pixlar: `encoding` säger om texeln är sRGB (en basfärg) eller
 linjär (en Metallic/Roughness-, normal- eller occlusion-karta), och mipkedjan
 byggs av backenden.
 
-- **På Vulkan** går konstanterna med push constants: 208 byte i meshpasset
-  (två matriser, basfärg och parametrar, kamera, emissiv faktor och
-  occlusion-styrka — ett tal, `state.MESH_FLOATS`, storleken härledd ur det),
-  och ljusmatrisen ligger i en uniform buffer. Storm kontrollerar enhetens
+- **På Vulkan** går konstanterna med push constants: 224 byte i meshpasset
+  för två matriser, basfärg, materialparametrar, kamera och siktlinje.
+  Storleken härleds ur `state.MESH_FLOATS`. Ljusmatrisen ligger i en uniform buffer. Storm kontrollerar enhetens
   `maxPushConstantsSize` när den väljer GPU.
 - **På Metal** är samma byte ett struct i adressrymden `constant`, som bundits
   per draw med `setVertexBytes:`/`setFragmentBytes:` (högst 4 KB), så att

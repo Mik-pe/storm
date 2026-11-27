@@ -258,6 +258,9 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
     ground := g.create_root(origin())
     mut meshes: []ecs.Entity = []
     model.attach(&mut g, ground, &glade, &[], &mut meshes, &[])
+    for i in 0..glade.parts.len {
+        g.set_sightline_occluder(meshes[i], !woodland_ground.is_ground(glade.parts[i].material_name))
+    }
     daisy := art_asset.load("flower")?
     flower_mount := core.vec3(0.0, -0.425, 0.0)
     bloom_offset := core.add(fox_expression.bloom_center(&daisy)?, flower_mount)
@@ -369,7 +372,7 @@ pub fn build(g: &mut scene.Graph, session: &play.Session, nodes: &[]ecs.Entity) 
 fn joint_matrix(socket: &Socket, pose: &anim.Pose) -> core.Mat4 {
     local := scene.LocalTransform {
         position: core.add(socket.pivot, pose.position), scale: pose.scale,
-        rotation_x: pose.rotation.x, rotation_y: pose.rotation.y, rotation_z: pose.rotation.z, visible: true
+        rotation_x: pose.rotation.x, rotation_y: pose.rotation.y, rotation_z: pose.rotation.z, visible: true, sightline_occluder: false
     }
     core.multiply(scene.matrix_for(&local), core.translation(-socket.pivot.x, -socket.pivot.y, -socket.pivot.z))
 }

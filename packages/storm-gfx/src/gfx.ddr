@@ -103,6 +103,14 @@ pub fn sky_params(sun: [f32; 4], sun_color: [f32; 4], zenith: [f32; 4], horizon:
     }
 }
 
+// A mesh sees the eye in world space. Scenery may also clear a feathered
+// line of sight to a subject. to_focus runs from the eye to the subject's
+// centre, and radius is the outer radius there, in world units.
+pub struct MeshView { eye: [f32; 3], to_focus: [f32; 3], radius: f32 }
+pub fn mesh_view(eye: [f32; 3]) -> MeshView {
+    MeshView { eye: eye, to_focus: [0.0; 3], radius: 0.0 }
+}
+
 // How a surface is written: opaque surfaces rely on the depth buffer, a
 // blended one is drawn after them, far to near, and tests depth without
 // writing it.
@@ -263,7 +271,7 @@ pub trait Backend {
     // whatever the strength, and 0 is the map ignored. Only the indirect
     // terms are touched: the direct sun keeps its own shadow map.
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, textures: &Textures, emissive: &[f32; 4], occlusion: f32, surface: Surface) -> Result<(), string>
+        params: &[f32; 4], camera: &MeshView, sky: &Sky, textures: &Textures, emissive: &[f32; 4], occlusion: f32, surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
     fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>

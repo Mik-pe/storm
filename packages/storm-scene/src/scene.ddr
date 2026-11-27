@@ -26,12 +26,13 @@ pub struct LocalTransform {
     rotation_y: f32,
     rotation_z: f32,
     visible: bool,
+    sightline_occluder: bool,
     scale: core.Vec3,
 }
 
 pub struct Parent { entity: ecs.Entity }
 
-pub struct WorldTransform { matrix: core.Mat4, visible: bool }
+pub struct WorldTransform { matrix: core.Mat4, visible: bool, sightline_occluder: bool }
 
 pub struct Name { value: string }
 
@@ -119,6 +120,7 @@ pub struct Drawable {
     entity: ecs.Entity,
     model: core.Mat4,
     material: Material,
+    sightline_occluder: bool,
     shape: Shape,
     mesh_index: i32,
     // Squared distance from the eye to the model origin, for sorting glass.
@@ -189,7 +191,7 @@ impl Graph {
     pub fn create_root(&mut self, position: core.Vec3) -> ecs.Entity {
         self.tree_revision = self.tree_revision + 1
         entity := self.allocator.create()
-        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_x: 0.0, rotation_y: 0.0, rotation_z: 0.0, visible: true, scale: core.vec3(1.0, 1.0, 1.0) })
+        _ := self.locals.insert(entity, LocalTransform { position: position, rotation_x: 0.0, rotation_y: 0.0, rotation_z: 0.0, visible: true, sightline_occluder: false, scale: core.vec3(1.0, 1.0, 1.0) })
         entity
     }
 
@@ -220,6 +222,11 @@ impl Graph {
 
     pub fn set_visible(&mut self, entity: ecs.Entity, visible: bool) {
         if self.locals.contains(entity) { self.locals.get_mut(entity).visible = visible }
+    }
+
+    // Children inherit the opt-in so a whole prop can share the same view effect.
+    pub fn set_sightline_occluder(&mut self, entity: ecs.Entity, enabled: bool) {
+        if self.locals.contains(entity) { self.locals.get_mut(entity).sightline_occluder = enabled }
     }
 
     pub fn set_scale(&mut self, entity: ecs.Entity, scale: core.Vec3) {
@@ -507,14 +514,15 @@ impl Graph {
             local := self.locals.get(entity)
             mut matrix := matrix_for(local)
             mut visible := local.visible
+            mut occluder := local.sightline_occluder
             if self.parents.contains(entity) {
                 parent := self.parents.get(entity).entity
                 basis := self.worlds.get(parent)
                 matrix = core.multiply(basis.matrix, matrix)
                 visible = visible && basis.visible
+                occluder = occluder || basis.sightline_occluder
             }
-            if self.worlds.contains(entity) { self.worlds.get_mut(entity).matrix = matrix; self.worlds.get_mut(entity).visible = visible }
-            else { _ := self.worlds.insert(entity, WorldTransform { matrix: matrix, visible: visible }) }
+            _ := self.worlds.insert(entity, WorldTransform { matrix: matrix, visible: visible, sightline_occluder: occluder })
         }
     }
 
@@ -536,6 +544,7 @@ impl Graph {
                 entity: row.entity,
                 model: if self.skins.contains(row.entity) { core.identity() } else { model },
                 material: mat,
+                sightline_occluder: self.worlds.at(row.b).sightline_occluder,
                 shape: self.meshes.at(row.a).shape,
                 mesh_index: if self.skins.contains(row.entity) { self.meshes.len() + self.skins.dense_index(row.entity) }
                 else if self.instances.contains(row.entity) { self.meshes.dense_index(self.instances.get(row.entity).clone()) } else { row.a },
