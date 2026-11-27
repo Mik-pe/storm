@@ -20,7 +20,8 @@ import ..src.woodland_ground
     art := gltf.Asset { parts: [gltf.Part { name: "patch", material_name: "grass", color: [1.0; 4],
         metallic: 0.0, roughness: 0.8, vertices: vertices, texture: -1, sampler: gfx.sampler(),
         metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
-        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4] }], images: [] }
+        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4],
+        occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0 }], images: [] }
     top := walk_surface.build(&art, &["grass"])
     assert((walk_surface.top(&top, 0.25, 0.25).unwrap() - 1.25).abs() < 0.00001)
     assert(walk_surface.top(&top, 0.5, 0.5).unwrap() == 1.5 && walk_surface.top(&top, 0.8, 0.8).is_none())
@@ -115,7 +116,8 @@ import ..src.woodland_ground
                 metallic: 0.0, roughness: 0.85, vertices: verts.clone(),
                 texture: -1, sampler: gfx.sampler(),
                 metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
-                emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4]
+                emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4],
+                    occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0
             }],
             images: []
         }

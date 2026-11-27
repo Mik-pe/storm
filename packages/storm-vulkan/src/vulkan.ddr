@@ -312,7 +312,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 }
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], blended: bool) -> DrawResult {
+    base_color: &[f32; 4], params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, blended: bool) -> DrawResult {
     if state.pass(&r) != .Direct && state.pass(&r) != .Filtered { return draw_error(r.frameIndex, "mesh requires an open scene") }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
@@ -328,16 +328,16 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     }
     r.vertexCursor = offset + bytes
     slot := r.current
-    // The draw's own values: mvp(64) model(64) base_color(16) params(16)
-    // camera(16) emissive_factor(16) = 192 bytes. The sun and the sky
-    // are the frame's, in set 0's uniform (shadow.set_light).
-    mut push: [f32; 48] = [0.0; 48]
+    // The draw's own values, laid out by state.MESH_FLOATS. The sun and
+    // the sky are the frame's, in set 0's uniform (shadow.set_light).
+    mut push: [f32; state.MESH_FLOATS] = [0.0; state.MESH_FLOATS]
     for i in 0..16 { push[i] = mvp[i] }
     for i in 0..16 { push[16 + i] = model[i] }
     for i in 0..4 { push[32 + i] = base_color[i] }
     for i in 0..4 { push[36 + i] = params[i] }
     for i in 0..3 { push[40 + i] = camera[i] }
     for i in 0..4 { push[44 + i] = emissive[i] }
+    push[48] = occlusion
     if blended {
         r.api.CmdBindPipeline(r.commands[slot], 0, r.transparentPipeline)
     } else {
@@ -578,11 +578,11 @@ impl gfx.Backend for Window {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &[f32; 3], sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, surface: gfx.Surface) -> Result<(), string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, textures, emissive, surface == gfx.Surface.Blended))
+            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, &camera, sky, textures, emissive, occlusion, surface == gfx.Surface.Blended))
         }
     }
 

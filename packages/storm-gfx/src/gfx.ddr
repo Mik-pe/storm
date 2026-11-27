@@ -137,8 +137,7 @@ pub fn no_texture() -> Texture { Texture { id: 0 } }
 // encoding together: two slots that name the same upload share a handle
 // (occlusion and metallic-roughness in one image, both linear), and two
 // that name different uploads have two (a base colour and a metallic-
-// roughness map in one image, sRGB and linear). The emissive slot is
-// carried and not read yet (the scene has an emissive factor, not a map).
+// roughness map in one image, sRGB and linear).
 pub struct Textures {
     base: Texture,
     metallic_roughness: Texture,
@@ -255,9 +254,14 @@ pub trait Backend {
     // identity. `emissive` is glTF's emissive term: rgb scales the emissive
     // map's texel and w is its strength, so a surface with no emissive map
     // (white) and the zero factor adds nothing; `params.z` is the surface's
-    // own glow in its base colour, and the two are added.
+    // own glow in its base colour, and the two are added. `occlusion` is
+    // occlusionTexture.strength (glTF 2.0 3.9.3, default 1): the occlusion
+    // map's R channel darkens the indirect light as
+    // 1 + strength * (occlusion - 1), so white (the fallback) is unoccluded
+    // whatever the strength, and 0 is the map ignored. Only the indirect
+    // terms are touched: the direct sun keeps its own shadow map.
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, textures: &Textures, emissive: &[f32; 4], surface: Surface) -> Result<(), string>
+        params: &[f32; 4], camera: &[f32; 3], sky: &Sky, textures: &Textures, emissive: &[f32; 4], occlusion: f32, surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
     fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>

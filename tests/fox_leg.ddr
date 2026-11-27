@@ -57,7 +57,8 @@ fn meadow(vertices: &[]f32) -> woodland_ground.Ground {
             name: "Meadow", material_name: "Meadow | seafoam", color: [1.0; 4],
             metallic: 0.0, roughness: 0.8, vertices: vertices.clone(), texture: -1, sampler: gfx.sampler(),
             metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
-            emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4]
+            emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4],
+            occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0
         }], images: []
     }
     woodland_ground.build(&art)
@@ -222,7 +223,8 @@ fn part(move name: string, move vertices: []f32) -> gltf.Part {
     gltf.Part {
         name: move name, material_name: "fox", color: [1.0; 4], metallic: 0.0, roughness: 0.8, vertices: move vertices,
         texture: -1, sampler: gfx.sampler(), metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
-        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4]
+        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0; 4],
+        occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0
     }
 }
 

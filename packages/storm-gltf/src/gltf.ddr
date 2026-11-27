@@ -280,11 +280,14 @@ pub fn load_mesh(doc: &Document) -> Mesh {
 // `emissive_factor` scales it: rgb is the material's emissiveFactor
 // (default [0,0,0], so a map without one is off -- the spec leaves that
 // to the exporter), w is KHR_materials_emissive_strength (default 1).
+// `occlusion` is the occlusion map (R channel darkens the indirect light)
+// and `occlusion_strength` is occlusionTexture.strength (default 1).
 pub struct Part {
     name: string, material_name: string, color: [f32; 4], metallic: f32, roughness: f32, vertices: []f32,
     texture: i32, sampler: gfx.Sampler,
     metallic_roughness: i32, metallic_roughness_sampler: gfx.Sampler,
     emissive: i32, emissive_sampler: gfx.Sampler, emissive_factor: [f32; 4],
+    occlusion: i32, occlusion_sampler: gfx.Sampler, occlusion_strength: f32,
 }
 
 pub struct Asset { parts: []Part, images: []textures.Image }
@@ -305,6 +308,16 @@ fn strength(j: &json.Doc, node: i32, fallback: f32) -> Result<f32,string> {
     if node < 0 { return .Ok(fallback) }
     n := match j.as_f64(node) { .Some(v) => v, .None => { return .Err("expected a numeric emissive strength") } }
     if !(n >= 0.0) { return .Err("emissive strength is negative") }
+    .Ok(f32(n))
+}
+
+// A scalar in [0,1]: occlusionTexture.strength and normalTexture.scale,
+// both optional with the spec's default 1 (glTF 2.0 3.9.3). Named by
+// `what` so a refusal says which of the two it read.
+fn unit_scalar(j: &json.Doc, node: i32, what: string, fallback: f32) -> Result<f32,string> {
+    if node < 0 { return .Ok(fallback) }
+    n := match j.as_f64(node) { .Some(v) => v, .None => { return .Err("expected a numeric " + what) } }
+    if !(n >= 0.0 && n <= 1.0) { return .Err(what + " outside [0,1]") }
     .Ok(f32(n))
 }
 
@@ -352,6 +365,11 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
     mr_texture := texture_info(j, pbr, "metallicRoughnessTexture")?
     // The emissive term lives on the material, not under pbrMetallicRoughness.
     emissive_texture := texture_info(j, material, "emissiveTexture")?
+    // Occlusion is the material's too. The strength is an object member of
+    // the texture info itself (material.occlusionTexture.strength), not of
+    // the material, and no file of the eleven sets it.
+    occlusion_texture := texture_info(j, material, "occlusionTexture")?
+    occlusion_strength := unit_scalar(j, j.field(j.field(material, "occlusionTexture"), "strength"), "occlusion strength", 1.0)?
     emissive_node := j.field(material, "emissiveFactor")
     mut emissive_factor: [f32; 4] = [0.0, 0.0, 0.0, 1.0]
     if emissive_node >= 0 {
@@ -366,7 +384,8 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
         color: color, metallic: metallic, roughness: roughness, vertices: interleave(&mesh),
         texture: base_texture.image, sampler: base_texture.sampler,
         metallic_roughness: mr_texture.image, metallic_roughness_sampler: mr_texture.sampler,
-        emissive: emissive_texture.image, emissive_sampler: emissive_texture.sampler, emissive_factor: emissive_factor })
+        emissive: emissive_texture.image, emissive_sampler: emissive_texture.sampler, emissive_factor: emissive_factor,
+        occlusion: occlusion_texture.image, occlusion_sampler: occlusion_texture.sampler, occlusion_strength: occlusion_strength })
 }
 
 pub fn asset(doc: &Document) -> Result<Asset,string> {

@@ -84,6 +84,24 @@ import core
     assert(!g.set_material_value(bare, .Metallic, 1.0))
 }
 
+// A glTF surface carries an occlusion map and its strength; both are the
+// material's own, and a plain material is the spec's default: no map, and
+// a strength of one, which leaves a white map unoccluded.
+@test fn an_occluded_material_keeps_its_strength_and_a_plain_one_is_unoccluded() {
+    mut g := scene.Graph::new()
+    hull := g.create_root(core.vec3(0.0, 1.0, 0.0))
+    textures := gfx.Textures { base: gfx.no_texture(), metallic_roughness: gfx.no_texture(), normal: gfx.no_texture(), occlusion: gfx.Texture { id: 5 }, emissive: gfx.no_texture() }
+    sealed := scene.occlusion_strength(scene.mapped(scene.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5), textures), 0.6)
+    assert(sealed.occlusion == 0.6 && sealed.textures.occlusion.id == 5)
+    assert(g.set_material(hull, move sealed))
+    assert(g.material_at(hull).occlusion == 0.6)
+    assert(g.set_material(hull, scene.material(0.2, 0.2, 0.2, 1.0, 0.0, 0.5)))
+    assert(g.material_at(hull).occlusion == 1.0 && g.material_at(hull).textures.occlusion.id == 0)
+    // Both constructors of a hand-made surface start at the default.
+    assert(scene.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5).occlusion == 1.0)
+    assert(scene.emissive_material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5, 0.4).occlusion == 1.0)
+}
+
 // A glTF surface carries an emissive map and its factor; the factor is the
 // material's own and set_material on an existing surface replaces the whole
 // material, the factor included (it used to be copied field by field, and a
@@ -272,14 +290,14 @@ import core
     graph.propagate()
     assert((graph.world(toe).matrix.m[13] - 2.0).abs() < 0.0001)
     graph.set_angles(hinge, 0.0, 0.0, 1.5707963)
-    graph.set_position(toe, core.vec3(1.0,0.0,0.0))
+    graph.set_position(toe, core.vec3(1.0, 0.0, 0.0))
     graph.set_visible(root, false)
     graph.propagate()
     assert((graph.world(toe).matrix.m[13] - 4.0).abs() < 0.0001)
-    assert(graph.drawables(core.vec3(0.0,0.0,0.0)).len == 0)
+    assert(graph.drawables(core.vec3(0.0, 0.0, 0.0)).len == 0)
     graph.set_visible(root, true)
     graph.propagate()
-    assert(graph.drawables(core.vec3(0.0,0.0,0.0)).len == 1)
+    assert(graph.drawables(core.vec3(0.0, 0.0, 0.0)).len == 1)
 }
 
 import .animation as _

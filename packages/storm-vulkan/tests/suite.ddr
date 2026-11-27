@@ -30,6 +30,21 @@ import ..src.ui as ui
     }
 }
 
+// The mesh draw's push-constant block is one number (state.MESH_FLOATS):
+// the array `record_mesh` writes and the size the driver is given
+// (pipeline.ddr, device.ddr) both come from it. A second copy of either is
+// a "remember to" pair, and a mismatch reads past the array inside the
+// driver. The block is 52 words — mvp(16) model(16) base_color(4) params(4)
+// camera(4) emissive_factor(4) occlusion(4) — and stays under 240 bytes:
+// 240 is proven on this device, 320 took the process down inside
+// vkCreateGraphicsPipelines (finding 25), and the device's limit is 256.
+@test fn the_mesh_push_block_is_one_number_under_the_devices_limit() {
+    assert(state.MESH_FLOATS == 52)
+    assert(state.MESH_PUSH_BYTES == 208)
+    assert(state.MESH_PUSH_BYTES == u32(state.MESH_FLOATS * 4))
+    assert(state.MESH_PUSH_BYTES <= 240)
+}
+
 // The blend attachment is a value, not five integers: ALPHA_OVER is the one
 // every alpha-over pipeline (UI and glass) writes; the enum numbers it writes
 // are pinned in storm-vk against the Khronos tables.

@@ -77,6 +77,7 @@ struct MeshPush {
     float4 params;          // metallic, roughness, emissive, shadows enabled
     float4 camera_pos;      // xyz = eye position in world space
     float4 emissive_factor; // rgb scales the emissive map, w = its strength
+    float4 occlusion;       // x = occlusionTexture.strength, yzw unused
 };
 
 // The frame's values, the same on every draw of a frame: the sun's
@@ -225,11 +226,14 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     // in its own colour (glTF 2.0 3.9.3). sRGB, like the base. White (the
     // fallback) times the zero factor of a surface without one is nothing.
     texture2d<float> emissive_texture [[texture(8)]],
+    // The material's occlusion map (R channel), linear. White is the fallback.
+    texture2d<float> occlusion_texture [[texture(7)]],
     sampler shadow_sampler [[sampler(0)]],
     sampler env_sampler [[sampler(1)]],
     sampler material_sampler [[sampler(2)]],
     sampler metallic_roughness_sampler [[sampler(3)]],
-    sampler emissive_sampler [[sampler(6)]]) {
+    sampler emissive_sampler [[sampler(6)]],
+    sampler occlusion_sampler [[sampler(5)]]) {
     float3 n = normalize(in.world_normal);
     float3 v = normalize(push.camera_pos.xyz - in.world_position);
     float3 l = normalize(light.sun_direction.xyz);
@@ -281,6 +285,12 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     float2 brdf = brdf_lut.sample(env_sampler, float2(ndv, roughness)).rg;
     float3 specular_ambient = prefiltered * (f0 * brdf.x + float3(brdf.y));
 
+    // The occlusion map's R channel darkens the indirect light only
+    // (glTF 2.0 3.9.3): 1 + strength * (occlusion - 1). White is the
+    // fallback, so a surface without a map is unoccluded whatever its
+    // strength, and a strength of 0 is the map ignored.
+    float occluded = 1.0 + push.occlusion.x * (occlusion_texture.sample(occlusion_sampler, in.uv).r - 1.0);
+
     // Contact darkening where the sun is blocked, faded smoothly across the
     // shadow terminator so back-facing curved surfaces never expose raw
     // self-shadowing blocks.
@@ -288,7 +298,7 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     float ambient_occlusion = mix(0.55, 1.0, shadow_lit);
 
     float3 fill = mix(light.horizon.rgb * 0.75, light.zenith.rgb, n.y * 0.5 + 0.5) * light.sun_color.w;
-    float3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive + emitted;
+    float3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion * occluded + albedo * emissive + emitted;
     color = aces(color * 1.35);
     return float4(pow(color, float3(1.0 / 2.2)), push.base_color.a);
 }

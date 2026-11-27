@@ -18,6 +18,7 @@ layout(push_constant, std430) uniform Push {
     vec4 params;          // metallic, roughness, emissive, shadows enabled
     vec4 camera_pos;      // xyz = eye position in world space
     vec4 emissive_factor; // rgb scales the emissive map, w = its strength
+    vec4 occlusion;       // x = occlusionTexture.strength, yzw unused
 } push;
 
 layout(set = 0, binding = 0) uniform sampler2D shadow_map;
@@ -41,6 +42,9 @@ layout(set = 1, binding = 0) uniform sampler2D base_texture;
 // as written: a linear texture. White (the fallback) leaves the factors as
 // they are, so a material without a map is unchanged.
 layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
+// The material's occlusion map: its R channel darkens the indirect light
+// (glTF 2.0 3.9.3). A mask, read as written: linear.
+layout(set = 1, binding = 3) uniform sampler2D occlusion_texture;
 // The material's emissive map: what the surface gives off as light, in its
 // own colour (glTF 2.0 3.9.3). sRGB, like the base. White (the fallback)
 // times the zero factor of a surface without one is nothing.
@@ -59,6 +63,7 @@ layout(location = 7) in vec4 sky_zenith;
 layout(location = 8) in vec4 sky_horizon;
 layout(location = 9) in vec2 vertex_uv;
 layout(location = 10) in vec4 vertex_emissive_factor;
+layout(location = 11) in vec4 vertex_occlusion;
 
 layout(location = 0) out vec4 out_color;
 
@@ -199,6 +204,12 @@ void main() {
     vec2 brdf = texture(brdf_lut, vec2(ndv, roughness)).rg;
     vec3 specular_ambient = prefiltered * (f0 * brdf.x + vec3(brdf.y));
 
+    // The occlusion map's R channel darkens the indirect light only
+    // (glTF 2.0 3.9.3): 1 + strength * (occlusion - 1). White is the
+    // fallback, so a surface without a map is unoccluded whatever its
+    // strength, and a strength of 0 is the map ignored.
+    float occluded = 1.0 + vertex_occlusion.x * (texture(occlusion_texture, vertex_uv).r - 1.0);
+
     // Contact darkening where the sun is blocked, faded smoothly across the
     // shadow terminator so back-facing curved surfaces never expose raw
     // self-shadowing blocks.
@@ -206,7 +217,7 @@ void main() {
     float ambient_occlusion = mix(0.55, 1.0, shadow_lit);
 
     vec3 fill = mix(sky_horizon.rgb * 0.75, sky_zenith.rgb, n.y * 0.5 + 0.5) * sky_sun_color.w;
-    vec3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion + albedo * emissive + emitted;
+    vec3 color = albedo * (1.0 - metallic) * fill + direct + (diffuse_ambient + specular_ambient) * ambient_occlusion * occluded + albedo * emissive + emitted;
     color = aces(color * 1.35);
     out_color = display_color(pow(color, vec3(1.0 / 2.2)), vertex_base_color.a);
 }

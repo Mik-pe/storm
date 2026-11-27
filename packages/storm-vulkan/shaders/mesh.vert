@@ -12,6 +12,7 @@ layout(push_constant, std430) uniform Push {
     vec4 params;          // metallic, roughness, emissive, shadows enabled
     vec4 camera_pos;      // xyz = eye position in world space
     vec4 emissive_factor; // rgb scales the emissive map, w = its strength
+    vec4 occlusion;       // x = occlusionTexture.strength, yzw unused
 } push;
 
 layout(set = 0, binding = 1) uniform Light {
@@ -38,6 +39,7 @@ layout(location = 7) out vec4 sky_zenith;
 layout(location = 8) out vec4 sky_horizon;
 layout(location = 9) out vec2 vertex_uv;
 layout(location = 10) out vec4 vertex_emissive_factor;
+layout(location = 11) out vec4 vertex_occlusion;
 
 void main() {
     vec4 world = push.model * vec4(position, 1.0);
@@ -55,5 +57,6 @@ void main() {
     sky_horizon = light.horizon;
     vertex_uv = uv;
     vertex_emissive_factor = push.emissive_factor;
+    vertex_occlusion = push.occlusion;
     gl_Position = push.mvp * vec4(position, 1.0);
 }

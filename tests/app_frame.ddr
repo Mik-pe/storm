@@ -159,7 +159,8 @@ fn shape(graph: &mut scenegraph.Graph, at: core.Vec3, alpha: f32) -> ecs.Entity 
             1.0, 1.0, 3.0, 0.0, 0.0, 1.0, 1.0, 1.0,
         ],
         texture: -1, sampler: gfx.sampler(), metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
-        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0, 0.0, 0.0, 1.0]
+        emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0, 0.0, 0.0, 1.0],
+        occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0
     }
     mut model := gltf.empty_asset()
     model.parts = [slab]
