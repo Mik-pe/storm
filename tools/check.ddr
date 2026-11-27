@@ -25,11 +25,18 @@
 // written, and this file checks itself. Exit status: 0 all roots check, 1 one
 // did not, 2 the gate could not run (a directory it cannot list, a compiler
 // that did not start).
+//
+// Every root is named on stderr before the compiler's own line for it, and the
+// verdict names the compiler it asked. A green line that does not say what it
+// asked is not a measurement: seventeen package suites all print
+// `checked tests/suite.ddr`, and a gate that resolves ~/.dunder/bin/dunder
+// through PATH owes the reader the version it got.
 capability filesystem, process, stdio
 
 import std.array as array
 import std.fs as fs
 import std.process as process
+import std.text as text
 import sys
 
 // The directories whose immediate .ddr children are program roots. `tools`
@@ -56,6 +63,17 @@ fn installed_compiler() -> string {
         },
         .None => "dunder",
     }
+}
+
+// The compiler's own `--version` line, so the verdict can name it. When the
+// compiler did not start or printed nothing, the line says so — the verdict
+// must never carry a version nobody asked for.
+fn compiler_version(compiler: &str) -> string {
+    out := process.run(compiler.clone(), ["--version"])
+    if !out.succeeded() { return "dunder (version unknown)" }
+    mut line := out.stdout_text()
+    if line.len == 0 { line = out.stderr_text() }
+    text.trim(line)
 }
 
 // `dunder check <args>` run from `dir`, its diagnostics inherited by this
@@ -146,9 +164,11 @@ fn suites() -> Result<[]Root, string> {
 }
 
 // A root's name in the report: the file for a program, "<dir> --tests" for a
-// suite, so a failure says which of the two kinds fell.
+// suite, so a failure says which of the two kinds fell. The root's own suite
+// is named by its file, for "." names nothing that reads.
 fn label(root: &Root) -> string {
     if root.dir == "" { return root.path.clone() }
+    if root.dir == "." { return "tests/suite.ddr --tests" }
     root.dir + " --tests"
 }
 
@@ -170,6 +190,8 @@ fn main() -> i32 {
         return 2
     }
 
+    compiler := installed_compiler()
+    version := compiler_version(&compiler)
     mut failed: []string = []
     started := sys.now_ms()
     for root in &list {
@@ -177,6 +199,9 @@ fn main() -> i32 {
         // from its own directory, where the manifest names the test_root.
         mut args: []string = ["--tests"]
         if root.dir == "" { args = [root.path.clone()] }
+        // The root's own name goes before the compiler's line, on stderr, so
+        // the two read as a pair and the compiler's word stays on stdout.
+        _ := sys.eprint("storm: " + label(root))
         code := check_code(move args, root.dir.clone())
         if code == 127 {
             _ := sys.eprint("storm: dunder check could not start for " + label(root))
@@ -189,7 +214,7 @@ fn main() -> i32 {
     for name in &failed { _ := sys.eprint("storm: " + name + " does not check") }
     verdict := if failed.len == 0 { "ok" } else { "FAILED" }
     print("storm: check " + list.len.str() + " roots, " + failed.len.str() + " failed, " +
-        elapsed.str() + " ms, " + verdict)
+        elapsed.str() + " ms, " + verdict + ", " + version)
     if failed.len == 0 { return 0 }
     return 1
 }

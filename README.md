@@ -347,7 +347,7 @@ dunder run tools/shaders.ddr -- --check   # GLSL → SPIR-V: utgång 1 om shader
 dunder run tools/shaders.ddr               # … eller skriv om den efter en shaderändring
 dunder run tools/vk.ddr -- /tmp/vk.xml --check   # registret → storm-vk: utgång 1 om en av de tre filerna skiljer sig
 dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
-dunder run tools/check.ddr      # varje programrot (tools/, examples/, packages/*/tools/) och varje svit (rotens + packages/*/tests) typkontrolleras; utgång 1 när en inte gör det
+dunder run tools/check.ddr      # varje programrot (tools/, examples/, packages/*/tools/) och varje svit (rotens + packages/*/tests) typkontrolleras; varje rot namnges på stderr före kompilatorns rad, domen säger vilken kompilator; utgång 1 när en inte gör det
 ```
 
 Vulkans SPIR-V ligger i `packages/storm-vulkan/src/shader.ddr`, en avledd
