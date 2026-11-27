@@ -1,5 +1,5 @@
-// Storm's type-check gate: every program root in the tree that `dunder check`
-// alone never reaches. Run from the repo root before every push:
+// Storm's type-check gate: every root in the tree that `dunder check` alone
+// never reaches. Run from the repo root before every push:
 //
 //   dunder run tools/check.ddr
 //
@@ -10,11 +10,21 @@
 // which is what happened to storm-metal's self-test: broken for a day through
 // seven commits that each claimed a green check.
 //
-// The roots are derived from the tree, not listed here: every .ddr directly
-// under tools/, examples/, packages/*/tools/ and packages/*/examples/. A new
-// tool is therefore under the gate the moment it is written, and this file
-// checks itself. Exit status: 0 all roots check, 1 one did not, 2 the gate
-// could not run (a directory it cannot list, a compiler that did not start).
+// Nor does it reach a *package's* suite: `dunder check` in a package checks
+// its src/ only, and `--tests` only the one package it is run in. So a test
+// backend implementing a trait the source just changed compiled nowhere
+// until `dunder test` ran it (2026-11-27: tests/executor.ddr against a new
+// parameter on gfx.Backend::mesh — every package "checked green").
+//
+// Both kinds are derived from the tree, not listed here. A program is every
+// .ddr directly under tools/, examples/, packages/*/tools/ and
+// packages/*/examples/, checked by its path. A suite is the root's own and
+// every packages/<name> that has a tests/ directory, each checked with
+// --tests from inside its directory, where the manifest names the test_root.
+// A new tool or package is therefore under the gate the moment it is
+// written, and this file checks itself. Exit status: 0 all roots check, 1 one
+// did not, 2 the gate could not run (a directory it cannot list, a compiler
+// that did not start).
 capability filesystem, process, stdio
 
 import std.array as array
@@ -26,6 +36,17 @@ import sys
 // is relative to the repo root, which is where the gate is run from.
 const ROOT_DIRS: []string = ["tools", "examples"]
 
+// One root to check. A program's `dir` is "" and `path` the file; a suite's
+// `path` is "" and `dir` the directory its manifest lives in ("." for the
+// root's own).
+struct Root {
+    path: string,
+    dir: string,
+}
+
+// The installed compiler: ~/.dunder/bin/dunder when it exists, else whatever
+// PATH names. ~/.dunder/bin is on the interactive shell's PATH only, so a
+// process started by an agent or a cron job finds nothing there.
 fn installed_compiler() -> string {
     match process.env("HOME") {
         .Some(home) => {
@@ -35,6 +56,22 @@ fn installed_compiler() -> string {
         },
         .None => "dunder",
     }
+}
+
+// `dunder check <args>` run from `dir`, its diagnostics inherited by this
+// terminal (the gate only counts, the compiler explains), as the compiler's
+// exit code: 127 when no compiler would start. "check" is this function's
+// one command, so it is written here and the callers pass only the target.
+fn check_code(move args: []string, dir: string) -> i32 {
+    mut cmd := process.Command::new(installed_compiler(), ["check"])
+    cmd.add_args(move args)
+    cmd.set_cwd(dir.clone())
+    cmd.inherit_stdio()
+    mut child := match cmd.spawn() {
+        .Ok(ch) => ch,
+        .Err(_) => return 127,
+    }
+    child.wait(0).code
 }
 
 // The .ddr files directly under `dir`, or .Err when it cannot be listed.
@@ -59,34 +96,60 @@ fn is_dir(dir: string) -> bool {
     info.ok && info.is_dir
 }
 
-// Every program root the gate covers, in a stable order.
-fn roots() -> Result<[]string, string> {
-    mut all: []string = []
+// The names under packages/, or .Err when the directory cannot be listed.
+fn packages() -> Result<[]string, string> {
+    match fs.list_dir("packages") {
+        .Ok(items) => .Ok(items),
+        .Err(e) => .Err("packages: errno " + e.code().str()),
+    }
+}
+
+// Every program root, in a stable order: the paths sorted, then each made a
+// root (a Root has no Ord, and the order is the path's).
+fn programs() -> Result<[]Root, string> {
+    mut paths: []string = []
     for dir in &ROOT_DIRS {
         if !is_dir(dir) { continue }
         match sources(dir) {
-            .Ok(found) => { for f in &found { all.push(f.clone()) } },
+            .Ok(found) => { for f in &found { paths.push(f.clone()) } },
             .Err(why) => return .Err(why),
         }
     }
-    match fs.list_dir("packages") {
-        .Ok(packages) => {
-            for package in &packages {
-                if !is_dir("packages/" + package) { continue }
-                for leaf in ["tools", "examples"] {
-                    dir := "packages/" + package + "/" + leaf
-                    if !is_dir(dir) { continue }
-                    match sources(dir) {
-                        .Ok(found) => { for f in &found { all.push(f.clone()) } },
-                        .Err(why) => return .Err(why),
-                    }
-                }
+    list := match packages() { .Ok(items) => items, .Err(why) => return .Err(why) }
+    for package in &list {
+        for leaf in ["tools", "examples"] {
+            dir := "packages/" + package + "/" + leaf
+            if !is_dir(dir) { continue }
+            match sources(dir) {
+                .Ok(found) => { for f in &found { paths.push(f.clone()) } },
+                .Err(why) => return .Err(why),
             }
-        },
-        .Err(e) => return .Err("packages: errno " + e.code().str()),
+        }
     }
-    array.sort(&mut all)
+    array.sort(&mut paths)
+    mut all: []Root = []
+    for path in &paths { all.push(Root { path: path.clone(), dir: "" }) }
     .Ok(all)
+}
+
+// Every suite root: the root's own, then one per package that has a tests/.
+fn suites() -> Result<[]Root, string> {
+    if !is_dir("tests") { return .Err("tests: the root suite's directory is missing") }
+    mut all: []Root = [Root { path: "", dir: "." }]
+    list := match packages() { .Ok(items) => items, .Err(why) => return .Err(why) }
+    for package in &list {
+        dir := "packages/" + package
+        if !is_dir(dir + "/tests") { continue }
+        all.push(Root { path: "", dir: dir.clone() })
+    }
+    .Ok(all)
+}
+
+// A root's name in the report: the file for a program, "<dir> --tests" for a
+// suite, so a failure says which of the two kinds fell.
+fn label(root: &Root) -> string {
+    if root.dir == "" { return root.path.clone() }
+    root.dir + " --tests"
 }
 
 fn main() -> i32 {
@@ -94,31 +157,36 @@ fn main() -> i32 {
         _ := sys.eprint("usage: dunder run tools/check.ddr")
         return 2
     }
-    list := match roots() {
+    mut list := match programs() {
         .Ok(all) => all,
         .Err(why) => { _ := sys.eprint("storm: could not list the program roots: " + why); return 2 },
     }
+    match suites() {
+        .Ok(more) => { for root in &more { list.push(root.clone()) } },
+        .Err(why) => { _ := sys.eprint("storm: could not list the suites: " + why); return 2 },
+    }
     if list.len == 0 {
-        _ := sys.eprint("storm: no program roots found; run from the repo root")
+        _ := sys.eprint("storm: no roots found; run from the repo root")
         return 2
     }
 
     mut failed: []string = []
     started := sys.now_ms()
     for root in &list {
-        // The compiler's diagnostics go to the terminal as they come; the
-        // gate only counts. 127 is a compiler nothing on PATH could start.
-        mut result := process.status("dunder", ["check", root.clone()])
-        if result.code == 127 { result = process.status(installed_compiler(), ["check", root.clone()]) }
-        if result.code == 127 {
-            _ := sys.eprint("storm: dunder check could not start for " + root)
+        // A program is checked by its path from here; a suite by --tests run
+        // from its own directory, where the manifest names the test_root.
+        mut args: []string = ["--tests"]
+        if root.dir == "" { args = [root.path.clone()] }
+        code := check_code(move args, root.dir.clone())
+        if code == 127 {
+            _ := sys.eprint("storm: dunder check could not start for " + label(root))
             return 2
         }
-        if !result.ok || result.code != 0 { failed.push(root.clone()) }
+        if code != 0 { failed.push(label(root)) }
     }
     elapsed := sys.now_ms() - started
 
-    for root in &failed { _ := sys.eprint("storm: " + root + " does not check") }
+    for name in &failed { _ := sys.eprint("storm: " + name + " does not check") }
     verdict := if failed.len == 0 { "ok" } else { "FAILED" }
     print("storm: check " + list.len.str() + " roots, " + failed.len.str() + " failed, " +
         elapsed.str() + " ms, " + verdict)

@@ -107,7 +107,13 @@
   2026-11-26 vaktar `tools/check.ddr` dem: den härleder rötterna ur
   katalogerna (ingen tabell), typkontrollerar varje och sig själv, och
   fallerar med namnet (utgång 1; 2 när den inte kan lista eller kompilatorn
-  inte startar; kontraktet bevisat i fyra fall). Ramens exektor
+  inte startar; kontraktet bevisat i fyra fall). Sedan 2026-11-27 vaktar
+  den sviterna likadant — rotens och varje `packages/*/tests/`, med
+  `--tests` inifrån sin katalog — för `dunder check` i ett paket når bara
+  dess `src/`, och en test-backend som implementerar ett kontrakt är kod
+  som ska följa med det (`tests/executor.ddr` stod med den gamla
+  signaturen när `mesh` fick occlusion, och vart och ett av paketen
+  rapporterade 0 fel; kontraktet bevisat i fem fall, 24 rötter). Ramens exektor
   (`app.gather`, `load_model`) är testbar utan fönster: vad ett pass får,
   när mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas

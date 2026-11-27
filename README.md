@@ -343,7 +343,7 @@ dunder run tools/shaders.ddr -- --check   # GLSL → SPIR-V: utgång 1 om shader
 dunder run tools/shaders.ddr               # … eller skriv om den efter en shaderändring
 dunder run tools/vk.ddr -- /tmp/vk.xml --check   # registret → storm-vk: utgång 1 om en av de tre filerna skiljer sig
 dunder run tools/build-time.ddr # bygger från noll; fallerar vid ≥ 20 s
-dunder run tools/check.ddr      # varje programrot (tools/, examples/, packages/*/tools/) typkontrolleras; utgång 1 när en inte gör det
+dunder run tools/check.ddr      # varje programrot (tools/, examples/, packages/*/tools/) och varje svit (rotens + packages/*/tests) typkontrolleras; utgång 1 när en inte gör det
 ```
 
 Vulkans SPIR-V ligger i `packages/storm-vulkan/src/shader.ddr`, en avledd
@@ -362,11 +362,14 @@ Kortformen; det fullständiga regelverket står i [AGENTS.md](AGENTS.md).
 - **Bygget ska ta under 20 sekunder** på Mikparchy. `dunder run tools/build-time.ddr`
   mäter och fallerar annars, även när bygget självt fallerar. En byggnad över
   budget pushas inte.
-- **Varje programrot ska typkontrolleras.** `dunder run tools/check.ddr` går
-  igenom `tools/`, `examples/` och `packages/*/tools/` — rötter som
-  `dunder check` utan argument aldrig når — och fallerar med namnet på den
-  som inte kompilerar. Listan är härledd ur trädet, så ett nytt verktyg står
-  under porten utan att registreras.
+- **Varje programrot och varje svit ska typkontrolleras.** `dunder run
+  tools/check.ddr` går igenom `tools/`, `examples/` och `packages/*/tools/`
+  — rötter som `dunder check` utan argument aldrig når — och varje svit:
+  rotens och `packages/*/tests/`, för `dunder check` i ett paket når bara
+  dess `src/`, och en test-backend som implementerar ett kontrakt är kod
+  som ska följa med det. Grinden fallerar med namnet på den som inte
+  kompilerar. Listan är härledd ur trädet, så ett nytt verktyg eller paket
+  står under porten utan att registreras.
 - **Bara `main`.** Inga pull requester, inga reviews, ingen CI. Arbete
   commit:as på `main` och pushas direkt när `check`, testerna och
   byggbudgeten är gröna.
