@@ -86,6 +86,16 @@ pub fn format_is_bgra(value: u32) -> bool {
     value == enums.format(.B8G8R8A8_UNORM) || value == enums.format(.B8G8R8A8_SRGB)
 }
 
+// How much Storm prefers a device of the type the driver reported in
+// VkPhysicalDeviceProperties.deviceType: a discrete GPU, then an integrated
+// one, then anything else (virtual, CPU, other). A type the registry does not
+// know ranks with the rest rather than ending the process.
+pub fn device_rank(device_type: u32) -> i32 {
+    if device_type == enums.physical_device_type(.DiscreteGpu) { return 3 }
+    if device_type == enums.physical_device_type(.IntegratedGpu) { return 2 }
+    1
+}
+
 // A blend state as a value. Pipelines pick one of the named blends below
 // instead of assigning five integers; apply_blend is the only writer of the
 // C record's blend fields.

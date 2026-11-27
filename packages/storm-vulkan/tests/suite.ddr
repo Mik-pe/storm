@@ -254,6 +254,19 @@ fn setup_steps() -> [state.SetupStep; 17] {
         .Texture]
 }
 
+// The device preference reads the type the driver reported through the
+// registry's enum, never a bare 1 or 2: discrete wins over integrated, both
+// over everything else, and a type the registry does not number ranks with
+// the rest instead of being a number nobody can read.
+@test fn a_discrete_gpu_outranks_an_integrated_one_by_name() {
+    assert(records.device_rank(enums.physical_device_type(.DiscreteGpu)) == 3)
+    assert(records.device_rank(enums.physical_device_type(.IntegratedGpu)) == 2)
+    assert(records.device_rank(enums.physical_device_type(.VirtualGpu)) == 1)
+    assert(records.device_rank(enums.physical_device_type(.Cpu)) == 1)
+    assert(records.device_rank(enums.physical_device_type(.Other)) == 1)
+    assert(records.device_rank(99) == 1)
+}
+
 // fail() is the one place a Vulkan code becomes a setup failure: it must hand
 // back the step it was given (the step is the return value, not a field) and
 // record the code for describe(). Every step takes the same path, so check all.

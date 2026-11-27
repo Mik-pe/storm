@@ -53,10 +53,7 @@ unsafe fn pick_physical(r: &mut state.Renderer) -> state.SetupStep {
         mut properties: vk.PhysicalDeviceProperties = zeroed()
         r.api.GetPhysicalDeviceProperties(devices[i], addr(&mut properties))
         if properties.limits.maxPushConstantsSize < state.MESH_PUSH_BYTES { continue }
-        mut score := 0
-        if properties.deviceType == 2 { score = 3 }
-        else if properties.deviceType == 1 { score = 2 }
-        else { score = 1 }
+        score := records.device_rank(properties.deviceType)
         if score > best_score { best_score = score; best = i }
     }
     if best < 0 { return .PhysicalDevice }

@@ -172,6 +172,13 @@ import sys
     assert(enums.fence(.Signaled) == 1)
     assert(enums.color_component(.RGBA) == 15)
     assert(enums.samples(.Type1) == 1)
+    // VkPhysicalDeviceType as the reference page prints it: the driver reports
+    // this one, Storm never writes it, so every value must have a name.
+    assert(enums.physical_device_type(.Other) == 0)
+    assert(enums.physical_device_type(.IntegratedGpu) == 1)
+    assert(enums.physical_device_type(.DiscreteGpu) == 2)
+    assert(enums.physical_device_type(.VirtualGpu) == 3)
+    assert(enums.physical_device_type(.Cpu) == 4)
 }
 
 // The codes Storm acts on, against the Khronos VkResult reference page. The

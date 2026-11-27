@@ -479,6 +479,18 @@ fn selected_enums() -> []SelectedEnum {
                 Selected { dunder: "ErrorValidationFailedEXT", constant: "VK_ERROR_VALIDATION_FAILED", comment: "" },
             ]
         },
+        // VkPhysicalDeviceType: reported by the driver in VkPhysicalDeviceProperties,
+        // never written by Storm. Every variant is here, so a value the driver
+        // reports always has a name; `records.device_rank` reads it.
+        SelectedEnum {
+            dunder: "PhysicalDeviceType", block: "VkPhysicalDeviceType", comment: "", variants: [
+                Selected { dunder: "Other", constant: "VK_PHYSICAL_DEVICE_TYPE_OTHER", comment: "" },
+                Selected { dunder: "IntegratedGpu", constant: "VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU", comment: "" },
+                Selected { dunder: "DiscreteGpu", constant: "VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU", comment: "" },
+                Selected { dunder: "VirtualGpu", constant: "VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU", comment: "" },
+                Selected { dunder: "Cpu", constant: "VK_PHYSICAL_DEVICE_TYPE_CPU", comment: "" },
+            ]
+        },
         // VkAccessFlagBits
         SelectedEnum {
             dunder: "Access", block: "VkAccessFlagBits", comment: "", variants: [

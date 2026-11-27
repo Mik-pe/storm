@@ -397,6 +397,16 @@ pub fn result_name(code: i32) -> string {
     }
 }
 
+pub enum PhysicalDeviceType {
+    Other = 0,
+    IntegratedGpu = 1,
+    DiscreteGpu = 2,
+    VirtualGpu = 3,
+    Cpu = 4,
+}
+
+pub fn physical_device_type(v: PhysicalDeviceType) -> u32 { u32(i32(v)) }
+
 pub enum Access {
     None = 0,
     IndirectCommandRead = 1,
