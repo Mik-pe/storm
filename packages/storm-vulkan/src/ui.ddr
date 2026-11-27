@@ -218,17 +218,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     code = r.api.BeginCommandBuffer(cmd, addr(&begin))
     if code != 0 { return device.fail(&mut r, code, .Ui) }
 
-    mut to_transfer: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
-    to_transfer.dstAccessMask = enums.access(.TransferWrite)
-    to_transfer.oldLayout = enums.image_layout(.Undefined)
-    to_transfer.newLayout = enums.image_layout(.TransferDstOptimal)
-    to_transfer.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    to_transfer.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    to_transfer.image = r.atlas.atlasImage
-    to_transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    to_transfer.subresourceRange.levelCount = 1
-    to_transfer.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.FragmentShader), enums.pipeline_stage(.Transfer), 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_transfer))
+    records.transition_image(&r, cmd, r.atlas.atlasImage, 0, 1, 1, records.transition(.Undefined, .TransferDstOptimal, .None, .TransferWrite, .FragmentShader, .Transfer))
 
     mut copy: vk2.BufferImageCopy = zeroed()
     copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
@@ -240,18 +230,7 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     copy.imageExtent.depth = 1
     r.api.CmdCopyBufferToImage(cmd, staging, r.atlas.atlasImage, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
 
-    mut to_sample: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
-    to_sample.srcAccessMask = enums.access(.TransferWrite)
-    to_sample.dstAccessMask = enums.access(.ShaderRead)
-    to_sample.oldLayout = enums.image_layout(.TransferDstOptimal)
-    to_sample.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
-    to_sample.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    to_sample.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    to_sample.image = r.atlas.atlasImage
-    to_sample.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    to_sample.subresourceRange.levelCount = 1
-    to_sample.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.Transfer), enums.pipeline_stage(.FragmentShader), 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut to_sample))
+    records.transition_image(&r, cmd, r.atlas.atlasImage, 0, 1, 1, records.transition(.TransferDstOptimal, .ShaderReadOnlyOptimal, .TransferWrite, .ShaderRead, .Transfer, .FragmentShader))
 
     code = r.api.EndCommandBuffer(cmd)
     if code != 0 { return device.fail(&mut r, code, .Ui) }

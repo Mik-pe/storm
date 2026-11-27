@@ -8,6 +8,7 @@ capability unsafe
 import gfx
 import vk.enums as enums
 import vk.layout as layout
+import .state as state
 
 // Three attribute descriptions in C order (location 0, 1, 2) for
 // pVertexAttributeDescriptions. A record of records is contiguous (a Dunder
@@ -133,6 +134,62 @@ pub unsafe fn apply_blend(attachment: &mut layout.PipelineColorBlendAttachmentSt
     attachment.dstAlphaBlendFactor = enums.blend_factor(blend.dst_alpha)
     attachment.alphaBlendOp = enums.blend_op(blend.color_op)
     attachment.colorWriteMask = enums.color_component(.RGBA)
+}
+
+// An image layout transition as a value: which layout an image leaves and
+// enters, and which accesses and stages the barrier orders. `new_layout` is a
+// number rather than an `ImageLayout` for one reason: the presentation layout
+// (`IMAGE_LAYOUT_PRESENT_SRC_KHR`) is an extension constant in the registry,
+// not a variant of the enum, and a barrier to it is the one a swapchain image
+// takes. Everything else here is an enum, so a transition that orders the
+// wrong access cannot be written as a bare word.
+pub struct Transition {
+    old_layout: enums.ImageLayout,
+    new_layout: u32,
+    src_access: enums.Access,
+    dst_access: enums.Access,
+    src_stage: enums.PipelineStage,
+    dst_stage: enums.PipelineStage,
+}
+
+pub fn transition(old_layout: enums.ImageLayout, new_layout: enums.ImageLayout, src_access: enums.Access, dst_access: enums.Access,
+    src_stage: enums.PipelineStage, dst_stage: enums.PipelineStage) -> Transition {
+    Transition {
+        old_layout: old_layout, new_layout: enums.image_layout(new_layout), src_access: src_access, dst_access: dst_access,
+        src_stage: src_stage, dst_stage: dst_stage
+    }
+}
+
+// The presentation transition: a swapchain image leaves the colour attachment
+// it was drawn into and becomes presentable, ordered after the draw.
+pub fn to_present() -> Transition {
+    Transition {
+        old_layout: .ColorAttachmentOptimal, new_layout: enums.IMAGE_LAYOUT_PRESENT_SRC_KHR, src_access: .ColorAttachmentWrite,
+        dst_access: .None, src_stage: .ColorAttachmentOutput, dst_stage: .BottomOfPipe
+    }
+}
+
+// The one writer of an image memory barrier, and the one place a barrier is
+// recorded: the whole colour aspect of `layers` array layers from `base_mip`
+// up, with the transition's layouts, accesses and stages. A transition is a
+// whole vkCmdPipelineBarrier call — one image, no buffer or memory barriers,
+// no dependency flags — which is the only shape Storm's images have needed.
+// The queue-family indices, the aspect and the record's structure type are
+// written here and nowhere else.
+pub unsafe fn transition_image(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mips: u32, layers: u32, t: &Transition) {
+    mut b: layout.ImageMemoryBarrier = layout.ImageMemoryBarrier::new()
+    b.srcAccessMask = enums.access(t.src_access)
+    b.dstAccessMask = enums.access(t.dst_access)
+    b.oldLayout = enums.image_layout(t.old_layout)
+    b.newLayout = t.new_layout
+    b.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    b.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
+    b.image = image
+    b.subresourceRange.aspectMask = enums.image_aspect(.Color)
+    b.subresourceRange.baseMipLevel = base_mip
+    b.subresourceRange.levelCount = mips
+    b.subresourceRange.layerCount = layers
+    _ := r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(t.src_stage), enums.pipeline_stage(t.dst_stage), 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut b))
 }
 
 // The only writer of the mesh vertex layout's enum fields: one binding in

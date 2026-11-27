@@ -367,19 +367,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     } else {
         // The same scene pass writes every target. A swapchain image must be
         // transitioned for the presentation engine.
-        mut barrier: vk.ImageMemoryBarrier = vk.ImageMemoryBarrier::new()
-        barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
-        barrier.dstAccessMask = enums.access(.None)
-        barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
-        barrier.newLayout = enums.IMAGE_LAYOUT_PRESENT_SRC_KHR
-        barrier.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-        barrier.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-        barrier.image = r.images[r.imageIndex]
-        barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
-        barrier.subresourceRange.levelCount = 1
-        barrier.subresourceRange.layerCount = 1
-        r.api.CmdPipelineBarrier(r.commands[slot], enums.pipeline_stage(.ColorAttachmentOutput), enums.pipeline_stage(.BottomOfPipe),
-            0, 0, ptr(0), 0, ptr(0), 1, addr(&mut barrier))
+        records.transition_image(&r, r.commands[slot], r.images[r.imageIndex], 0, 1, 1, &records.to_present())
     }
     if r.api.EndCommandBuffer(r.commands[slot]) != 0 {
         state.set_pass(&mut r, .Idle)

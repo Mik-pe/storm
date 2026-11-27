@@ -138,19 +138,7 @@ pub unsafe fn composite(r: &mut state.Renderer, settings: &gfx.PostProcess) -> R
     if !settings.valid() { return .Err("post-process strength must be between 0 and 1") }
     cmd := r.commands[r.current]
     r.api.CmdEndRenderPass(cmd)
-    mut barrier: vk2.ImageMemoryBarrier = vk2.ImageMemoryBarrier::new()
-    barrier.srcAccessMask = enums.access(.ColorAttachmentWrite)
-    barrier.dstAccessMask = enums.access(.ShaderRead)
-    barrier.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
-    barrier.newLayout = enums.image_layout(.ShaderReadOnlyOptimal)
-    barrier.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    barrier.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    barrier.image = r.post.image
-    barrier.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    barrier.subresourceRange.levelCount = 1
-    barrier.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.ColorAttachmentOutput), enums.pipeline_stage(.FragmentShader),
-        0, 0, ptr(0), 0, ptr(0), 1, addr(&barrier))
+    records.transition_image(&r, cmd, r.post.image, 0, 1, 1, records.transition(.ColorAttachmentOptimal, .ShaderReadOnlyOptimal, .ColorAttachmentWrite, .ShaderRead, .ColorAttachmentOutput, .FragmentShader))
     mut pass := r.pendingPass.clone()
     pass.renderPass = r.compositePass
     pass.clearValueCount = 0

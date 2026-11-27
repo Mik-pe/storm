@@ -18,6 +18,7 @@ import gfx
 import .device as device
 import vk.enums as enums
 import vk.layout as vkl
+import .records as records
 import .state as state
 
 pub const CAPACITY: i32 = 64
@@ -170,24 +171,6 @@ unsafe fn bind_sampler(r: &state.Renderer, set: ptr, binding: u32, sampler: ptr,
     r.api.UpdateDescriptorSets(r.device, 1, addr(&write), 0, ptr(0))
 }
 
-// Image barrier over the given mip range of a single-layer image.
-unsafe fn barrier(r: &state.Renderer, cmd: ptr, image: ptr, base_mip: u32, mip_count: u32, old_layout: u32, new_layout: u32,
-    src_access: u32, dst_access: u32, src_stage: u32, dst_stage: u32) {
-    mut b: vkl.ImageMemoryBarrier = vkl.ImageMemoryBarrier::new()
-    b.srcAccessMask = src_access
-    b.dstAccessMask = dst_access
-    b.oldLayout = old_layout
-    b.newLayout = new_layout
-    b.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    b.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    b.image = image
-    b.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    b.subresourceRange.baseMipLevel = base_mip
-    b.subresourceRange.levelCount = mip_count
-    b.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, ptr(0), 0, ptr(0), 1, addr(&mut b))
-}
-
 // Allocate and begin a one-time command buffer from the renderer's pool.
 unsafe fn begin(r: &state.Renderer, cmd_out: ptr) -> i32 {
     mut alloc: vkl.CommandBufferAllocateInfo = vkl.CommandBufferAllocateInfo::new()
@@ -292,7 +275,7 @@ unsafe fn create_image(r: &state.Renderer, format: enums.Format, width: u32, hei
 // into level 0, then blit each next level from the one before it when the
 // device can, and leave every level readable by the fragment shader.
 unsafe fn record_upload(r: &state.Renderer, cmd: ptr, staging: ptr, image: ptr, width: i32, height: i32, levels: i32, can_blit: bool) {
-    barrier(r, cmd, image, 0, u32(levels), enums.image_layout(.Undefined), enums.image_layout(.TransferDstOptimal), 0, enums.access(.TransferWrite), enums.pipeline_stage(.TopOfPipe), enums.pipeline_stage(.Transfer))
+    records.transition_image(r, cmd, image, 0, u32(levels), 1, records.transition(.Undefined, .TransferDstOptimal, .None, .TransferWrite, .TopOfPipe, .Transfer))
     mut copy: vkl.BufferImageCopy = zeroed()
     copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
     copy.imageSubresource.layerCount = 1
@@ -302,7 +285,7 @@ unsafe fn record_upload(r: &state.Renderer, cmd: ptr, staging: ptr, image: ptr, 
     r.api.CmdCopyBufferToImage(cmd, staging, image, enums.image_layout(.TransferDstOptimal), 1, addr(&mut copy))
     // Level 0 becomes a blit source whether or not a blit follows, so the
     // final barrier below has one layout to come from.
-    barrier(r, cmd, image, 0, 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.TransferSrcOptimal), enums.access(.TransferWrite), enums.access(.TransferRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Transfer))
+    records.transition_image(r, cmd, image, 0, 1, 1, records.transition(.TransferDstOptimal, .TransferSrcOptimal, .TransferWrite, .TransferRead, .Transfer, .Transfer))
     if levels > 1 && can_blit {
         // Every later level is written by the blit from the one before it,
         // then becomes a source itself.
@@ -318,11 +301,11 @@ unsafe fn record_upload(r: &state.Renderer, cmd: ptr, staging: ptr, image: ptr, 
             blit.srcOffsets[1] = vkl.Offset3D { x: mip_size(width, level - 1), y: mip_size(height, level - 1), z: 1 }
             blit.dstOffsets[1] = vkl.Offset3D { x: mip_size(width, level), y: mip_size(height, level), z: 1 }
             r.api.CmdBlitImage(cmd, image, enums.image_layout(.TransferSrcOptimal), image, enums.image_layout(.TransferDstOptimal), 1, addr(&mut blit), enums.filter(.Linear))
-            barrier(r, cmd, image, u32(level), 1, enums.image_layout(.TransferDstOptimal), enums.image_layout(.TransferSrcOptimal), enums.access(.TransferWrite), enums.access(.TransferRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Transfer))
+            records.transition_image(r, cmd, image, u32(level), 1, 1, records.transition(.TransferDstOptimal, .TransferSrcOptimal, .TransferWrite, .TransferRead, .Transfer, .Transfer))
             level = level + 1
         }
     }
-    barrier(r, cmd, image, 0, u32(levels), enums.image_layout(.TransferSrcOptimal), enums.image_layout(.ShaderReadOnlyOptimal), enums.access(.TransferRead).bit_or(enums.access(.TransferWrite)), enums.access(.ShaderRead), enums.pipeline_stage(.Transfer), enums.pipeline_stage(.FragmentShader))
+    records.transition_image(r, cmd, image, 0, u32(levels), 1, records.transition(.TransferSrcOptimal, .ShaderReadOnlyOptimal, .TransferReadWrite, .ShaderRead, .Transfer, .FragmentShader))
     _ := r.api.EndCommandBuffer(cmd)
 }
 

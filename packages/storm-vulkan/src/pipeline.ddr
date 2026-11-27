@@ -49,7 +49,7 @@ unsafe fn targets(r: &mut state.Renderer) -> state.SetupStep {
     before.srcStageMask = enums.pipeline_stage(.ColorAndDepthStages)
     before.dstStageMask = enums.pipeline_stage(.ColorAndDepthStages)
     before.srcAccessMask = enums.access(.ColorDepthWrite)
-    before.dstAccessMask = enums.access(.ColorDepthWrite) + enums.access(.DepthStencilAttachmentRead)
+    before.dstAccessMask = enums.access(.ColorDepthWriteDepthRead)
     mut after: vk.SubpassDependency = zeroed()
     after.srcSubpass = 0
     after.dstSubpass = enums.SUBPASS_EXTERNAL

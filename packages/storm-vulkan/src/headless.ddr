@@ -94,19 +94,7 @@ pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
 
 pub unsafe fn copy_to_host(r: &state.Renderer) {
     cmd := r.commands[r.current]
-    mut transfer: vk.ImageMemoryBarrier = vk.ImageMemoryBarrier::new()
-    transfer.srcAccessMask = enums.access(.ColorAttachmentWrite)
-    transfer.dstAccessMask = enums.access(.TransferRead)
-    transfer.oldLayout = enums.image_layout(.ColorAttachmentOptimal)
-    transfer.newLayout = enums.image_layout(.TransferSrcOptimal)
-    transfer.srcQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    transfer.dstQueueFamilyIndex = enums.QUEUE_FAMILY_IGNORED
-    transfer.image = r.capture.image
-    transfer.subresourceRange.aspectMask = enums.image_aspect(.Color)
-    transfer.subresourceRange.levelCount = 1
-    transfer.subresourceRange.layerCount = 1
-    r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.ColorAttachmentOutput), enums.pipeline_stage(.Transfer),
-        0, 0, ptr(0), 0, ptr(0), 1, addr(&transfer))
+    records.transition_image(&r, cmd, r.capture.image, 0, 1, 1, records.transition(.ColorAttachmentOptimal, .TransferSrcOptimal, .ColorAttachmentWrite, .TransferRead, .ColorAttachmentOutput, .Transfer))
     mut copy: vk.BufferImageCopy = zeroed()
     copy.imageSubresource.aspectMask = enums.image_aspect(.Color)
     copy.imageSubresource.layerCount = 1
