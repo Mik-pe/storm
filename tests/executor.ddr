@@ -27,8 +27,10 @@ struct MeshCall {
     textures: [i64; 5],
     // glTF's emissiveFactor (rgb) and emissive strength (w).
     emissive: [f32; 4],
-    // occlusionTexture.strength: what the occlusion map is worth.
+    // occlusionTexture.strength: what the occlusion map is worth, and
+    // normalTexture.scale: how much the normal map tilts the normal.
     occlusion: f32,
+    normal_scale: f32,
     blended: bool,
 }
 
@@ -88,13 +90,13 @@ impl gfx.Backend for Recorder {
         .Ok
     }
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32, surface: gfx.Surface) -> Result<(), string> {
         _ := sky.sun[0]
         self.meshes.push(MeshCall {
             stream: vertices.len, mvp: mvp.clone(), model: model.clone(), color: base_color.clone(),
             params: params.clone(), camera: camera.clone(),
             textures: [textures.base.id, textures.metallic_roughness.id, textures.normal.id, textures.occlusion.id, textures.emissive.id],
-            emissive: emissive.clone(), occlusion: occlusion, blended: surface == gfx.Surface.Blended
+            emissive: emissive.clone(), occlusion: occlusion, normal_scale: normal_scale, blended: surface == gfx.Surface.Blended
         })
         self.gate()
     }
@@ -257,6 +259,35 @@ const PLANE_STREAM: i32 = 48
     // The cube asked for nothing: the default strength and an empty slot.
     plain := &recorder.meshes[1]
     assert(plain.textures[3] == 0 && plain.occlusion == 1.0)
+}
+
+// A surface with a normal map hands the backend its map handle (slot 2,
+// the binding order) and glTF's normalTexture.scale, through the same draw:
+// the scene carries both on the material, record_list passes them on. A
+// surface that never asked is 1.0, the spec's default, and its slot is empty.
+@test fn a_normal_mapped_surface_hands_the_backend_its_map_and_scale() {
+    mut world := scenegraph.Graph::new()
+    hull := shape(&mut world, .Mesh, core.vec3(0.0, 1.0, 0.0), 1.0)
+    _ := world.set_mesh(hull, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+    _ := shape(&mut world, .Cube, core.vec3(2.0, 1.0, 0.0), 1.0)
+    maps := gfx.Textures { base: gfx.no_texture(), metallic_roughness: gfx.no_texture(), normal: gfx.Texture { id: 7 }, occlusion: gfx.no_texture(), emissive: gfx.no_texture() }
+    assert(world.set_material(hull, scenegraph.normal_scaled(scenegraph.mapped(scenegraph.material(1.0, 1.0, 1.0, 1.0, 0.0, 0.5), maps), 2.0)))
+    world.propagate()
+    mut frame := scene_renderer.FrameGeometry::new()
+    scene_renderer.gather(&mut frame, &world, core.vec3(0.0, 0.0, 0.0))
+    mut recorder := Recorder::new()
+    sphere := sphere_stream()
+    cube := cube_stream()
+    plane := plane_stream()
+    drawn := scene_renderer.record_list(&mut recorder, frame.meshes(), frame.solids(), &cube, &plane, &sphere,
+        &view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0])), true, render.PassKind.Opaque)
+    assert(drawn.is_ok())
+    assert(recorder.meshes.len == 2)
+    sealed := &recorder.meshes[0]
+    assert(sealed.textures[2] == 7 && sealed.normal_scale == 2.0)
+    // The cube asked for nothing: the default scale and an empty slot.
+    plain := &recorder.meshes[1]
+    assert(plain.textures[2] == 0 && plain.normal_scale == 1.0)
 }
 
 @test fn glass_is_blended_without_shadows_and_the_shadow_pass_draws_only_solids() {
@@ -443,7 +474,8 @@ fn part(move name: string, image: i32, move sampler: gfx.Sampler) -> gltf.Part {
         vertices: [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], texture: image, sampler: sampler,
         metallic_roughness: -1, metallic_roughness_sampler: gfx.sampler(),
         emissive: -1, emissive_sampler: gfx.sampler(), emissive_factor: [0.0, 0.0, 0.0, 1.0],
-        occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0
+        occlusion: -1, occlusion_sampler: gfx.sampler(), occlusion_strength: 1.0,
+        normal: -1, normal_sampler: gfx.sampler(), normal_scale: 1.0
     }
 }
 

@@ -39,7 +39,7 @@ pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scen
     mut view := settings.mesh.clone()
     if !item.sightline_occluder { view.radius = 0.0 }
     surface := if is_transparent(&item.material) { gfx.Surface.Blended } else { gfx.Surface.Opaque }
-    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &view, &settings.sky, &item.material.textures, &item.material.emissive_factor, item.material.occlusion, surface)
+    window.mesh(vertices, &mvp.m, &item.model.m, &color, &params, &view, &settings.sky, &item.material.textures, &item.material.emissive_factor, item.material.occlusion, item.material.normal_scale, surface)
 }
 
 // The backend reads owned streams. A globally unique geometry revision

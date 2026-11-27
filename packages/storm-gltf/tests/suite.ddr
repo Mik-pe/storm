@@ -443,6 +443,63 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(text.contains(refusal, "occlusion strength outside [0,1]"))
 }
 
+// normal_triangle.glb (make_normal_fixture.py beside it) has one material
+// with a normalTexture (texture 0 -> image 0, a 2x2 (128, 200, 255) PNG),
+// normalTexture.scale 0.5 and its own sampler (magFilter 9729, wrapS/T
+// 33071). The map is read through the same TextureInfo form as the
+// occlusion map; the scale is a member of the texture info, and the spec
+// leaves it at 1 when absent. Every number was read back from the file
+// with Python, not from the script.
+@test fn reads_the_normal_map_and_its_scale() {
+    doc := gltf.load("tests/fixtures/normal_triangle.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    assert(asset.parts.len == 1 && asset.images.len == 1)
+    part := &asset.parts[0]
+    assert(part.normal == 0 && part.texture == -1 && part.occlusion == -1 && part.emissive == -1)
+    assert(part.normal_scale == 0.5)
+    assert(part.normal_sampler.mag == gfx.Filter.Linear && part.normal_sampler.wrap == gfx.Wrap.ClampToEdge)
+    // The image bytes are the PNG the script wrote.
+    assert(asset.images[0].data.len == 73)
+    assert(asset.images[0].data[1] == 80 && asset.images[0].data[2] == 78 && asset.images[0].data[3] == 71)
+}
+
+// Khronos's Box.glb has no normal map either: no map, and the spec's
+// default scale of one, so a surface that never asked is flat.
+@test fn an_untextured_model_has_no_normal_map_and_the_default_scale() {
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    part := &asset.parts[0]
+    assert(part.normal == -1)
+    assert(part.normal_scale == 1.0)
+}
+
+// glTF 2.0 5.20.3: normalTexture.scale is >= 0 with NO upper bound (its
+// JSON schema has neither a minimum nor a maximum) -- 2 doubles the bumps.
+// It is not occlusionTexture.strength, whose 1 is the whole range; reading
+// it through the unit scalar refused this valid file (read back: 2.0).
+@test fn a_normal_scale_above_one_is_read() {
+    doc := gltf.load("tests/fixtures/strong_normal_triangle.glb")
+    assert(doc.ok)
+    asset := gltf.asset(&doc).unwrap()
+
+    part := &asset.parts[0]
+    assert(part.normal == 0)
+    assert(part.normal_scale == 2.0)
+}
+
+// glTF 2.0 5.20.3: a negative scale is refused by name, never read as a
+// guess (the refused file was read back with Python: -0.5).
+@test fn a_negative_normal_scale_is_refused() {
+    doc := gltf.load("tests/fixtures/refused_normal.glb")
+    assert(doc.ok)
+    refusal := match gltf.asset(&doc) { .Ok(_) => "loaded", .Err(s) => s.clone() }
+    assert(text.contains(refusal, "normal scale is below 0"))
+}
+
 // Khronos's Box.glb has no textures: the surface is a colour only.
 @test fn an_untextured_model_has_no_texture() {
     doc := gltf.load("tests/fixtures/Box.glb")

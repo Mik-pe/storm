@@ -9,7 +9,11 @@ och Metal (macOS), genom `storm-gfx`.
 
 Storm Studio och fysikbanan First light kan köras direkt ur motorrepot. Spelprojekt använder `storm-studio` och väljer själva regler, kamera, HUD och tillgångar. [Blomsterskogen och spelets provspelade rutter](https://github.com/Mik-pe/blomsterskogen/blob/main/docs/spel.md)
 
-**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). **3d, steg 3 är landat (2026-11-27, `4ec8d3a`):** occlusion — `occlusionTexture` (linjärt, R-kanalen) läses och `occlusionTexture.strength` (default 1,0) förs genom kedjan som en egen push-rad `vec4 occlusion` (ord 48–51, pushen 192 → 208 byte; en ensam float kan inte ligga i std430); formeln är specens `1 + strength × (occ − 1)` på det indirekta ljuset. Bevis: DamagedHelmet 8 765 px (8 516 mörkare, 217 ljusare — en tonemappning som svarar på mindre indirekt ljus), allt i hjälmen; sex scener utan karta bit-identiska. Kvar i 3d: normal (3e). Se avsnitt 3d.
+**3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3e (b) och (c) är landade
+(2026-11-27):** en skinnad tangent följer leden och båda shaderna läser
+`normalTexture` med sin `scale` (bevis i avsnitt 3e: Box/Fox/spelscenen 0
+pixlar mot `26a7af1`, Lantern och Avokado med bucklorna). Kvar i 3e: MikkTSpace när filen
+saknar `TANGENT`. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). **3d, steg 3 är landat (2026-11-27, `4ec8d3a`):** occlusion — `occlusionTexture` (linjärt, R-kanalen) läses och `occlusionTexture.strength` (default 1,0) förs genom kedjan som en egen push-rad `vec4 occlusion` (ord 48–51, pushen 192 → 208 byte; en ensam float kan inte ligga i std430); formeln är specens `1 + strength × (occ − 1)` på det indirekta ljuset. Bevis: DamagedHelmet 8 765 px (8 516 mörkare, 217 ljusare — en tonemappning som svarar på mindre indirekt ljus), allt i hjälmen; sex scener utan karta bit-identiska. Kvar i 3d: normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (82 prototyper + `load()`; `vkResetDescriptorPool`
@@ -727,22 +731,14 @@ koden, till filerna och till andra motorer; det första svaret ändrar vad
    (`gfx.normal_tangent`) och en normalmapp utan genererade tangenter
    avbildas i ett basrum som inte är kartans — så DamagedHelmet (har
    normalmapp, saknar `TANGENT`) är **inte** ett bevis för (c) förrän
-   (b):s MikkTSpace har landat. Beviset för (c) är Lantern och Tiger
-   (båda har `TANGENT`).
+   (b):s MikkTSpace har landat. Beviset för (c) är Lantern och Avokado
+   (båda har `TANGENT`; Tiger vägras av läsaren, se 3c, och DamagedHelmet
+   väntar på MikkTSpace).
 
-**Kvar i 3e, omskrivet efter researchen:** (b) `skinning.deform` väger
-`(tx, ty, tz)` med samma tre kofaktorkolumner som normalen, renormaliserar
-och låter `w` passera oförändrad (Filaments `skinNormalTangent`) — fyra
-rader; test: en tangent som står vinkelrätt mot leden roteras med den, en
-längs en ren vridningsaxel påverkas inte. Dessutom
-MikkTSpace-generering när filen saknar `TANGENT` (idag: per triangel ur
-uv:n med `w = −sign(det)`, vilket är rätt på plan men inte på en
-sammanfogad söm — och som redan har glTF:s teckenkonvention, så
-`mikktspace-wasm`:s `w *= −1` är samma vändning). (c) shadern läser
-`b = cross(n, t)·w` mot Khronos referensbild; bevis: Lantern från Khronos
-referenskamera och **en pixelmätning på den speglade delen** (128
-trianglar, 104 vertexar) som visar att G-kanalen vänder tecken där — det
-är den enda mätning som skiljer en läsande shader från en winding-deriverad.
+**Kvar i 3e efter landade (b) och (c):** MikkTSpace-generering när filen
+saknar `TANGENT` (idag: per triangel ur uv:n med `w = −sign(det)`, vilket är
+rätt på plan men inte på en sammanfogad söm — och som redan har glTF:s
+teckenkonvention, så `mikktspace-wasm`:s `w *= −1` är samma vändning).
 
    Slarv kvar efter samma mönster, i ett annat format: `storm-ui`:s canvas
    (`ui.ddr`: `x y u v r g b a`, `vertex_count = len / 8`, och `i * 8` i sex
@@ -830,7 +826,7 @@ lyktan är tänd. Bygge 18,3 s; tester: rot 67 egna `@test`, storm-gltf
 `occlusion: f32` — `occlusionTexture.strength`, en siffra om materialet
 (kontraktet säger vad som är sant, inte hur en backend lägger det i
 minnet); varje backend bär den som en egen push-rad `vec4 occlusion`
-(yzw = 0, reserverade för `normalTexture.scale` i 3e). `scene.Material` bär
+(y bär `normalTexture.scale` sedan 3e, zw = 0). `scene.Material` bär
 `occlusion: f32`, `occlusion_strength(surface, strength)` sätter den  (samma form som
 `emissive_factor`), och
 `scene.material`/`emissive_material` börjar på 1,0 — specens default, som
@@ -866,9 +862,38 @@ pixlar (ingen occlusion-karta: vit × 1,0). Ingen av de elva filerna sätter
 kartans av pixlarna. Bygge 9,7 s; tester: rot 120 egna `@test`,
 storm-gltf 21, storm-scene 26.
 
-**Kvar i 3d efter besluten:** MikkTSpace-generering och shadern som läser
-tangenten (3e b och c; attributet är landat, 3e(a)), `normalTexture.scale`
-(platsen finns: `occlusion.yzw`), `texCoord`
+**Landat i 3e, steg (b) och (c) (2026-11-27):** `skinning.deform` väger
+tangentens `(tx, ty, tz)` med normalens tre kofaktorkolumner, renormaliserar
+och låter `w` passera (Filaments `skinNormalTangent`); testet mäter en
+tangent på 45° mot leden: `(0.4472136, 0.8944272, 0)`, `tw = 1.0`. Kontraktet
+får `normal_scale: f32` på `mesh()` (`occlusion.y` i push-blocket, 224 byte
+oförändrat), `scene.Material` bär den, storm-gltf läser `normalTexture`
+och `scale` — **`scale` får sin egen regel, `nonnegative_scalar`: specen
+säger `>= 0.0`, inte `[0, 1]`** (det är `occlusionTexture.strength`; en
+`unit_scalar` här vägrade en giltig fil med `scale = 2`). `storm-assets` laddar
+kartan linjärt i sjätte sloten, båda backender härleder `scale = 0` för en
+yta utan karta (`texture.live`), och shaderna (Vulkan och Metal) bygger
+`t = normalize(world_tangent − n·dot(n, world_tangent))`, `b = cross(n, t)·w`
+och `n = normalize(t·nt.x + b·nt.y + n·nt.z)`. Två shader-fynd på vägen,
+båda mätta: **tangenten transformeras som en riktning** (modellmatrisens
+linjära del — invers-transposen, som normalen får, vrider den fel), och
+**`t` måste normaliseras i fragmentet**: `--glb`-laddaren skalar Khronos
+0.063-enheter ×10, och en `t` av längd 10 förstärker kartans xy 10× (27°
+fel, svarta band över Avokadon; mean|Δ| 86 → 6.3 av fixen). Skuggbiaset tar
+den **geometriska** normalen (`shadow_factor(world_position, n_geo, …)`,
+Filaments princip) — kartan får inte flytta en yta in i sin egen skugga;
+Lanterns skugg-acne försvann (5 696 → 3 189 px före normaliseringen).
+Bevis enligt regel 6: Box **0**, Fox **0**, spelscenen **0** pixlar (ytor
+utan karta, AE = 0); Lantern 12 150 px och Avokado 62 720 px, mean|Δ| 6,0
+och 6.3 — bucklor i skalet och kärnan, godkända i parbild. Tester: sex
+nya (skinning: en roterande led för tangenten, `w` behållen; gltf-läsaren
+fyra — `scale` 0.5 når `Part`, 2.0 läses, −0.5 vägras, Avokados `index
+2`/`scale 1.0`; kontraktet ett: `normal_scale` når backenden genom
+`mesh()`), alla bevisade röda när deras länk bryts. Bygge 6,7 s; tester: rot
+50 egna, storm-gltf 27, storm-scene 27, storm-render 11, storm-assets 1.
+
+**Kvar i 3d efter besluten:** MikkTSpace-generering när filen saknar
+`TANGENT` (DamagedHelmet), `texCoord`
 ≠ 0 (ingen fil använder det; beslut 1 i
 3c:s research gäller: Storm läser `TEXCOORD_0`).
 

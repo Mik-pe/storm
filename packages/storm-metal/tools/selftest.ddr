@@ -244,7 +244,7 @@ fn post_frame(r: &mut metal.Renderer, sky: &gfx.Sky, settings: Option<gfx.PostPr
     eye := gfx.mesh_view([0.0, 0.0, 0.0])
     r.begin()?
     r.begin_scene(settings.is_some())?
-    r.mesh(&mesh, &view, &view, &color, &emitting, &eye, sky, &plain, &unlit, 1.0, .Opaque)?
+    r.mesh(&mesh, &view, &view, &color, &emitting, &eye, sky, &plain, &unlit, 1.0, 1.0, .Opaque)?
     match settings { .Some(post) => { r.post_process(&post)? }, .None => {} }
     r.ui_draw(hud, [w, h])?
     _ := r.end()?
@@ -515,8 +515,8 @@ fn frame_checks(failures: &mut i32) {
     mut far_mvp := identity()
     near_mvp[14] = 0.4
     far_mvp[14] = 0.8
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() &&
-    window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
+    window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the far cube, then the near one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     centre := f32(WIDTH) / 2.0
@@ -525,8 +525,8 @@ fn frame_checks(failures: &mut i32) {
     expect(&mut failures, "drawn far first, the near cube is in front: rgb " + rgb(under(&far_first, centre, middle, scale)),
         far_first.ok && is_red(under(&far_first, centre, middle, scale)))
 
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() &&
-    window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
+    window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the near cube, then the far one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     near_first := read_capture()
@@ -537,8 +537,8 @@ fn frame_checks(failures: &mut i32) {
     // intersects it; the green face at z=0.5 is beyond its endpoint.
     opening := gfx.MeshView { eye: [0.0; 3], to_focus: [0.0, 0.0, 0.45], radius: 0.28 }
     drawn = window.begin().is_ok() && window.begin_pass().is_ok() &&
-        window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &opening, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() &&
-        window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &opening, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+        window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &opening, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
+        window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &opening, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "a sightline through overlapping cubes is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     revealed := read_capture()
@@ -553,13 +553,13 @@ fn frame_checks(failures: &mut i32) {
     gfx.plane(&mut ground, 0.5)
     facing := plane_facing(true)
     away := plane_facing(false)
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &facing, &facing, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &facing, &facing, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the plane facing the viewer is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     front := read_capture()
     expect(&mut failures, "the plane's front face, the one whose normal points at the viewer, is drawn: rgb " + rgb(under(&front, centre, middle, scale)),
         front.ok && is_blue(under(&front, centre, middle, scale)))
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &away, &away, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &away, &away, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the plane turned away is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     back := read_capture()
@@ -609,7 +609,7 @@ fn frame_checks(failures: &mut i32) {
     grown_slot := window.frame_slot
     drawn = window.begin_with_vertices(total_bytes).is_ok() && window.shadow_begin(&sky).is_ok() &&
     window.shadow_mesh(&large, &near_mvp).is_ok() && window.shadow_end().is_ok() && window.begin_pass().is_ok() &&
-    window.mesh(&large, &near_mvp, &near_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    window.mesh(&large, &near_mvp, &near_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     expect(&mut failures, "the shadow and color draws share more than four MiB", drawn && window.vertex_cursor == total_bytes)
     worked(&mut failures, "the grown stream capture is saved", window.save_capture(capture_path()))
     large_capture := read_capture()
@@ -624,7 +624,7 @@ fn frame_checks(failures: &mut i32) {
     junk: []f32 = [1.0, 2.0]
     worked(&mut failures, "a frame for the invalid-stream probe opens", window.begin())
     worked(&mut failures, "its main pass opens", window.begin_pass())
-    refused(&mut failures, "a malformed position-normal-UV stream", window.mesh(&junk, &view, &view, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, .Opaque))
+    refused(&mut failures, "a malformed position-normal-UV stream", window.mesh(&junk, &view, &view, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque))
     expect(&mut failures, "the frame can finish after refusing a mesh", window.end().is_ok())
 
     // Closing is the last thing a renderer does; it cannot be done twice.

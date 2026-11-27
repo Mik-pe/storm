@@ -57,12 +57,17 @@ pub fn deform(s: &Skin, palette: &[]core.Mat4, bind: &[]f32, out: &mut []f32) {
         mut n := core.normalize(core.add(core.scale(co, source.nx),
             core.add(core.scale(core.cross(c, a), source.ny), core.scale(core.cross(a, b), source.nz))))
         if core.dot(a, co) < 0.0 { n = core.scale(n, -1.0) }
-        // The frame rides along undeformed (uv and tangent as bound): bending
-        // the tangent with the joint is next-steps 3e(b), and until the
-        // shaders read it no pixel depends on it.
+        // The tangent bends with the joint through the same cofactor columns
+        // as the normal (Filament's skinNormalTangent): it is dp/du, a
+        // direction in the surface, so a sheared or rotated joint carries it
+        // along and it is renormalised. Its w is a handedness, not a
+        // direction: it passes through as bound. Without this, a normal map
+        // on a posed mesh is read in the bind pose's frame.
+        t := core.normalize(core.add(core.scale(co, source.tx),
+            core.add(core.scale(core.cross(c, a), source.ty), core.scale(core.cross(a, b), source.tz))))
         moved := gfx.Vertex {
             x: p.x, y: p.y, z: p.z, nx: n.x, ny: n.y, nz: n.z,
-            u: source.u, v: source.v, tx: source.tx, ty: source.ty, tz: source.tz, tw: source.tw
+            u: source.u, v: source.v, tx: t.x, ty: t.y, tz: t.z, tw: source.tw
         }
         while slot >= 0 {
             gfx.put_vertex(&mut out, slot * gfx.VERTEX_FLOATS, &moved)

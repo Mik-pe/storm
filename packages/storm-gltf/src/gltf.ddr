@@ -288,12 +288,15 @@ pub fn load_mesh(doc: &Document) -> Mesh {
 // to the exporter), w is KHR_materials_emissive_strength (default 1).
 // `occlusion` is the occlusion map (R channel darkens the indirect light)
 // and `occlusion_strength` is occlusionTexture.strength (default 1).
+// `normal` is the normal map (rgb * 2 - 1 in the tangent frame) and
+// `normal_scale` is normalTexture.scale (default 1; 0 = the map ignored).
 pub struct Part {
     name: string, material_name: string, color: [f32; 4], metallic: f32, roughness: f32, vertices: []f32,
     texture: i32, sampler: gfx.Sampler,
     metallic_roughness: i32, metallic_roughness_sampler: gfx.Sampler,
     emissive: i32, emissive_sampler: gfx.Sampler, emissive_factor: [f32; 4],
     occlusion: i32, occlusion_sampler: gfx.Sampler, occlusion_strength: f32,
+    normal: i32, normal_sampler: gfx.Sampler, normal_scale: f32,
 }
 
 pub struct Asset { parts: []Part, images: []textures.Image }
@@ -317,13 +320,26 @@ fn strength(j: &json.Doc, node: i32, fallback: f32) -> Result<f32,string> {
     .Ok(f32(n))
 }
 
-// A scalar in [0,1]: occlusionTexture.strength and normalTexture.scale,
-// both optional with the spec's default 1 (glTF 2.0 3.9.3). Named by
-// `what` so a refusal says which of the two it read.
+// A scalar in [0,1]: occlusionTexture.strength, optional with the
+// spec's default 1 (glTF 2.0 5.21.3: 0 is no occlusion, 1 is all of it).
+// Named by `what` so a refusal says which one it read.
 fn unit_scalar(j: &json.Doc, node: i32, what: string, fallback: f32) -> Result<f32,string> {
     if node < 0 { return .Ok(fallback) }
     n := match j.as_f64(node) { .Some(v) => v, .None => { return .Err("expected a numeric " + what) } }
     if !(n >= 0.0 && n <= 1.0) { return .Err(what + " outside [0,1]") }
+    .Ok(f32(n))
+}
+
+// normalTexture.scale, which is NOT a unit scalar: the spec's text says
+// >= 0 with no upper bound (5.20.3, and its JSON schema has neither a
+// minimum nor a maximum), because it multiplies the map's x and y
+// before the normal is normalised -- 2 doubles the bumps, 0 flattens
+// the map to the geometric normal. Reading it through unit_scalar
+// refused a valid file that asks for stronger bumps.
+fn nonnegative_scalar(j: &json.Doc, node: i32, what: string, fallback: f32) -> Result<f32,string> {
+    if node < 0 { return .Ok(fallback) }
+    n := match j.as_f64(node) { .Some(v) => v, .None => { return .Err("expected a numeric " + what) } }
+    if !(n >= 0.0) { return .Err(what + " is below 0") }
     .Ok(f32(n))
 }
 
@@ -376,6 +392,10 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
     // the material, and no file of the eleven sets it.
     occlusion_texture := texture_info(j, material, "occlusionTexture")?
     occlusion_strength := unit_scalar(j, j.field(j.field(material, "occlusionTexture"), "strength"), "occlusion strength", 1.0)?
+    // The normal map and its scale, the same two forms: the map through
+    // TextureInfo, the scale off the texture info object itself.
+    normal_texture := texture_info(j, material, "normalTexture")?
+    normal_scale := nonnegative_scalar(j, j.field(j.field(material, "normalTexture"), "scale"), "normal scale", 1.0)?
     emissive_node := j.field(material, "emissiveFactor")
     mut emissive_factor: [f32; 4] = [0.0, 0.0, 0.0, 1.0]
     if emissive_node >= 0 {
@@ -391,7 +411,8 @@ fn part(doc: &Document, j: &json.Doc, primitive: i32, move name: string) -> Resu
         texture: base_texture.image, sampler: base_texture.sampler,
         metallic_roughness: mr_texture.image, metallic_roughness_sampler: mr_texture.sampler,
         emissive: emissive_texture.image, emissive_sampler: emissive_texture.sampler, emissive_factor: emissive_factor,
-        occlusion: occlusion_texture.image, occlusion_sampler: occlusion_texture.sampler, occlusion_strength: occlusion_strength })
+        occlusion: occlusion_texture.image, occlusion_sampler: occlusion_texture.sampler, occlusion_strength: occlusion_strength,
+        normal: normal_texture.image, normal_sampler: normal_texture.sampler, normal_scale: normal_scale })
 }
 
 pub fn asset(doc: &Document) -> Result<Asset,string> {

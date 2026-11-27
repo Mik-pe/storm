@@ -70,11 +70,15 @@ pub struct Material {
     // map darkens the indirect light. 1.0 is the spec's default and every
     // hand-made surface; a map that is white is unoccluded whatever it is.
     occlusion: f32,
+    // normalTexture.scale (glTF 2.0 3.9.3): how much the normal map's
+    // slope tilts the normal. 1.0 is the spec's default and every
+    // hand-made surface; 0 is the map ignored (the flat normal).
+    normal_scale: f32,
     textures: gfx.Textures,
 }
 
 pub fn material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, emissive_factor: [0.0, 0.0, 0.0, 1.0], occlusion: 1.0, textures: gfx.no_textures() }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: 0.0, emissive_factor: [0.0, 0.0, 0.0, 1.0], occlusion: 1.0, normal_scale: 1.0, textures: gfx.no_textures() }
 }
 
 // The same surface with a base colour image. The image replaces nothing
@@ -98,7 +102,7 @@ pub fn mapped(move surface: Material, move textures: gfx.Textures) -> Material {
 // The same surface with an emissive term: what the shader adds on its own,
 // for orbs, lamps and anything that should glow rather than reflect.
 pub fn emissive_material(r: f32, g: f32, b: f32, a: f32, metallic: f32, roughness: f32, emissive: f32) -> Material {
-    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, emissive_factor: [0.0, 0.0, 0.0, 1.0], occlusion: 1.0, textures: gfx.no_textures() }
+    Material { base: core.rgba(r, g, b, a), metallic: metallic, roughness: roughness, emissive: emissive, emissive_factor: [0.0, 0.0, 0.0, 1.0], occlusion: 1.0, normal_scale: 1.0, textures: gfx.no_textures() }
 }
 
 // A surface with glTF's emissive factor: rgb scales the emissive map's texel
@@ -116,6 +120,15 @@ pub fn emissive_mapped(move surface: Material, move factor: [f32; 4]) -> Materia
 pub fn occlusion_strength(move surface: Material, strength: f32) -> Material {
     mut m := move surface
     m.occlusion = strength
+    m
+}
+
+// The same surface with glTF's normalTexture.scale: how much its normal
+// map tilts the normal. The map is `mapped`'s to give. 0 is the map
+// ignored; a surface without one is unchanged whatever this is.
+pub fn normal_scaled(move surface: Material, scale: f32) -> Material {
+    mut m := move surface
+    m.normal_scale = scale
     m
 }
 

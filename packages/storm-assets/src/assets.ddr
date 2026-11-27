@@ -21,6 +21,7 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, name: strin
         mut material := scenegraph.material(c[0], c[1], c[2], c[3], part.metallic, part.roughness)
         material = scenegraph.emissive_mapped(move material, part.emissive_factor.clone())
         material = scenegraph.occlusion_strength(move material, part.occlusion_strength)
+        material = scenegraph.normal_scaled(move material, part.normal_scale)
         if i < textures.len { material = scenegraph.mapped(move material, textures[i].clone()) }
         _ := graph.set_material(node, move material)
         _ := graph.set_mesh(node, part.vertices.clone())
@@ -68,6 +69,9 @@ fn upload_parts<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset, uploads: &mu
         glow := upload_or_refused(&uploads, asset, part.name, "emissive map", part.emissive, &part.emissive_sampler, .Srgb)?
         // The occlusion map is a mask, not a colour: linear, like the MR map.
         sealed := upload_or_refused(&uploads, asset, part.name, "occlusion map", part.occlusion, &part.occlusion_sampler, .Linear)?
+        // A normal map is data, not a colour: linear too -- an sRGB decode
+        // tilts every normal (measured: a flat one to (-0.45, -0.45, 0.78)).
+        relief := upload_or_refused(&uploads, asset, part.name, "normal map", part.normal, &part.normal_sampler, .Linear)?
         mut base_handle := base.handle
         if base.decoded.pixels.len > 0 {
             base_handle = window.upload_texture(base.decoded.pixels, base.decoded.width, base.decoded.height, base.encoding, &base.sampler)?
@@ -88,7 +92,12 @@ fn upload_parts<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset, uploads: &mu
             sealed_handle = window.upload_texture(sealed.decoded.pixels, sealed.decoded.width, sealed.decoded.height, sealed.encoding, &sealed.sampler)?
             remember(&mut uploads, &sealed, sealed_handle)
         }
-        textures.push(gfx.Textures { base: base_handle, metallic_roughness: rough_handle, normal: gfx.no_texture(),
+        mut relief_handle := relief.handle
+        if relief.decoded.pixels.len > 0 {
+            relief_handle = window.upload_texture(relief.decoded.pixels, relief.decoded.width, relief.decoded.height, relief.encoding, &relief.sampler)?
+            remember(&mut uploads, &relief, relief_handle)
+        }
+        textures.push(gfx.Textures { base: base_handle, metallic_roughness: rough_handle, normal: relief_handle,
             occlusion: sealed_handle, emissive: glow_handle })
     }
     .Ok(textures)

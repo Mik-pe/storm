@@ -77,7 +77,7 @@ struct MeshPush {
     float4 params;          // metallic, roughness, emissive, shadows enabled
     float4 camera_pos;      // xyz = eye position in world space
     float4 emissive_factor; // rgb scales the emissive map, w = its strength
-    float4 occlusion;       // x = occlusionTexture.strength
+    float4 occlusion;       // x = occlusionTexture.strength, y = normalTexture.scale
     float4 sightline;       // xyz = eye to subject, w = outer radius at subject
 };
 
@@ -104,6 +104,9 @@ struct MeshOut {
     float3 world_normal;
     float3 world_position;
     float2 uv;
+    // The tangent in world space, turned by the model matrix's linear
+    // part as a direction is, its w the file's handedness as bound.
+    float4 world_tangent;
 };
 
 vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [[buffer(1)]]) {
@@ -113,6 +116,13 @@ vertex MeshOut mesh_vertex(MeshVertex in [[stage_in]], constant MeshPush& push [
     float3 co = cross(b, c);
     out.world_normal = (dot(a, co) < 0.0 ? -1.0 : 1.0) *
         (co * in.normal.x + cross(c, a) * in.normal.y + cross(a, b) * in.normal.z);
+    // The tangent is a direction in the surface (dp/du), not a normal: it
+    // takes the model matrix as a direction does, its linear part -- the
+    // cofactor form above is the normal's, and on a scaled model it bends
+    // the tangent away from the surface. The w is the file's, and a
+    // mirroring model leaves both as they are: cross(n, t) * w then points
+    // where the mirrored island's texture does.
+    out.world_tangent = float4(a * in.tangent.x + b * in.tangent.y + c * in.tangent.z, in.tangent.w);
     out.world_position = world.xyz;
     out.uv = in.uv;
     out.position = push.mvp * float4(in.position, 1.0);
@@ -241,6 +251,10 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     // read as written: a linear texture. White (the fallback) leaves the
     // factors as they are.
     texture2d<float> metallic_roughness_texture [[texture(5)]],
+    // The material's normal map (glTF 2.0 3.9.3): rgb * 2 - 1 in the tangent
+    // frame, +Y up. A surface without one binds the flat normal (127, 127,
+    // 255), whose slope is 0: the identity whatever the scale. Linear.
+    texture2d<float> normal_texture [[texture(6)]],
     // The material's emissive map: what the surface gives off as light,
     // in its own colour (glTF 2.0 3.9.3). sRGB, like the base. White (the
     // fallback) times the zero factor of a surface without one is nothing.
@@ -251,10 +265,30 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     sampler env_sampler [[sampler(1)]],
     sampler material_sampler [[sampler(2)]],
     sampler metallic_roughness_sampler [[sampler(3)]],
+    sampler normal_sampler [[sampler(4)]],
     sampler emissive_sampler [[sampler(6)]],
     sampler occlusion_sampler [[sampler(5)]]) {
     if (clears_sightline(in.world_position - push.camera_pos.xyz, push.sightline.xyz, push.sightline.w, in.position.xy)) { discard_fragment(); }
     float3 n = normalize(in.world_normal);
+    // The shadow map sees the geometry alone (Filament #7155): both its
+    // normal-offset bias and the angle that scales it take the geometric
+    // normal. A mapped normal lifts the lookup out of a small model by more
+    // than its size, and the surface shadows itself along the terminator.
+    float3 n_geo = n;
+    // The normal map in the surface's own frame (glTF 2.0 3.9.3): the texel
+    // is rgb * 2 - 1, its x and y scaled by normalTexture.scale before
+    // normalising (the contract's `normal_scale`, 1.0 unless a file asks
+    // otherwise), and the frame is t, b = cross(n, t) * w, n -- the w is the
+    // file's, so a mirrored UV island's bitangent points where its texture
+    // does. Filament's form: n is unit, t is the tangent made perpendicular
+    // to it, and b follows from the two.
+    float3 nt = normal_texture.sample(normal_sampler, in.uv).xyz * 2.0 - 1.0;
+    nt.xy *= push.occlusion.y;
+    // Normalised: the model matrix scales the tangent with the model, and an
+    // unnormalised t would scale the map's x and y by the same factor.
+    float3 t = normalize(in.world_tangent.xyz - n * dot(n, in.world_tangent.xyz));
+    float3 b = cross(n, t) * in.world_tangent.w;
+    n = normalize(t * nt.x + b * nt.y + n * nt.z);
     float3 v = normalize(push.camera_pos.xyz - in.world_position);
     float3 l = normalize(light.sun_direction.xyz);
     float3 h = normalize(v + l);
@@ -278,7 +312,7 @@ fragment float4 mesh_fragment(MeshOut in [[stage_in]],
     float ndv = max(dot(n, v), 0.0001);
 
     float shadow = shadows_on > 0.5
-        ? (ndl > 0.0 ? shadow_factor(in.world_position, n, ndl, light, shadow_map, shadow_sampler) : 0.0)
+        ? (ndl > 0.0 ? shadow_factor(in.world_position, n_geo, max(dot(n_geo, l), 0.0), light, shadow_map, shadow_sampler) : 0.0)
         : 1.0;
 
     // --- direct sun ---

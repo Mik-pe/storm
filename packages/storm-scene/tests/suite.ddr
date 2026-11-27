@@ -311,6 +311,9 @@ import .animation as _
     g.set_scale(moving, core.vec3(3.0, 1.0, 1.0))
     mut data: []f32 = []
     for _ in 0..3 { gfx.push_vertex(&mut data, gfx.vertex(1.0, 0.0, 0.0, 0.70710678, 0.70710678, 0.0, 0.2, 0.7)) }
+    // A 45-degree tangent in the xy plane: the scaling joint's cofactor
+    // (diag(1,2,2)) tilts it to the normal's slope, the measurement below.
+    for i in 0..3 { data[i * gfx.VERTEX_FLOATS + 8] = 0.70710678; data[i * gfx.VERTEX_FLOATS + 9] = 0.70710678; data[i * gfx.VERTEX_FLOATS + 10] = 0.0 }
     assert(g.set_mesh(source, move data))
     instance := g.create_root(origin)
     assert(g.share_mesh(instance, source))
@@ -328,6 +331,13 @@ import .animation as _
         assert((v.nx - 0.4472136).abs() < 0.00001 && (v.ny - 0.8944272).abs() < 0.00001)
         // The frame rides along through the deformation: uv as bound.
         assert(v.u == 0.2 && v.v == 0.7)
+        // ... and the tangent bends with the joint through the normal's
+        // cofactor, renormalised, w as bound. The bind tangent is 45
+        // degrees in xy (set above); the cofactor of 0.5 I + 0.5
+        // scale(3,1,1) is diag(1,2,2), which tilts it to the normal's
+        // slope: (1, 2, 0) / sqrt(5) -- measured in numpy before the test.
+        assert((v.tx - 0.4472136).abs() < 0.00001 && (v.ty - 0.8944272).abs() < 0.00001)
+        assert(v.tz.abs() < 0.00001 && v.tw == 1.0)
     }
     revision := g.geometry_revision()
     g.set_position(moving, origin)
@@ -335,6 +345,35 @@ import .animation as _
     g.pose_meshes(&mut streams)
     assert(g.geometry_revision() == revision && streams[skin].vertices[0] == 2.0)
     assert(g.vertices(instance)[0] == 1.0)
+}
+
+// A joint that is a pure rotation carries the tangent round with it and
+// leaves a tangent along its axis -- and the normal -- alone (the cofactor
+// of a rotation is the rotation). Measured in numpy before the test: the
+// rotated tangent is (0, 1, 0) for a quarter turn about z.
+@test fn a_rotating_joint_carries_the_tangent_and_keeps_its_handedness() {
+    mut g := scene.Graph::new()
+    origin := core.vec3(0.0, 0.0, 0.0)
+    source := g.create_root(origin)
+    rest := g.create_root(core.vec3(50.0, 0.0, 0.0))
+    turn := g.create_root(origin)
+    g.set_angles(turn, 0.0, 0.0, 1.5707963)
+    mut data: []f32 = []
+    gfx.push_vertex(&mut data, gfx.vertex(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+    data[8] = 1.0; data[9] = 0.0; data[10] = 0.0; data[11] = -1.0
+    assert(g.set_mesh(source, move data))
+    instance := g.create_root(origin)
+    assert(g.share_mesh(instance, source))
+    inf := core.Influence { joints: [0, 1, 0, 0], weights: [0.0, 1.0, 0.0, 0.0] }
+    assert(g.bind_skin(instance, [rest, turn], [inf], [0]))
+    g.propagate()
+    mut streams := g.mesh_snapshot()
+    skin := g.drawables(origin)[1].mesh_index
+    v := gfx.vertex_at(&streams[skin].vertices, 0)
+    assert((v.tx - 0.0).abs() < 0.00001 && (v.ty - 1.0).abs() < 0.00001 && v.tz.abs() < 0.00001)
+    assert((v.nx).abs() < 0.00001 && (v.ny).abs() < 0.00001 && (v.nz - 1.0).abs() < 0.00001)
+    assert(v.tw == -1.0)
+    assert((v.y - 1.0).abs() < 0.00001 && v.x.abs() < 0.00001)
 }
 
 // `dunder test` collects tests from the modules the test root imports, and

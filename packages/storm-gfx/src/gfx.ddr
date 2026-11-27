@@ -270,8 +270,15 @@ pub trait Backend {
     // 1 + strength * (occlusion - 1), so white (the fallback) is unoccluded
     // whatever the strength, and 0 is the map ignored. Only the indirect
     // terms are touched: the direct sun keeps its own shadow map.
+    // `normal_scale` is normalTexture.scale (glTF 2.0 3.9.3, default 1):
+    // the normal map's x and y, as the tangent frame's slope, are scaled by
+    // it before the normal is renormalised -- 0 is the flat normal, i.e.
+    // the map ignored, and a surface without one is unchanged whatever it
+    // is (the flat fallback's slope is already 0). The two are one number
+    // about the surface each, handed to the backend as they are: the
+    // contract says what is true, not how a backend lays it in memory.
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &MeshView, sky: &Sky, textures: &Textures, emissive: &[f32; 4], occlusion: f32, surface: Surface) -> Result<(), string>
+        params: &[f32; 4], camera: &MeshView, sky: &Sky, textures: &Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32, surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
     fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>

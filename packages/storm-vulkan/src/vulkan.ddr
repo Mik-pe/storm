@@ -312,7 +312,7 @@ unsafe fn sky_pass(r: &mut state.Renderer, inv_view_proj: &[f32; 16],
 }
 
 unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16],
-    base_color: &[f32; 4], params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, blended: bool) -> DrawResult {
+    base_color: &[f32; 4], params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32, blended: bool) -> DrawResult {
     if state.pass(&r) != .Direct && state.pass(&r) != .Filtered { return draw_error(r.frameIndex, "mesh requires an open scene") }
     if vertices.len % gfx.VERTEX_FLOATS != 0 { return draw_error(r.frameIndex, "vertices must be [x,y,z,nx,ny,nz,u,v]") }
     for i in 0..vertices.len {
@@ -338,6 +338,13 @@ unsafe fn mesh_pass(r: &mut state.Renderer, vertices: &[]f32, mvp: &[f32; 16], m
     for i in 0..3 { push[40 + i] = camera.eye[i] }
     for i in 0..4 { push[44 + i] = emissive[i] }
     push[48] = occlusion
+    // A surface without a normal map has the geometry's normal exactly: the
+    // scale counts a map that is not there as nothing, so the flat fallback
+    // (127, 127, 255 decodes to a 0.3 degree tilt, 8 bits cannot hold 0.5)
+    // never reaches the result. The descriptor set asks the table the same.
+    mut scale := normal_scale
+    if !texture.live(ref_at(r.material.table), textures.normal.id) { scale = 0.0 }
+    push[49] = scale
     for i in 0..3 { push[52 + i] = camera.to_focus[i] }
     push[55] = camera.radius
     if blended {
@@ -568,11 +575,11 @@ impl gfx.Backend for Window {
     }
 
     fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
-        params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, surface: gfx.Surface) -> Result<(), string> {
+        params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32, surface: gfx.Surface) -> Result<(), string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, camera, sky, textures, emissive, occlusion, surface == gfx.Surface.Blended))
+            return drawn(mesh_pass(ref_at(address), &vertices, &mvp, &model, &base_color, &params, camera, sky, textures, emissive, occlusion, normal_scale, surface == gfx.Surface.Blended))
         }
     }
 

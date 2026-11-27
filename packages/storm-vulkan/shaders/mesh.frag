@@ -18,7 +18,7 @@ layout(push_constant, std430) uniform Push {
     vec4 params;          // metallic, roughness, emissive, shadows enabled
     vec4 camera_pos;      // xyz = eye position in world space
     vec4 emissive_factor; // rgb scales the emissive map, w = its strength
-    vec4 occlusion;       // x = occlusionTexture.strength
+    vec4 occlusion;       // x = occlusionTexture.strength, y = normalTexture.scale
     vec4 sightline;       // xyz = eye to subject, w = outer radius at subject
 } push;
 
@@ -43,6 +43,12 @@ layout(set = 1, binding = 0) uniform sampler2D base_texture;
 // as written: a linear texture. White (the fallback) leaves the factors as
 // they are, so a material without a map is unchanged.
 layout(set = 1, binding = 1) uniform sampler2D metallic_roughness_texture;
+// The material's normal map (glTF 2.0 3.9.3): rgb * 2 - 1 in the tangent
+// frame, +Y up (the OpenGL convention the files are authored in). A surface
+// without one binds the flat normal (127, 127, 255), whose slope is 0, so
+// the map is the identity for it whatever the scale. Linear: it is data,
+// not a colour -- an sRGB decode tilts a flat normal to (-0.45, -0.45, 0.78).
+layout(set = 1, binding = 2) uniform sampler2D normal_texture;
 // The material's occlusion map: its R channel darkens the indirect light
 // (glTF 2.0 3.9.3). A mask, read as written: linear.
 layout(set = 1, binding = 3) uniform sampler2D occlusion_texture;
@@ -65,6 +71,7 @@ layout(location = 8) in vec4 sky_horizon;
 layout(location = 9) in vec2 vertex_uv;
 layout(location = 10) in vec4 vertex_emissive_factor;
 layout(location = 11) in vec4 vertex_occlusion;
+layout(location = 12) in vec4 world_tangent;
 
 layout(location = 0) out vec4 out_color;
 
@@ -175,6 +182,26 @@ bool clears_sightline(vec3 offset, vec3 axis, float radius, vec2 pixel) {
 void main() {
     if (clears_sightline(world_position - vertex_camera, push.sightline.xyz, push.sightline.w, gl_FragCoord.xy)) { discard; }
     vec3 n = normalize(world_normal);
+    // The shadow map sees the geometry alone (Filament #7155): its normal-offset
+    // bias takes the geometric normal, never the mapped one. A mapped normal
+    // lifts the lookup out of a small model by more than its size, and the
+    // surface shadows itself along the terminator.
+    vec3 n_geo = n;
+    // The normal map in the surface's own frame (glTF 2.0 3.9.3): the texel
+    // is rgb * 2 - 1, its x and y scaled by normalTexture.scale before
+    // normalising (the contract's `normal_scale`, 1.0 unless a file asks
+    // otherwise), and the frame is t, b = cross(n, t) * w, n -- the w is the
+    // file's, so a mirrored UV island's bitangent points where its texture
+    // does. Filament's form: n is unit, t is the tangent made perpendicular
+    // to it, and b follows from the two.
+    vec3 nt = texture(normal_texture, vertex_uv).xyz * 2.0 - 1.0;
+    nt.xy *= vertex_occlusion.y;
+    // Normalised: the model matrix scales the tangent with the model (a file
+    // scaled 10x for the stage gives |t| = 10), and an unnormalised t would
+    // scale the map's x and y by the same 10 and tilt the normal 10x too far.
+    vec3 t = normalize(world_tangent.xyz - n * dot(n, world_tangent.xyz));
+    vec3 b = cross(n, t) * world_tangent.w;
+    n = normalize(t * nt.x + b * nt.y + n * nt.z);
     vec3 v = normalize(vertex_camera - world_position);
     vec3 l = normalize(sky_sun.xyz);
     vec3 h = normalize(v + l);
@@ -196,7 +223,7 @@ void main() {
     float ndv = max(dot(n, v), 0.0001);
 
     float shadow = shadows_on > 0.5
-        ? (ndl > 0.0 ? shadow_factor(world_position, n, ndl) : 0.0)
+        ? (ndl > 0.0 ? shadow_factor(world_position, n_geo, max(dot(n_geo, l), 0.0)) : 0.0)
         : 1.0;
 
     // --- direct sun ---
