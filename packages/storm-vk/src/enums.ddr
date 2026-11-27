@@ -427,6 +427,8 @@ pub enum Access {
     MemoryRead = 32768,
     MemoryWrite = 65536,
     ColorDepthWrite = 1280, // Combined masks Storm's barriers use. COLOR_ATTACHMENT_WRITE | DEPTH_STENCIL_ATTACHMENT_WRITE
+    TransferReadWrite = 6144, // TRANSFER_READ | TRANSFER_WRITE: the mip a blit chain reads and the one it writes are the same image
+    ColorDepthWriteDepthRead = 1792, // The scene pass's external dependency: the colour and depth writes it waits for, and the depth it reads
 }
 
 pub fn access(v: Access) -> u32 { u32(i32(v)) }

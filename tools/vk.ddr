@@ -513,6 +513,8 @@ fn selected_enums() -> []SelectedEnum {
                 Selected { dunder: "MemoryRead", constant: "VK_ACCESS_MEMORY_READ_BIT", comment: "" },
                 Selected { dunder: "MemoryWrite", constant: "VK_ACCESS_MEMORY_WRITE_BIT", comment: "" },
                 Selected { dunder: "ColorDepthWrite", constant: "", comment: "Combined masks Storm's barriers use. COLOR_ATTACHMENT_WRITE | DEPTH_STENCIL_ATTACHMENT_WRITE" },
+                Selected { dunder: "TransferReadWrite", constant: "", comment: "TRANSFER_READ | TRANSFER_WRITE: the mip a blit chain reads and the one it writes are the same image" },
+                Selected { dunder: "ColorDepthWriteDepthRead", constant: "", comment: "The scene pass's external dependency: the colour and depth writes it waits for, and the depth it reads" },
             ]
         },
     ]
@@ -529,6 +531,8 @@ fn flag_sets() -> []FlagSet {
         FlagSet { dunder: "TransferSrcTransferDstSampled", bits: ["VK_IMAGE_USAGE_SAMPLED_BIT", "VK_IMAGE_USAGE_TRANSFER_DST_BIT", "VK_IMAGE_USAGE_TRANSFER_SRC_BIT"] },
         FlagSet { dunder: "RGBA", bits: ["VK_COLOR_COMPONENT_A_BIT", "VK_COLOR_COMPONENT_B_BIT", "VK_COLOR_COMPONENT_G_BIT", "VK_COLOR_COMPONENT_R_BIT"] },
         FlagSet { dunder: "ColorDepthWrite", bits: ["VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT", "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT"] },
+        FlagSet { dunder: "TransferReadWrite", bits: ["VK_ACCESS_TRANSFER_READ_BIT", "VK_ACCESS_TRANSFER_WRITE_BIT"] },
+        FlagSet { dunder: "ColorDepthWriteDepthRead", bits: ["VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT", "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT", "VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT"] },
         FlagSet { dunder: "HostVisibleCoherent", bits: ["VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT", "VK_MEMORY_PROPERTY_HOST_COHERENT_BIT"] },
     ]
 }
