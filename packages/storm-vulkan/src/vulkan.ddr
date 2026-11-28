@@ -650,12 +650,14 @@ impl gfx.Backend for Window {
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     if r.device != ptr(0) {
         _ := r.api.DeviceWaitIdle(r.device)
-        pipeline.destroy_framebuffers(&mut r)
         headless.destroy(&mut r)
         shadow.destroy(&mut r)
     }
-    post.destroy(&mut r)
+    // Reverse of `initialize` (ui, post, pipeline, texture), the device's
+    // own last; each module destroys what it created.
     ui.destroy(&mut r)
+    post.destroy(&mut r)
+    if r.device != ptr(0) { pipeline.destroy(&mut r) }
     ibl.destroy(&mut r)
     texture.destroy(&mut r)
     depth.destroy(&mut r)

@@ -1,5 +1,8 @@
-capability unsafe
+capability unsafe, filesystem, stdio
 
+import std.fs as fs
+import sys
+import std.text as textlib
 import vk.layout as vk
 import vk.enums as enums
 import ..src.depth as depth
@@ -608,4 +611,45 @@ fn setup_steps() -> [state.SetupStep; 17] {
         pipelines.describe(&r, &plan, &mut d)
         assert(d.stages.fragment.pSpecializationInfo == ptr(0))
     }
+}
+
+// The creator destroys. `pipeline.ddr` builds twelve Vulkan objects in its
+// `setup` (three pipelines, two layouts, four shader modules, three render
+// passes) and, until 2026-11-28, `device.ddr` destroyed them — a split the
+// renderer split had left and explained as "orchestration handles". A test
+// reads the sources and holds the rule: every Destroy of one of those
+// handles stands in pipeline.ddr, and nowhere else. Without it, the next
+// move is a rule to remember; with it, a red line naming the module.
+@test fn pipeline_handles_are_destroyed_by_their_creator() {
+    handles: [string; 12] = ["pipeline", "skyPipeline", "transparentPipeline", "pipelineLayout",
+        "skyPipelineLayout", "vertexShader", "fragmentShader", "skyVertexShader", "skyFragmentShader",
+        "renderPass", "scenePass", "compositePass"]
+    names := match fs.list_dir("src") {
+        .Ok(items) => items, .Err(e) => { _ := sys.eprint("could not list src/: errno " + e.code().str()); assert(false); return },
+    }
+    mut stray: []string = []
+    mut destroyed: [bool; 12] = [false, false, false, false, false, false, false, false, false, false, false, false]
+    for name in &names {
+        if !textlib.ends_with(name, ".ddr") { continue }
+        source := sys.read_text("src/" + name)
+        if !source.ok { _ := sys.eprint("could not read src/" + name + ": errno " + source.error.str()); assert(false); return }
+        mut cursor := textlib.lines(source.value.as_str())
+        while cursor.advance() {
+            line := cursor.current().clone()
+            if !textlib.contains(line, "Destroy") { continue }
+            for h in 0..12 {
+                if textlib.contains(line, "r." + handles[h] + ",") {
+                    if name == "pipeline.ddr" { destroyed[h] = true }
+                    else { stray.push(name + " destroys r." + handles[h]) }
+                }
+            }
+        }
+    }
+    for s in &stray { _ := sys.eprint(s) }
+    for h in 0..12 {
+        if !destroyed[h] { _ := sys.eprint("pipeline.ddr never destroys r." + handles[h]) }
+    }
+    assert(stray.len == 0)
+    assert(destroyed[0] && destroyed[1] && destroyed[2] && destroyed[3] && destroyed[4] && destroyed[5]
+        && destroyed[6] && destroyed[7] && destroyed[8] && destroyed[9] && destroyed[10] && destroyed[11])
 }

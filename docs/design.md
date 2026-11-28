@@ -1,9 +1,10 @@
 # Storm — design från första principer
 
-> Status: **levande dokument** — uppmätt 2026-11-27 mot trädet efter
+> Status: **levande dokument** — uppmätt 2026-11-28 mot trädet efter
 > `storm-gfx`, Metal-backenden, Blomsterskogen, materialtexturerna (3b),
 > glTF-bilderna med samplare per textur (3c) och de linjära texturerna (3d,
-> steg 1–3) och efter uppdelningen av Studio, renderare och modellinläsning.
+> steg 1–3), efter uppdelningen av Studio, renderare och modellinläsning,
+> och efter att pipeline.ddr fick förstöra det den skapar (§3b).
 > Skrevs efter djupbufferten, av en
 > blend-bugg: två pipelines blenda med `ONE_MINUS_DST_COLOR`/`SRC_ALPHA`
 > (5/6) i stället för `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` (6/7). Någon skrev
@@ -488,9 +489,18 @@ tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 13:
   (6), `pipeline` (5), `texture` (4), `ibl` (3), `shadow` (3), `depth` (1).
 - **10 pipeline-handtag** (`pipelineLayout`, `pipeline`, `skyPipeline`,
   `transparentPipeline`, deras layouter, shadermoduler och `framebuffers`):
-  `pipeline.ddr` skapar dem, `device.ddr` förstör dem och `vulkan.ddr` binder
-  dem i varje draw. De är *inte* ett ägarkluster — de är orchestringens
-  handtag, samma sort som `shadowSet` — så de stannar.
+  `pipeline.ddr` skapar dem och binder dem i varje draw (`vulkan.ddr`).
+  De är *inte* ett ägarkluster — de är orchestringens handtag, samma sort
+  som `shadowSet` — så *fälten* stannar på `Renderer`. **Ägarskapet följer
+  skaparen, inte fältet:** `pipeline.destroy` är den enda som förstör de
+  tolv (tre pipelines, två layouter, fyra shadermoduler, tre renderpass),
+  i omvänd `setup`-ordning, och `teardown` anropar den på sin plats (mellan
+  `post` och `texture`). Tills 2026-11-28 stod de tolv `Destroy*`-raderna i
+  `device.destroy` — splittrad av Renderer-uppdelningen och förklarad som
+  "orchestringens handtag", vilket är sant om var namnen bor och inte om
+  vem som släpper dem. `pipeline_handles_are_destroyed_by_their_creator`
+  läser källorna och håller regeln: en `Destroy` på ett av handtagen i
+  annan modul är röd med modulens namn.
 - **6 gränsnamn** som klusterflyttarna medvetet lämnade: `sceneFramebuffer`,
   `scenePass`, `compositePass` (post), `captureFramebuffer` (capture),
   `shadowSet`, `shadowSetLayout` (shadow).

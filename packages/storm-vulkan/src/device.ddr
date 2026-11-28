@@ -354,18 +354,6 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
             r.api.DestroyFence(r.device, r.fences[i], ptr(0))
             r.api.DestroySemaphore(r.device, r.image_available[i], ptr(0))
         }
-        r.api.DestroyPipeline(r.device, r.pipeline, ptr(0))
-        r.api.DestroyPipeline(r.device, r.skyPipeline, ptr(0))
-        r.api.DestroyPipeline(r.device, r.transparentPipeline, ptr(0))
-        r.api.DestroyPipelineLayout(r.device, r.pipelineLayout, ptr(0))
-        r.api.DestroyPipelineLayout(r.device, r.skyPipelineLayout, ptr(0))
-        r.api.DestroyShaderModule(r.device, r.vertexShader, ptr(0))
-        r.api.DestroyShaderModule(r.device, r.fragmentShader, ptr(0))
-        r.api.DestroyShaderModule(r.device, r.skyVertexShader, ptr(0))
-        r.api.DestroyShaderModule(r.device, r.skyFragmentShader, ptr(0))
-        r.api.DestroyRenderPass(r.device, r.scenePass, ptr(0))
-        r.api.DestroyRenderPass(r.device, r.compositePass, ptr(0))
-        r.api.DestroyRenderPass(r.device, r.renderPass, ptr(0))
         if r.pool != ptr(0) { r.api.DestroyCommandPool(r.device, r.pool, ptr(0)) }
         r.api.DestroyDevice(r.device, ptr(0))
     }
