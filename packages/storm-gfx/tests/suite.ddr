@@ -220,3 +220,4 @@ import ..src.gfx as gfx
     assert(s.mips == .Linear)
     assert(s.wrap == .Repeat)
 }
+import .tangents as _

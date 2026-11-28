@@ -1,0 +1,342 @@
+// Tangent frames for a mesh without TANGENT (glTF 2.0 §3.7.2.1: "SHOULD
+// calculate tangents using default MikkTSpace algorithms"), in the shape
+// mikktspace.c is written. The contract owns the tangent convention for both
+// sources: a file's TANGENT rides through the loader untouched, a file
+// without one gets this -- four floats a vertex, the same shape -- so the
+// shader has one form and the loader one path. Nothing here needs a backend.
+//
+// The algorithm, in mikktspace.c's terms: corners are welded on (position,
+// normal, uv); a triangle's tangent and bitangent are its UV Jacobian (eq
+// 18/19), signed by the triangle's UV orientation; a vertex's frame is the
+// corner-angle-weighted sum over the triangles reachable from one of its
+// corners across welded edges without the orientation changing (the "4
+// rules"); the handedness is the group's orientation, negated for glTF. The
+// default angular threshold (180 degrees) splits no group, so there is no
+// threshold here to remember.
+//
+// Measured against a Python transcription of the same algorithm on the
+// Katla models, per vertex: DamagedHelmet 14 544 w of 14 544, max angle
+// 0.03 degrees (f32 against f64); Lantern 926 of 926; FoxBlender 1 728 of
+// 1 728; Avokado 404 of 406, the two being the needle tip where the
+// reference itself yields two frames for one vertex (a vertex whose corners
+// fall in groups of both orientations: the last group to write wins, and
+// mikktspace.c is as silent about the order). Against the files' own
+// TANGENT: Lantern agrees on every w, Tiger disagrees on 46 of 15 133 --
+// measured three ways, that is the exporter (its tangents are not
+// MikkTSpace's), not the port.
+
+import std.array as array
+import .gfx as gfx
+import std.math as math
+
+// A triangle's oriented UV Jacobian, before normalisation. `None` for a
+// triangle with no UV area (its uv collapses onto a line): no dp/du exists,
+// and it joins no group.
+pub struct Derivative { s: [f32; 3], t: [f32; 3] }
+
+// A corner's identity for welding: the eight floats of position, normal and
+// uv as their bit patterns. Two corners weld when every bit is equal -- a
+// -0.0 and a 0.0 are different corners, which is what an exporter's split
+// produces. The sort is on the bits themselves, so equal corners land next
+// to each other by construction: a hash key was measured to interleave a
+// third corner between two equal ones whenever it collided (every flat
+// 0/1 pattern collides under eight low bits a float), and the run-length
+// grouping below then welded nothing.
+struct Corner { bits: [i32; 8], vertex: i32 }
+
+// The triangles on one side of a welded edge, sorted by (from, to) so the
+// neighbour across (v, w) is the triangle that has (w, v).
+struct EdgeSide { from: i32, to: i32, triangle: i32 }
+
+// The frame of one vertex: tangent xyz and the handedness w.
+pub struct Frame { tx: f32, ty: f32, tz: f32, w: f32 }
+
+// Lexicographic on the eight words: the only order that puts every run of
+// equal corners together, whatever the floats are.
+fn by_bits(a: &Corner, b: &Corner) -> Ordering {
+    for i in 0..8 {
+        if a.bits[i] != b.bits[i] { if a.bits[i] < b.bits[i] { return .Less } else { return .Greater } }
+    }
+    .Equal
+}
+
+fn by_edge(a: &EdgeSide, b: &EdgeSide) -> Ordering {
+    if a.from != b.from { if a.from < b.from { .Less } else { .Greater } }
+    else if a.to != b.to { if a.to < b.to { .Less } else { .Greater } }
+    else { .Equal }
+}
+
+fn same_bits(a: &[i32; 8], b: &[i32; 8]) -> bool {
+    a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3] && a[4] == b[4] && a[5] == b[5] && a[6] == b[6] && a[7] == b[7]
+}
+
+fn corner_bits(positions: &[]f32, normals: &[]f32, uvs: &[]f32, v: i32) -> [i32; 8] {
+    [
+        positions[v * 3].to_bits(), positions[v * 3 + 1].to_bits(), positions[v * 3 + 2].to_bits(),
+        normals[v * 3].to_bits(), normals[v * 3 + 1].to_bits(), normals[v * 3 + 2].to_bits(),
+        uvs[v * 2].to_bits(), uvs[v * 2 + 1].to_bits(),
+    ]
+}
+
+// Welded corner ids: one per distinct (position, normal, uv), 0.. in first
+// appearance order of the sorted runs, -1 never (every vertex gets one).
+pub fn weld(positions: &[]f32, normals: &[]f32, uvs: &[]f32, vertex_count: i32) -> []i32 {
+    mut corners: []Corner = []
+    corners.reserve(vertex_count)
+    for v in 0..vertex_count {
+        corners.push(Corner { bits: corner_bits(positions, normals, uvs, v), vertex: v })
+    }
+    array.sort_by(&mut corners, by_bits)
+    mut welded: []i32 = []
+    array.resize(&mut welded, vertex_count, -1)
+    mut ids: i32 = 0
+    for i in 0..corners.len {
+        if i == 0 || !same_bits(&corners[i - 1].bits, &corners[i].bits) { ids += 1 }
+        welded[corners[i].vertex] = ids - 1
+    }
+    welded
+}
+
+// Per triangle: the oriented, normalised UV Jacobian (`None` for a triangle
+// with no UV area, or one whose corners weld to each other), whether its UV
+// orientation is positive, and the welded id of each of its corners.
+pub struct Triangles {
+    derivative: []Option<Derivative>,
+    orienting: []bool,
+    welded: []i32,
+}
+
+pub fn derivatives(positions: &[]f32, uvs: &[]f32, indices: &[]i32, welded: &[]i32) -> Triangles {
+    triangles := indices.len / 3
+    mut ders: []Option<Derivative> = []
+    array.resize(&mut ders, triangles, .None)
+    mut orienting: []bool = []
+    array.resize(&mut orienting, triangles, false)
+    mut tri_weld: []i32 = []
+    array.resize(&mut tri_weld, triangles * 3, -1)
+    for f in 0..triangles {
+        a := indices[f * 3]
+        b := indices[f * 3 + 1]
+        c := indices[f * 3 + 2]
+        tri_weld[f * 3] = welded[a]
+        tri_weld[f * 3 + 1] = welded[b]
+        tri_weld[f * 3 + 2] = welded[c]
+        if welded[a] == welded[b] || welded[a] == welded[c] || welded[b] == welded[c] { continue }
+        d1 := [positions[b * 3] - positions[a * 3], positions[b * 3 + 1] - positions[a * 3 + 1], positions[b * 3 + 2] - positions[a * 3 + 2]]
+        d2 := [positions[c * 3] - positions[a * 3], positions[c * 3 + 1] - positions[a * 3 + 1], positions[c * 3 + 2] - positions[a * 3 + 2]]
+        t21x := uvs[b * 2] - uvs[a * 2]
+        t21y := uvs[b * 2 + 1] - uvs[a * 2 + 1]
+        t31x := uvs[c * 2] - uvs[a * 2]
+        t31y := uvs[c * 2 + 1] - uvs[a * 2 + 1]
+        area := t21x * t31y - t21y * t31x
+        if area == 0.0 { continue }
+        orienting[f] = area > 0.0
+        sign: f32 = if area > 0.0 { 1.0 } else { -1.0 }
+        // eq 18: s = t31y * d1 - t21y * d2;  eq 19: t = t21x * d2 - t31x * d1
+        s := normalised([t31y * d1[0] - t21y * d2[0], t31y * d1[1] - t21y * d2[1], t31y * d1[2] - t21y * d2[2]])
+        t := normalised([t21x * d2[0] - t31x * d1[0], t21x * d2[1] - t31x * d1[1], t21x * d2[2] - t31x * d1[2]])
+        if s[3] == 0.0 || t[3] == 0.0 { continue }
+        ders[f] = .Some(Derivative { s: [sign * s[0], sign * s[1], sign * s[2]], t: [sign * t[0], sign * t[1], sign * t[2]] })
+    }
+    Triangles { derivative: ders, orienting: orienting, welded: tri_weld }
+}
+
+// xyz normalised, and the fourth component 1.0 when the length was positive,
+// 0.0 when there was nothing to normalise (a zero vector).
+fn normalised(v: [f32; 3]) -> [f32; 4] {
+    l := (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l, 1.0] } else { [0.0, 0.0, 0.0, 0.0] }
+}
+
+fn project(v: [f32; 3], n: [f32; 3]) -> [f32; 3] {
+    k := n[0] * v[0] + n[1] * v[1] + n[2] * v[2]
+    [v[0] - n[0] * k, v[1] - n[1] * k, v[2] - n[2] * k]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
+
+// The angle between two unit vectors, in [0, pi]: atan2 of the cross product's
+// length against the dot product, which is acos of the dot without its
+// rounding cliff at |dot| > 1.
+fn angle_between(a: [f32; 3], b: [f32; 3]) -> f32 {
+    c := [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    cl := (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
+    // atan2 takes f64 and returns f64 (std.math).
+    f32(math.atan2(f64(cl), f64(dot(a, b))))
+}
+
+// For each triangle corner, the triangle across the edge that leaves the
+// corner (k -> k+1), when it is good and oriented the same way; -1 otherwise.
+pub fn neighbours(tri: &Triangles, triangles: i32) -> []i32 {
+    mut sides: []EdgeSide = []
+    for f in 0..triangles {
+        if !is_good(tri, f) { continue }
+        for k in 0..3 {
+            sides.push(EdgeSide { from: tri.welded[f * 3 + k], to: tri.welded[f * 3 + (k + 1) % 3], triangle: f })
+        }
+    }
+    array.sort_by(&mut sides, by_edge)
+    mut out: []i32 = []
+    array.resize(&mut out, triangles * 3, -1)
+    for f in 0..triangles {
+        if !is_good(tri, f) { continue }
+        for k in 0..3 {
+            // the edge leaving corner k goes k -> k+1; the neighbour has k+1 -> k
+            from := tri.welded[f * 3 + (k + 1) % 3]
+            to := tri.welded[f * 3 + k]
+            out[f * 3 + k] = edge_owner(&sides, from, to, f, &tri.orienting)
+        }
+    }
+    out
+}
+
+fn is_good(tri: &Triangles, f: i32) -> bool {
+    match tri.derivative[f] {
+        .Some(_) => true,
+        .None => false,
+    }
+}
+
+// The first triangle other than `me` with the directed edge (from, to) and
+// my orientation; -1 when there is none.
+fn edge_owner(sides: &[]EdgeSide, from: i32, to: i32, me: i32, orienting: &[]bool) -> i32 {
+    // binary search for the start of the (from, to) run
+    mut lo: i32 = 0
+    mut hi: i32 = sides.len
+    while lo < hi {
+        mid := (lo + hi) / 2
+        s := sides[mid]
+        if s.from < from || (s.from == from && s.to < to) { lo = mid + 1 } else { hi = mid }
+    }
+    mut i := lo
+    while i < sides.len && sides[i].from == from && sides[i].to == to {
+        t := sides[i].triangle
+        if t != me && orienting[t] == orienting[me] { return t }
+        i += 1
+    }
+    -1
+}
+
+fn eval_tspace(members: &[]i32, first: i32, tri: &Triangles, indices: &[]i32, positions: &[]f32, normals: &[]f32) -> Option<Frame> {
+    mut tx: f32 = 0.0
+    mut ty: f32 = 0.0
+    mut tz: f32 = 0.0
+    for m in first..members.len {
+        c := members[m]
+        g := c / 3
+        k := c % 3
+        match tri.derivative[g] {
+            .Some(v) => {
+                a := indices[g * 3 + k]
+                n := [normals[a * 3], normals[a * 3 + 1], normals[a * 3 + 2]]
+                s := normalised(project(v.s, n))
+                t := normalised(project(v.t, n))
+                if s[3] == 0.0 || t[3] == 0.0 { continue }
+                p1 := [positions[a * 3], positions[a * 3 + 1], positions[a * 3 + 2]]
+                b := indices[g * 3 + (k + 2) % 3]
+                e := indices[g * 3 + (k + 1) % 3]
+                v1 := normalised(project([positions[b * 3] - p1[0], positions[b * 3 + 1] - p1[1], positions[b * 3 + 2] - p1[2]], n))
+                v2 := normalised(project([positions[e * 3] - p1[0], positions[e * 3 + 1] - p1[1], positions[e * 3 + 2] - p1[2]], n))
+                if v1[3] == 0.0 || v2[3] == 0.0 { continue }
+                ang := angle_between([v1[0], v1[1], v1[2]], [v2[0], v2[1], v2[2]])
+                tx += ang * s[0]
+                ty += ang * s[1]
+                tz += ang * s[2]
+            },
+            .None => {},
+        }
+    }
+    mut w: f32 = 1.0
+    if tri.orienting[members[first] / 3] { w = -1.0 }
+    tn := normalised([tx, ty, tz])
+    // A sum that cancelled has no direction: the vertex keeps its fallback.
+    if tn[3] == 0.0 { return .None }
+    .Some(Frame { tx: tn[0], ty: tn[1], tz: tn[2], w: w })
+}
+
+// The corner of triangle `t` whose welded id is `w`; -1 when it has none
+// (the neighbour was found through an edge it shares, so it always has one).
+fn corner_with_weld(tri: &Triangles, t: i32, w: i32) -> i32 {
+    for k in 0..3 {
+        if tri.welded[t * 3 + k] == w { return k }
+    }
+    -1
+}
+
+// The tangent frame of every vertex of an indexed mesh: four floats a vertex
+// (tx, ty, tz, w) in the order the indices refer to -- the shape a file's
+// TANGENT accessor has, so a loader fills `tangents` with it and goes on.
+// `positions` and `normals` are three floats a vertex, `uvs` two, `indices`
+// triangles. A vertex no good triangle reaches keeps the frame its normal
+// gives (`normal_tangent`), the fallback of a degenerate `triangle_tangent`.
+//
+// A mesh without NORMAL or TEXCOORD_0 has nothing to build a frame from:
+// the result is empty, and the caller keeps its own way for such a file (a
+// read past a short slice is a silent death, status 103, so the check
+// lives here and not in the caller's memory).
+pub fn mikk_tangents(positions: &[]f32, normals: &[]f32, uvs: &[]f32, indices: &[]i32, vertex_count: i32) -> []f32 {
+    if normals.len < vertex_count * 3 || uvs.len < vertex_count * 2 { return [] }
+    triangles := indices.len / 3
+    welded := weld(positions, normals, uvs, vertex_count)
+    tri := derivatives(positions, uvs, indices, &welded)
+    neighbour := neighbours(&tri, triangles)
+    // The fallback frame of every vertex, overwritten by each group.
+    mut out: []f32 = []
+    array.resize(&mut out, vertex_count * 4, 0.0)
+    for v in 0..vertex_count {
+        f := gfx.normal_tangent(normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2])
+        out[v * 4] = f[0]
+        out[v * 4 + 1] = f[1]
+        out[v * 4 + 2] = f[2]
+        out[v * 4 + 3] = f[3]
+    }
+    // Groups by the 4 rules: from an unassigned good corner, every corner
+    // reachable across a welded edge with the same orientation joins.
+    mut group_of: []i32 = []
+    array.resize(&mut group_of, triangles * 3, -1)
+    mut stack: []i32 = []
+    mut members: []i32 = []
+    for f in 0..triangles {
+        if !is_good(&tri, f) { continue }
+        for k in 0..3 {
+            if group_of[f * 3 + k] >= 0 { continue }
+            gid := f * 3 + k
+            stack.clear()
+            stack.push(f * 3 + k)
+            group_of[f * 3 + k] = gid
+            first := members.len
+            while stack.len > 0 {
+                here := stack.pop()
+                members.push(here)
+                hf := here / 3
+                hk := here % 3
+                w := tri.welded[hf * 3 + hk]
+                // the two edges that meet in this corner: hk -> hk+1 and hk+2 -> hk
+                e := neighbour[hf * 3 + hk]
+                if e >= 0 {
+                    c := e * 3 + corner_with_weld(&tri, e, w)
+                    if group_of[c] < 0 { group_of[c] = gid; stack.push(c) }
+                }
+                p := neighbour[hf * 3 + (hk + 2) % 3]
+                if p >= 0 {
+                    c := p * 3 + corner_with_weld(&tri, p, w)
+                    if group_of[c] < 0 { group_of[c] = gid; stack.push(c) }
+                }
+            }
+            match eval_tspace(&members, first, &tri, indices, positions, normals) {
+                .Some(frame) => {
+                    for m in first..members.len {
+                        c := members[m]
+                        v := indices[c / 3 * 3 + c % 3]
+                        out[v * 4] = frame.tx
+                        out[v * 4 + 1] = frame.ty
+                        out[v * 4 + 2] = frame.tz
+                        out[v * 4 + 3] = frame.w
+                    }
+                },
+                .None => {},
+            }
+        }
+    }
+    out
+}

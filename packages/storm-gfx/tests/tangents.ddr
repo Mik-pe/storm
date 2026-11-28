@@ -1,0 +1,137 @@
+import ..src.gfx as gfx
+import ..src.tangents as tangents
+
+fn close(a: f32, b: f32) -> bool { (a - b).abs() < 0.0001 }
+
+fn frame_at(t: &[]f32, v: i32) -> [f32; 4] { [t[v * 4], t[v * 4 + 1], t[v * 4 + 2], t[v * 4 + 3]] }
+
+// A unit square in the xy plane, normal +z, uv = (x, y).
+fn square_positions() -> []f32 { [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0] }
+fn square_normals() -> []f32 { [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0] }
+fn square_uvs() -> []f32 { [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0] }
+fn square_indices() -> []i32 { [0, 1, 2, 0, 2, 3] }
+
+@test fn unit_square_gives_plus_x_tangent_and_minus_one_w_everywhere() {
+    p := square_positions()
+    n := square_normals()
+    uv := square_uvs()
+    ix := square_indices()
+    t := tangents.mikk_tangents(&p, &n, &uv, &ix, 4)
+    assert(t.len == 16)
+    for v in 0..4 {
+        f := frame_at(&t, v)
+        assert(close(f[0], 1.0) && close(f[1], 0.0) && close(f[2], 0.0))
+        assert(f[3] == -1.0)
+    }
+}
+
+@test fn mirrored_u_flips_the_tangent_and_the_handedness() {
+    p := square_positions()
+    n := square_normals()
+    // u -> 1 - u: the same square with its UV island mirrored.
+    uv: []f32 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    ix := square_indices()
+    t := tangents.mikk_tangents(&p, &n, &uv, &ix, 4)
+    for v in 0..4 {
+        f := frame_at(&t, v)
+        assert(close(f[0], -1.0) && close(f[1], 0.0) && close(f[2], 0.0))
+        assert(f[3] == 1.0)
+    }
+}
+
+@test fn a_welded_corner_shared_by_same_orientation_triangles_blends_by_corner_angle() {
+    // Triangle A = (0, 1, 2) of the square, uv (x, y): tangent +x. Triangle
+    // B = (4, 5, 6) where 4 and 5 are copies of 0 and 2 (same position, normal
+    // and uv, so the two weld) and 6 sits at (-1, 0) carrying uv (0, 1). B's
+    // UV Jacobian: d1 = (1, 1), d2 = (-1, 0), t21 = (1, 1), t31 = (0, 1), so
+    // s = t31y*d1 - t21y*d2 = (2, 1) -- normalised (0.894, 0.447) -- with the
+    // same UV orientation as A (area 1). B is A's neighbour across the welded
+    // edge 2 -> 0. At the shared corner A's angle is 45 degrees ((1,0) against
+    // (1,1)) and B's is 135 ((-1,0) against (1,1)), so the frame is
+    // (45*(1,0) + 135*(0.8944,0.4472)) normalised = (0.9396, 0.3423), w = -1, on
+    // vertex 0 and on its welded copy 4 alike: both corners are one group.
+    p: []f32 = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0]
+    n: []f32 = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    uv: []f32 = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    ix: []i32 = [0, 1, 2, 4, 5, 6]
+    welded := tangents.weld(&p, &n, &uv, 7)
+    assert(welded[4] == welded[0] && welded[5] == welded[2])
+    assert(welded[6] != welded[3])
+    t := tangents.mikk_tangents(&p, &n, &uv, &ix, 7)
+    f0 := frame_at(&t, 0)
+    assert(close(f0[0], 0.9396) && close(f0[1], 0.3423) && close(f0[2], 0.0))
+    assert(f0[3] == -1.0)
+    f4 := frame_at(&t, 4)
+    assert(close(f4[0], 0.9396) && close(f4[1], 0.3423) && f4[3] == -1.0)
+    // B's own corner 6 sees only B: (0.8944, 0.4472), w = -1.
+    f6 := frame_at(&t, 6)
+    assert(close(f6[0], 0.8944) && close(f6[1], 0.4472) && f6[3] == -1.0)
+}
+
+@test fn triangles_of_opposite_orientation_across_a_welded_edge_are_not_neighbours() {
+    // The square's second triangle B = (4, 5, 6) as copies of (0, 2, 3), with
+    // vertex 6 carrying uv (1, 0) instead of (0, 1): t21 = (1, 1), t31 = (1, 0),
+    // area = -1 -- B's UV orientation is A's opposite. 4 and 5 weld with 0 and
+    // 2, so B is A's neighbour across the welded edge 2 -> 0 by position, and
+    // the 4 rules refuse it. Vertex 0 keeps A's frame alone (+x, w = -1) and
+    // its welded copy 4 keeps B's alone (+y, w = +1: mirrored). Were they one
+    // group, both would read the same blend.
+    p: []f32 = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+    n: []f32 = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    uv: []f32 = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
+    ix: []i32 = [0, 1, 2, 4, 5, 6]
+    welded := tangents.weld(&p, &n, &uv, 7)
+    assert(welded[4] == welded[0] && welded[5] == welded[2])
+    assert(welded[6] != welded[3])
+    t := tangents.mikk_tangents(&p, &n, &uv, &ix, 7)
+    f0 := frame_at(&t, 0)
+    assert(close(f0[0], 1.0) && close(f0[1], 0.0) && f0[3] == -1.0)
+    f4 := frame_at(&t, 4)
+    assert(close(f4[0], 0.0) && close(f4[1], 1.0) && f4[3] == 1.0)
+}
+
+@test fn degenerate_uv_triangle_keeps_the_normal_s_fallback_frame() {
+    // A triangle whose uv has no area: every corner keeps normal_tangent's frame.
+    p := square_positions()
+    n := square_normals()
+    uv: []f32 = [0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 1.0]
+    ix: []i32 = [0, 1, 2]
+    t := tangents.mikk_tangents(&p, &n, &uv, &ix, 4)
+    for v in 0..3 {
+        f := frame_at(&t, v)
+        fb := gfx.normal_tangent(0.0, 0.0, 1.0)
+        assert(f[0] == fb[0] && f[1] == fb[1] && f[2] == fb[2] && f[3] == fb[3])
+    }
+}
+
+@test fn weld_groups_identical_corners_and_splits_different_ones() {
+    p := square_positions()
+    n := square_normals()
+    uv := square_uvs()
+    // a fifth vertex identical to vertex 0, a sixth with another normal
+    mut p6 := p.clone()
+    p6.push(0.0); p6.push(0.0); p6.push(0.0)
+    p6.push(0.0); p6.push(0.0); p6.push(0.0)
+    mut n6 := n.clone()
+    n6.push(0.0); n6.push(0.0); n6.push(1.0)
+    n6.push(0.0); n6.push(1.0); n6.push(0.0)
+    mut uv6 := uv.clone()
+    uv6.push(0.0); uv6.push(0.0)
+    uv6.push(0.0); uv6.push(0.0)
+    welded := tangents.weld(&p6, &n6, &uv6, 6)
+    assert(welded[4] == welded[0])
+    assert(welded[5] != welded[0])
+    assert(welded[0] != welded[1] && welded[0] != welded[2] && welded[0] != welded[3])
+    assert(welded[1] != welded[2] && welded[1] != welded[3] && welded[2] != welded[3])
+}
+
+@test fn a_mesh_without_normals_or_uvs_gives_no_frames() {
+    p: []f32 = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0]
+    n: []f32 = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    uv: []f32 = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    ix: []i32 = [0, 1, 2, 0, 2, 3]
+    empty: []f32 = []
+    assert(tangents.mikk_tangents(&p, &empty, &uv, &ix, 4).len == 0)
+    assert(tangents.mikk_tangents(&p, &n, &empty, &ix, 4).len == 0)
+    assert(tangents.mikk_tangents(&p, &n, &uv, &ix, 4).len == 16)
+}
