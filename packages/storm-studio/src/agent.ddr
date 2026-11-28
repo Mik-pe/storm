@@ -1,0 +1,232 @@
+// The editor RPC adapter uses the same commands as the graphical inspector.
+capability filesystem, stdio
+
+import core
+import ecs
+import editor
+import editor.commands as commands
+import image
+import mcp.protocol as protocol
+import mcp.schema as schema
+import scene
+import std.fs as fs
+import std.json as json
+import std.parse as parse
+import std.text as text
+import .mailbox
+
+const VECTOR: string = r#"""{"type":"array","items":{"type":"number","minimum":-100000,"maximum":100000},"minItems":3,"maxItems":3}"""#
+const CHANNEL: string = r#"""{"type":"number","minimum":0,"maximum":1}"""#
+const OBJECT_ID: string = r#"""{"type":"string","minLength":1,"description":"Object ID from editor_inspect or editor_create, in index:generation form."}"""#
+
+const TOOLS: string = r#"""
+{"tools":[
+  {"name":"editor_inspect","description":"Read the live scene hierarchy, selection, local transforms and materials in the open Studio window.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true}},
+  {"name":"editor_search","description":"Filter the visible scene tree by name. Pass an empty query to clear the filter.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}},
+  {"name":"editor_select","description":"Reveal and select an object in the live scene tree and Inspector.","inputSchema":{"type":"object","properties":{"id":OBJECT_ID},"required":["id"],"additionalProperties":false}},
+  {"name":"editor_create","description":"Create and select a new primitive or empty group. Position is local to the optional parent.","inputSchema":{"type":"object","properties":{"name":{"type":"string","minLength":1},"shape":{"type":"string","enum":["cube","sphere","plane","group"]},"parent":OBJECT_ID,"position":VECTOR3},"required":["name","shape"],"additionalProperties":false}},
+  {"name":"editor_edit","description":"Atomically patch only the supplied fields on a live object. Rotation is X, Y, Z in radians. Material colors are linear.","inputSchema":{"type":"object","properties":{"id":OBJECT_ID,"name":{"type":"string","minLength":1},"position":VECTOR3,"rotation":VECTOR3,"scale":VECTOR3,"visible":{"type":"boolean"},"material":{"type":"object","properties":{"red":CHANNEL,"green":CHANNEL,"blue":CHANNEL,"opacity":CHANNEL,"metallic":CHANNEL,"roughness":CHANNEL,"emission":{"type":"number","minimum":0,"maximum":4}},"additionalProperties":false}},"required":["id"],"additionalProperties":false}},
+  {"name":"editor_delete","description":"Delete one object. Its children remain in the scene as roots.","inputSchema":{"type":"object","properties":{"id":OBJECT_ID},"required":["id"],"additionalProperties":false},"annotations":{"destructiveHint":true}},
+  {"name":"editor_screenshot","description":"Capture a PNG of the current Studio frame, including the viewport and panels.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true}}
+]}
+"""#
+
+pub fn catalog() -> string {
+    text.replace(text.replace(text.replace(TOOLS, "OBJECT_ID", OBJECT_ID), "VECTOR3", VECTOR), "CHANNEL", CHANNEL)
+}
+
+fn wire_id(entity: ecs.Entity) -> string { entity.index.str() + ":" + entity.generation.str() }
+
+fn entity_id(raw: string) -> Result<ecs.Entity, string> {
+    cut := text.find(raw, ":").unwrap_or(-1)
+    if cut <= 0 { return .Err("Use an object ID from editor_inspect") }
+    index := parse.integer(raw[0..cut])
+    generation := parse.integer(raw[cut + 1..raw.len])
+    if !index.ok || !generation.ok || index.value < 0 || generation.value < 0 ||
+    index.value > 2147483647 || generation.value > 2147483647 { return .Err("Use an object ID from editor_inspect") }
+    .Ok(ecs.Entity { index: i32(index.value), generation: i32(generation.value) })
+}
+
+fn vector(doc: &json.Doc, at: i32) -> Option<core.Vec3> {
+    if at < 0 { return .None }
+    .Some(core.vec3(f32(doc.as_f64(doc.at(at, 0)).unwrap()), f32(doc.as_f64(doc.at(at, 1)).unwrap()), f32(doc.as_f64(doc.at(at, 2)).unwrap())))
+}
+
+fn decimal(doc: &json.Doc, node: i32, field: string) -> Option<f32> {
+    match doc.get_f64(node, field) { .Some(value) => .Some(f32(value)), .None => .None }
+}
+
+fn material(doc: &json.Doc, node: i32) -> Option<commands.MaterialPatch> {
+    if node < 0 { return .None }
+    .Some(commands.MaterialPatch {
+        red: decimal(doc, node, "red"), green: decimal(doc, node, "green"), blue: decimal(doc, node, "blue"),
+        opacity: decimal(doc, node, "opacity"), metallic: decimal(doc, node, "metallic"),
+        roughness: decimal(doc, node, "roughness"), emission: decimal(doc, node, "emission"),
+    })
+}
+
+fn write_vec(writer: &mut json.Writer, key: string, v: core.Vec3) {
+    writer.key(key)
+    writer.array()
+    writer.decimal(f64(v.x))
+    writer.decimal(f64(v.y))
+    writer.decimal(f64(v.z))
+    writer.end()
+}
+
+fn write_surface(w: &mut json.Writer, graph: &scene.Graph, node: ecs.Entity) {
+    w.key("material")
+    if !graph.has_material(node) { w.null(); return }
+    surface := graph.material_at(node)
+    w.object()
+    w.key("red"); w.decimal(f64(surface.base.r))
+    w.key("green"); w.decimal(f64(surface.base.g))
+    w.key("blue"); w.decimal(f64(surface.base.b))
+    w.key("opacity"); w.decimal(f64(surface.base.a))
+    w.key("metallic"); w.decimal(f64(surface.metallic))
+    w.key("roughness"); w.decimal(f64(surface.roughness))
+    w.key("emission"); w.decimal(f64(surface.emissive))
+    w.end()
+}
+
+pub fn snapshot(state: &editor.State, graph: &scene.Graph) -> Result<string, string> {
+    mut w := json.Writer::new()
+    w.object()
+    w.key("selected")
+    if graph.is_alive(state.selected) { w.string(wire_id(state.selected)) } else { w.null() }
+    w.key("search"); w.string(state.query)
+    w.key("nodes")
+    w.array()
+    for row in graph.hierarchy() {
+        node := row.entity
+        transform := graph.local(node)
+        w.object()
+        w.key("id"); w.string(wire_id(node))
+        w.key("name"); w.string(graph.name(node))
+        w.key("parent")
+        match graph.parent_of(node) { .Some(parent) => { w.string(wire_id(parent)) }, .None => { w.null() } }
+        w.key("shape")
+        shape := match graph.shape(node) { .Some(.Cube) => "cube", .Some(.Sphere) => "sphere", .Some(.Plane) => "plane", .Some(.Mesh) => "mesh", .None => "group" }
+        w.string(shape)
+        write_vec(&mut w, "position", transform.position)
+        write_vec(&mut w, "rotation", core.vec3(transform.rotation_x, transform.rotation_y, transform.rotation_z))
+        write_vec(&mut w, "scale", transform.scale)
+        w.key("visible"); w.boolean(transform.visible)
+        write_surface(&mut w, graph, node)
+        w.end()
+    }
+    w.end()
+    w.end()
+    match w.finish() { .Ok(body) => .Ok(body), .Err(_) => .Err("Could not encode scene") }
+}
+
+pub struct Session { directory: string, specs: json.Doc, next_poll: i64, capture: string, labels_changed: bool }
+
+pub fn session(directory: string) -> Session {
+    Session { directory: directory.clone(), specs: json.Doc::parse_text(catalog()), next_poll: 0, capture: "", labels_changed: false }
+}
+
+fn dispatch(host: &mut Session, state: &mut editor.State, graph: &mut scene.Graph, name: string, doc: &json.Doc, args: i32) -> Result<string, string> {
+    if name == "editor_inspect" { return snapshot(state, graph) }
+    if name == "editor_search" {
+        editor.search(&mut state, doc.get_str(args, "query").unwrap())?
+        return .Ok("{\"query\":" + json.quote(state.query) + "}")
+    }
+    mut item := ecs.Entity { index: -1, generation: 0 }
+    if name == "editor_create" {
+        mut parent: Option<ecs.Entity> = .None
+        parent_arg := doc.get_str(args, "parent")
+        if parent_arg.is_some() { parent = .Some(entity_id(parent_arg.unwrap())?) }
+        shape := match doc.get_str(args, "shape").unwrap() {
+            "cube" => Option < scene.Shape > .Some(.Cube), "sphere" => .Some(.Sphere), "plane" => .Some(.Plane), _ => .None,
+        }
+        spec := commands.NewNode {
+            name: doc.get_str(args, "name").unwrap(), shape: shape, parent: parent,
+            position: vector(doc, doc.field(args, "position")).unwrap_or(core.vec3(0.0, 0.0, 0.0))
+        }
+        item = commands.create(&mut graph, &spec)?
+        editor.select(&mut state, graph, item)?
+        host.labels_changed = true
+    } else {
+        item = entity_id(doc.get_str(args, "id").unwrap())?
+        if name == "editor_select" { editor.select(&mut state, graph, item)? }
+        else if name == "editor_delete" {
+            commands.remove(&mut graph, item)?
+            editor.removed(&mut state, graph)
+            return .Ok("{\"removed\":" + json.quote(wire_id(item)) + "}")
+        } else {
+            patch := commands.Patch {
+                name: doc.get_str(args, "name"),
+                position: vector(doc, doc.field(args, "position")), rotation: vector(doc, doc.field(args, "rotation")),
+                scale: vector(doc, doc.field(args, "scale")), visible: doc.get_bool(args, "visible"),
+                material: material(doc, doc.field(args, "material"))
+            }
+            commands.edit(&mut graph, item, &patch)?
+            if patch.name.is_some() { host.labels_changed = true }
+        }
+    }
+    .Ok("{\"id\":" + json.quote(wire_id(item)) + "}")
+}
+
+pub fn poll(host: &mut Session, state: &mut editor.State, graph: &mut scene.Graph, now: i64) {
+    if host.directory.len == 0 || now < host.next_poll || host.capture.len > 0 { return }
+    host.next_poll = now + 40
+    match mailbox.next(host.directory) {
+        .None => {},
+        .Some(request) => {
+            doc := json.Doc::parse_text(request.body)
+            name := doc.get_str(doc.root, "name").unwrap_or_default()
+            input := doc.field(doc.root, "arguments")
+            spec := schema.schema(&host.specs, name)
+            if !doc.ok || spec < 0 { mailbox.reply(request.directory, .Err("Unknown editor command. Use tools/list.")); return }
+            error := schema.validate(&host.specs, spec, &doc, input, "arguments")
+            if error.len > 0 { mailbox.reply(request.directory, .Err(error)); return }
+            if name == "editor_screenshot" { host.capture = request.directory; return }
+            mailbox.reply(request.directory, dispatch(&mut host, &mut state, &mut graph, name, &doc, input))
+        },
+    }
+}
+
+fn wire(name: string, arguments: string) -> string {
+    "{\"name\":" + json.quote(name) + ",\"arguments\":" + arguments + "}"
+}
+
+fn invoke(endpoint: &mut string, name: string, doc: &json.Doc, args: i32) -> Result<string, string> {
+    result := mailbox.call(endpoint.clone(), wire(name, if args < 0 { "{}" } else { doc.raw_json(args) }), false)?
+    .Ok(result.json)
+}
+
+fn screenshot(endpoint: &string) -> Result<string, string> {
+    response := mailbox.call(endpoint.clone(), wire("editor_screenshot", "{}"), true)?
+    defer { _ := fs.remove_all(response.directory) }
+    image.capture_base64(response.frame_path, 1600)
+}
+
+struct Connection { platform: protocol.Protocol, endpoint: string }
+
+fn handle(client: &mut Connection, body: string) -> string {
+    protocol.handle(&mut client.platform, &mut client.endpoint, body, invoke, screenshot)
+}
+
+pub fn listen(endpoint: string) -> i32 {
+    rpc := protocol.new_tools("storm-editor", catalog(),
+        "Read and edit the open Storm Studio scene by object ID. Use editor_inspect first and editor_screenshot to verify the result.", "editor_screenshot")
+    protocol.serve(Connection { platform: rpc, endpoint: endpoint.clone() }, handle)
+}
+
+pub fn cli(endpoint: string, body: string) -> Result<string, string> {
+    doc := json.Doc::parse_text(body)
+    if !doc.ok || doc.kind(doc.root) != .Object { return .Err("Expected a JSON object with name and arguments") }
+    name := doc.get_str(doc.root, "name").unwrap_or_default()
+    if name == "tools/list" { return .Ok(catalog()) }
+    if endpoint.len == 0 { return .Err("Editor commands require --editor-session FILE") }
+    if name == "editor_screenshot" {
+        specs := json.Doc::parse_text(catalog())
+        error := schema.validate(&specs, schema.schema(&specs, name), &doc, doc.field(doc.root, "arguments"), "arguments")
+        if error.len > 0 { return .Err(error) }
+        png := screenshot(&endpoint)?
+        return .Ok("{\"mimeType\":\"image/png\",\"data\":" + json.quote(png) + "}")
+    }
+    result := mailbox.call(endpoint, body, false)?
+    .Ok(result.json)
+}

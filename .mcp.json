@@ -1,5 +1,9 @@
 {
   "mcpServers": {
+    "storm-editor": {
+      "command": "./build/storm",
+      "args": ["--editor-mcp", "--editor-session", ".storm-editor"]
+    },
     "storm": {
       "command": "./build/storm",
       "args": ["--mcp"]

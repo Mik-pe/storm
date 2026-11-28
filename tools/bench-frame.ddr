@@ -6,6 +6,7 @@ import scene
 import sys
 import text
 import ui
+import ui.view as views
 import ui.widgets as widgets
 import editor
 import studio.gallery as gallery
@@ -43,7 +44,7 @@ fn redraws() {
     for tick in 0..4000 {
         canvas.clear()
         editor.draw(&mut studio, &mut canvas, &atlas, &mut world, &pointer, &editor.Frame {
-            w: 1280.0, h: 800.0, wheel: 0.0, navigation: .None, title: "Material study",
+            w: 1280.0, h: 800.0, wheel: 0.0, navigation: .None, entry: views.Entry { text: "", erase: false }, title: "Material study",
             fps: f32(100 + tick % 10), passes: 5, device: "Apple M5", can_play: true,
         })
         floats += i64(canvas.take().len)

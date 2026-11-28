@@ -1,5 +1,9 @@
+capability filesystem
+
 // The material study is an optional workspace hosted by storm-runtime.
 import editor
+import .agent
+import .mailbox
 import .gallery
 import .game
 import assets
@@ -13,6 +17,7 @@ import runtime
 import runtime.args as args
 import scene as scenegraph
 import text
+import sys
 import ui
 import ui.view as view_ui
 import ui.widgets as widgets
@@ -142,6 +147,10 @@ pub fn flags() -> []args.Flag {
     list.push(args.Flag { name: "--glb", args: "MODEL.glb", text: "load a model on the studio plinth" })
     list.push(args.Flag { name: "--texture", args: "FLOOR.ppm", text: "use a Storm capture as the studio floor texture" })
     list.push(args.Flag { name: "--no-glass", args: "", text: "start the studio without glass" })
+    list.push(args.Flag { name: "--editor-session", args: "FILE", text: "publish or connect to a local Studio session" })
+    list.push(args.Flag { name: "--editor-mcp", args: "", text: "serve the live editor tools via MCP stdio" })
+    list.push(args.Flag { name: "--editor-command", args: "JSON", text: "invoke a live editor tool and print its JSON result" })
+    list.push(args.Flag { name: "--editor-headless", args: "", text: "run the editor session on an offscreen surface" })
     list
 }
 
@@ -152,16 +161,18 @@ pub fn launch_mode(argv: &[]string, fallback: runtime.Launch) -> runtime.Launch 
 }
 
 struct Workspace {
-    graph: scenegraph.Graph, study: gallery.Study, editor: editor.State, baseline: input.Camera, glass_visible: bool, collectibles: ecs.Entity,
+    graph: scenegraph.Graph, study: gallery.Study, editor: editor.State, baseline: input.Camera, glass_visible: bool, collectibles: ecs.Entity, agent: agent.Session,
+    packed_query: string, headless: bool,
 }
 
 impl Workspace {
-    fn empty() -> Self {
+    fn empty(directory: string, headless: bool) -> Self {
         missing := ecs.Entity { index: -1, generation: 0 }
         Self { graph: scenegraph.Graph::new(),
             study: gallery.Study { hub: missing, floor: missing, ring: missing, left: missing, right: missing, pieces: [missing, missing, missing] },
             editor: editor.new(missing, true, true, false),
-            baseline: input.Camera::new(core.vec3(0.0, 0.0, 0.0)), glass_visible: true, collectibles: missing }
+            baseline: input.Camera::new(core.vec3(0.0, 0.0, 0.0)), glass_visible: true, collectibles: missing,
+            agent: agent.session(directory), packed_query: "", headless: headless }
     }
 }
 
@@ -203,10 +214,28 @@ fn setup<B: gfx.Backend>(workspace: &mut Workspace, window: &mut B, argv: &[]str
 
 impl runtime.Workspace for Workspace {
     fn available(&self) -> bool { true }
+    fn renders_on_request(&self) -> bool { self.headless }
+    fn text_focused(&self) -> bool { editor.typing(&self.editor) }
+    fn poll_tools(&mut self) -> bool {
+        agent.poll(&mut self.agent, &mut self.editor, &mut self.graph, sys.now_ms())
+        refresh := replace(&mut self.agent.labels_changed, false) || self.packed_query != self.editor.query
+        if refresh { self.packed_query = self.editor.query.clone() }
+        refresh
+    }
+    fn capture_path(&self) -> string {
+        if self.agent.capture.len == 0 { "" } else { self.agent.capture + "/frame.ppm" }
+    }
+    fn captured(&mut self, result: Result<(), string>) {
+        directory := replace(&mut self.agent.capture, "")
+        match result {
+            .Ok => { mailbox.reply(directory, .Ok("{}")) },
+            .Err(message) => { mailbox.reply(directory, .Err(message.clone())) },
+        }
+    }
 
     fn graph(&self) -> &scenegraph.Graph from self { &self.graph }
     fn labels(&self) -> []string {
-        mut labels: []string = ["◇"]
+        mut labels: []string = [self.editor.query.clone()]
         for node in self.graph.nodes() { labels.push(self.graph.name(node)) }
         labels
     }
@@ -214,16 +243,18 @@ impl runtime.Workspace for Workspace {
         mut camera := previous
         elapsed := if dt > 0.1 { 0.1 } else { dt }
         keys := &frame.input
-        over_view := editor.in_viewport(&self.editor, keys.mouse.x, keys.mouse.y, f32(frame.width), f32(frame.height))
-        camera.update(keys, f32(elapsed), over_view && keys.button_down(.Right))
-        if keys.hit(.R) {
-            camera = self.baseline.clone()
-            reset_collectibles(&mut self)
+        if !editor.typing(&self.editor) {
+            over_view := editor.in_viewport(&self.editor, keys.mouse.x, keys.mouse.y, f32(frame.width), f32(frame.height))
+            camera.update(keys, f32(elapsed), over_view && keys.button_down(.Right))
+            if keys.hit(.R) {
+                camera = self.baseline.clone()
+                reset_collectibles(&mut self)
+            }
+            if keys.hit(.F) { self.editor.focus = !self.editor.focus }
+            if keys.hit(.T) { self.editor.glass = !self.editor.glass }
+            if keys.hit(.G) { self.editor.shadows = !self.editor.shadows }
+            if keys.hit(.E) { self.editor.effects = !self.editor.effects }
         }
-        if keys.hit(.F) { self.editor.focus = !self.editor.focus }
-        if keys.hit(.T) { self.editor.glass = !self.editor.glass }
-        if keys.hit(.G) { self.editor.shadows = !self.editor.shadows }
-        if keys.hit(.E) { self.editor.effects = !self.editor.effects }
         if self.glass_visible != self.editor.glass {
             for pane in [self.study.left, self.study.right] {
                 if self.editor.glass { _ := self.graph.set_shape(pane, .Cube) } else { _ := self.graph.remove_shape(pane) }
@@ -245,12 +276,14 @@ impl runtime.Workspace for Workspace {
     fn overlay(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, pointer: &widgets.Pointer, details: &runtime.Overlay) {
         nav := if details.keys.hit(.Tab) {
             if details.keys.down(.Shift) { view_ui.Navigation.Previous } else { view_ui.Navigation.Next }
-        } else if details.keys.hit(.Enter) { view_ui.Navigation.Activate }
+        } else if details.keys.hit(.Escape) { view_ui.Navigation.Dismiss }
+        else if details.keys.hit(.Enter) { view_ui.Navigation.Activate }
         else if details.keys.hit(.Left) { view_ui.Navigation.Decrease }
         else if details.keys.hit(.Right) { view_ui.Navigation.Increase }
         else { view_ui.Navigation.None }
         editor.draw(&mut self.editor, &mut canvas, atlas, &mut self.graph, pointer, &editor.Frame {
-            w: details.width, h: details.height, wheel: details.wheel, navigation: nav, title: "Material study",
+            w: details.width, h: details.height, wheel: details.wheel, navigation: nav,
+            entry: view_ui.Entry { text: details.text.clone(), erase: details.keys.hit(.Backspace) }, title: "Material study",
             fps: details.fps, passes: details.passes, device: details.device.clone(), can_play: true,
         })
     }
@@ -259,5 +292,15 @@ impl runtime.Workspace for Workspace {
 pub fn run<B: gfx.Backend, P: runtime.Project>(open: fn(string, i32, i32) -> Result<B, string>, title: string,
     argv: &[]string, move initial: P, launch: runtime.Launch, shot: string) -> Result<(), string> {
     if launch != .Workspace && args.value(argv, "--texture").len > 0 { return .Err("--texture needs the studio") }
-    runtime.drive<B, P, Workspace>(open, title, argv, move initial, Workspace::empty(), setup<B>, launch, shot)
+    endpoint := args.value(argv, "--editor-session")
+    if endpoint.len > 0 && (launch != .Workspace || shot.len > 0) {
+        return .Err("Start an editor session in Studio without --capture")
+    }
+    mut session := if endpoint.len > 0 { Option<mailbox.Session>.Some(mailbox.open(endpoint)?) } else { .None }
+    defer {
+        match &mut session { .Some(opened) => mailbox.close(&mut opened), .None => {} }
+    }
+    directory := match &session { .Some(opened) => opened.directory.clone(), .None => "" }
+    workspace := Workspace::empty(directory, args.flag(argv, "--editor-headless"))
+    runtime.drive<B, P, Workspace>(open, title, argv, move initial, move workspace, setup<B>, launch, shot)
 }

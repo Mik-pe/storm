@@ -4,6 +4,7 @@ capability stdio
 import .app
 import runtime
 import studio
+import studio.agent as agent
 import runtime.args as args
 import runtime.watch as watch
 import mcp
@@ -34,7 +35,25 @@ fn main() -> i32 {
         print(args.usage("storm", "Open Storm Studio, load a model, or playtest an authored scene.", &flags))
         return 2
     }
+    endpoint := args.value(&argv, "--editor-session")
+    if args.flag(&argv, "--editor-session") && endpoint.len == 0 {
+        _ := sys.eprint("storm: --editor-session requires a file")
+        return 2
+    }
+    if args.flag(&argv, "--editor-mcp") {
+        if endpoint.len == 0 { _ := sys.eprint("storm: editor clients require --editor-session FILE"); return 2 }
+        return agent.listen(endpoint)
+    }
+    if args.flag(&argv, "--editor-command") {
+        command := args.value(&argv, "--editor-command")
+        match agent.cli(endpoint, command) {
+            .Ok(data) => { print(data); return 0 },
+            .Err(message) => { _ := sys.eprint("storm: " + message); return 1 },
+        }
+    }
     if args.flag(&argv, "--mcp") { return mcp.serve(preview) }
+    headless := args.flag(&argv, "--editor-headless")
+    if headless && endpoint.len == 0 { _ := sys.eprint("storm: --editor-headless requires --editor-session FILE"); return 2 }
     capture := args.flag(&argv, "--capture")
     project := match app.load(&argv) {
         .Ok(p) => p, .Err(message) => { _ := sys.eprint(message); return 1 },
@@ -42,10 +61,10 @@ fn main() -> i32 {
     launch := studio.launch_mode(&argv, .Workspace)
     shot := args.value(&argv, "--capture")
     result := if target_is("macos") {
-        open := if capture { metal.open_preview } else { metal.open }
+        open := if capture || headless { metal.open_preview } else { metal.open }
         studio.run<metal.Renderer, app.Game>(open, "Storm", &argv, move project, launch, shot)
     } else {
-        open := if capture { vulkan.open_preview } else { vulkan.open }
+        open := if capture || headless { vulkan.open_preview } else { vulkan.open }
         studio.run<vulkan.Window, app.Game>(open, "Storm", &argv, move project, launch, shot)
     }
     match result {

@@ -4,6 +4,7 @@ import .layout
 import .ui
 import .widgets
 import text
+import std.text.grapheme as segmentation
 
 pub struct Key { group: i64, item: i64 }
 pub fn key(group: i64, item: i64) -> Key { Key { group: group, item: item } }
@@ -16,12 +17,12 @@ pub struct Style {
 }
 
 pub fn dark() -> Style {
-    Style { root: ui.rgb(0.078, 0.089, 0.113), chrome: ui.rgb(0.096, 0.111, 0.140),
-        panel: ui.rgb(0.111, 0.128, 0.155), fill: ui.rgb(0.144, 0.163, 0.201),
-        raised: ui.rgb(0.190, 0.213, 0.267), border: ui.rgb(0.247, 0.277, 0.328),
-        accent: ui.rgb(0.365, 0.508, 0.990), selection: ui.rgb(0.177, 0.228, 0.343),
-        ink: ui.rgb(0.940, 0.953, 0.980), quiet: ui.rgb(0.690, 0.737, 0.815),
-        accent_ink: ui.rgb(0.057, 0.086, 0.157) }
+    Style { root: ui.rgb(0.064, 0.072, 0.088), chrome: ui.rgb(0.073, 0.082, 0.1),
+        panel: ui.rgb(0.099, 0.114, 0.139), fill: ui.rgb(0.137, 0.158, 0.191),
+        raised: ui.rgb(0.191, 0.216, 0.255), border: ui.rgb(0.238, 0.268, 0.309),
+        accent: ui.rgb(0.447, 0.898, 0.753), selection: ui.rgb(0.132, 0.259, 0.239),
+        ink: ui.rgb(0.944, 0.959, 0.965), quiet: ui.rgb(0.700, 0.753, 0.791),
+        accent_ink: ui.rgb(0.032, 0.110, 0.094) }
 }
 
 pub enum Tone { Quiet, Normal, Heading }
@@ -32,10 +33,12 @@ pub struct Slider { value: f32, lo: f32, hi: f32 }
 
 enum Kind {
     Fill(ui.Color),
+    Rounded(f32, ui.Color),
     Label(Tone, Align),
     Button(ButtonStyle),
     Toggle(bool),
     Slider(Slider),
+    Field(string),
 }
 
 struct Node<A> {
@@ -50,6 +53,10 @@ impl View<A> {
 
     pub fn fill(&mut self, rect: layout.Rect, color: ui.Color) {
         self.nodes.push(Node<A> { rect: rect, title: "", kind: .Fill(color), identity: .None, action: .None })
+    }
+
+    pub fn rounded(&mut self, rect: layout.Rect, radius: f32, color: ui.Color) {
+        self.nodes.push(Node<A> { rect: rect, title: "", kind: .Rounded(radius, color), identity: .None, action: .None })
     }
 
     pub fn label(&mut self, rect: layout.Rect, title: string, tone: Tone, align: Align) {
@@ -67,14 +74,22 @@ impl View<A> {
     pub fn slider(&mut self, rect: layout.Rect, id: Key, title: string, model: Slider, move action: A) {
         self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Slider(model), identity: .Some(id), action: .Some(move action) })
     }
+
+    pub fn field(&mut self, rect: layout.Rect, id: Key, value: string, placeholder: string, move action: A) {
+        self.nodes.push(Node<A> { rect: rect, title: placeholder.clone(), kind: .Field(value.clone()), identity: .Some(id), action: .Some(move action) })
+    }
 }
 
-pub enum Event<A> { Press(A), Slide(A, f32) }
-pub enum Navigation { None, Next, Previous, Activate, Decrease, Increase }
+pub enum Event<A> { Press(A), Slide(A, f32), Text(A, string) }
+pub enum Navigation { None, Next, Previous, Activate, Decrease, Increase, Dismiss }
 
 pub struct State { pressed: Option<Key>, focus: Option<Key> }
 impl State {
     pub fn new() -> Self { Self { pressed: .None, focus: .None } }
+
+    pub fn focused(&self, wanted: Key) -> bool {
+        match self.focus { .Some(id) => same(&id, &wanted), .None => false }
+    }
 }
 
 fn lookup<A>(view: &View<A>, key: &Option<Key>) -> i32 {
@@ -129,8 +144,9 @@ fn paint<A>(node: &Node<A>, canvas: &mut ui.Canvas, atlas: &text.Atlas, style: &
     if r.w <= 0.0 || r.h <= 0.0 { return }
     match node.kind {
         .Fill(color) => canvas.rect(r.x, r.y, r.w, r.h, color),
+        .Rounded(radius, color) => canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, radius, color),
         .Label(tone, align) => {
-            size: f32 = if tone == .Heading { 17.0 } else if tone == .Quiet { 12.0 } else { 14.0 }
+            size: f32 = if tone == .Heading { 18.0 } else if tone == .Quiet { 13.0 } else { 15.0 }
             ink := if tone == .Quiet { style.quiet.clone() } else { style.ink.clone() }
             text_at(&mut canvas, atlas, r, node.title, size, align, &ink)
         },
@@ -139,43 +155,78 @@ fn paint<A>(node: &Node<A>, canvas: &mut ui.Canvas, atlas: &text.Atlas, style: &
                 fill := if kind == .Primary { style.accent.clone() }
                     else if kind == .Selected { style.selection.clone() }
                     else if down || over { style.raised.clone() } else { style.fill.clone() }
-                canvas.rounded_rect(r.x, r.y, r.w, r.h, 5.0, &fill)
+                if kind == .Outline {
+                    canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, 7.0, &style.border)
+                    canvas.smooth_rounded_rect(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 6.0, &fill)
+                } else {
+                    canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, 7.0, &fill)
+                }
             }
             if kind == .Selected || focus { canvas.rect(r.x + 2.0, r.y + 4.0, 2.0, r.h - 8.0, &style.accent) }
             ink := if kind == .Primary { style.accent_ink.clone() } else { style.ink.clone() }
             row := kind == .Selected || kind == .Row
             inset: f32 = if row { 5.0 } else { 9.0 }
-            text_at(&mut canvas, atlas, &r.inset(inset, 0.0), node.title, 13.0, if row { .Start } else { .Center }, &ink)
+            text_at(&mut canvas, atlas, &r.inset(inset, 0.0), node.title, 14.0, if row { .Start } else { .Center }, &ink)
         },
         .Slider(model) => {
             track := bar(r)
             span := model.hi - model.lo
             fraction := if span > 0.0 { unit((model.value - model.lo) / span) } else { 0.0 }
             knob := track.x + fraction * track.w
-            if over || focus { canvas.rounded_rect(r.x, r.y, r.w, r.h, 4.0, &style.fill) }
+            if over || focus { canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, 4.0, &style.fill) }
             text_at(&mut canvas, atlas, &layout.rect(r.x + 3.0, r.y, track.x - r.x - 7.0, r.h), node.title, 12.0, .Start, &style.quiet)
             if track.w > 0.0 {
-                canvas.rounded_rect(track.x, track.y, track.w, track.h, 2.0, &style.border)
-                canvas.rounded_rect(track.x, track.y, knob - track.x, track.h, 2.0, &style.accent)
-                canvas.rounded_rect(knob - 4.0, track.y - 2.0, 8.0, 8.0, 4.0, &style.ink)
+                canvas.smooth_rounded_rect(track.x, track.y, track.w, track.h, 2.0, &style.border)
+                canvas.smooth_rounded_rect(track.x, track.y, knob - track.x, track.h, 2.0, &style.accent)
+                canvas.smooth_rounded_rect(knob - 4.0, track.y - 2.0, 8.0, 8.0, 4.0, &style.ink)
             }
-            text_at(&mut canvas, atlas, &layout.rect(r.x + r.w - 36.0, r.y, 33.0, r.h), widgets.decimal2(model.value), 12.0, .End, &style.ink)
+            numeric := layout.rect(r.x + r.w - 42.0, r.y + 3.0, 42.0, r.h - 6.0)
+            canvas.smooth_rounded_rect(numeric.x, numeric.y, numeric.w, numeric.h, 5.0, &style.fill)
+            text_at(&mut canvas, atlas, &numeric.inset(4.0, 0.0), widgets.decimal2(model.value), 12.0, .End, &style.ink)
+        },
+        .Field(value) => {
+            border := if focus { style.accent.clone() } else { style.border.clone() }
+            canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, 7.0, &border)
+            canvas.smooth_rounded_rect(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 6.0, &style.root)
+            content := r.inset(11.0, 0.0)
+            if value.len == 0 { text_at(&mut canvas, atlas, &content, node.title, 14.0, .Start, &style.quiet) }
+            else { text_at(&mut canvas, atlas, &content, value, 14.0, .Start, &style.ink) }
         },
         .Toggle(checked) => {
-            if over || focus { canvas.rounded_rect(r.x, r.y, r.w, r.h, 4.0, &style.fill) }
+            if over || focus { canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, 4.0, &style.fill) }
             x := r.x + r.w - 32.0
             y := r.y + (r.h - 15.0) * 0.5
             text_at(&mut canvas, atlas, &layout.rect(r.x + 3.0, r.y, r.w - 37.0, r.h), node.title, 13.0, .Start, &style.ink)
-            canvas.rounded_rect(x, y, 29.0, 15.0, 7.5, &if checked { style.accent } else { style.border })
-            canvas.rounded_rect(x + (if checked { 16.0 } else { 3.0 }), y + 2.0, 11.0, 11.0, 5.5, &style.ink)
+            canvas.smooth_rounded_rect(x, y, 29.0, 15.0, 7.5, &if checked { style.accent } else { style.border })
+            canvas.smooth_rounded_rect(x + (if checked { 16.0 } else { 3.0 }), y + 2.0, 11.0, 11.0, 5.5, &style.ink)
         },
     }
 }
 
 // Return at most one model event. The last interactive node at a point wins.
 // A drag keeps its key when the view is rebuilt, and cancels if that key disappears.
+pub struct Entry { text: string, erase: bool }
+
+fn changed_text(value: string, entry: &Entry) -> string {
+    mut out := value.clone()
+    if entry.erase {
+        mut last := 0
+        mut end := 0
+        while end < out.len {
+            last = end
+            end = segmentation.next_boundary(out.as_str(), end)
+        }
+        out = out[0..last]
+    }
+    for byte in entry.text.bytes() {
+        if byte < 32 || byte == 127 { return out }
+    }
+    if out.len + entry.text.len <= 240 { return out + entry.text }
+    out
+}
+
 pub fn frame<A: Clone>(view: &View<A>, state: &mut State, canvas: &mut ui.Canvas, atlas: &text.Atlas,
-    pointer: &widgets.Pointer, style: &Style, navigation: Navigation) -> Option<Event<A>> {
+    pointer: &widgets.Pointer, style: &Style, navigation: Navigation, entry: &Entry) -> Option<Event<A>> {
     mut captured := lookup(view, &state.pressed)
     mut focus := lookup(view, &state.focus)
     if !pointer.down || captured < 0 { state.pressed = .None; captured = -1 }
@@ -186,12 +237,23 @@ pub fn frame<A: Clone>(view: &View<A>, state: &mut State, canvas: &mut ui.Canvas
     }
     if navigation == .Next { focus = focused(view, focus, 1) }
     if navigation == .Previous { focus = focused(view, focus, -1) }
-    if pointer.pressed && captured < 0 { captured = hot; focus = hot }
+    if navigation == .Dismiss { focus = -1; captured = -1 }
+    else if pointer.pressed && captured < 0 { captured = hot; focus = hot }
     state.pressed = if captured < 0 { .None } else { view.nodes[captured].identity.clone() }
     state.focus = if focus < 0 { .None } else { view.nodes[focus].identity.clone() }
 
     for i in 0..view.nodes.len {
         paint(&view.nodes[i], &mut canvas, atlas, style, hot == i, captured == i, focus == i)
+    }
+    if focus >= 0 && (entry.erase || entry.text.len > 0) {
+        focused := &view.nodes[focus]
+        match focused.kind {
+            .Field(value) => {
+                next := changed_text(value, entry)
+                if next != value { return .Some(Event<A>.Text(focused.action.clone().unwrap(), next)) }
+            },
+            _ => {},
+        }
     }
     keyboard := navigation == .Activate || navigation == .Decrease || navigation == .Increase
     target := if keyboard { focus } else { captured }
@@ -213,6 +275,7 @@ pub fn frame<A: Clone>(view: &View<A>, state: &mut State, canvas: &mut ui.Canvas
             value := model.lo + span * fraction
             if value != model.value { return .Some(Event<A>.Slide(move action, value)) }
         },
+        .Field(_) => {},
         _ => {
             if pointer.pressed || navigation == .Activate { return .Some(Event<A>.Press(move action)) }
         },

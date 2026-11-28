@@ -1,0 +1,117 @@
+// The same scene commands serve local controls and automation.
+import core
+import ecs
+import scene
+
+pub struct MaterialPatch {
+    red: Option<f32>, green: Option<f32>, blue: Option<f32>, opacity: Option<f32>,
+    metallic: Option<f32>, roughness: Option<f32>, emission: Option<f32>,
+}
+
+pub struct Patch {
+    name: Option<string>, position: Option<core.Vec3>, rotation: Option<core.Vec3>,
+    scale: Option<core.Vec3>, visible: Option<bool>, material: Option<MaterialPatch>,
+}
+
+pub struct NewNode {
+    name: string, shape: Option<scene.Shape>, parent: Option<ecs.Entity>, position: core.Vec3,
+}
+
+pub fn alive(graph: &scene.Graph, entity: ecs.Entity) -> Result<(), string> {
+    if !graph.is_alive(entity) { return .Err("Object no longer exists. Inspect the scene for its current ID.") }
+    .Ok
+}
+
+fn valid_name(name: string) -> bool {
+    if name.len == 0 || name.len > 128 { return false }
+    for character in name.bytes() {
+        if character < 32 || character == 127 { return false }
+    }
+    true
+}
+
+fn finite(value: core.Vec3) -> bool { value.x.is_finite() && value.y.is_finite() && value.z.is_finite() }
+
+pub fn create(graph: &mut scene.Graph, spec: &NewNode) -> Result<ecs.Entity, string> {
+    if !valid_name(spec.name) || !finite(spec.position) { return .Err("Invalid object name or position") }
+    node := match spec.parent {
+        .Some(parent) => { alive(graph, parent)?; graph.create_child(parent, spec.position) },
+        .None => graph.create_root(spec.position),
+    }
+    _ := graph.set_name(node, spec.name.clone())
+    match spec.shape {
+        .Some(shape) => {
+            _ := graph.set_shape(node, shape)
+            _ := graph.set_material(node, scene.material(0.52, 0.24, 0.16, 1.0, 0.20, 0.4))
+        },
+        .None => {},
+    }
+    graph.propagate()
+    .Ok(node)
+}
+
+pub fn remove(graph: &mut scene.Graph, entity: ecs.Entity) -> Result<(), string> {
+    alive(graph, entity)?
+    _ := graph.destroy(entity)
+    graph.propagate()
+    .Ok
+}
+
+pub fn visible(graph: &mut scene.Graph, entity: ecs.Entity, enabled: bool) -> Result<(), string> {
+    alive(graph, entity)?
+    graph.set_visible(entity, enabled)
+    graph.propagate()
+    .Ok
+}
+
+fn allowed(value: f32, high: f32) -> bool { value.is_finite() && value >= 0.0 && value <= high }
+
+pub fn set_surface(graph: &mut scene.Graph, entity: ecs.Entity, field: scene.MaterialField, value: f32) -> Result<(), string> {
+    alive(graph, entity)?
+    if !allowed(value, if field == .Emissive { 4.0 } else { 1.0 }) { return .Err("Material value is out of range") }
+    if !graph.set_material_value(entity, field, value) { return .Err("Object has no material") }
+    .Ok
+}
+
+pub fn set_transform(graph: &mut scene.Graph, entity: ecs.Entity, field: scene.TransformField, value: f32) -> Result<(), string> {
+    alive(graph, entity)?
+    if !value.is_finite() { return .Err("Transform must be finite") }
+    _ := graph.set_transform_value(entity, field, value)
+    graph.propagate()
+    .Ok
+}
+
+pub fn edit(graph: &mut scene.Graph, entity: ecs.Entity, change: &Patch) -> Result<(), string> {
+    alive(graph, entity)?
+    if change.name.is_some() && !valid_name(change.name.clone().unwrap()) { return .Err("Invalid object name") }
+    for v in [change.position, change.rotation, change.scale] {
+        if v.is_some() && !finite(v.unwrap()) { return .Err("Transform must be finite") }
+    }
+    if change.material.is_some() {
+        if !graph.has_material(entity) { return .Err("Object has no material") }
+        mat := change.material.unwrap()
+        for v in [mat.red, mat.green, mat.blue, mat.opacity, mat.metallic, mat.roughness] {
+            if v.is_some() && !allowed(v.unwrap(), 1.0) { return .Err("Material value is out of range") }
+        }
+        if mat.emission.is_some() && !allowed(mat.emission.unwrap(), 4.0) { return .Err("Emission is out of range") }
+    }
+    // Commit only after every field has been validated.
+    if change.name.is_some() { _ := graph.set_name(entity, change.name.clone().unwrap()) }
+    if change.position.is_some() { graph.set_position(entity, change.position.unwrap()) }
+    if change.rotation.is_some() {
+        angles := change.rotation.unwrap()
+        graph.set_angles(entity, angles.x, angles.y, angles.z)
+    }
+    if change.scale.is_some() { graph.set_scale(entity, change.scale.unwrap()) }
+    if change.visible.is_some() { graph.set_visible(entity, change.visible.unwrap()) }
+    if change.material.is_some() {
+        mat := change.material.unwrap()
+        fields := [scene.MaterialField.BaseR, .BaseG, .BaseB, .BaseA, .Metallic, .Roughness, .Emissive]
+        values := [mat.red, mat.green, mat.blue, mat.opacity, mat.metallic, mat.roughness, mat.emission]
+        for i in 0..fields.len {
+            if values[i].is_some() { _ := graph.set_material_value(entity, fields[i], values[i].unwrap()) }
+        }
+    }
+    graph.propagate()
+    .Ok
+}

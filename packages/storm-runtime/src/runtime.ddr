@@ -100,13 +100,18 @@ impl Transport {
 }
 
 pub struct Overlay {
-    width: f32, height: f32, wheel: f32, fps: f32, passes: i32, device: string, keys: gfx.Input,
+    width: f32, height: f32, wheel: f32, fps: f32, passes: i32, device: string, keys: gfx.Input, text: string,
 }
 
 // An optional authoring workspace lives beside the game. An exported game
 // instantiates the same loop with NoWorkspace and depends only on this package.
 pub trait Workspace {
     fn available(&self) -> bool
+    fn poll_tools(&mut self) -> bool { false }
+    fn renders_on_request(&self) -> bool { false }
+    fn text_focused(&self) -> bool { false }
+    fn capture_path(&self) -> string { "" }
+    fn captured(&mut self, result: Result<(), string>) {}
     fn labels(&self) -> []string { [] }
     fn graph(&self) -> &scenegraph.Graph from self
     fn update(&mut self, frame: &gfx.Frame, dt: f64, camera: input.Camera) -> input.Camera
@@ -221,7 +226,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     }
     tool_labels := if has_tools { workspace.labels() } else { [] }
     for label in &tool_labels {
-        if !atlas.add_text(&face, label) { return stop(move window, "could not pack workspace glyphs") }
+        _ := atlas.add_text(&face, label)
     }
     pixels := atlas.copy_pixels()
     atlas_size := atlas.size()
@@ -236,7 +241,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     mut running := true
     while running {
         frame := window.poll()
-        if frame.closed || frame.input.down(gfx.Key.Escape) { running = false; continue }
+        if frame.closed || (frame.input.hit(gfx.Key.Escape) && (transport.playing() || !workspace.text_focused())) { running = false; continue }
         mut dt := if previous == 0.0 { 0.016 } else { frame.time - previous }
         previous = frame.time
         if frames > 0 && dt > 0.0 {
@@ -245,25 +250,42 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
         }
 
         if frame.width <= 0 || frame.height <= 0 { continue }
+        mut scene_reloaded := false
         if !capturing {
             match project.reload(frame.time) {
-                .Ok(changed) => {
-                    if changed {
-                        mut fresh := text.Atlas::new(atlas_size, atlas_size)
-                        if !fresh.add_text(&face, GLYPHS) { return stop(move window, "could not pack UI glyphs") }
-                        for label in project.labels() {
-                            if !fresh.add_text(&face, label) { return stop(move window, "could not pack scene glyphs") }
-                        }
-                        for label in &tool_labels {
-                            if !fresh.add_text(&face, label) { return stop(move window, "could not pack workspace glyphs") }
-                        }
-                        updated := window.ui_atlas(fresh.copy_pixels(), atlas_size, atlas_size)
-                        if updated.is_err() { return stop(move window, updated.unwrap_err()) }
-                        atlas = move fresh
-                        sphere_vertices = project.sphere_geometry()
-                    }
-                },
+                .Ok(changed) => { scene_reloaded = changed },
                 .Err(message) => { _ := sys.eprint("storm: scene reload: " + message) },
+            }
+        }
+        labels_changed := has_tools && workspace.poll_tools()
+        if scene_reloaded { sphere_vertices = project.sphere_geometry() }
+        if scene_reloaded || labels_changed {
+            mut fresh := text.Atlas::new(atlas_size, atlas_size)
+            if !fresh.add_text(&face, GLYPHS) { return stop(move window, "could not pack UI glyphs") }
+            for label in project.labels() {
+                if !fresh.add_text(&face, label) { return stop(move window, "could not pack scene glyphs") }
+            }
+            if has_tools {
+                for label in workspace.labels() {
+                    _ := fresh.add_text(&face, label)
+                }
+            }
+            updated := window.ui_atlas(fresh.copy_pixels(), atlas_size, atlas_size)
+            if updated.is_err() { return stop(move window, updated.unwrap_err()) }
+            atlas = move fresh
+        }
+
+        mut tool_capture := if has_tools { workspace.capture_path() } else { "" }
+        if has_tools && workspace.renders_on_request() && tool_capture.len == 0 {
+            sys.sleep_ms(12)
+            continue
+        }
+        if tool_capture.len > 0 {
+            armed := window.capture_next()
+            if armed.is_err() {
+                workspace.captured(armed)
+                if workspace.renders_on_request() { continue }
+                tool_capture = ""
             }
         }
         if has_tools && workspace.wants_play() {
@@ -311,7 +333,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
             action = project.hud(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height), paused, paused || capturing, has_tools)
         } else {
             workspace.overlay(&mut canvas, &atlas, &pointer, &Overlay {
-                width: f32(frame.width), height: f32(frame.height), wheel: mouse.scroll, fps: fps, passes: passes, device: device.clone(), keys: frame.input.clone(),
+                width: f32(frame.width), height: f32(frame.height), wheel: mouse.scroll, fps: fps, passes: passes, device: device.clone(), keys: frame.input.clone(), text: window.take_text(),
             })
         }
         match window.ui_draw(canvas.take(), [f32(frame.width), f32(frame.height)]) {
@@ -323,6 +345,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
             return stop(move window, ended.unwrap_err())
         }
         frames = ended.unwrap()
+        if tool_capture.len > 0 { workspace.captured(window.save_capture(tool_capture)) }
         if capturing {
             match window.save_capture(shot) {
                 .Ok => { if !exporting { _ := sys.eprint("storm: wrote " + shot) } },

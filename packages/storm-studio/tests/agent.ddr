@@ -1,0 +1,40 @@
+capability filesystem
+
+import ..src.agent
+import ..src.mailbox
+import core
+import editor
+import scene
+import std.fs as fs
+import std.json as json
+import sys
+
+@test fn editor_commands_share_selection_and_validate_before_editing() {
+    root := fs.temp_dir("storm-editor-test-")
+    assert(root.ok)
+    defer { _ := fs.remove_all(root.value) }
+    endpoint := root.value + "/studio.json"
+    mut session := mailbox.open(endpoint).unwrap()
+    defer { mailbox.close(&mut session) }
+    assert(mailbox.open(endpoint).is_err())
+    queue := session.directory + "/request-test"
+    assert(sys.mkdir(queue).ok)
+    mut host := agent.session(session.directory)
+    mut graph := scene.Graph::new()
+    object := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(object, "Group")
+    mut state := editor.new(object, true, true, false)
+    change := "{\"name\":\"editor_edit\",\"arguments\":{\"id\":\"0:0\",\"name\":\"Changed\",\"material\":{\"red\":0.5}}}"
+    assert(fs.write_private_text_atomic(queue + "/request.json", change).is_ok())
+    agent.poll(&mut host, &mut state, &mut graph, 0)
+    reply := json.Doc::parse_text(sys.read_text_limit(queue + "/reply.json", 4096).value)
+    assert(reply.ok && !reply.get_bool(reply.root, "ok").unwrap())
+    assert(graph.name(object) == "Group")
+    create := "{\"name\":\"editor_create\",\"arguments\":{\"name\":\"Child\",\"shape\":\"cube\",\"parent\":\"0:0\"}}"
+    assert(fs.write_private_text_atomic(queue + "/request.json", create).is_ok())
+    agent.poll(&mut host, &mut state, &mut graph, 41)
+    created := json.Doc::parse_text(sys.read_text_limit(queue + "/reply.json", 4096).value)
+    assert(created.ok && created.get_bool(created.root, "ok").unwrap())
+    assert(graph.parent_of(state.selected).unwrap().index == object.index)
+    assert(graph.name(state.selected) == "Child")
+}

@@ -1,0 +1,140 @@
+// A local session publishes a small endpoint file. Requests and replies use
+// unique directories inside the private session, with atomic writes.
+capability filesystem, unsafe
+
+import std.fs as fs
+import std.json as json
+import std.text as text
+import sys
+
+const FORMAT: string = "storm-editor-session-1"
+const LIMIT: i64 = 262144
+const TIMEOUT_MS: i64 = 30000
+
+// POSIX releases the lease even if Studio is terminated before cleanup.
+enum Lock { ExclusiveNonblocking = 6 }
+@extern("c", "flock")
+unsafe fn flock(fd: i32, operation: i32) -> i32
+
+pub struct Session { directory: string, lease: fs.File }
+pub struct Request { directory: string, body: string }
+
+fn read_endpoint(path: string) -> Result<string, string> {
+    info := sys.metadata(path)
+    if info.ok && (!info.is_file || info.is_symlink) { return .Err("Expected a Storm editor endpoint file at " + path) }
+    data := sys.read_text_limit(path, 4096)
+    if !data.ok { return .Err("No Studio session at " + path + ". Start Storm with --editor-session.") }
+    doc := json.Doc::parse_text(data.value)
+    if !doc.ok || doc.get_str(doc.root, "format").unwrap_or_default() != FORMAT {
+        return .Err("Expected a Storm editor endpoint at " + path)
+    }
+    session := doc.get_str(doc.root, "directory").unwrap_or_default()
+    if session.len == 0 { return .Err("Editor endpoint has no directory") }
+    .Ok(session)
+}
+
+pub fn open(path: string) -> Result<Session, string> {
+    mut options := fs.OpenOptions::read_write()
+    options.set_create(true)
+    options.set_nofollow(true)
+    options.set_mode(384)
+    lease := match fs.File::open(path + ".lock", options) {
+        .Ok(file) => move file,
+        .Err(_) => { return .Err("Could not reserve an editor endpoint at " + path) },
+    }
+    regular := match lease.metadata() { .Ok(info) => info.is_file, .Err(_) => false }
+    if !regular { return .Err("Expected a regular editor lock file at " + path + ".lock") }
+    acquired := unsafe { flock(lease.fd(), i32(Lock.ExclusiveNonblocking)) == 0 }
+    if !acquired { return .Err("Could not lock Studio endpoint. Another session may be using " + path) }
+    if sys.metadata(path).ok { _ := read_endpoint(path)? }
+    created := fs.temp_dir("storm-editor-")
+    if !created.ok { return .Err("Could not create a private editor session directory") }
+    status := fs.write_private_text_atomic(path, "{\"format\":" + json.quote(FORMAT) + ",\"directory\":" + json.quote(created.value) + "}")
+    if status.is_err() {
+        _ := fs.remove_all(created.value)
+        return .Err("Could not publish Studio endpoint at " + path)
+    }
+    .Ok(Session { directory: created.value, lease: move lease })
+}
+
+pub fn close(session: &mut Session) {
+    _ := fs.remove_all(session.directory)
+    _ := session.lease.close()
+}
+
+fn publish(directory: string, body: string) -> Result<(), string> {
+    status := fs.write_private_text_atomic(directory + "/reply.json", body)
+    if status.is_err() { return .Err("Could not reply to editor client") }
+    .Ok
+}
+
+pub fn reply(directory: string, outcome: Result<string, string>) {
+    message := match outcome {
+        .Ok(data) => "{\"ok\":true,\"result\":" + data + "}",
+        .Err(reason) => "{\"ok\":false,\"error\":" + json.quote(reason) + "}",
+    }
+    _ := publish(directory, message)
+}
+
+pub fn next(session: string) -> Option<Request> {
+    names := match fs.list_dir(session) { .Ok(values) => values, .Err(_) => { return .None } }
+    for name in &names {
+        if !text.starts_with(name, "request-") { continue }
+        path := session + "/" + name
+        if !sys.rename(path + "/request.json", path + "/running.json").ok { continue }
+        data := sys.read_text_limit(path + "/running.json", LIMIT)
+        _ := sys.remove_file(path + "/running.json")
+        if !data.ok {
+            reply(path, .Err("Editor request is too large or unreadable"))
+            return .None
+        }
+        return .Some(Request { directory: path, body: data.value })
+    }
+    .None
+}
+
+fn submit(session: string) -> Result<string, string> {
+    for attempt in 0..128 {
+        directory := session + "/request-" + sys.pid().str() + "-" + sys.now_ms().str() + "-" + attempt.str()
+        status := sys.mkdir(directory)
+        if status.ok { return .Ok(directory) }
+        if status.error != 17 { return .Err("Could not submit a request to the editor") }
+    }
+    .Err("Could not allocate an editor request")
+}
+
+pub struct Response { json: string, frame_path: string, directory: string }
+
+pub fn call(endpoint: string, body: string, wants_frame: bool) -> Result<Response, string> {
+    if i64(body.len) > LIMIT { return .Err("Editor request is too large") }
+    session := read_endpoint(endpoint)?
+    info := sys.metadata(session)
+    if !info.is_dir || info.is_symlink || info.mode.bit_and(63) != 0 {
+        return .Err("Studio session has closed or its directory is not private")
+    }
+    directory := submit(session)?
+    result := exchange(directory, body, wants_frame)
+    if result.is_err() || !wants_frame { _ := fs.remove_all(directory) }
+    result
+}
+
+fn exchange(directory: string, body: string, wants_frame: bool) -> Result<Response, string> {
+    if fs.write_private_text_atomic(directory + "/request.json", body).is_err() { return .Err("Could not write editor request") }
+    deadline := sys.now_ms() + TIMEOUT_MS
+    while sys.now_ms() < deadline {
+        path := directory + "/reply.json"
+        if sys.metadata(path).is_file {
+            data := sys.read_text_limit(path, 4194304)
+            doc := json.Doc::parse_text(data.value)
+            if !data.ok || !doc.ok { return .Err("Editor reply is unreadable or too large") }
+            if !doc.get_bool(doc.root, "ok").unwrap_or(false) {
+                return .Err(doc.get_str(doc.root, "error").unwrap_or("Editor request failed"))
+            }
+            frame := if wants_frame { directory + "/frame.ppm" } else { "" }
+            return .Ok(Response { json: doc.raw_json(doc.field(doc.root, "result")), frame_path: frame, directory: directory.clone() })
+        }
+        if !sys.metadata(directory).is_dir { return .Err("Studio session closed during the request") }
+        sys.sleep_ms(12)
+    }
+    .Err("Studio did not acknowledge the request in time. Inspect the scene before retrying a change.")
+}
