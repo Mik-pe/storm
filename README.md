@@ -102,9 +102,23 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt JPEG (baseline och progressivt; 4:4:4, 4:2:2, 4:2:0, grå, restart-markörer) som RGBA8, valt på filens signatur — 12-bitars JPEG, bitdjup 16 i PNG och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
-| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI med kantutjämnad vektorgeometri, typade vyer, textfält, knappar, reglage och tangentfokus. Testbar utan fönster. | `text` |
+| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI med vektorgeometri, typade vyer, klippta behållare, textfält, knappar, reglage och tangentfokus. Testbar utan fönster. | `gfx`, `text` |
 
 `src/main.ddr` väljer backend. Samma `storm-render` ritar Studio, provspelningen och förhandsbilderna från MCP. Spel kan använda `storm-runtime` för fönsterloopen eller anropa `render.frame.Renderer` med egen loop. Studio och editorn är valfria för spelreleasen. Se [paketgränserna](docs/design.md#21-spelprojekt-och-studio).
+
+### UI i spel
+
+`runtime.Project.draw_hud` ger spel en pekare, tangentnavigering, textinmatning
+och ett `view.State` som lever mellan bildrutorna. Bygg en `View<Action>`,
+rita den med `view.frame` och hantera den typade händelsen i spelet.
+First lights paus-, steg- och omstartsknappar använder den vägen. Spel med
+det tidigare `Project.hud`-gränssnittet fortsätter anropas genom runtime.
+[First lights UI](packages/storm-runtime/src/controls.ddr)
+
+`View.clipped` och `View.scroll` använder samma klippyta för geometri,
+pekarträffar och fokus. `View.modal` begränsar indata till dialogens
+kontroller. Scenträdet bygger bara rader som skär listans synliga yta.
+[Vyer och behållare](packages/storm-ui/src/view.ddr)
 
 ## Fönstret
 

@@ -259,6 +259,17 @@ begärd skärmbild först efter UI-passet. `storm-ui` tar emot text och
 tangenthändelser genom ett gemensamt gränssnitt. AppKit och SDL översätter
 plattformens indata till det formatet.
 
+Studio och First light använder `View<Action>` med samma tangentnavigering.
+`Project.draw_hud` levererar indata och tillstånd till spel. Det tidigare
+`Project.hud` går genom en kompatibilitetsadapter. Adaptern delar
+pekarfångst och reglagens intervallberäkning med typade vyer.
+
+En vy kan infoga en klippt, skrollad eller modal undervy. Klippytorna
+skärs samman när vyn byggs. Ritning och pekarträffar läser samma
+skärning, och tangentfokus hoppar över kontroller utanför ytan. En
+modal undervy begränsar fokus och pekarträffar till sitt eget innehåll.
+Studio använder samma behållare i scenträdet och inspektören.
+
 ## 3. Enums i FFI-lagret
 
 Dunder har enums med värden, `match`, `i32(x)` och validerande `X(number)`.
@@ -408,6 +419,13 @@ ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har
 Ett projekt kan märka upp förgrundsgeometri med `sightline_occluder` på en scennod. Barnen ärver markeringen. Med `gfx.MeshView` kan projektet ange en siktlinje från kameran till sitt motiv. Färgpasset tonar ut blockerande fragment med ett gemensamt skärmfast pixelmönster för alla lager. Skuggpasset använder hela geometrin.
 
 `storm-render` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
+
+UI-geometrin använder en växande vertexström. När bufferten behöver växa
+mitt i en bildruta lever den tidigare bufferten tills GPU:n har läst
+klart sina kommandon. En tom UI-ström lämnar färgpasset som det är.
+Regressionstesterna kontrollerar pixlar från ritkommandon före och efter
+tillväxt över 1 MiB på båda backends. Vulkan-provet körs med
+`dunder run tools/selftest-ui.ddr` i `packages/storm-vulkan`.
 
 `begin_scene(filtered)` väljer färgmål för himmel, ogenomskinlig geometri och transparens. När FXAA eller färgtoning och glöd är aktiva skriver scenen till `scene_color`, en åttabitars färgtextur i bildens upplösning. `post_process` läser scenfärgen och skriver till slutbilden i ett fullskärmspass. HUD och editor ritas sedan ovanpå slutbilden i skärmens pixeltäthet. När båda filtren är avstängda skriver scenen direkt till slutbilden. Fönstret, filcapture och MCP-förhandsvisningen kör samma rendergraf.
 
