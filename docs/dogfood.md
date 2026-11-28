@@ -1154,3 +1154,24 @@ fn main() {
 ```
 
 I Storm kopierar grafikbackendarna omedelbart strömmen till sitt eget minne. Renderaren behåller ändå en ägd kopia per geometrirevision så att backenden kan ta adressen till källan. Rekommendation: överväg en begränsad adress- eller kopieringsoperation vars kontrakt garanterar att lånet stannar inom anropet.
+
+**112. `dunder fmt` läser inte en två nivåer kvalificerad variant i ett `match`-mönster — `Module.Variant` går, `alias.Module.Variant` är `expected ')'` — medan kompilatorn accepterar båda (Dunder 0.13.1).** Symptom: `dunder check --tests` grönt på 81 moduler och `dunder test` grönt, men `dunder fmt --check tests/editor_tree.ddr` svarar `tests/editor_tree.ddr:32:34: expected ')'` med utgång 1 — kolumn 34 är den *andra* punkten i `.Some(scene.Shape.Cube) => { … }`. Alla tre former är lagliga för kompilatorn (mätt: `.Some(.Cube)`, `.Some(Shape.Cube)` och `.Some(scene.Shape.Cube)` ger alla `checked`), så det är ingen felaktig kod som formateraren vägrar utan korrekt kod — och `fmt --check` i pushlistan blir då ett fel på rätt kod. Minimal repro, två filer:
+
+```dunder
+// scene.ddr
+pub enum Shape { Cube, Plane }
+```
+
+```dunder
+// d.ddr
+import scene
+
+fn pick(shape: Option<scene.Shape>) -> bool {
+    match shape {
+        .Some(scene.Shape.Cube) => true,
+        _ => false,
+    }
+}
+```
+
+`dunder check d.ddr` → `checked d.ddr (2 modules)`; `dunder fmt --check d.ddr` → `d.ddr:5:26: expected ')'`, utgång 1 (kolumn 26 är punkten efter `Shape`). Mätt varianter: `.Some(Shape.Cube)` med enumen i samma fil → både `check` och `fmt` gröna; `.Some(scene.Shape.Cube)` genom en import → `check` grönt, `fmt` rött. Formateraren har alltså en egen mönsterparser som klarar en nivå av kvalificering men inte två, och den hänger inte med när kompilatorns grammatik utökas — samma grund som fynd 87 (två parserar, ett språk). Workaround här: bind nyttolasten och jämför — `.Some(shape) => { found = shape == scene.Shape.Cube && … }` (`Shape` är `i32`-backed, så `==` går; `Option<Shape>` saknar `Eq`, så `if x == .Some(scene.Shape.Cube)` är `E3004` och inget alternativ). Rekommendation: låt `fmt` och kompilatorn dela mönstergrammatiken — en form som den ena accepterar och den andra vägrar gör `fmt --check` i pushlistan till ett fel på korrekt kod, och nästa fix i den ena parsern är en ny skillregel i den andra.
