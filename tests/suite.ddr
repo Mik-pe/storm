@@ -70,7 +70,7 @@ struct Spin { speed: f32 }
 
 // --- the application's own logic: arguments and the orb game, no window ---
 
-import studio.args as args
+import runtime.args as args
 import studio.game as game
 import input
 import scene as scenegraph
@@ -246,45 +246,15 @@ import scene as scenegraph
     assert(graph.vertices(solid)[0] == 1.0)
 }
 
-import studio.editor as editor
 import .play_ui as _
 import .app_frame as _
 import .executor as _
 import .flags as _
-import text
-import ui
-import ui.widgets as widgets
-
-@test fn compact_editor_routes_clicks_only_to_visible_tools() {
-    mut graph := scenegraph.Graph::new()
-    first := graph.create_root(core.vec3(0.0, 0.0, 0.0))
-    _ := graph.set_name(first, "Turntable")
-    child := graph.create_child(first, core.vec3(0.0, 0.0, 0.0))
-    _ := graph.set_name(child, "Brass")
-    _ := graph.set_material(child, scenegraph.material(0.8, 0.5, 0.3, 1.0, 0.8, 0.3))
-    mut s := editor.new(first, true, true, false)
-    atlas := text.Atlas::new(16, 16)
-    mut canvas := ui.Canvas::new()
-    points := [[45, 148], [140, 24], [45, 148], [209, 24], [645, 194], [670, 24], [591, 194]]
-    mut metal: f32 = 0.0
-    for i in 0..points.len {
-        p := widgets.Pointer::at(f32(points[i][0]), f32(points[i][1]), true, true)
-        canvas.clear()
-        editor.draw(&mut s, &mut canvas, &atlas, &mut graph, &p, 0.0, 720.0, 520.0, 0.0, 6, "GPU", 0, 8)
-        if i == 0 { assert(s.selected.index == first.index) }
-        if i == 2 { assert(s.selected.index == child.index) }
-        if i == 4 { metal = graph.material_value(child, .Metallic); assert(metal != 0.8) }
-        if i == 6 { assert(s.focus && graph.material_value(child, .Metallic) == metal) }
-        up := widgets.Pointer::at(p.x, p.y, false, false)
-        editor.draw(&mut s, &mut canvas, &atlas, &mut graph, &up, 0.0, 720.0, 520.0, 0.0, 6, "GPU", 0, 8)
-    }
-}
 
 import .play_view as _
 import .scene_file as _
 import .transport as _
 import .launch as _
-import .editor_tree as _
 
 import render
 

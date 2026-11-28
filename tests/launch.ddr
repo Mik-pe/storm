@@ -3,24 +3,25 @@
 // that asks for a file it does not name. `main` only forwards these
 // results to the backend, so these tests are the whole decision.
 import studio
+import runtime
 import std.text as textlib
 import ..src.app as app
 
 @test fn the_launch_mode_follows_the_scene_flags_and_the_fallback_otherwise() {
     game: []string = ["--scene", "level.toml"]
-    assert(studio.launch_mode(&game, .Studio) == studio.Launch.Game)
+    assert(studio.launch_mode(&game, .Workspace) == runtime.Launch.Game)
     play: []string = ["--play"]
-    assert(studio.launch_mode(&play, .Studio) == studio.Launch.Game)
+    assert(studio.launch_mode(&play, .Workspace) == runtime.Launch.Game)
     model: []string = ["--glb", "Fox.glb"]
-    assert(studio.launch_mode(&model, .Game) == studio.Launch.Studio)
+    assert(studio.launch_mode(&model, .Game) == runtime.Launch.Workspace)
     explicit: []string = ["--studio"]
-    assert(studio.launch_mode(&explicit, .Game) == studio.Launch.Studio)
+    assert(studio.launch_mode(&explicit, .Game) == runtime.Launch.Workspace)
     bare: []string = []
-    assert(studio.launch_mode(&bare, .Preview) == studio.Launch.Preview)
-    assert(studio.launch_mode(&bare, .Studio) == studio.Launch.Studio)
+    assert(studio.launch_mode(&bare, .Preview) == runtime.Launch.Preview)
+    assert(studio.launch_mode(&bare, .Workspace) == runtime.Launch.Workspace)
     // Both given: the scene wins, as the usage line lists it first.
     both: []string = ["--scene", "level.toml", "--glb", "Fox.glb"]
-    assert(studio.launch_mode(&both, .Studio) == studio.Launch.Game)
+    assert(studio.launch_mode(&both, .Workspace) == runtime.Launch.Game)
 }
 
 @test fn a_scene_flag_without_a_file_is_refused_by_name() {

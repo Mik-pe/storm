@@ -1,7 +1,7 @@
 // The game's transport, without a window: what each frame's keys and HUD
 // action do to the level's mode, and the one simulation call that follows.
-import studio as app
-import studio.controls as hud
+import runtime as app
+import runtime.controls as hud
 import ..src.play_view as view
 import gfx
 import play
@@ -101,12 +101,12 @@ fn idle() -> hud.Action { hud.Action.Idle }
     mut t := app.Transport::new(.Running, .None)
     none := gfx.Input::empty()
     frame(&mut t, &none, .Studio, &mut s, FRAME, false)
-    assert(t.mode() == .Studio && !t.playing() && s.tick == 0)
+    assert(t.mode() == .Workspace && !t.playing() && s.tick == 0)
     // In the studio nothing reaches the level: no key and no button.
     frame(&mut t, &pressed(.R), .Step, &mut s, FRAME, false)
     frame(&mut t, &pressed(.Q), .TogglePause, &mut s, FRAME, false)
     frame(&mut t, &keys(.A, .D), idle(), &mut s, FRAME, false)
-    assert(t.mode() == .Studio && s.tick == 0 && !t.paused())
+    assert(t.mode() == .Workspace && s.tick == 0 && !t.paused())
     // Back to the game: running, not paused, and the keyboard works again.
     t.play()
     frame(&mut t, &pressed(.Q), idle(), &mut s, FRAME, false)
@@ -144,7 +144,7 @@ fn idle() -> hud.Action { hud.Action.Idle }
     mut forced := app.Transport::new(.Running, .Some(true))
     assert(forced.graded(false) && forced.graded(true))
     // The studio does not read E: its effects are the editor's own.
-    mut studio := app.Transport::new(.Studio, .None)
+    mut studio := app.Transport::new(.Workspace, .None)
     frame(&mut studio, &pressed(.E), idle(), &mut s, 0.0, false)
     assert(!studio.graded(false) && studio.graded(true))
 }

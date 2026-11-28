@@ -1,4 +1,4 @@
-import ..src.studio
+import ..src.runtime
 import core
 import gfx
 import input
@@ -6,13 +6,13 @@ import scene
 
 struct BareProject { world: scene.Graph }
 
-impl studio.Project for BareProject {
+impl runtime.Project for BareProject {
     fn graph(&self) -> &scene.Graph from self { &self.world }
-    fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: studio.Tick, paused: bool, capturing: bool,
+    fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: runtime.Tick, paused: bool, capturing: bool,
         camera: input.Camera, custom_eye: bool, sky: &mut gfx.Sky) -> input.Camera { camera }
 }
 
-fn basic_project_defaults<P: studio.Project>(project: &mut P) {
+fn basic_project_defaults<P: runtime.Project>(project: &mut P) {
     assert(project.graph().len() == 0)
     assert(project.sphere_geometry().len > 0)
     assert(project.labels().len == 0)
@@ -26,3 +26,5 @@ fn basic_project_defaults<P: studio.Project>(project: &mut P) {
     mut project := BareProject { world: scene.Graph::new() }
     basic_project_defaults(&mut project)
 }
+
+import .controls as _

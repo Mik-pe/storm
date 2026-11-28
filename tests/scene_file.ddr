@@ -1,6 +1,6 @@
 capability filesystem
 
-import studio.watch as scene_file
+import runtime.watch as scene_file
 import play
 import sys
 

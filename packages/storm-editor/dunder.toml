@@ -1,0 +1,11 @@
+name = "storm-editor"
+version = "0.1.0"
+root = "src/editor.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+ecs = { path = "../storm-ecs" }
+scene = { path = "../storm-scene", capabilities = ["unsafe"] }
+ui = { path = "../storm-ui", capabilities = ["filesystem"] }
+text = { path = "../storm-text", capabilities = ["filesystem"] }

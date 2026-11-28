@@ -2,7 +2,7 @@ import render.frame as scene_renderer
 // The frame executor's scene gather, without a window: what the frame's
 // passes are handed, and when the mesh copy is taken.
 import studio as app
-import studio.editor as editor
+import editor
 import studio.gallery as gallery
 import core
 import ecs

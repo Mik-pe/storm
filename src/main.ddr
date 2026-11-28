@@ -2,9 +2,10 @@
 capability stdio
 
 import .app
+import runtime
 import studio
-import studio.args as args
-import studio.watch as watch
+import runtime.args as args
+import runtime.watch as watch
 import mcp
 import play
 import metal
@@ -14,13 +15,13 @@ import sys
 fn preview(session: &play.Session, path: string) -> Result<(), string> {
     argv: []string = []
     project := app.project(session.clone(), watch.new("", ""))?
-    if target_is("macos") { return studio.run<metal.Renderer, app.Game>(metal.open_preview, "Storm", &argv, move project, .Preview, path) }
-    else { return studio.run<vulkan.Window, app.Game>(vulkan.open_preview, "Storm", &argv, move project, .Preview, path) }
+    if target_is("macos") { return runtime.run<metal.Renderer, app.Game>(metal.open_preview, "Storm", &argv, move project, .Preview, path) }
+    else { return runtime.run<vulkan.Window, app.Game>(vulkan.open_preview, "Storm", &argv, move project, .Preview, path) }
 }
 
 fn main() -> i32 {
     argv := args.from_process()
-    flags := args.flags()
+    flags := studio.flags()
     if args.flag(&argv, "--help") || args.flag(&argv, "-h") {
         print(args.usage("storm", "Open Storm Studio, load a model, or playtest an authored scene.", &flags))
         return 0
@@ -38,7 +39,7 @@ fn main() -> i32 {
     project := match app.load(&argv) {
         .Ok(p) => p, .Err(message) => { _ := sys.eprint(message); return 1 },
     }
-    launch := studio.launch_mode(&argv, .Studio)
+    launch := studio.launch_mode(&argv, .Workspace)
     shot := args.value(&argv, "--capture")
     result := if target_is("macos") {
         open := if capture { metal.open_preview } else { metal.open }

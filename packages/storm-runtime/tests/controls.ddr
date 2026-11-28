@@ -26,7 +26,7 @@ import ..src.controls as controls
     mut state := widgets.State::new()
     mut canvas := ui.Canvas::new()
     pointer := widgets.Pointer { x: -100.0, y: -100.0, down: false, pressed: false }
-    _ := controls.draw(&mut state, &mut canvas, &atlas, &pointer, width, 800.0, title, 0, false, true, true, false)
+    _ := controls.draw(&mut state, &mut canvas, &atlas, &pointer, width, 800.0, title, 0, false, true, true, false, true)
     assert(ui.Canvas::text_width(&atlas, title, 0.79) > title_end - title_x)
     // Every glyph of the title row (y < 44, the bar's first row; the
     // buttons sit on the second at y = 49) starts at or before title_end.

@@ -7,6 +7,7 @@
 import gfx
 import text
 import std.text.grapheme as segmentation
+import .layout
 
 // Text is drawn at this many points when its scale is 1. The editor draws at
 // scales between 0.8 and 1.2, so strokes are neither undersampled nor
@@ -139,6 +140,28 @@ impl Canvas {
             qy := y + quad.y * per_pixel
             self.quad(qx, qy, quad.width * per_pixel, quad.height * per_pixel,
                 quad.u0, quad.v0, quad.u1, quad.v1, color)
+        }
+    }
+
+    // Clip text to its layout box while preserving texel coordinates along
+    // the trimmed edges of each glyph.
+    pub fn text_in(&mut self, atlas: &text.Atlas, value: string, x: f32, y: f32, scale: f32, color: &Color, clip: &layout.Rect) {
+        per_pixel := points_per_pixel(atlas, scale)
+        if per_pixel <= 0.0 { return }
+        for glyph in atlas.layout(value, atlas.raster_size(), 0.0, 0.0) {
+            x0 := x + glyph.x * per_pixel
+            y0 := y + glyph.y * per_pixel
+            w := glyph.width * per_pixel
+            h := glyph.height * per_pixel
+            left := if x0 < clip.x { clip.x } else { x0 }
+            top := if y0 < clip.y { clip.y } else { y0 }
+            right := if x0 + w > clip.x + clip.w { clip.x + clip.w } else { x0 + w }
+            bottom := if y0 + h > clip.y + clip.h { clip.y + clip.h } else { y0 + h }
+            if left >= right || top >= bottom { continue }
+            du := (glyph.u1 - glyph.u0) / w
+            dv := (glyph.v1 - glyph.v0) / h
+            self.quad(left, top, right - left, bottom - top, glyph.u0 + (left - x0) * du, glyph.v0 + (top - y0) * dv,
+                glyph.u0 + (right - x0) * du, glyph.v0 + (bottom - y0) * dv, color)
         }
     }
 

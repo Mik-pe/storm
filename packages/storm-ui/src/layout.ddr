@@ -1,0 +1,45 @@
+// Layout uses points, the same space as pointer and canvas geometry.
+pub struct Rect { x: f32, y: f32, w: f32, h: f32 }
+
+fn positive(value: f32) -> f32 { if value > 0.0 { value } else { 0.0 } }
+
+pub fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    Rect { x: x, y: y, w: positive(w), h: positive(h) }
+}
+
+impl Rect {
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
+    }
+
+    pub fn inset(&self, horizontal: f32, vertical: f32) -> Rect {
+        rect(self.x + horizontal, self.y + vertical, self.w - horizontal * 2.0, self.h - vertical * 2.0)
+    }
+
+    pub fn visible_in(&self, clip: &Rect) -> bool {
+        self.w > 0.0 && self.h > 0.0 && self.x >= clip.x && self.y >= clip.y && self.x + self.w <= clip.x + clip.w && self.y + self.h <= clip.y + clip.h
+    }
+}
+
+pub enum Axis { Row, Column }
+
+pub struct Stack { bounds: Rect, axis: Axis, gap: f32, cursor: f32 }
+
+impl Stack {
+    pub fn new(bounds: Rect, axis: Axis, gap: f32) -> Self {
+        Self { bounds: bounds, axis: axis, gap: positive(gap), cursor: 0.0 }
+    }
+
+    // Lay out every child at its requested extent. A scrollable panel may
+    // build children beyond its viewport and use the same rectangles to clip
+    // visibility and pointer routing.
+    pub fn next(&mut self, extent: f32) -> Rect {
+        size := positive(extent)
+        at := self.cursor
+        self.cursor += size + self.gap
+        if self.axis == .Row { return rect(self.bounds.x + at, self.bounds.y, size, self.bounds.h) }
+        rect(self.bounds.x, self.bounds.y + at, self.bounds.w, size)
+    }
+
+    pub fn extent(&self) -> f32 { positive(self.cursor - self.gap) }
+}

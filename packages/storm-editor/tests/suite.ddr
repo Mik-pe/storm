@@ -1,0 +1,129 @@
+// Where a pointer counts as being over the 3D view: the editor routes input
+// to the camera only inside this area, and to the panels around it elsewhere.
+// The rules are the layout's -- the bar and footer are never the view, a wide
+// window keeps both panels out of it, a compact one with nothing open has
+// the full width as its view. Focus and the compact panels' open state are
+// switched by typed view actions.
+import core
+import scene as scenegraph
+import ..src.editor as editor
+
+// `selected` is never read by in_viewport; any live entity will do.
+fn fresh() -> editor.State {
+    mut graph := scenegraph.Graph::new()
+    node := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    editor.new(node, false, false, false)
+}
+
+@test fn the_bar_and_footer_are_never_the_view() {
+    state := fresh()
+    assert(!editor.in_viewport(&state, 600.0, 53.9, 1400.0, 900.0))
+    assert(!editor.in_viewport(&state, 600.0, 868.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 600.0, 54.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 600.0, 867.9, 1400.0, 900.0))
+}
+
+@test fn a_wide_window_keeps_both_panels_out_of_the_view() {
+    state := fresh()
+    // Scene tree and inspector have independent dock widths.
+    assert(!editor.in_viewport(&state, 225.9, 300.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 226.0, 300.0, 1400.0, 900.0))
+    assert(editor.in_viewport(&state, 1109.9, 300.0, 1400.0, 900.0))
+    assert(!editor.in_viewport(&state, 1110.0, 300.0, 1400.0, 900.0))
+    // The layout snaps at its supported desktop breakpoint.
+    assert(editor.in_viewport(&state, 649.9, 300.0, 940.0, 900.0))
+    assert(!editor.in_viewport(&state, 650.0, 300.0, 940.0, 900.0))
+}
+
+@test fn a_compact_window_with_nothing_open_views_its_full_width() {
+    state := fresh()
+    assert(editor.in_viewport(&state, 0.0, 300.0, 800.0, 900.0))
+    assert(editor.in_viewport(&state, 799.9, 300.0, 800.0, 900.0))
+    assert(!editor.in_viewport(&state, 0.0, 10.0, 800.0, 900.0))
+}
+
+import text
+import ui
+import ui.widgets as widgets
+
+fn frame(width: f32, height: f32) -> editor.Frame {
+    editor.Frame { w: width, h: height, wheel: 0.0, navigation: .None, title: "Scene",
+        fps: 60.0, passes: 6, device: "Test backend", can_play: true }
+}
+
+fn click(state: &mut editor.State, graph: &mut scenegraph.Graph, w: f32, h: f32, x: f32, y: f32) {
+    atlas := text.Atlas::new(16, 16)
+    mut canvas := ui.Canvas::new()
+    bounds := frame(w, h)
+    editor.draw(&mut state, &mut canvas, &atlas, &mut graph, &widgets.Pointer::at(x, y, true, true), &bounds)
+    editor.draw(&mut state, &mut canvas, &atlas, &mut graph, &widgets.Pointer::at(x, y, false, false), &bounds)
+}
+
+@test fn compact_editor_edits_the_selected_object_only_in_the_visible_panel() {
+    mut graph := scenegraph.Graph::new()
+    first := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(first, "Turntable")
+    child := graph.create_child(first, core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(child, "Brass")
+    _ := graph.set_material(child, scenegraph.material(0.8, 0.5, 0.3, 1.0, 0.8, 0.3))
+    graph.propagate()
+    mut state := editor.new(first, true, true, false)
+    click(&mut state, &mut graph, 720.0, 520.0, 45.0, 143.0)
+    assert(state.selected.index == first.index)
+    click(&mut state, &mut graph, 720.0, 520.0, 72.0, 26.0)
+    click(&mut state, &mut graph, 720.0, 520.0, 45.0, 143.0)
+    assert(state.selected.index == child.index)
+    click(&mut state, &mut graph, 720.0, 520.0, 145.0, 26.0)
+    click(&mut state, &mut graph, 720.0, 520.0, 580.0, 177.0)
+    metal := graph.material_value(child, .Metallic)
+    assert(metal != 0.8)
+    click(&mut state, &mut graph, 720.0, 520.0, 597.0, 24.0)
+    click(&mut state, &mut graph, 720.0, 520.0, 640.0, 177.0)
+    assert(state.focus && graph.material_value(child, .Metallic) == metal)
+}
+
+@test fn play_is_available_in_compact_and_desktop_layouts() {
+    mut graph := scenegraph.Graph::new()
+    node := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    mut state := editor.new(node, true, true, false)
+    for width in [320, 720, 1280] {
+        x: f32 = if width == 320 { 32.0 } else { f32(width - 46) }
+        y: f32 = if width == 320 { 401.0 } else { 24.0 }
+        state.play_requested = false
+        click(&mut state, &mut graph, f32(width), 420.0, x, y)
+        assert(state.play_requested && !state.focus && state.selected.index == node.index)
+    }
+}
+
+@test fn adding_and_deleting_a_cube_updates_the_shared_scene() {
+    mut graph := scenegraph.Graph::new()
+    missing := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.destroy(missing)
+    mut state := editor.new(missing, true, true, false)
+    click(&mut state, &mut graph, 1280.0, 800.0, 45.0, 740.0)
+    cube := state.selected
+    assert(graph.is_alive(cube) && graph.shape(cube).unwrap() == .Cube)
+    assert(graph.drawables(core.vec3(0.0, 0.0, 0.0)).len == 1)
+    click(&mut state, &mut graph, 1280.0, 800.0, 165.0, 740.0)
+    assert(!graph.is_alive(cube) && graph.len() == 0)
+}
+
+@test fn unfolding_a_group_in_a_short_window_makes_its_last_child_selectable() {
+    mut graph := scenegraph.Graph::new()
+    parent := graph.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := graph.set_name(parent, "Group")
+    mut last := parent
+    for i in 0..8 {
+        last = graph.create_child(parent, core.vec3(0.0, 0.0, 0.0))
+        _ := graph.set_name(last, "Child " + i.str())
+    }
+    graph.propagate()
+    mut state := editor.new(parent, true, true, false)
+    editor.collapse(&mut state, parent)
+    // First unfold the group. Four rows fit at this height, so the last
+    // child takes the fourth row after the view scrolls to the end.
+    click(&mut state, &mut graph, 1280.0, 300.0, 21.0, 115.0)
+    assert(state.first_node == 5)
+    click(&mut state, &mut graph, 1280.0, 300.0, 120.0, 198.0)
+    assert(state.selected.index == last.index)
+}

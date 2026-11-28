@@ -1,10 +1,7 @@
-import core
-import scene
 import text
 import ui
 import ui.widgets as widgets
-import studio.editor as editor
-import studio.controls as hud
+import runtime.controls as hud
 
 @test fn play_transport_wraps_and_only_steps_a_paused_game() {
     atlas := text.Atlas::new(16, 16)
@@ -18,31 +15,14 @@ import studio.controls as hud
                 points := [[42, 24], [x + 36, y], [x + 104, y], [x + 170, y], [72, 190]]
                 p := widgets.Pointer::at(f32(points[i][0]), f32(points[i][1]), true, true)
                 canvas.clear()
-                act := hud.draw(&mut controls, &mut canvas, &atlas, &p, f32(width), 420.0, "Jump", 35, paused, true, true, false)
+                act := hud.draw(&mut controls, &mut canvas, &atlas, &p, f32(width), 420.0, "Jump", 35, paused, true, true, false, true)
                 expected := [hud.Action.Studio, .TogglePause, if paused { hud.Action.Step } else { hud.Action.Idle }, .Restart, .Idle]
                 assert(act == expected[i])
                 held := widgets.Pointer::at(p.x, p.y, false, true)
-                assert(hud.draw(&mut controls, &mut canvas, &atlas, &held, f32(width), 420.0, "Jump", 35, paused, true, true, false) == hud.Action.Idle)
+                assert(hud.draw(&mut controls, &mut canvas, &atlas, &held, f32(width), 420.0, "Jump", 35, paused, true, true, false, true) == hud.Action.Idle)
                 release := widgets.Pointer::at(p.x, p.y, false, false)
-                _ := hud.draw(&mut controls, &mut canvas, &atlas, &release, f32(width), 420.0, "Jump", 35, paused, true, true, false)
+                _ := hud.draw(&mut controls, &mut canvas, &atlas, &release, f32(width), 420.0, "Jump", 35, paused, true, true, false, true)
             }
         }
-    }
-}
-
-@test fn studio_play_launch_does_not_toggle_focus_or_select_a_node() {
-    mut graph := scene.Graph::new()
-    node := graph.create_root(core.vec3(0.0, 0.0, 0.0))
-    mut studio := editor.new(node, true, true, false)
-    atlas := text.Atlas::new(16, 16)
-    mut canvas := ui.Canvas::new()
-    for width in [320, 720, 1280] {
-        p := if width == 320 { widgets.Pointer::at(36.0, 402.0, true, true) }
-        else { widgets.Pointer::at(f32(width - 136), 24.0, true, true) }
-        studio.play_requested = false
-        editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &p, 0.0, f32(width), 420.0, 60.0, 6, "GPU", 0, 8)
-        assert(studio.play_requested && !studio.focus && studio.selected.index == node.index)
-        release := widgets.Pointer::at(p.x, p.y, false, false)
-        editor.draw(&mut studio, &mut canvas, &atlas, &mut graph, &release, 0.0, f32(width), 420.0, 60.0, 6, "GPU", 0, 8)
     }
 }

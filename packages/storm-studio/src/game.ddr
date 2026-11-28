@@ -42,15 +42,20 @@ fn token() -> []f32 {
 pub fn is_orb(name: string) -> bool { name.len >= 4 && name[0..4] == "orb " }
 
 pub fn spawn_orbs(graph: &mut scenegraph.Graph) {
+    spawn_under(&mut graph, ecs.Entity { index: -1, generation: 0 })
+}
+
+pub fn spawn_under(graph: &mut scenegraph.Graph, parent: ecs.Entity) {
     for i in 0..ORB_COUNT {
         // Half a step off, so no orb starts squarely in front of the camera.
         angle := (f32(i) + 0.5) * 6.2831853 / f32(ORB_COUNT)
         position := core.vec3(angle.cos() * ORB_RADIUS, 0.32, angle.sin() * ORB_RADIUS)
-        orb := graph.create_root(position)
+        orb := graph.create_child(parent, position)
         _ := graph.set_name(orb, "orb " + i.str())
         _ := graph.set_mesh(orb, token())
         _ := graph.set_material(orb, orb_material())
     }
+    graph.propagate()
 }
 
 pub fn orbs_left(graph: &scenegraph.Graph) -> i32 {
@@ -71,7 +76,8 @@ pub fn collect_orbs(graph: &mut scenegraph.Graph, eye: core.Vec3) -> i32 {
         locals := graph.locals()
         for row in ecs.join2(names, locals) {
             if !is_orb(names.at(row.a).value) { continue }
-            at := locals.at(row.b).position
+            matrix := graph.world(row.entity).matrix
+            at := core.vec3(matrix.m[12], matrix.m[13], matrix.m[14])
             dx := at.x - eye.x
             dy := at.y - eye.y
             dz := at.z - eye.z
@@ -85,10 +91,14 @@ pub fn collect_orbs(graph: &mut scenegraph.Graph, eye: core.Vec3) -> i32 {
     collected
 }
 
-pub fn reset_orbs(graph: &mut scenegraph.Graph) {
+pub fn clear_orbs(graph: &mut scenegraph.Graph) {
     nodes := graph.nodes()
     for node in nodes {
         if is_orb(graph.name(node)) { _ := graph.destroy(node) }
     }
+}
+
+pub fn reset_orbs(graph: &mut scenegraph.Graph) {
+    clear_orbs(&mut graph)
     spawn_orbs(&mut graph)
 }

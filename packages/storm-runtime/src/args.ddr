@@ -83,8 +83,6 @@ pub struct Flag { name: string, args: string, text: string }
 pub fn flags() -> []Flag {
     [
         Flag { name: "--help", args: "(-h)", text: "print this and exit" },
-        Flag { name: "--studio", args: "", text: "open the material studio" },
-        Flag { name: "--glb", args: "MODEL.glb", text: "load a model into the studio (fitted to the view, standing on the plinth)" },
         Flag { name: "--play", args: "", text: "run the playable scene" },
         Flag { name: "--scene", args: "FILE", text: "load a level from a scene file" },
         Flag { name: "--watch", args: "", text: "with --scene: reload when the file is saved" },
@@ -95,9 +93,7 @@ pub fn flags() -> []Flag {
         Flag { name: "--at", args: "x y z", text: "with --eye: the point it looks at" },
         Flag { name: "--yaw", args: "a", text: "with --eye: turn the camera by this angle instead" },
         Flag { name: "--pitch", args: "b", text: "with --eye: tilt the camera by this angle instead" },
-        Flag { name: "--texture", args: "FLOOR.ppm", text: "the studio's floor wears a Storm capture (needs the studio)" },
         Flag { name: "--font", args: "PATH", text: "the UI font (default: the platform's)" },
-        Flag { name: "--no-glass", args: "", text: "start the studio without glass" },
         Flag { name: "--no-shadows", args: "", text: "start without shadows" },
         Flag { name: "--no-aa", args: "", text: "start without anti-aliasing" },
         Flag { name: "--no-post", args: "", text: "start without colour grading and glow" },
@@ -108,7 +104,7 @@ pub fn flags() -> []Flag {
 
 // The text --help prints: one line per flag, every flag in the program.
 pub fn usage(program: string, description: string, known: &[]Flag) -> string {
-    mut out := program + " [--studio | --glb MODEL.glb | --play | --scene FILE [--watch] | --mcp] [options]\n"
+    mut out := program + " [options]\n"
     out = out + description + "\n\n"
     out = out + "options:\n"
     // The descriptions start in one column: the widest name and arguments,

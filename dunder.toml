@@ -4,6 +4,8 @@ root = "src/main.ddr"
 test_root = "tests/suite.ddr"
 
 [dependencies]
+editor = { path = "packages/storm-editor", capabilities = ["filesystem", "unsafe"] }
+runtime = { path = "packages/storm-runtime", capabilities = ["filesystem", "stdio", "unsafe"] }
 assets = { path = "packages/storm-assets", capabilities = ["filesystem", "stdio", "unsafe"] }
 studio = { path = "packages/storm-studio", capabilities = ["filesystem", "stdio", "unsafe"] }
 mcp = { path = "packages/storm-mcp", capabilities = ["stdio", "filesystem", "unsafe"] }

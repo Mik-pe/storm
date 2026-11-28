@@ -1,0 +1,13 @@
+name = "storm-runtime"
+version = "0.1.0"
+root = "src/runtime.ddr"
+test_root = "tests/suite.ddr"
+
+[dependencies]
+core = { path = "../storm-core" }
+gfx = { path = "../storm-gfx" }
+input = { path = "../storm-input" }
+render = { path = "../storm-render", capabilities = ["unsafe"] }
+scene = { path = "../storm-scene", capabilities = ["unsafe"] }
+ui = { path = "../storm-ui", capabilities = ["filesystem"] }
+text = { path = "../storm-text", capabilities = ["filesystem"] }

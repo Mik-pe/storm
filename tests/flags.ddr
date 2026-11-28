@@ -1,6 +1,6 @@
 // Every flag the program reads has a line in --help, and every line names a
 // flag the program reads. The source of truth on both sides is a measurement:
-// the "--x" string literals in src/*.ddr against the rows of args.flags().
+// the "--x" string literals in src/*.ddr against the rows of studio.flags().
 // Without this, --help listed 12 of the program's 20 flags and nothing was red.
 capability filesystem, stdio
 
@@ -8,7 +8,8 @@ import std.fs as fs
 import std.text as text
 import sys
 
-import studio.args as args
+import runtime.args as args
+import studio
 
 // Does `line` start with `word` once its indentation is skipped?
 fn opens_with(line: string, word: string) -> bool {
@@ -52,7 +53,7 @@ fn contains(xs: &[]string, needle: &string) -> bool {
 
 @test fn every_flag_in_the_source_has_its_help_line_and_every_line_a_flag() {
     mut read: []string = []
-    for dir in ["src", "packages/storm-studio/src"] {
+    for dir in ["src", "packages/storm-studio/src", "packages/storm-runtime/src"] {
         names := fs.list_dir(dir).unwrap()
         for name in &names {
             if !text.ends_with(name, ".ddr") { continue }
@@ -65,12 +66,12 @@ fn contains(xs: &[]string, needle: &string) -> bool {
     // would pass every comparison below against an empty table).
     assert(contains(&read, "--eye") && contains(&read, "--frames") && contains(&read, "--mcp"))
     assert(!contains(&read, "--"))
-    table := args.flags()
+    table := studio.flags()
     mut documented: []string = []
     for f in &table { documented.push(f.name.clone()) }
     // Every flag read somewhere in src/ is a row.
     for flag in &read {
-        if !contains(&documented, flag) { _ := sys.eprint("flag without a help line: " + flag + " (args.flags())") }
+        if !contains(&documented, flag) { _ := sys.eprint("flag without a help line: " + flag + " (studio.flags())") }
         assert(contains(&documented, flag))
     }
     // Every row is a flag read somewhere in src/: a line about a flag nobody
@@ -82,11 +83,11 @@ fn contains(xs: &[]string, needle: &string) -> bool {
 }
 
 @test fn help_shows_every_flag_with_its_arguments_in_one_column() {
-    usage := args.usage("storm", "Storm Studio", &args.flags())
+    usage := args.usage("storm", "Storm Studio", &studio.flags())
     // The column every description starts in: measured on the first row, and
     // every other row must start there too (never a number written by hand).
     mut column := -1
-    for f in &args.flags() {
+    for f in &studio.flags() {
         assert(text.contains(usage, f.name) && text.contains(usage, f.text + "\n"))
         at := text.find(usage, f.text).unwrap_or(-1)
         assert(at > 0)
@@ -104,19 +105,19 @@ fn contains(xs: &[]string, needle: &string) -> bool {
 // Every known flag with a value, and -h, read as "nothing unknown".
 @test fn an_unknown_flag_is_named_and_every_known_one_is_not() {
     mut good: []string = ["--glb", "Fox.glb", "--frames", "5", "--capture", "a.ppm", "--eye", "1", "2", "3", "-h"]
-    assert(args.unknown(&good, &args.flags()) == "")
-    assert(args.unknown(&[], &args.flags()) == "")
-    for f in &args.flags() {
+    assert(args.unknown(&good, &studio.flags()) == "")
+    assert(args.unknown(&[], &studio.flags()) == "")
+    for f in &studio.flags() {
         mut one: []string = [f.name.clone()]
-        assert(args.unknown(&one, &args.flags()) == "")
+        assert(args.unknown(&one, &studio.flags()) == "")
     }
     mut typo: []string = ["--glb", "Fox.glb", "--bogus", "--frames", "5"]
-    assert(args.unknown(&typo, &args.flags()) == "--bogus")
+    assert(args.unknown(&typo, &studio.flags()) == "--bogus")
     // The first unknown word is the one named: fix one, see the next.
     mut two: []string = ["--zzz", "--aaa"]
-    assert(args.unknown(&two, &args.flags()) == "--zzz")
+    assert(args.unknown(&two, &studio.flags()) == "--zzz")
     // A short dash-word is a value or a mistake for something else, not a
     // flag this test speaks about; only "--x" is judged.
     mut short: []string = ["--", "-x", "a--b"]
-    assert(args.unknown(&short, &args.flags()) == "")
+    assert(args.unknown(&short, &studio.flags()) == "")
 }
