@@ -34,3 +34,118 @@ import ..src.play_view as view
     // after the first frame of the largest level. Measured: 5 898 240 bytes.
     assert(u64(vertices.len * 4 * 2 * level.entities.len) <= gfx.INITIAL_VERTEX_BYTES)
 }
+
+// The keys the play view reads, as the contract numbers them: WASD and the
+// arrows both move, each axis independently, and Space alone jumps.
+@test fn controls_read_both_key_sets_and_jump_is_space_alone() {
+    idle := view.controls(&gfx.Input::empty())
+    assert(idle.x == 0.0 && idle.z == 0.0 && !idle.jump)
+    mut keys := gfx.Input::empty()
+    keys.held = view_bit(gfx.Key.D)
+    right := view.controls(&keys)
+    assert(right.x == 1.0 && right.z == 0.0 && !right.jump)
+    keys.held = view_bit(gfx.Key.Right)
+    assert(view.controls(&keys).x == 1.0)
+    keys.held = view_bit(gfx.Key.A)
+    left := view.controls(&keys)
+    assert(left.x == -1.0 && left.z == 0.0)
+    keys.held = view_bit(gfx.Key.Left)
+    assert(view.controls(&keys).x == -1.0)
+    keys.held = view_bit(gfx.Key.W)
+    assert(view.controls(&keys).z == -1.0)
+    keys.held = view_bit(gfx.Key.Up)
+    assert(view.controls(&keys).z == -1.0)
+    keys.held = view_bit(gfx.Key.S)
+    assert(view.controls(&keys).z == 1.0)
+    keys.held = view_bit(gfx.Key.Down)
+    assert(view.controls(&keys).z == 1.0)
+    // Opposing keys cancel; two keys of one direction are one unit, not
+    // two: a direction is a sign, never a speed.
+    keys.held = view_bit(gfx.Key.D).bit_or(view_bit(gfx.Key.A))
+    opposing := view.controls(&keys)
+    assert(opposing.x == 0.0 && opposing.z == 0.0)
+    keys.held = view_bit(gfx.Key.A).bit_or(view_bit(gfx.Key.W))
+    up_left := view.controls(&keys)
+    assert(up_left.x == -1.0 && up_left.z == -1.0 && !up_left.jump)
+    // Two keys of one direction are one unit, not two: a direction is a
+    // sign, never a speed.
+    keys.held = view_bit(gfx.Key.S).bit_or(view_bit(gfx.Key.Down))
+    down := view.controls(&keys)
+    assert(down.x == 0.0 && down.z == 1.0)
+    keys.held = view_bit(gfx.Key.W).bit_or(view_bit(gfx.Key.Up))
+    assert(view.controls(&keys).z == -1.0)
+    keys.held = 0
+    keys.pressed = view_bit(gfx.Key.Space)
+    jump := view.controls(&keys)
+    assert(jump.jump && jump.x == 0.0 && jump.z == 0.0)
+}
+
+fn view_bit(key: gfx.Key) -> u32 { u32(1).shl(i32(key)) }
+
+// The camera keeps the player inside a room around the scene's middle:
+// while the player is inside it the framing is the scene's own bounds, and
+// once the player leaves it the room follows by exactly the overshoot, on
+// the axis that was left and on no other.
+@test fn framing_follows_the_player_only_once_she_leaves_the_room() {
+    mut session := play.start(&play.demo())
+    world := view.build(&session)
+    assert(world.player_node == 1)
+    inside := view.framing(&world, &session, true)
+    // Nothing has moved yet: the framing is the scene's own middle and half
+    // size, clamped only where a level is larger than the camera shows.
+    clamp := core.vec3(10.0, 6.0, 8.0)
+    assert(inside.center.x == world.center.x && inside.center.z == world.center.z)
+    assert(inside.extent.x == if world.extent.x < 10.0 { world.extent.x } else { clamp.x })
+    assert(inside.extent.y == if world.extent.y < 6.0 { world.extent.y } else { clamp.y })
+    // Walk far to the right: the room is 1 + extent.x * 0.65 wide around the
+    // centre, so the framing moves to player - room, no more.
+    room_x := 1.0 + inside.extent.x * 0.65
+    player := session.player
+    assert(player == 1 && session.body_indices[1] == player)
+    far_x := world.center.x + room_x + 7.0
+    session.bodies[player].position = core.vec3(far_x, session.bodies[player].position.y, session.bodies[player].position.z)
+    after := view.framing(&world, &session, true)
+    assert(after.center.x > inside.center.x)
+    assert((after.center.x - (far_x - room_x)).abs() < 0.0001)
+    // Y and Z were never left: they stay where the scene put them.
+    assert(after.center.y == inside.center.y && after.center.z == inside.center.z)
+    // Back inside the room, the camera is on the scene's middle again ...
+    rest := session.bodies[player].position.clone()
+    session.bodies[player].position = core.vec3(world.center.x, rest.y, rest.z)
+    assert(view.framing(&world, &session, true).center.x == inside.center.x)
+    // ... and leaving to the left mirrors the right: player + room.
+    near_left := world.center.x - room_x + 0.5
+    session.bodies[player].position = core.vec3(near_left, rest.y, rest.z)
+    assert(view.framing(&world, &session, true).center.x == inside.center.x)
+    far_left := world.center.x - room_x - 7.0
+    session.bodies[player].position = core.vec3(far_left, rest.y, rest.z)
+    left := view.framing(&world, &session, true)
+    assert((left.center.x - (far_left + room_x)).abs() < 0.0001)
+    // The same room on z, measured by its own extent.
+    room_z := 1.0 + inside.extent.z * 0.55
+    far_z := world.center.z + room_z + 3.0
+    session.bodies[player].position = core.vec3(world.center.x, rest.y, far_z)
+    assert((view.framing(&world, &session, true).center.z - (far_z - room_z)).abs() < 0.0001)
+    // Y has its own, steeper room: 1.4 + extent.y * 0.36.
+    room_y := 1.4 + inside.extent.y * 0.36
+    high_y := world.center.y + room_y + 2.0
+    session.bodies[player].position = core.vec3(world.center.x, high_y, world.center.z)
+    assert((view.framing(&world, &session, true).center.y - (high_y - room_y)).abs() < 0.0001)
+}
+
+// A level larger than the camera shows is clamped before the room is
+// measured: the framing keeps the scene's middle but never more than 10 x 6
+// x 8 of half size, so the camera does not zoom out to a whole island.
+@test fn framing_clamps_a_level_larger_than_the_camera_shows() {
+    mut level := play.empty("Island")
+    level.entities = play.demo().entities.clone()
+    island := &mut level.entities[0]
+    island.size = core.vec3(60.0, 2.0, 40.0)
+    island.position = core.vec3(0.0, -1.0, 0.0)
+    mut session := play.start(&level)
+    world := view.build(&session)
+    assert(world.extent.x > 10.0 && world.extent.z > 8.0)
+    area := view.framing(&world, &session, true)
+    assert(area.extent.x == 10.0 && area.extent.y == world.extent.y && area.extent.z == 8.0)
+    assert(area.center.x == world.center.x && area.center.z == world.center.z)
+}
