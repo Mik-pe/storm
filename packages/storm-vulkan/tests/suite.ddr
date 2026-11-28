@@ -656,3 +656,69 @@ fn setup_steps() -> [state.SetupStep; 17] {
     assert(destroyed[0] && destroyed[1] && destroyed[2] && destroyed[3] && destroyed[4] && destroyed[5]
         && destroyed[6] && destroyed[7] && destroyed[8] && destroyed[9] && destroyed[10] && destroyed[11])
 }
+// The frame ring has one owner. `state.FRAME_COUNT` is the length of the
+// three per-frame arrays, the number of command buffers allocated and the
+// modulus the current index advances by. A change to the count must be one
+// edit, and a literal spelled beside a ring name is an edit nobody would
+// find: the compiler accepts an index past a short array in silence
+// (dogfood 101). This test reads the sources and holds both: no line spells
+// the ring's size as a literal next to a ring name, and the constant has
+// readers outside its own module (a constant nobody reads is the same debt
+// the other way round).
+@test fn the_frame_count_is_spelled_by_its_constant() {
+    names := match fs.list_dir("src") {
+        .Ok(items) => items, .Err(e) => { _ := sys.eprint("could not list src/: errno " + e.code().str()); assert(false); return },
+    }
+    ring: [string; 5] = ["commands", "fences", "image_available", "commandBufferCount", "r.current"]
+    mut stray: []string = []
+    mut readers := 0
+    for name in &names {
+        if !textlib.ends_with(name, ".ddr") { continue }
+        source := sys.read_text("src/" + name)
+        if !source.ok { _ := sys.eprint("could not read src/" + name + ": errno " + source.error.str()); assert(false); return }
+        mut cursor := textlib.lines(source.value.as_str())
+        mut number := 0
+        while cursor.advance() {
+            number = number + 1
+            line := cursor.current().clone()
+            if textlib.starts_with(textlib.trim(line), "//") { continue }
+            if textlib.contains(line, "FRAME_COUNT") {
+                if name != "state.ddr" { readers = readers + 1 }
+                continue
+            }
+            mut on_ring := false
+            for i in 0..5 {
+                if textlib.contains(line, ring[i]) { on_ring = true }
+            }
+            if !on_ring { continue }
+            // A literal right where the constant belongs: an array length, a
+            // loop bound, an allocated count or a modulus. Each is a digit
+            // following the token the constant should follow.
+            for shape in 0..4 {
+                token: string = match shape {
+                    0 => "[ptr; ",
+                    1 => "[ptr(0); ",
+                    2 => "..",
+                    _ => "% ",
+                }
+                at := textlib.find(line, token)
+                if at == .None { continue }
+                start := match at { .Some(i) => i, _ => 0 }
+                rest := textlib.trim(line[start + token.len..line.len])
+                if rest.len == 0 { continue }
+                first := rest[0]
+                if first >= 48 && first <= 57 {
+                    stray.push(name + ":" + number.str() + " spells the frame count by hand: " + textlib.trim(line))
+                    break
+                }
+            }
+        }
+    }
+    for s in &stray { _ := sys.eprint(s) }
+    if readers == 0 { _ := sys.eprint("state.FRAME_COUNT has no reader outside state.ddr: it is dead again") }
+    assert(state.FRAME_COUNT >= 1)
+    assert(stray.len == 0)
+    assert(readers > 0)
+    // The three arrays are as long as the constant says, measured, not counted.
+    assert(usize(state.FRAME_COUNT * 8 * 3) <= size_of(state.Renderer))
+}

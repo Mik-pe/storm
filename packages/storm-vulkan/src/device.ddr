@@ -354,7 +354,7 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
         destroy_swapchain(&mut r)
         destroy_vertex_buffer(&r, &r.vertex)
         r.vertex = zeroed()
-        for i in 0..2 {
+        for i in 0..state.FRAME_COUNT {
             r.api.DestroyFence(r.device, r.fences[i], ptr(0))
             r.api.DestroySemaphore(r.device, r.image_available[i], ptr(0))
         }
@@ -465,11 +465,11 @@ pub unsafe fn setup_frames(r: &mut state.Renderer) -> state.SetupStep {
     mut allocate_info: vk.CommandBufferAllocateInfo = vk.CommandBufferAllocateInfo::new()
     allocate_info.commandPool = r.pool
     allocate_info.level = 0
-    allocate_info.commandBufferCount = 2
-    mut commands: [ptr; 2] = [ptr(0); 2]
+    allocate_info.commandBufferCount = u32(state.FRAME_COUNT)
+    mut commands: [ptr; state.FRAME_COUNT] = [ptr(0); state.FRAME_COUNT]
     mut code := r.api.AllocateCommandBuffers(r.device, addr(&allocate_info), addr(&mut commands[0]))
     if code != 0 { return fail(&mut r, code, .FrameSync) }
-    for i in 0..2 {
+    for i in 0..state.FRAME_COUNT {
         r.commands[i] = commands[i]
         mut fence: vk.FenceCreateInfo = vk.FenceCreateInfo::new()
         fence.flags = enums.fence(.Signaled)

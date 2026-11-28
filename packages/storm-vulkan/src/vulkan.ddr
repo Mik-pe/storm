@@ -460,7 +460,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
             state.set_capture(&mut r, .Ready)
         }
         state.set_pass(&mut r, .Idle)
-        r.current = (r.current + 1) % 2
+        r.current = (r.current + 1) % state.FRAME_COUNT
         r.frameIndex = r.frameIndex + 1
         return DrawResult { ok: true, error: "", frames: r.frameIndex }
     }
@@ -487,7 +487,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     } else if presented != 0 {
         return draw_error(r.frameIndex, "presenting failed (" + enums.result_name(presented) + ")")
     }
-    r.current = (r.current + 1) % 2
+    r.current = (r.current + 1) % state.FRAME_COUNT
     r.frameIndex = r.frameIndex + 1
     DrawResult { ok: true, error: "", frames: r.frameIndex }
 }

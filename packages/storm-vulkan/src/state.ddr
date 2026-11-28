@@ -110,9 +110,9 @@ pub struct Renderer {
     // requirement allows that has the wanted properties.
     memoryProperties: vkl.PhysicalDeviceMemoryProperties,
     pool: ptr,
-    commands: [ptr; 2],
-    fences: [ptr; 2],
-    image_available: [ptr; 2],
+    commands: [ptr; FRAME_COUNT],
+    fences: [ptr; FRAME_COUNT],
+    image_available: [ptr; FRAME_COUNT],
     // Presentation owns its wait semaphore until the same image is acquired again.
     render_finished: [ptr; 8],
     current: i32,
