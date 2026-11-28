@@ -651,15 +651,20 @@ unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     if r.device != ptr(0) {
         _ := r.api.DeviceWaitIdle(r.device)
         headless.destroy(&mut r)
-        shadow.destroy(&mut r)
     }
-    // Reverse of `initialize` (ui, post, pipeline, texture), the device's
-    // own last; each module destroys what it created.
+    // Reverse of creation, each module destroying what it created: ui, post,
+    // pipeline, ibl, texture, shadow, depth, then the device's own. Shadow
+    // comes after pipeline because `shadow.destroy` frees `shadowSetLayout`
+    // and the mesh and sky pipeline layouts are built on it — not required by
+    // the spec (a pipeline layout may not access its set layouts after
+    // creation, so they may die first), but the order that reads as the
+    // creation order backwards.
     ui.destroy(&mut r)
     post.destroy(&mut r)
     if r.device != ptr(0) { pipeline.destroy(&mut r) }
     ibl.destroy(&mut r)
     texture.destroy(&mut r)
+    if r.device != ptr(0) { shadow.destroy(&mut r) }
     depth.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)

@@ -537,6 +537,23 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   (`r.<namn>` utanför ägaren = 0), inte av kompilatorn.
 - **Varje kluster är en commit med AE = 0** mot capturen före. Ingen
   klusterflytt ändrar bilden; den ändrar bara var namnen bor.
+- **`teardown` är skapandet baklänges, och varje modul förstör sitt
+  eget.** Skapandeordningen är device → depth → shadow → texture →
+  pipeline → post → ui (och ibl i `build_environment` efteråt); `teardown`
+  kör headless, sedan ui → post → pipeline → ibl → texture → shadow →
+  depth → device. Tills 2026-11-28 stod tolv `Destroy*` för pipeline.ddr:s
+  pipelines, layouter, shaders och renderpass i `device.destroy`, och
+  `shadow.destroy` (som frigör `shadowSetLayout`) kördes *före* de
+  pipeline-layouter som bygger på den. Ingen av dem var ett spec-brott —
+  specen säger om `VkPipelineLayoutCreateInfo::pSetLayouts` att
+  implementationen inte får komma åt set-layouterna efter skapandet
+  ("must not access these objects outside of the duration of the command
+  this structure is passed to"), så layouten lever sitt eget liv efteråt
+  och `vkDestroyDescriptorSetLayout` har ingen regel om pipeline-layouts
+  (mätt i registrets spec-text 2026-11-28) — men princip 4 är omvänd
+  ordning och en förstörare per skapare, och det var två regler att komma
+  ihåg. `pipeline_handles_are_destroyed_by_their_creator` håller den andra;
+  den första står här med sin mätning.
 
 Ordningen efter depth var **ui** (10 fält), **ibl** (25), **shadow** (17,
 de två set-namnen stannade) — alla 2026-11-25 — och sedan **post** (12
