@@ -29,7 +29,7 @@ pub fn sort_back_to_front(items: &mut []scenegraph.Drawable) {
 // ground and loaded meshes. Transparent items only blend into the main pass.
 pub fn casts_shadow(item: &scenegraph.Drawable) -> bool { !is_transparent(&item.material) }
 
-pub fn record_mesh<B: gfx.Backend>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, settings: &View, shadows_on: bool, pass: graph.PassKind) -> Result<(), string> {
+pub fn record_mesh<B: gfx.Device>(window: &mut B, vertices: &[]f32, item: &scenegraph.Drawable, settings: &View, shadows_on: bool, pass: graph.PassKind) -> Result<(), string> {
     if pass == .Shadow { return window.shadow_mesh(vertices, &item.model.m) }
     mvp := core.multiply(settings.projection, item.model)
     mut color: [f32; 4] = [item.material.base.r, item.material.base.g, item.material.base.b, item.material.base.a]
@@ -93,7 +93,7 @@ impl Primitives {
     }
 }
 
-pub fn record_list<B: gfx.Backend>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
+pub fn record_list<B: gfx.Device>(window: &mut B, meshes: &[]scenegraph.Mesh, items: &[]scenegraph.Drawable,
     cube: &[]f32, plane: &[]f32, sphere: &[]f32, view: &View, shadows: bool, pass: graph.PassKind) -> Result<(), string> {
     for item in items {
         drawn := match item.shape {
@@ -155,17 +155,23 @@ impl Renderer {
             shadows: false, transparent: false, filtered: false }
     }
 
-    // A Ready frame is open for an optional screen-space overlay. Submit
-    // that through Backend.ui_draw and finish with Backend.end. Skipped
-    // means the target changed size before the backend could begin.
-    pub fn draw_scene<B: gfx.Backend>(&mut self, window: &mut B, world: &scenegraph.Graph,
+    pub fn draw_scene<B: gfx.Device>(&mut self, window: &mut B, world: &scenegraph.Graph,
         frame: &gfx.Frame, view: &View, sphere: &[]f32, shadows_enabled: bool,
+        finish: &gfx.PostProcess) -> Result<Draw, string> {
+        self.draw_view(&mut window, world, &frame.size(), view, sphere, shadows_enabled, finish)
+    }
+
+    // A Ready frame can receive UI before submission through Device.end.
+    // A skipped frame has no recorded passes.
+    pub fn draw_view<B: gfx.Device>(&mut self, window: &mut B, world: &scenegraph.Graph,
+        size: &gfx.FrameSize, view: &View, sphere: &[]f32, shadows_enabled: bool,
         finish: &gfx.PostProcess) -> Result<Draw, string> {
         eye := core.vec3(view.mesh.eye[0], view.mesh.eye[1], view.mesh.eye[2])
         gather(&mut self.geometry, world, eye)
-        shadows := shadows_enabled && self.geometry.solids.len > 0
+        supported := window.features()
+        shadows := supported.shadows && shadows_enabled && self.geometry.solids.len > 0
         transparent := self.geometry.glass.len > 0
-        filtered := finish.enabled()
+        filtered := supported.post_process && finish.enabled()
         if self.plan.steps.len == 0 || shadows != self.shadows || transparent != self.transparent || filtered != self.filtered {
             plan := frame_plan(shadows, transparent, filtered)
             if !plan.ok { return .Err(plan.error) }
@@ -177,12 +183,10 @@ impl Renderer {
 
         solids := vertex_bytes(&self.geometry.solids, &self.geometry.meshes, self.primitives.cube.len, self.primitives.plane.len, sphere.len)
         glass := vertex_bytes(&self.geometry.glass, &self.geometry.meshes, self.primitives.cube.len, self.primitives.plane.len, sphere.len)
-        match window.begin_with_vertices(solids + glass + (if shadows { solids } else { u64(0) })) {
-            .Ok => {},
-            .Err(message) => {
-                if frame.resized { return .Ok(.Skipped) }
-                return .Err(message)
-            },
+        request := gfx.FrameRequest { mesh_bytes: solids + glass + (if shadows { solids } else { u64(0) }), size: .Some(size.clone()) }
+        match window.start_frame(&request)? {
+            .Ready => {},
+            .Unavailable => { return .Ok(.Skipped) },
         }
 
         for step in &self.plan.steps {

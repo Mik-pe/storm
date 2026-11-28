@@ -5,8 +5,9 @@ import vk.enums as enums
 import vk.layout as vk
 import .state as state
 import .records as records
+import .surface as presentation
 
-// Vulkan instance with the surface extensions SDL asks for.
+// A presentation provider describes the extensions required by its surface.
 // Every Vulkan call that can fail reports its code and the setup step it
 // belongs to, here; the step is the return value, so a failure cannot travel
 // without a name for where it happened.
@@ -21,19 +22,20 @@ unsafe fn create_instance(r: &mut state.Renderer) -> state.SetupStep {
     app.apiVersion = 4194304
     mut info: vk.InstanceCreateInfo = vk.InstanceCreateInfo::new()
     info.pApplicationInfo = addr(&app)
-    // SDL knows which platform surface extensions the window needs.
     mut count: u32 = 0
     mut names: [ptr; 16] = [ptr(0); 16]
-    if r.window.handle != ptr(0) {
-        if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), ptr(0)) == 0 { return .Instance }
+    if r.presentation.context != ptr(0) {
+        if r.presentation.extensions(r.presentation.context, addr(&mut count), ptr(0)) == 0 { return .Instance }
         if count == 0 || count > 16 { return .Instance }
-        if r.window.GetInstanceExtensions(r.window.handle, addr(&mut count), addr(&mut names[0])) == 0 { return .Instance }
+        if r.presentation.extensions(r.presentation.context, addr(&mut count), addr(&mut names[0])) == 0 { return .Instance }
         info.enabledExtensionCount = count
         info.ppEnabledExtensionNames = addr(&names[0])
     }
     mut code := r.api.CreateInstance(addr(&info), ptr(0), addr(&mut r.instance))
     if code != 0 { return fail(&mut r, code, .Instance) }
-    if r.window.handle != ptr(0) && r.window.CreateSurface(r.window.handle, r.instance, addr(&mut r.surface)) == 0 { return .Instance }
+    if r.presentation.context != ptr(0) {
+        if r.presentation.create(r.presentation.context, r.instance, addr(&mut r.surface)) == 0 || r.surface == ptr(0) { return .Instance }
+    }
     .Ready
 }
 
@@ -256,13 +258,14 @@ unsafe fn create_swapchain(r: &mut state.Renderer) -> state.SetupStep {
     mut height := caps.currentExtent.height
     // 0xFFFFFFFF means "pick your own size"; use the window's.
     if width == 4294967295 || height == 4294967295 {
-        mut w: i32 = 0
-        mut h: i32 = 0
-        r.window.GetDrawableSize(r.window.handle, addr(&mut w), addr(&mut h))
+        (w, h) := presentation.drawable_size(&r.presentation)
+        if w <= 0 || h <= 0 { return .Swapchain }
         width = u32(w)
         height = u32(h)
         if width < caps.minImageExtent.width { width = caps.minImageExtent.width }
         if height < caps.minImageExtent.height { height = caps.minImageExtent.height }
+        if width > caps.maxImageExtent.width { width = caps.maxImageExtent.width }
+        if height > caps.maxImageExtent.height { height = caps.maxImageExtent.height }
     }
     if width == 0 || height == 0 { return .Swapchain }
     r.width = width

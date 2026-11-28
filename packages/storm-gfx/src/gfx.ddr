@@ -1,9 +1,7 @@
 // storm-gfx: the contract between Storm and a graphics backend.
 //
-// A backend is anything that implements `Backend`. On Linux that is the
-// Vulkan package, on macOS the Metal package. The application is written
-// against this module alone, so it names no backend, and a new backend is
-// added by implementing the trait rather than by changing the app.
+// Device records graphics work. FrameSource supplies the host's input and time.
+// Backend combines both roles for callers that open a native window.
 //
 // Nothing here needs an API's name to be described: no image views, no
 // render-pass objects, no pipelines. Those are how a backend keeps the
@@ -22,11 +20,8 @@ pub enum Key {
     Ctrl = 17, Shift = 18, Tab = 19, Enter = 20, Backspace = 21,
 }
 
-// Mouse buttons. The values are the bits of `Mouse.buttons`/`Mouse.pressed`,
-// and the contract owns them: a backend pairs its platform's button with the
-// name (SDL numbers left 1, middle 2, right 3; these are not SDL's bits) in
-// the same way it pairs a scancode with a `Key`. The methods take the enum,
-// so a number nobody named cannot reach a comparison.
+// Mouse buttons occupy these bits in Mouse.buttons and Mouse.pressed.
+// The frame source maps platform input to these keys and buttons.
 pub enum Button { Left = 1, Right = 2, Middle = 4 }
 
 // The pointer this frame, in points from the window's top-left corner.
@@ -80,6 +75,57 @@ pub struct Frame {
     time: f64,
     resized: bool,
     input: Input,
+}
+
+pub struct FrameSize { width: i32, height: i32, scale: f32 }
+pub struct PixelSize { width: i32, height: i32 }
+
+impl FrameSize {
+    pub fn pixels(&self) -> Result<PixelSize, string> {
+        width := (f64(self.width) * f64(self.scale)).round()
+        height := (f64(self.height) * f64(self.scale)).round()
+        if self.width <= 0 || self.height <= 0 || !self.scale.is_finite() || self.scale <= 0.0 ||
+            width < 1.0 || height < 1.0 || width > 2147483647.0 || height > 2147483647.0 {
+            return .Err("invalid render target extent")
+        }
+        .Ok(PixelSize { width: i32(width), height: i32(height) })
+    }
+}
+
+impl Frame {
+    pub fn size(&self) -> FrameSize { FrameSize { width: self.width, height: self.height, scale: self.scale } }
+}
+
+// Host-side input and timing, with logical size in points.
+pub trait FrameSource {
+    fn poll(&mut self) -> Frame
+    fn take_text(&mut self) -> string { "" }
+}
+
+pub struct FrameRequest {
+    mesh_bytes: u64,
+    // Logical size and density of the host. Direct callers can use the
+    // target's existing dimensions by passing None.
+    size: Option<FrameSize>,
+}
+
+// Unavailable means no commands were recorded. Retry on a later frame.
+// Resource, device and command failures are reported via Result.Err.
+pub enum FrameStart { Ready, Unavailable }
+
+pub struct Features { shadows: bool, environment: bool, post_process: bool }
+
+pub fn basic_features() -> Features { Features { shadows: false, environment: false, post_process: false } }
+pub fn full_features() -> Features { Features { shadows: true, environment: true, post_process: true } }
+
+// Display-encoded RGBA8, tightly packed from the top-left.
+pub struct Readback { width: i32, height: i32, rgba: []u8 }
+
+impl Readback {
+    pub fn valid(&self) -> bool {
+        self.width > 0 && self.height > 0 && self.rgba.len % 4 == 0 &&
+            i64(self.width) * i64(self.height) == i64(self.rgba.len / 4)
+    }
 }
 
 // Lighting parameters shared by the sky pass and the mesh pass. Keeping one
@@ -200,38 +246,26 @@ pub fn sampler() -> Sampler {
     Sampler { mag: .Linear, min: .Linear, mips: .Linear, wrap: .Repeat }
 }
 
-// The backend contract. A frame is recorded like this:
-//
-//   poll()                          input, size, and whether to stop
-//   begin()                         take a frame to record into
+// The rendering contract. A frame is recorded like this:
+//   start_frame                     acquire a target and reserve mesh data
 //   shadow_begin / shadow_mesh / shadow_end
 //   begin_scene(filtered)
 //   sky, mesh, post_process (when filtered), ui_draw
-//   end()                           show it
-//
-// Every operation that can fail says why in its error.
-pub trait Backend {
-    // Drain the platform's events and describe the window as it is now.
-    fn poll(&mut self) -> Frame
-
-    // Committed text from the last poll. Key bindings are reported separately.
-    fn take_text(&mut self) -> string { "" }
-
+//   end()                           submit and present or read back
+pub trait Device {
+    fn features(&self) -> Features { basic_features() }
     fn device_name(&self) -> string
 
-    // Print each frame's steps to stdout; for when a frame hangs.
-    fn set_trace(&mut self, enabled: bool)
+    fn set_trace(&mut self, enabled: bool) {}
 
-    // Render the next frame offscreen and keep its pixels for save_capture.
-    fn capture_next(&mut self) -> Result<(), string>
-
-    // Write the captured frame as a binary PPM at native resolution.
-    fn save_capture(&mut self, path: string) -> Result<(), string>
+    // Keep a copy of the next submitted frame for readback.
+    fn capture_next(&mut self) -> Result<(), string> { .Err("this device does not support capture") }
+    fn read_capture(&mut self) -> Result<Readback, string> { .Err("this device does not support capture") }
 
     // Render and convolve the environment maps from the sky. Call once after
     // open, before the first frame; the maps are static, so the sky must be
     // the same value every frame passes to sky().
-    fn build_environment(&mut self, sky: &Sky) -> Result<(), string>
+    fn build_environment(&mut self, sky: &Sky) -> Result<(), string> { .Err("this device does not support environment lighting") }
 
     // Upload RGBA8 pixels as a texture, read as `encoding` says and sampled
     // as `sampler` says, and hand back its handle. The pixels are read
@@ -241,15 +275,22 @@ pub trait Backend {
 
     fn free_texture(&mut self, texture: Texture)
 
-    // Reserve the complete mesh stream (shadow and color draws) before recording.
-    // Frames without an explicit estimate use the initial stream capacity.
-    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string>
+    fn start_frame(&mut self, request: &FrameRequest) -> Result<FrameStart, string>
+
+    // Convenience for consumers that already own the target.
+    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string> {
+        match self.start_frame(&FrameRequest { mesh_bytes: vertex_bytes, size: .None }) {
+            .Ok(.Ready) => .Ok,
+            .Ok(.Unavailable) => .Err("the render target is temporarily unavailable"),
+            .Err(reason) => .Err(reason),
+        }
+    }
     fn begin(&mut self) -> Result<(), string> { self.begin_with_vertices(0) }
 
     // The sun's shadow map, in its own pass, recorded before begin_pass.
-    fn shadow_begin(&mut self, sky: &Sky) -> Result<(), string>
-    fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string>
-    fn shadow_end(&mut self) -> Result<(), string>
+    fn shadow_begin(&mut self, sky: &Sky) -> Result<(), string> { .Err("this device does not support shadows") }
+    fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string> { .Err("this device does not support shadows") }
+    fn shadow_end(&mut self) -> Result<(), string> { .Err("this device does not support shadows") }
 
     // Open the main pass: colour and depth, cleared.
     fn begin_scene(&mut self, filtered: bool) -> Result<(), string>
@@ -284,7 +325,7 @@ pub trait Backend {
         params: &[f32; 4], camera: &MeshView, sky: &Sky, textures: &Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32, surface: Surface) -> Result<(), string>
 
     // Finish the sampled scene and open its display target for native-resolution UI.
-    fn post_process(&mut self, settings: &PostProcess) -> Result<(), string>
+    fn post_process(&mut self, settings: &PostProcess) -> Result<(), string> { .Err("this device does not support post-processing") }
 
     // Upload the packed glyph coverage atlas: one byte per pixel.
     fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string>
@@ -297,6 +338,11 @@ pub trait Backend {
     fn end(&mut self) -> Result<i64, string>
 
     fn close(move self)
+}
+
+// Native windows still expose the combined entry points.
+pub trait Backend: Device + FrameSource {
+    fn save_capture(&mut self, path: string) -> Result<(), string>
 }
 
 // Mesh stream shared by primitives, imported assets, and every render pass.

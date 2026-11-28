@@ -1,7 +1,6 @@
-capability unsafe, filesystem
+capability unsafe
 
-import std.bytes as bytes
-import std.sys as sys
+import gfx
 import .device as device
 import vk.enums as enums
 import vk.layout as vk
@@ -108,18 +107,21 @@ pub unsafe fn copy_to_host(r: &state.Renderer) {
     r.api.CmdPipelineBarrier(cmd, enums.pipeline_stage(.Transfer), enums.pipeline_stage(.Host), 0, 1, addr(&host), 0, ptr(0), 0, ptr(0))
 }
 
-pub unsafe fn save(r: &state.Renderer, path: string) -> bool {
-    if state.capture(&r) != .Ready || r.capture.readback.mapped == ptr(0) { return false }
+pub unsafe fn read(r: &state.Renderer) -> Result<gfx.Readback, string> {
+    if state.capture(&r) != .Ready || r.capture.readback.mapped == ptr(0) {
+        return .Err("no frame has been captured")
+    }
     red := if records.format_is_bgra(r.format) { usize(2) } else { usize(0) }
     blue := usize(2) - red
-    mut out: []u8 = []
-    out.reserve(i32(r.width * r.height * 3) + 32)
-    bytes.append_utf8(&mut out, "P6\n" + r.width.str() + " " + r.height.str() + "\n255\n")
-    for pixel in 0..i32(r.width * r.height) {
+    mut rgba: []u8 = []
+    count := i32(r.width * r.height)
+    rgba.reserve(count * 4)
+    for pixel in 0..count {
         at := usize(r.capture.readback.mapped) + usize(pixel) * 4
-        out.push(load_u8(ptr(at + red)))
-        out.push(load_u8(ptr(at + 1)))
-        out.push(load_u8(ptr(at + blue)))
+        rgba.push(load_u8(ptr(at + red)))
+        rgba.push(load_u8(ptr(at + 1)))
+        rgba.push(load_u8(ptr(at + blue)))
+        rgba.push(load_u8(ptr(at + 3)))
     }
-    sys.write_bytes(path, &out).is_ok()
+    .Ok(gfx.Readback { width: i32(r.width), height: i32(r.height), rgba: move rgba })
 }

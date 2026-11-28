@@ -40,12 +40,12 @@ pub struct ModelTextures { parts: []gfx.Textures, handles: []gfx.Texture }
 
 impl ModelTextures {
     // Remove all scene users before releasing the upload on its backend.
-    pub fn release<B: gfx.Backend>(move self, window: &mut B) {
+    pub fn release<B: gfx.Device>(move self, window: &mut B) {
         for handle in self.handles { window.free_texture(handle) }
     }
 }
 
-pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset) -> Result<ModelTextures, string> {
+pub fn upload_model_textures<B: gfx.Device>(window: &mut B, asset: &gltf.Asset) -> Result<ModelTextures, string> {
     mut uploads: []Upload = []
     match upload_parts(&mut window, asset, &mut uploads) {
         .Ok(parts) => {
@@ -60,7 +60,7 @@ pub fn upload_model_textures<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset)
     }
 }
 
-fn upload_parts<B: gfx.Backend>(window: &mut B, asset: &gltf.Asset, uploads: &mut []Upload) -> Result<[]gfx.Textures, string> {
+fn upload_parts<B: gfx.Device>(window: &mut B, asset: &gltf.Asset, uploads: &mut []Upload) -> Result<[]gfx.Textures, string> {
     mut textures: []gfx.Textures = []
     for part in &asset.parts {
         base := upload_or_refused(&uploads, asset, part.name, "base colour", part.texture, &part.sampler, .Srgb)?

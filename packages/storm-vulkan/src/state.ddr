@@ -8,6 +8,7 @@ import .post as post
 import vk.layout as vkl
 import .sdl as sdl
 import .shadow as shadow
+import .surface as presentation
 import .texture as texture
 import .ui as ui
 
@@ -159,6 +160,7 @@ pub struct Renderer {
     // Material textures (texture.ddr): set 1 of the mesh pipeline.
     material: texture.Material,
     window: sdl.Window,
+    presentation: presentation.Native,
     frameIndex: i64,
     trace: u32,
     // Read through `pass()`, written through `set_pass()` only.

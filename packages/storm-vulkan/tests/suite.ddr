@@ -384,7 +384,8 @@ fn setup_steps() -> [state.SetupStep; 17] {
         // guessed `rest` (5984 - 536, the 4 being alignment), measured.
         // The SDL window owns its text buffer and SDL_StartTextInput pointer.
         // One pointer in the atlas retains buffers referenced by in-flight UI draws.
-        assert(size_of(state.Renderer) == 5704)
+        // The native presentation provider stores a context and three callbacks.
+        assert(size_of(state.Renderer) == 5736)
     }
 }
 

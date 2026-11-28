@@ -11,9 +11,10 @@
 // The shadow pass has its own render pass before begin_pass. Mesh vertices
 // are interleaved [x, y, z, nx, ny, nz] f32 (24 bytes).
 
-capability unsafe, stdio
+capability unsafe, filesystem, stdio
 
 import gfx
+import gfx.readback
 import std.bytes as b
 import std.dl as dl
 import std.sys as sys
@@ -30,6 +31,7 @@ import .shadow as shadow
 import .ui as ui
 import .sdl as sdl
 import .state as state
+import .surface as presentation
 import .texture as texture
 import .records as records
 
@@ -41,6 +43,8 @@ pub struct Window { id: i64 }
 // into Result values.
 struct BeginResult { ok: bool, error: string }
 struct DrawResult { ok: bool, error: string, frames: i64 }
+
+enum Target { Window, Offscreen, Surface(presentation.Native) }
 
 @c_layout
 struct Registry { active: ptr, generation: i64 }
@@ -54,12 +58,19 @@ unsafe fn release(address: ptr)
 @extern("c", "memcpy")
 unsafe fn copy_bytes(destination: ptr, source: ptr, bytes: usize) -> ptr
 
-unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32, windowed: bool) -> state.SetupStep {
+unsafe fn initialize(r: &mut state.Renderer, title: string, width: i32, height: i32, target: &Target) -> state.SetupStep {
     r.width = u32(width)
     r.height = u32(height)
     r.frameIndex = 0
     r.current = 0
-    if windowed && !sdl.open(&mut r.window, title, width, height) { return .Window }
+    match target {
+        .Window => {
+            if !sdl.open(&mut r.window, title, width, height) { return .Window }
+            r.presentation = sdl.presentation(&r.window)
+        },
+        .Surface(surface) => { r.presentation = surface.clone() },
+        .Offscreen => {},
+    }
     mut step := device.setup(&mut r)
     if step != .Ready { return step }
     step = depth.create(&mut r, r.width, r.height)
@@ -85,7 +96,7 @@ unsafe fn bootstrap(r: &mut state.Renderer, loader: ptr, windowed: bool) -> bool
     api.load(&mut r.api, loader, windowed)
 }
 
-unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32, windowed: bool) -> Result<Window, string> {
+unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, height: i32, target: Target) -> Result<Window, string> {
     if width < 1 || width > 8192 || height < 1 || height > 8192 {
         return .Err("window dimensions must be between 1 and 8192")
     }
@@ -97,12 +108,13 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
         release(address)
         return .Err("Vulkan loader is unavailable")
     }
-    if !bootstrap(ref_at(address), loader, windowed) {
+    present := match target { .Offscreen => false, _ => true }
+    if !bootstrap(ref_at(address), loader, present) {
         _ := dl.close(loader)
         release(address)
         return .Err("Vulkan loader is missing required entry points")
     }
-    mut failed := initialize(ref_at(address), title, width, height, windowed)
+    mut failed := initialize(ref_at(address), title, width, height, &target)
     if failed != .Ready {
         failure := describe(ref_at(address), failed)
         _ := teardown(ref_at(address))
@@ -116,11 +128,17 @@ unsafe fn open_renderer(registry: &mut Registry, title: string, width: i32, heig
 }
 
 pub fn open(title: string, width: i32, height: i32) -> Result<Window, string> {
-    unsafe { open_renderer(ref_at(registry_address()), title, width, height, true) }
+    unsafe { open_renderer(ref_at(registry_address()), title, width, height, .Window) }
 }
 
 pub fn open_preview(title: string, width: i32, height: i32) -> Result<Window, string> {
-    unsafe { open_renderer(ref_at(registry_address()), title, width, height, false) }
+    unsafe { open_renderer(ref_at(registry_address()), title, width, height, .Offscreen) }
+}
+
+// The caller owns the native host and supplies input separately.
+pub unsafe fn open_surface(surface: presentation.Native, width: i32, height: i32) -> Result<Window, string> {
+    if surface.context == ptr(0) { return .Err("a presentation surface needs a live context") }
+    open_renderer(ref_at(registry_address()), "", width, height, .Surface(surface))
 }
 
 unsafe fn active(registry: &Registry, window: Window) -> ptr {
@@ -190,26 +208,54 @@ fn draw_error(frames: i64, move message: string) -> DrawResult {
     DrawResult { ok: false, error: message.clone(), frames: frames }
 }
 
-unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult {
-    if r.window.closed != 0 { return BeginResult { ok: false, error: "window is closed" } }
-    if state.pass(&r) != .Idle { return BeginResult { ok: false, error: "a frame is already being recorded" } }
+unsafe fn presenting(r: &state.Renderer) -> bool {
+    r.surface != ptr(0) && state.capture(r) != .Recording
+}
+
+unsafe fn resize_offscreen(r: &mut state.Renderer, size: &gfx.FrameSize) -> Result<(), string> {
+    extent := size.pixels()?
+    if extent.width > 8192 || extent.height > 8192 { return .Err("render target dimensions exceed 8192 pixels") }
+    if r.width == u32(extent.width) && r.height == u32(extent.height) { return .Ok }
+    waited := r.api.DeviceWaitIdle(r.device)
+    if waited != 0 { return .Err("waiting for the offscreen target failed (" + enums.result_name(waited) + ")") }
+    capture := state.capture(&r) == .Recording
+    headless.destroy(&mut r)
+    post.destroy_target(&mut r)
+    depth.destroy(&mut r)
+    r.width = u32(extent.width)
+    r.height = u32(extent.height)
+    rebuilt := depth.create(&mut r, r.width, r.height)
+    if rebuilt != .Ready { return .Err("could not resize the offscreen target at " + describe(&r, rebuilt)) }
+    if capture && !capture_next_at(&mut r) { return .Err("could not resize the capture target") }
+    .Ok
+}
+
+unsafe fn begin_frame(r: &mut state.Renderer, request: &gfx.FrameRequest) -> Result<gfx.FrameStart, string> {
+    if r.window.closed != 0 { return .Err("window is closed") }
+    if state.pass(&r) != .Idle { return .Err("a frame is already being recorded") }
+    if r.surface == ptr(0) {
+        match request.size {
+            .Some(size) => { resize_offscreen(&mut r, size)? },
+            .None => {},
+        }
+    }
+    vertex_bytes := request.mesh_bytes
     slot := r.current
     trace_step(&r, "frame " + r.frameIndex.str() + " slot " + slot.str() + " wait fence")
     // The CPU is about to reuse the mapped mesh, UI and light buffers shared by both slots.
     waited := r.api.WaitForFences(r.device, u32(r.fences.len), addr(&mut r.fences[0]), 1, 18446744073709551615)
-    if waited != 0 { return BeginResult { ok: false, error: "waiting for the frame fence failed" } }
+    if waited != 0 { return .Err("waiting for the frame fence failed") }
     // Every set of the last frame is out of use now: its pool starts over.
     pooled := texture.begin_frame(&mut r)
-    if pooled != 0 { return BeginResult { ok: false, error: "the material descriptor pool could not be made (" + enums.result_name(pooled) + ")" } }
-    if r.resizePending != 0 {
-        mut width: i32 = 0
-        mut height: i32 = 0
-        r.window.GetDrawableSize(r.window.handle, addr(&mut width), addr(&mut height))
-        if width > 0 && height > 0 && (u32(width) != r.width || u32(height) != r.height) {
+    if pooled != 0 { return .Err("the material descriptor pool could not be made (" + enums.result_name(pooled) + ")") }
+    if r.presentation.context != ptr(0) && (r.resizePending != 0 || r.window.handle == ptr(0)) {
+        (width, height) := presentation.drawable_size(&r.presentation)
+        if width <= 0 || height <= 0 { return .Ok(.Unavailable) }
+        if u32(width) != r.width || u32(height) != r.height {
             capture := state.capture(&r) == .Recording
             failed := recreate(&mut r)
-            if failed != .Ready { return BeginResult { ok: false, error: "could not resize at " + describe(&r, failed) } }
-            if capture && !capture_next_at(&mut r) { return BeginResult { ok: false, error: "could not resize the capture target" } }
+            if failed != .Ready { return .Err("could not resize at " + describe(&r, failed)) }
+            if capture && !capture_next_at(&mut r) { return .Err("could not resize the capture target") }
         }
         r.resizePending = 0
     }
@@ -219,23 +265,28 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
         if step != .Ready && capacity > vertex_bytes && vertex_bytes > 0 {
             step = device.replace_vertex_buffer(&mut r, vertex_bytes)
         }
-        if step != .Ready { return BeginResult { ok: false, error: "could not reserve vertex stream: " + describe(&r, step) } }
+        if step != .Ready { return .Err("could not reserve vertex stream: " + describe(&r, step)) }
         trace_step(&r, "reserved " + r.vertex.capacity.str() + " vertex bytes for " + vertex_bytes.str())
     }
     mut image_index: u32 = 0
-    if r.surface == ptr(0) && state.capture(&r) != .Recording {
-        return BeginResult { ok: false, error: "offscreen rendering requires capture_next" }
+    present := presenting(&r)
+    if !present && r.captureFramebuffer == ptr(0) {
+        failed := headless.setup(&mut r)
+        if failed != .Ready { return .Err("could not initialize the offscreen target at " + describe(&r, failed)) }
     }
-    if state.capture(&r) != .Recording {
+    if present {
         mut acquired := r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
             r.image_available[slot], ptr(0), addr(&mut image_index))
         if records.is_out_of_date(acquired) {
+            (width, height) := presentation.drawable_size(&r.presentation)
+            if width <= 0 || height <= 0 { return .Ok(.Unavailable) }
             failed := recreate(&mut r)
-            if failed != .Ready { return BeginResult { ok: false, error: "swapchain is out of date and could not be recreated at " + describe(&r, failed) } }
+            if failed != .Ready { return .Err("swapchain is out of date and could not be recreated at " + describe(&r, failed)) }
             acquired = r.api.AcquireNextImageKHR(r.device, r.swapchain, 18446744073709551615,
                 r.image_available[slot], ptr(0), addr(&mut image_index))
         }
-        if !records.is_success(acquired) { return BeginResult { ok: false, error: "acquiring a swapchain image failed (" + enums.result_name(acquired) + ")" } }
+        if records.is_out_of_date(acquired) { return .Ok(.Unavailable) }
+        if !records.is_success(acquired) { return .Err("acquiring a swapchain image failed (" + enums.result_name(acquired) + ")") }
         trace_step(&r, "acquired image " + i32(image_index).str())
     }
     _ := r.api.ResetFences(r.device, 1, addr(&mut r.fences[slot]))
@@ -246,12 +297,12 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     mut begin: vk.CommandBufferBeginInfo = vk.CommandBufferBeginInfo::new()
     begin.flags = enums.command_buffer_usage(.OneTimeSubmit)
     if r.api.BeginCommandBuffer(r.commands[slot], addr(&begin)) != 0 {
-        return BeginResult { ok: false, error: "beginning the command buffer failed" }
+        return .Err("beginning the command buffer failed")
     }
     mut clear_color: [f32; 4] = [1.0, 0.0, 0.0, 1.0]
     mut pass: vk.RenderPassBeginInfo = vk.RenderPassBeginInfo::new()
     pass.renderPass = r.renderPass
-    pass.framebuffer = if state.capture(&r) == .Recording { r.captureFramebuffer } else { r.framebuffers[i32(image_index)] }
+    pass.framebuffer = if present { r.framebuffers[i32(image_index)] } else { r.captureFramebuffer }
     pass.renderArea.extent.width = r.width
     pass.renderArea.extent.height = r.height
     pass.clearValueCount = 2
@@ -269,7 +320,7 @@ unsafe fn begin_frame(r: &mut state.Renderer, vertex_bytes: u64) -> BeginResult 
     r.pendingClear = clears
     r.pendingPass.pClearValues = addr(&mut r.pendingClear[0])
     state.set_pass(&mut r, .Waiting)
-    BeginResult { ok: true, error: "" }
+    .Ok(.Ready)
 }
 
 // Open the main render pass. Called after prepare_frame and after the optional
@@ -370,10 +421,12 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     if state.pass(&r) == .Idle { return draw_error(r.frameIndex, "end without begin") }
     if state.pass(&r) != .Direct && state.pass(&r) != .Composite { return draw_error(r.frameIndex, "end requires a finished scene") }
     slot := r.current
+    present_frame := presenting(&r)
+    capture := state.capture(&r) == .Recording
     r.api.CmdEndRenderPass(r.commands[slot])
-    if state.capture(&r) == .Recording {
+    if capture {
         headless.copy_to_host(&r)
-    } else {
+    } else if present_frame {
         // The same scene pass writes every target. A swapchain image must be
         // transitioned for the presentation engine.
         records.transition_image(&r, r.commands[slot], r.images[r.imageIndex], 0, 1, 1, &records.to_present())
@@ -384,7 +437,7 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
     }
     mut submit_info: vk.SubmitInfo = vk.SubmitInfo::new()
     wait_stage := enums.pipeline_stage(.ColorAttachmentOutput)
-    if state.capture(&r) != .Recording {
+    if present_frame {
         submit_info.waitSemaphoreCount = 1
         submit_info.pWaitSemaphores = addr(&r.image_available[slot])
         submit_info.pWaitDstStageMask = addr(&wait_stage)
@@ -398,13 +451,14 @@ unsafe fn end_frame(r: &mut state.Renderer) -> DrawResult {
         state.set_pass(&mut r, .Idle)
         return draw_error(r.frameIndex, "queue submission failed")
     }
-    if state.capture(&r) == .Recording {
-        // Offscreen frames are read back from mapped memory; nothing to present.
-        if r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615) != 0 {
-            state.set_pass(&mut r, .Idle)
-            return draw_error(r.frameIndex, "waiting for capture readback failed")
+    if !present_frame {
+        if capture {
+            if r.api.WaitForFences(r.device, 1, addr(&mut r.fences[slot]), 1, 18446744073709551615) != 0 {
+                state.set_pass(&mut r, .Idle)
+                return draw_error(r.frameIndex, "waiting for capture readback failed")
+            }
+            state.set_capture(&mut r, .Ready)
         }
-        state.set_capture(&mut r, .Ready)
         state.set_pass(&mut r, .Idle)
         r.current = (r.current + 1) % 2
         r.frameIndex = r.frameIndex + 1
@@ -467,7 +521,7 @@ fn drawn(move result: DrawResult) -> Result<(), string> {
 
 fn take_window_text(r: &mut state.Renderer) -> string { sdl.take_text(&mut r.window) }
 
-impl gfx.Backend for Window {
+impl gfx.FrameSource for Window {
     fn poll(&mut self) -> gfx.Frame {
         unsafe {
             address := renderer(self.clone())
@@ -483,6 +537,11 @@ impl gfx.Backend for Window {
             return take_window_text(ref_at(address))
         }
     }
+
+}
+
+impl gfx.Device for Window {
+    fn features(&self) -> gfx.Features { gfx.full_features() }
 
     fn device_name(&self) -> string {
         unsafe {
@@ -508,12 +567,11 @@ impl gfx.Backend for Window {
         }
     }
 
-    fn save_capture(&mut self, path: string) -> Result<(), string> {
+    fn read_capture(&mut self) -> Result<gfx.Readback, string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            if !headless.save(ref_at(address), path) { return .Err("could not write the capture") }
-            .Ok
+            return headless.read(ref_at(address))
         }
     }
 
@@ -529,11 +587,11 @@ impl gfx.Backend for Window {
         }
     }
 
-    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string> {
+    fn start_frame(&mut self, request: &gfx.FrameRequest) -> Result<gfx.FrameStart, string> {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            return begun(begin_frame(ref_at(address), vertex_bytes))
+            return begin_frame(ref_at(address), request)
         }
     }
 
@@ -654,27 +712,32 @@ impl gfx.Backend for Window {
     }
 }
 
+impl gfx.Backend for Window {
+    fn save_capture(&mut self, path: string) -> Result<(), string> {
+        pixels := self.read_capture()?
+        image := readback.ppm(&pixels)
+        match sys.write_bytes(path, &image) {
+            .Ok(_) => .Ok,
+            .Err(error) => .Err("could not write the capture: " + sys.io_error_message(error)),
+        }
+    }
+}
+
 // ---- Teardown ----
 
 unsafe fn teardown(r: &mut state.Renderer) -> ptr {
     if r.device != ptr(0) {
         _ := r.api.DeviceWaitIdle(r.device)
+        // Only a successfully created device owns these resources.
         headless.destroy(&mut r)
+        ui.destroy(&mut r)
+        post.destroy(&mut r)
+        pipeline.destroy(&mut r)
+        ibl.destroy(&mut r)
+        texture.destroy(&mut r)
+        shadow.destroy(&mut r)
+        depth.destroy(&mut r)
     }
-    // Reverse of creation, each module destroying what it created: ui, post,
-    // pipeline, ibl, texture, shadow, depth, then the device's own. Shadow
-    // comes after pipeline because `shadow.destroy` frees `shadowSetLayout`
-    // and the mesh and sky pipeline layouts are built on it — not required by
-    // the spec (a pipeline layout may not access its set layouts after
-    // creation, so they may die first), but the order that reads as the
-    // creation order backwards.
-    ui.destroy(&mut r)
-    post.destroy(&mut r)
-    if r.device != ptr(0) { pipeline.destroy(&mut r) }
-    ibl.destroy(&mut r)
-    texture.destroy(&mut r)
-    if r.device != ptr(0) { shadow.destroy(&mut r) }
-    depth.destroy(&mut r)
     loader := r.loader
     device.destroy(&mut r)
     sdl.close(&mut r.window)

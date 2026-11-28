@@ -28,3 +28,4 @@ fn basic_project_defaults<P: runtime.Project>(project: &mut P) {
 }
 
 import .controls as _
+import .rhi as _

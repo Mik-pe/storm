@@ -10,7 +10,9 @@ import ecs
 import gfx
 import gltf
 import gltf.textures as textures
+import input
 import render
+import runtime
 import scene as scenegraph
 import studio as app
 
@@ -64,19 +66,16 @@ impl Recorder {
     }
 }
 
-impl gfx.Backend for Recorder {
-    fn poll(&mut self) -> gfx.Frame { gfx.Frame { closed: true, width: 1, height: 1, scale: 1.0, time: 0.0, resized: false, input: gfx.Input::empty() } }
+impl gfx.Device for Recorder {
+    fn features(&self) -> gfx.Features { gfx.full_features() }
     fn device_name(&self) -> string { "recorder" }
-    fn set_trace(&mut self, enabled: bool) { _ := enabled }
-    fn capture_next(&mut self) -> Result<(), string> { .Ok }
-    fn save_capture(&mut self, path: string) -> Result<(), string> { .Err(path.clone()) }
-    fn build_environment(&mut self, sky: &gfx.Sky) -> Result<(), string> { _ := sky.sun[0]; .Ok }
+    fn build_environment(&mut self, sky: &gfx.Sky) -> Result<(), string> { .Ok }
     fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
         self.uploads.push(Upload { width: width, height: height, bytes: pixels.len, sampler: sampler.clone(), encoding: encoding })
         .Ok(gfx.Texture { id: i64(self.uploads.len) })
     }
     fn free_texture(&mut self, texture: gfx.Texture) { self.freed.push(texture.id) }
-    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string> { _ := vertex_bytes; self.began += 1; .Ok }
+    fn start_frame(&mut self, request: &gfx.FrameRequest) -> Result<gfx.FrameStart, string> { self.began += 1; .Ok(.Ready) }
     fn shadow_begin(&mut self, sky: &gfx.Sky) -> Result<(), string> { _ := sky.sun[0]; .Ok }
     fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string> {
         self.shadows.push(ShadowCall { stream: vertices.len, model: model.clone() })
@@ -105,6 +104,30 @@ impl gfx.Backend for Recorder {
     fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string> { _ := vertices.len; _ := screen[0]; .Ok }
     fn end(&mut self) -> Result<i64, string> { .Ok(0) }
     fn close(move self) {}
+}
+
+struct StudioHost { frames: i32 }
+
+impl gfx.FrameSource for StudioHost {
+    fn poll(&mut self) -> gfx.Frame {
+        self.frames += 1
+        gfx.Frame { closed: self.frames > 1, width: 900, height: 600, scale: 1.0,
+            time: f64(self.frames) * 0.02, resized: false, input: gfx.Input::empty() }
+    }
+}
+
+struct StudioProject { graph: scenegraph.Graph }
+impl runtime.Project for StudioProject {
+    fn graph(&self) -> &scenegraph.Graph from self { &self.graph }
+    fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: runtime.Tick, paused: bool, capturing: bool,
+        camera: input.Camera, custom_eye: bool, sky: &mut gfx.Sky) -> input.Camera { camera }
+}
+
+@test fn studio_accepts_a_device_without_its_own_window() {
+    argv: []string = []
+    project := StudioProject { graph: scenegraph.Graph::new() }
+    result := app.run_on(Recorder::new(), StudioHost { frames: 0 }, &argv, move project, .Workspace, "")
+    assert(result.is_ok())
 }
 
 // A sky with the executor's defaults: a unit sun and the frames it needs.
@@ -427,7 +450,7 @@ const PLANE_STREAM: i32 = 48
 @test fn an_independent_renderer_draws_replaced_worlds_and_leaves_the_overlay_open() {
     mut renderer := scene_renderer.Renderer::new()
     mut backend := Recorder::new()
-    frame := backend.poll()
+    frame := gfx.Frame { closed: false, width: 1, height: 1, scale: 1.0, time: 0.0, resized: false, input: gfx.Input::empty() }
     camera := view(core.identity(), &gfx.mesh_view([0.0, 5.0, 10.0]))
     finish := gfx.PostProcess { antialias: true, strength: 0.0 }
 

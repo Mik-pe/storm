@@ -1,0 +1,18 @@
+// Wire encoding for the original capture API. Devices supply display pixels.
+import .gfx
+import std.bytes as bytes
+
+pub fn ppm(image: &gfx.Readback) -> []u8 {
+    if !image.valid() { return [] }
+    mut out: []u8 = []
+    count := image.rgba.len / 4
+    out.reserve(count * 3 + 32)
+    bytes.append_utf8(&mut out, "P6\n" + image.width.str() + " " + image.height.str() + "\n255\n")
+    for p in 0..count {
+        at := p * 4
+        out.push(image.rgba[at])
+        out.push(image.rgba[at + 1])
+        out.push(image.rgba[at + 2])
+    }
+    out
+}

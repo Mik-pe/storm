@@ -17,7 +17,8 @@ fn preview(session: &play.Session, path: string) -> Result<(), string> {
     argv: []string = []
     project := app.project(session.clone(), watch.new("", ""))?
     if target_is("macos") { return runtime.run<metal.Renderer, app.Game>(metal.open_preview, "Storm", &argv, move project, .Preview, path) }
-    else { return runtime.run<vulkan.Window, app.Game>(vulkan.open_preview, "Storm", &argv, move project, .Preview, path) }
+    if target_is("linux") { return runtime.run<vulkan.Window, app.Game>(vulkan.open_preview, "Storm", &argv, move project, .Preview, path) }
+    .Err("this target has no configured Storm graphics backend")
 }
 
 fn main() -> i32 {
@@ -63,9 +64,11 @@ fn main() -> i32 {
     result := if target_is("macos") {
         open := if capture || headless { metal.open_preview } else { metal.open }
         studio.run<metal.Renderer, app.Game>(open, "Storm", &argv, move project, launch, shot)
-    } else {
+    } else if target_is("linux") {
         open := if capture || headless { vulkan.open_preview } else { vulkan.open }
         studio.run<vulkan.Window, app.Game>(open, "Storm", &argv, move project, launch, shot)
+    } else {
+        Result<(), string>.Err("this target has no configured Storm graphics backend")
     }
     match result {
         .Ok => 0,

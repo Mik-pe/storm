@@ -1,6 +1,7 @@
 capability unsafe
 
 import gfx
+import .surface as surface
 import sys
 import std.dl as dl
 
@@ -116,6 +117,10 @@ pub unsafe fn close(w: &mut Window) {
     if w.handle != ptr(0) { w.DestroyWindow(w.handle) }
     if w.initialized != 0 { w.QuitSubSystem(32) }
     if w.library != ptr(0) { _ := dl.close(w.library) }
+}
+
+pub unsafe fn presentation(w: &Window) -> surface.Native {
+    surface.Native { context: w.handle, extensions: w.GetInstanceExtensions, create: w.CreateSurface, extent: w.GetDrawableSize }
 }
 
 fn scancode_valid(scancode: i32) -> bool { scancode >= 0 && scancode < 512 }

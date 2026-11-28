@@ -469,14 +469,6 @@ pub unsafe fn sync(rt: &objc.Runtime, window: &Window) {
     }
 }
 
-// Whether the layer's drawables may be read back. A drawable normally exists
-// only to be shown; a capture reads its pixels, and says so before the first
-// frame, because the layer decides when it makes them.
-pub unsafe fn readable_drawables(rt: &objc.Runtime, window: &Window, readable: bool) {
-    value := u64(if readable { 0 } else { 1 })
-    objc.tell_number(rt, window.layer, rt.sel.set_framebuffer_only, value)
-}
-
 // ---- the self-test's hands (tools/selftest.ddr) ----
 //
 // Events made to order and handed to the window, the way the system's would

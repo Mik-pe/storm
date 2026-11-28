@@ -18,6 +18,7 @@
 capability unsafe, filesystem, stdio
 
 import gfx
+import gfx.readback
 import std.bytes as bytes
 import std.dl as dl
 import std.sys as sys
@@ -60,6 +61,7 @@ pub struct Renderer {
     window: appkit.Window,
     // An offscreen renderer owns its color texture instead of borrowing a drawable.
     preview_target: ptr,
+    external_layer: ptr,
     // The device's objects, in the order they were made.
     device: ptr,
     queue: ptr,
@@ -110,23 +112,31 @@ pub struct Renderer {
     frames: i64,
     capturing: u8,
     trace: u8,
-    // The pixels of the last captured frame, BGRA8, until the next one.
-    captured: []u8,
+    // The last captured frame carries its own extent across resizes.
+    captured: Option<gfx.Readback>,
 }
 
+enum Target { Window, Offscreen, Layer(ptr) }
+
 pub fn open(title: string, width: i32, height: i32) -> Result<Renderer, string> {
-    unsafe { open_renderer(title, width, height, false) }
+    unsafe { open_renderer(title, width, height, .Window) }
 }
 
 // The preview size is in pixels. No application, window, or layer is created.
 pub fn open_preview(title: string, width: i32, height: i32) -> Result<Renderer, string> {
-    unsafe { open_renderer(title, width, height, true) }
+    unsafe { open_renderer(title, width, height, .Offscreen) }
+}
+
+// Attach an existing presentation layer. The host owns the window and input.
+pub unsafe fn open_layer(layer: ptr, width: i32, height: i32) -> Result<Renderer, string> {
+    if layer == ptr(0) { return .Err("a presentation layer is required") }
+    open_renderer("", width, height, .Layer(layer))
 }
 
 unsafe fn empty() -> Renderer {
     Renderer {
         objc: zeroed(),
-        window: appkit.empty(), preview_target: ptr(0),
+        window: appkit.empty(), preview_target: ptr(0), external_layer: ptr(0),
         device: ptr(0), queue: ptr(0), library: ptr(0),
         mesh_pipeline: device.no_pipeline(), glass_pipeline: device.no_pipeline(), sky_pipeline: device.no_pipeline(),
         shadow_pipeline: device.no_pipeline(), post_pipeline: device.no_pipeline(),
@@ -145,22 +155,22 @@ unsafe fn empty() -> Renderer {
         bound_mat_tex: [ptr(0); 5], bound_mat_samp: [ptr(0); 5],
         light_vp: [0.0; 16],
         width: 0, height: 0, vertex_cursor: 0, frames: 0, capturing: 0, trace: 0,
-        captured: [],
+        captured: .None,
     }
 }
 
-unsafe fn open_renderer(title: string, width: i32, height: i32, preview: bool) -> Result<Renderer, string> {
+unsafe fn open_renderer(title: string, width: i32, height: i32, target: Target) -> Result<Renderer, string> {
     if width < 1 || width > 8192 || height < 1 || height > 8192 {
         return .Err("window dimensions must be between 1 and 8192")
     }
-    runtime := if preview { objc.load_metal()? } else { objc.load()? }
+    runtime := match target { .Window => objc.load()?, _ => objc.load_metal()? }
     pool := runtime.poolPush()
-    outcome := create(runtime, title, width, height, preview)
+    outcome := create(runtime, title, width, height, &target)
     runtime.poolPop(pool)
     outcome
 }
 
-unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32, preview: bool) -> Result<Renderer, string> {
+unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32, target: &Target) -> Result<Renderer, string> {
     // MTLCreateSystemDefaultDevice: the one C function Storm needs from Metal.
     create_device: extern fn() -> ptr = ffi_fn(dl.symbol(runtime.metal, cstr("MTLCreateSystemDefaultDevice")))
     chosen := create_device()
@@ -168,7 +178,7 @@ unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32, 
     mut made := empty()
     made.objc = runtime
     made.device = chosen
-    outcome := prepare(&mut made, title, width, height, preview)
+    outcome := prepare(&mut made, title, width, height, target)
     if outcome.is_err() {
         destroy(&mut made)
         return .Err(outcome.unwrap_err())
@@ -178,13 +188,22 @@ unsafe fn create(runtime: objc.Runtime, title: string, width: i32, height: i32, 
 
 // Everything a renderer holds, in the order `close` releases it. Either all
 // of it is made, or what was made is released and the reason comes back.
-unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, preview: bool) -> Result<(), string> {
-    if preview {
-        r.width = u64(width)
-        r.height = u64(height)
-        r.preview_target = device.texture(&r.objc, r.device, .Type2D, .BGRA8Unorm, r.width, r.height, 1, .RenderTarget, .Shared)?
-    } else {
-        r.window = appkit.open(&r.objc, title, width, height, r.device)?
+unsafe fn prepare(r: &mut Renderer, title: string, width: i32, height: i32, target: &Target) -> Result<(), string> {
+    match target {
+        .Offscreen => {
+            r.width = u64(width)
+            r.height = u64(height)
+            r.preview_target = offscreen_texture(&r, r.width, r.height)?
+        },
+        .Layer(layer) => {
+            r.external_layer = objc.send(&r.objc, layer, r.objc.sel.retain)
+            objc.tell_to(&r.objc, layer, r.objc.sel.set_device, r.device)
+            objc.tell_number(&r.objc, layer, r.objc.sel.set_pixel_format, enums.pixel_format(.BGRA8Unorm))
+            objc.tell_size(&r.objc, layer, r.objc.sel.set_drawable_size, records.size(f64(width), f64(height)))
+            r.width = u64(width)
+            r.height = u64(height)
+        },
+        .Window => { r.window = appkit.open(&r.objc, title, width, height, r.device)? },
     }
     r.queue = objc.send(&r.objc, r.device, r.objc.sel.new_command_queue)
     if r.queue == ptr(0) { return .Err("the device could not make a command queue") }
@@ -291,7 +310,40 @@ unsafe fn reset_pass_state(r: &mut Renderer) {
     }
 }
 
-unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string> {
+unsafe fn offscreen_texture(r: &Renderer, width: u64, height: u64) -> Result<ptr, string> {
+    device.texture(&r.objc, r.device, .Type2D, .BGRA8Unorm, width, height, 1, .RenderTarget, .Shared)
+}
+
+unsafe fn presentation_layer(r: &Renderer) -> ptr {
+    if r.external_layer != ptr(0) { r.external_layer } else { r.window.layer }
+}
+
+unsafe fn readable_drawables(r: &Renderer, readable: bool) {
+    layer := presentation_layer(r)
+    if layer != ptr(0) {
+        objc.tell_number(&r.objc, layer, r.objc.sel.set_framebuffer_only, u64(if readable { 0 } else { 1 }))
+    }
+}
+
+unsafe fn update_target(r: &mut Renderer, size: &gfx.FrameSize) -> Result<(), string> {
+    extent := size.pixels()?
+    if extent.width > 8192 || extent.height > 8192 { return .Err("render target dimensions exceed 8192 pixels") }
+    if r.external_layer != ptr(0) {
+        wanted := records.size(f64(extent.width), f64(extent.height))
+        actual := objc.measure(&r.objc, r.external_layer, r.objc.sel.drawable_size)
+        if actual.width != wanted.width || actual.height != wanted.height {
+            objc.tell_size(&r.objc, r.external_layer, r.objc.sel.set_drawable_size, wanted)
+        }
+    } else if r.preview_target != ptr(0) && (u64(extent.width) != r.width || u64(extent.height) != r.height) {
+        retire_all(&mut r)?
+        fresh := offscreen_texture(&r, u64(extent.width), u64(extent.height))?
+        r.objc.release(r.preview_target)
+        r.preview_target = fresh
+    }
+    .Ok
+}
+
+unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<gfx.FrameStart, string> {
     if r.pool != ptr(0) { return .Err("a frame is already being recorded") }
     slot := r.frame_slot
     retire_slot(&mut r, slot)?
@@ -300,9 +352,12 @@ unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string
     if r.preview_target != ptr(0) {
         r.target = r.preview_target
     } else {
-        appkit.sync(&r.objc, &r.window)
-        r.drawable = objc.send(&r.objc, r.window.layer, r.objc.sel.next_drawable)
-        if r.drawable == ptr(0) { return refuse(&mut r, "the window offered no drawable to render into") }
+        if r.window.window != ptr(0) { appkit.sync(&r.objc, &r.window) }
+        r.drawable = objc.send(&r.objc, presentation_layer(&r), r.objc.sel.next_drawable)
+        if r.drawable == ptr(0) {
+            cancel_begin(&mut r)
+            return .Ok(.Unavailable)
+        }
         r.target = objc.send(&r.objc, r.drawable, r.objc.sel.texture)
     }
     width := objc.number(&r.objc, r.target, r.objc.sel.width)
@@ -329,11 +384,11 @@ unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string
     r.vertex_cursor = 0
     ui.begin_frame(&r.objc, &mut r.atlas, slot)
     if r.trace != 0 { trace(r, "frame " + r.frames.str() + ": " + width.str() + "x" + height.str()) }
-    .Ok
+    .Ok(.Ready)
 }
 
 // Give up on the frame that was being begun: its pool goes with it.
-unsafe fn refuse(r: &mut Renderer, move message: string) -> Result<(), string> {
+unsafe fn cancel_begin(r: &mut Renderer) {
     if r.pool != ptr(0) { r.objc.poolPop(r.pool) }
     r.pool = ptr(0)
     r.drawable = ptr(0)
@@ -342,6 +397,10 @@ unsafe fn refuse(r: &mut Renderer, move message: string) -> Result<(), string> {
     r.encoder = ptr(0)
     r.pass = .None
     reset_pass_state(&mut r)
+}
+
+unsafe fn refuse<T>(r: &mut Renderer, move message: string) -> Result<T, string> {
+    cancel_begin(&mut r)
     .Err(message)
 }
 
@@ -577,7 +636,8 @@ unsafe fn read_pixels(r: &mut Renderer) -> Result<(), string> {
         read := r.objc.get_bytes
         read(r.target, r.objc.sel.get_bytes, addr(&pixels[0]), r.width * 4, records.region(0, 0, r.width, r.height), 0)
     }
-    r.captured = pixels
+    image := capture.pixels(&pixels, i32(r.width), i32(r.height))?
+    r.captured = .Some(move image)
     .Ok
 }
 
@@ -601,6 +661,10 @@ unsafe fn record_end(r: &mut Renderer) -> Result<i64, string> {
     missing_post := r.pass == .FilteredScene
     if r.encoder != ptr(0) { _ := record_end_pass(&mut r) }
     outcome: Result<(), string> = if missing_post { .Err("the filtered scene was never composited") } else { finish(&mut r) }
+    if r.capturing != 0 {
+        readable_drawables(&r, false)
+        r.capturing = 0
+    }
     r.objc.poolPop(r.pool)
     r.pool = ptr(0)
     r.drawable = ptr(0)
@@ -628,7 +692,7 @@ unsafe fn destroy(r: &mut Renderer) {
     ibl.destroy(&r.objc, &mut r.environment)
     for owned in [r.scene_color, r.depth_buffer, r.shadow_map, r.shadow_sampler, r.depth_off, r.depth_test, r.depth_write,
         r.post_pipeline.state, r.shadow_pipeline.state, r.sky_pipeline.state, r.glass_pipeline.state, r.mesh_pipeline.state,
-        r.library, r.queue, r.preview_target] {
+        r.library, r.queue, r.preview_target, r.external_layer] {
         if owned != ptr(0) { r.objc.release(owned) }
     }
     r.scene_color = ptr(0)
@@ -646,6 +710,7 @@ unsafe fn destroy(r: &mut Renderer) {
     r.library = ptr(0)
     r.queue = ptr(0)
     r.preview_target = ptr(0)
+    r.external_layer = ptr(0)
     appkit.close(&r.objc, &mut r.window)
     if r.device != ptr(0) {
         r.objc.release(r.device)
@@ -663,10 +728,10 @@ impl Renderer {
 
 // ---- the contract: every promise in gfx.Backend, kept with Metal ----
 
-impl gfx.Backend for Renderer {
+impl gfx.FrameSource for Renderer {
     fn poll(&mut self) -> gfx.Frame {
         unsafe {
-            if self.preview_target != ptr(0) {
+            if self.window.window == ptr(0) {
                 return gfx.Frame {
                     closed: false, width: i32(self.width), height: i32(self.height), scale: 1.0,
                     time: f64(sys.now_ms()) / 1000.0, resized: false, input: gfx.Input::empty(),
@@ -678,10 +743,15 @@ impl gfx.Backend for Renderer {
 
     fn take_text(&mut self) -> string {
         unsafe {
-            if self.preview_target != ptr(0) { return "" }
+            if self.window.window == ptr(0) { return "" }
             appkit.take_text()
         }
     }
+
+}
+
+impl gfx.Device for Renderer {
+    fn features(&self) -> gfx.Features { gfx.full_features() }
 
     fn device_name(&self) -> string {
         unsafe { objc.text(&self.objc, objc.send(&self.objc, self.device, self.objc.sel.name)) }
@@ -692,18 +762,18 @@ impl gfx.Backend for Renderer {
     }
 
     fn capture_next(&mut self) -> Result<(), string> {
-        unsafe { if self.preview_target == ptr(0) { appkit.readable_drawables(&self.objc, &self.window, true) } }
+        unsafe {
+            if self.pool != ptr(0) { return .Err("request capture before starting the frame") }
+            readable_drawables(&self, true)
+        }
         self.capturing = 1
         .Ok
     }
 
-    fn save_capture(&mut self, path: string) -> Result<(), string> {
-        if self.captured.len == 0 { return .Err("no frame has been captured") }
-        image := capture.ppm(&self.captured, i32(self.width), i32(self.height))
-        if image.len == 0 { return .Err("the captured frame is not an image") }
-        match sys.write_bytes(path, &image) {
-            .Ok(_) => .Ok,
-            .Err(error) => .Err("could not write the capture: " + sys.io_error_message(error)),
+    fn read_capture(&mut self) -> Result<gfx.Readback, string> {
+        match self.captured {
+            .Some(image) => .Ok(image.clone()),
+            .None => .Err("no frame has been captured"),
         }
     }
 
@@ -719,8 +789,17 @@ impl gfx.Backend for Renderer {
         }
     }
 
-    fn begin_with_vertices(&mut self, vertex_bytes: u64) -> Result<(), string> {
-        unsafe { record_begin(&mut self, vertex_bytes) }
+    fn start_frame(&mut self, request: &gfx.FrameRequest) -> Result<gfx.FrameStart, string> {
+        unsafe {
+            if self.pool != ptr(0) { return .Err("a frame is already being recorded") }
+            if self.window.window == ptr(0) {
+                match request.size {
+                    .Some(size) => { update_target(&mut self, size)? },
+                    .None => {},
+                }
+            }
+            record_begin(&mut self, request.mesh_bytes)
+        }
     }
 
     fn shadow_begin(&mut self, sky: &gfx.Sky) -> Result<(), string> {
@@ -786,5 +865,16 @@ impl gfx.Backend for Renderer {
 
     fn close(move mut self) {
         unsafe { destroy(&mut self) }
+    }
+}
+
+impl gfx.Backend for Renderer {
+    fn save_capture(&mut self, path: string) -> Result<(), string> {
+        pixels := self.read_capture()?
+        image := readback.ppm(&pixels)
+        match sys.write_bytes(path, &image) {
+            .Ok(_) => .Ok,
+            .Err(error) => .Err("could not write the capture: " + sys.io_error_message(error)),
+        }
     }
 }

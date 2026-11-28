@@ -1,7 +1,8 @@
 // Offscreen regression for buffer growth after a draw has been recorded.
-capability filesystem, stdio
+capability unsafe, filesystem, stdio
 
 import gfx
+import ..src.sdl
 import ..src.vulkan
 import std.fs as fs
 import sys
@@ -20,19 +21,19 @@ fn quad(out: &mut []f32, x: f32, green: f32, blue: f32) {
     }
 }
 
-fn verify(path: string) -> bool {
-    header := "P6\n" + WIDTH.str() + " " + HEIGHT.str() + "\n255\n"
-    size := header.len + WIDTH * HEIGHT * 3
+fn verify(path: string, width: i32, height: i32, scale: i32) -> bool {
+    header := "P6\n" + width.str() + " " + height.str() + "\n255\n"
+    size := header.len + width * height * 3
     capture := sys.read_u8_limit(path, i64(size))
     if !capture.ok || capture.value.len != size { return false }
-    left := header.len + (20 * WIDTH + 20) * 3
-    right := header.len + (20 * WIDTH + 70) * 3
+    left := header.len + scale * (20 * width + 20) * 3
+    right := header.len + scale * (20 * width + 70) * 3
     pix := &capture.value
     pix[left] < 20 && pix[left + 1] < 20 && pix[left + 2] > 235 &&
         pix[right] < 20 && pix[right + 1] > 235 && pix[right + 2] < 20
 }
 
-fn capture(window: &mut vulkan.Window, path: string) -> Result<(), string> {
+fn capture(window: &mut vulkan.Window, path: string, scale: i32) -> Result<(), string> {
     mut left: []f32 = []
     quad(&mut left, 0.0, 0.0, 1.0)
     mut right: []f32 = []
@@ -40,36 +41,76 @@ fn capture(window: &mut vulkan.Window, path: string) -> Result<(), string> {
     for _ in 0..300000 { right.push(0.0) }
     quad(&mut right, 50.0, 1.0, 0.0)
     screen := [f32(WIDTH), f32(HEIGHT)]
+    size := gfx.FrameSize { width: WIDTH, height: HEIGHT, scale: f32(scale) }
+    request := gfx.FrameRequest { mesh_bytes: 0, size: .Some(size) }
     window.capture_next()?
-    window.begin()?
+    match window.start_frame(&request)? {
+        .Ready => {},
+        .Unavailable => { return .Err("capture target is unavailable") },
+    }
     window.begin_pass()?
     window.ui_draw([], screen)?
     window.ui_draw(left, screen)?
     window.ui_draw(right, screen)?
     _ := window.end()?
     window.save_capture(path)?
-    if !verify(path) { return .Err("an earlier draw or the grown stream is missing in the capture") }
+    if !verify(path, WIDTH * scale, HEIGHT * scale, scale) { return .Err("an earlier draw or the grown stream is missing in the capture") }
     .Ok
 }
 
-fn run() -> Result<(), string> {
+fn draw_without_capture(window: &mut vulkan.Window) -> Result<(), string> {
+    window.begin()?
+    window.begin_pass()?
+    window.ui_draw([], [f32(WIDTH), f32(HEIGHT)])?
+    _ := window.end()?
+    .Ok
+}
+
+fn run_offscreen(path: string) -> Result<(), string> {
+    mut window := vulkan.open_preview("UI regression", WIDTH, HEIGHT)?
+    outcome := check_offscreen(&mut window, path)
+    window.close()
+    outcome
+}
+
+fn check_offscreen(window: &mut vulkan.Window, path: string) -> Result<(), string> {
+    draw_without_capture(&mut window)?
+    if window.read_capture().is_ok() { return .Err("the device captured an unrequested frame") }
+    for scale in [1, 1, 2] { capture(&mut window, path, scale)? }
+    draw_without_capture(&mut window)
+}
+
+unsafe fn run_surface(path: string) -> Result<(), string> {
+    mut host: sdl.Window = zeroed()
+    defer { sdl.close(&mut host) }
+    if !sdl.open(&mut host, "External surface", WIDTH, HEIGHT) { return .Err("could not open the host window") }
+    mut window := vulkan.open_surface(sdl.presentation(&host), WIDTH, HEIGHT)?
+    outcome := check_surface(&mut window, path)
+    window.close()
+    sdl.poll(&mut host)
+    if host.closed != 0 { return .Err("closing the device closed the host window") }
+    outcome
+}
+
+fn check_surface(window: &mut vulkan.Window, path: string) -> Result<(), string> {
+    draw_without_capture(&mut window)?
+    capture(&mut window, path, 1)?
+    draw_without_capture(&mut window)
+}
+
+fn run(external: bool) -> Result<(), string> {
     temp := fs.temp_dir("storm-ui-test-")
     if !temp.ok { return .Err("could not create capture directory") }
     defer { _ := fs.remove_all(temp.value) }
-    mut window := vulkan.open_preview("UI regression", WIDTH, HEIGHT)?
-    for _ in 0..3 {
-        match capture(&mut window, temp.value + "/frame.ppm") {
-            .Ok => {},
-            .Err(reason) => { window.close(); return .Err(reason) },
-        }
-    }
-    window.close()
-    .Ok
+    path := temp.value + "/frame.ppm"
+    if external { unsafe { return run_surface(path) } }
+    run_offscreen(path)
 }
 
 fn main() -> i32 {
-    match run() {
-        .Ok => { print("UI selftest passed: empty draw, growth past 1 MiB and repeated capture"); 0 },
+    external := sys.arg_count() > 1 && sys.arg(1) == "--surface"
+    match run(external) {
+        .Ok => { print("UI selftest passed for " + (if external { "a host-owned window" } else { "a resizable offscreen target" })); 0 },
         .Err(reason) => { _ := sys.eprint("UI selftest failed: " + reason); 1 },
     }
 }

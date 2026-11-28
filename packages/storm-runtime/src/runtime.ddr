@@ -1,10 +1,11 @@
 // The window, fixed-step transport and rendering shared by games and tools.
-capability stdio
+capability stdio, filesystem
 
 import .args
 import .controls
 import core
 import gfx
+import gfx.readback
 import input
 import render.frame as scene_renderer
 import scene as scenegraph
@@ -17,7 +18,7 @@ import ui.widgets as widgets
 const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·•… åäö ÅÄÖ éÉ ²³"
 
 // Report why the backend refused, close it, and stop with a failure.
-fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
+fn stop<B: gfx.Device>(move window: B, message: string) -> Result<(), string> {
     window.close()
     .Err(message.clone())
 }
@@ -149,7 +150,7 @@ impl Workspace for NoWorkspace {
 
 pub struct WorkspaceInit { camera: input.Camera, width: f32, height: f32 }
 
-fn no_setup<B: gfx.Backend>(tools: &mut NoWorkspace, window: &mut B, argv: &[]string, init: &WorkspaceInit) -> Result<(), string> { .Ok }
+fn no_setup<B: gfx.Device>(tools: &mut NoWorkspace, window: &mut B, argv: &[]string, init: &WorkspaceInit) -> Result<(), string> { .Ok }
 
 pub fn run<B: gfx.Backend, P: Project>(open: fn(string, i32, i32) -> Result<B, string>, title: string,
     argv: &[]string, move initial: P, launch: GameLaunch, shot: string) -> Result<(), string> {
@@ -157,7 +158,60 @@ pub fn run<B: gfx.Backend, P: Project>(open: fn(string, i32, i32) -> Result<B, s
     drive<B, P, NoWorkspace>(open, title, argv, move initial, NoWorkspace { graph: scenegraph.Graph::new() }, no_setup<B>, mode, shot)
 }
 
+// The original native entry point adapts a window that owns both roles.
 pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32) -> Result<B, string>, title: string,
+    argv: &[]string, move initial: P, move tools: W,
+    setup: fn(&mut W, &mut B, &[]string, &WorkspaceInit) -> Result<(), string>, launch: Launch, shot: string) -> Result<(), string> {
+    size := default_size(launch)
+    window := open(title, size.width, size.height)?
+    port := Events<B, NativeEvents> { source: NativeEvents {}, poll: native_poll<B>, text: native_text<B> }
+    drive_port(move window, move port, argv, move initial, move tools, setup, launch, shot)
+}
+
+// A project can combine a graphics device with an independent frame source,
+// for example an embedded view, a replay, or a host-owned event loop.
+pub fn run_on<B: gfx.Device, H: gfx.FrameSource, P: Project>(move window: B, move source: H,
+    argv: &[]string, move initial: P, launch: GameLaunch, shot: string) -> Result<(), string> {
+    mode := if launch == .Preview { Launch.Preview } else { Launch.Game }
+    drive_on(move window, move source, argv, move initial, NoWorkspace { graph: scenegraph.Graph::new() }, no_setup<B>, mode, shot)
+}
+
+pub fn drive_on<B: gfx.Device, H: gfx.FrameSource, P: Project, W: Workspace>(move window: B, move source: H,
+    argv: &[]string, move initial: P, move tools: W,
+    setup: fn(&mut W, &mut B, &[]string, &WorkspaceInit) -> Result<(), string>, launch: Launch, shot: string) -> Result<(), string> {
+    port := Events<B, H> { source: move source, poll: host_poll<B, H>, text: host_text<B, H> }
+    drive_port(move window, move port, argv, move initial, move tools, setup, launch, shot)
+}
+
+struct NativeEvents {}
+
+struct Events<B: gfx.Device, H> {
+    source: H,
+    poll: fn(&mut H, &mut B) -> gfx.Frame,
+    text: fn(&mut H, &mut B) -> string,
+}
+
+fn native_poll<B: gfx.Backend>(source: &mut NativeEvents, window: &mut B) -> gfx.Frame { window.poll() }
+fn native_text<B: gfx.Backend>(source: &mut NativeEvents, window: &mut B) -> string { window.take_text() }
+fn host_poll<B: gfx.Device, H: gfx.FrameSource>(source: &mut H, window: &mut B) -> gfx.Frame { source.poll() }
+fn host_text<B: gfx.Device, H: gfx.FrameSource>(source: &mut H, window: &mut B) -> string { source.take_text() }
+
+fn default_size(launch: Launch) -> gfx.FrameSize {
+    if launch == .Preview { return gfx.FrameSize { width: 720, height: 450, scale: 1.0 } }
+    gfx.FrameSize { width: 1280, height: 800, scale: 1.0 }
+}
+
+fn write_capture<B: gfx.Device>(window: &mut B, path: string) -> Result<(), string> {
+    pixels := window.read_capture()?
+    data := readback.ppm(&pixels)
+    if data.len == 0 { return .Err("the captured frame has an invalid pixel extent") }
+    match sys.write_bytes(path, &data) {
+        .Ok(_) => .Ok,
+        .Err(error) => .Err("could not write the capture: " + sys.io_error_message(error)),
+    }
+}
+
+fn drive_port<B: gfx.Device, H, P: Project, W: Workspace>(move mut window: B, move mut events: Events<B, H>,
     argv: &[]string, move initial: P, move tools: W,
     setup: fn(&mut W, &mut B, &[]string, &WorkspaceInit) -> Result<(), string>, launch: Launch, shot: string) -> Result<(), string> {
     mut project := move initial
@@ -166,9 +220,6 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     playing := launch != .Workspace
     exporting := launch == .Preview
     limit := args.frame_limit(argv)
-    width: f32 = if exporting { 720.0 } else { 1280.0 }
-    height: f32 = if exporting { 450.0 } else { 800.0 }
-    mut window := open(title, i32(width), i32(height))?
     window.set_trace(args.flag(argv, "--trace"))
     device := window.device_name()
     if !exporting { print("device=" + device) }
@@ -190,8 +241,10 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     camera.yaw = start.yaw
     camera.pitch = start.pitch
     camera.fov = 0.85
+    initial_frame := events.poll(&mut events.source, &mut window)
+    size := if initial_frame.width > 0 && initial_frame.height > 0 { initial_frame.size() } else { default_size(launch) }
     if has_tools {
-        ready := setup(&mut workspace, &mut window, argv, &WorkspaceInit { camera: camera.clone(), width: width, height: height })
+        ready := setup(&mut workspace, &mut window, argv, &WorkspaceInit { camera: camera.clone(), width: f32(size.width), height: f32(size.height) })
         if ready.is_err() { return stop(move window, ready.unwrap_err()) }
     }
 
@@ -210,8 +263,10 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     sky := gfx.sky_params(sun_push, sun_color_push, zenith_push, horizon_push, light_vp.m, light_dir_c)
     // The environment maps are built once from the same sky the dome draws,
     // so reflections and irradiance agree with what is visible.
-    environment := window.build_environment(&sky)
-    if environment.is_err() { return stop(move window, environment.unwrap_err()) }
+    if window.features().environment {
+        environment := window.build_environment(&sky)
+        if environment.is_err() { return stop(move window, environment.unwrap_err()) }
+    }
 
     disable_post := args.flag(argv, "--no-post")
     enable_post := args.flag(argv, "--effects") && !disable_post
@@ -224,12 +279,12 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     // The glyphs are rasterized at the display's density (2 on Retina), so
     // they are sharp there and the same size everywhere: the canvas asks the
     // atlas how large they are.
-    density := window.poll().scale
+    mut density := if size.scale.is_finite() && size.scale > 0.0 { size.scale } else { 1.0 }
     font := text.find_font(args.value(argv, "--font"))
     if font.len == 0 {
         return stop(move window, "no UI font found; pass --font <path>")
     }
-    face := text.load_face(font, ui.RASTER_SIZE * density)
+    mut face := text.load_face(font, ui.RASTER_SIZE * density)
     if !face.ok {
         return stop(move window, "font missing: " + face.error)
     }
@@ -253,8 +308,12 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     mut frames: i64 = 0
     mut previous := 0.0
     mut running := true
+    mut first := Option<gfx.Frame>.Some(initial_frame)
     while running {
-        frame := window.poll()
+        frame := match replace(&mut first, .None) {
+            .Some(sample) => sample.clone(),
+            .None => events.poll(&mut events.source, &mut window),
+        }
         if frame.closed || (frame.input.hit(gfx.Key.Escape) && (transport.playing() || !workspace.text_focused())) { running = false; continue }
         mut dt := if previous == 0.0 { 0.016 } else { frame.time - previous }
         previous = frame.time
@@ -273,7 +332,13 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
         }
         labels_changed := has_tools && workspace.poll_tools()
         if scene_reloaded { sphere_vertices = project.sphere_geometry() }
-        if scene_reloaded || labels_changed {
+        density_changed := frame.scale.is_finite() && frame.scale > 0.0 && density != frame.scale
+        if density_changed {
+            face = text.load_face(font, ui.RASTER_SIZE * frame.scale)
+            if !face.ok { return stop(move window, "font missing: " + face.error) }
+            density = frame.scale
+        }
+        if scene_reloaded || labels_changed || density_changed {
             mut fresh := text.Atlas::new(atlas_size, atlas_size)
             if !fresh.add_text(&face, GLYPHS) { return stop(move window, "could not pack UI glyphs") }
             for label in project.labels() {
@@ -312,6 +377,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
         tick := if was_playing { transport.apply(&frame.input, action, project.graded(), dt, capturing) } else { Tick.None }
         playing := transport.playing()
         aspect := f32(frame.width) / f32(frame.height)
+        frame_size := frame.size()
         mut view_camera := camera
         mut frame_sky := sky.clone()
         if playing {
@@ -329,9 +395,9 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
         drawn := if playing {
             strength: f32 = if transport.graded(project.graded()) { 1.0 } else { 0.0 }
             finish := gfx.PostProcess { antialias: antialias, strength: strength }
-            renderer.draw_scene(&mut window, project.graph(), &frame, &view, &sphere_vertices, shadows, &finish)
+            renderer.draw_view(&mut window, project.graph(), &frame_size, &view, &sphere_vertices, shadows, &finish)
         } else {
-            renderer.draw_scene(&mut window, workspace.graph(), &frame, &view, &sphere_vertices, workspace.shadows(), &workspace.finish())
+            renderer.draw_view(&mut window, workspace.graph(), &frame_size, &view, &sphere_vertices, workspace.shadows(), &workspace.finish())
         }
         passes := match drawn {
             .Ok(.Ready(count)) => count,
@@ -344,7 +410,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
         pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.Button.Left), frame.input.button_down(gfx.Button.Left))
         if playing {
             paused := transport.paused()
-            entry := ui_view.Entry { text: window.take_text(), erase: frame.input.hit(.Backspace) }
+            entry := ui_view.Entry { text: events.text(&mut events.source, &mut window), erase: frame.input.hit(.Backspace) }
             action = project.draw_hud(&mut hud, &mut canvas, &atlas, &controls.Frame {
                 width: f32(frame.width), height: f32(frame.height), pointer: pointer, navigation: navigation(&frame.input),
                 entry: entry, wheel: mouse.scroll,
@@ -352,7 +418,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
             })
         } else {
             workspace.overlay(&mut canvas, &atlas, &pointer, &Overlay {
-                width: f32(frame.width), height: f32(frame.height), wheel: mouse.scroll, fps: fps, passes: passes, device: device.clone(), keys: frame.input.clone(), text: window.take_text(),
+                width: f32(frame.width), height: f32(frame.height), wheel: mouse.scroll, fps: fps, passes: passes, device: device.clone(), keys: frame.input.clone(), text: events.text(&mut events.source, &mut window),
             })
         }
         match window.ui_draw(canvas.take(), [f32(frame.width), f32(frame.height)]) {
@@ -364,9 +430,9 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
             return stop(move window, ended.unwrap_err())
         }
         frames = ended.unwrap()
-        if tool_capture.len > 0 { workspace.captured(window.save_capture(tool_capture)) }
+        if tool_capture.len > 0 { workspace.captured(write_capture(&mut window, tool_capture)) }
         if capturing {
-            match window.save_capture(shot) {
+            match write_capture(&mut window, shot) {
                 .Ok => { if !exporting { _ := sys.eprint("storm: wrote " + shot) } },
                 .Err(message) => { return stop(move window, message) },
             }

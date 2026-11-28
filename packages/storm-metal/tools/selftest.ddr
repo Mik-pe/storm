@@ -242,6 +242,7 @@ fn post_frame(r: &mut metal.Renderer, sky: &gfx.Sky, settings: Option<gfx.PostPr
     plain: gfx.Textures = gfx.no_textures()
     unlit: [f32; 4] = [0.0; 4]
     eye := gfx.mesh_view([0.0, 0.0, 0.0])
+    r.capture_next()?
     r.begin()?
     r.begin_scene(settings.is_some())?
     r.mesh(&mesh, &view, &view, &color, &emitting, &eye, sky, &plain, &unlit, 1.0, 1.0, .Opaque)?
@@ -480,7 +481,7 @@ fn frame_checks(failures: &mut i32) {
 
     // UI quads: where their points say, with y down the screen.
     quads := corners(f32(WIDTH), f32(HEIGHT))
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_atlas([255], 1, 1).is_ok() &&
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_atlas([255], 1, 1).is_ok() &&
     window.ui_draw(quads, [f32(WIDTH), f32(HEIGHT)]).is_ok() && window.end().is_ok()
     worked(&mut failures, "a frame of UI quads is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
@@ -494,7 +495,7 @@ fn frame_checks(failures: &mut i32) {
     // points down, into the horizon's red, and clip y = +1 points up, into
     // the zenith's green. That clip y = -1 is the TOP of the frame is what
     // the mirrored viewport is for.
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.sky(&view, &sun, &green, &red).is_ok() && window.end().is_ok()
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.sky(&view, &sun, &green, &red).is_ok() && window.end().is_ok()
     worked(&mut failures, "a frame of sky is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     dome := read_capture()
@@ -517,7 +518,7 @@ fn frame_checks(failures: &mut i32) {
     mut far_mvp := identity()
     near_mvp[14] = 0.4
     far_mvp[14] = 0.8
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
     window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the far cube, then the near one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
@@ -527,7 +528,7 @@ fn frame_checks(failures: &mut i32) {
     expect(&mut failures, "drawn far first, the near cube is in front: rgb " + rgb(under(&far_first, centre, middle, scale)),
         far_first.ok && is_red(under(&far_first, centre, middle, scale)))
 
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
     window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the near cube, then the far one, is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
@@ -538,7 +539,7 @@ fn frame_checks(failures: &mut i32) {
     // Use the same sightline on both cubes. Only the near face at z=0.1
     // intersects it; the green face at z=0.5 is beyond its endpoint.
     opening := gfx.MeshView { eye: [0.0; 3], to_focus: [0.0, 0.0, 0.45], radius: 0.28 }
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() &&
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() &&
         window.mesh(&cube, &near_mvp, &near_mvp, &red, &glowing, &opening, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() &&
         window.mesh(&cube, &far_mvp, &far_mvp, &green, &glowing, &opening, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "a sightline through overlapping cubes is recorded", if drawn { .Ok } else { .Err("a step failed") })
@@ -555,13 +556,13 @@ fn frame_checks(failures: &mut i32) {
     gfx.plane(&mut ground, 0.5)
     facing := plane_facing(true)
     away := plane_facing(false)
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &facing, &facing, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &facing, &facing, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the plane facing the viewer is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     front := read_capture()
     expect(&mut failures, "the plane's front face, the one whose normal points at the viewer, is drawn: rgb " + rgb(under(&front, centre, middle, scale)),
         front.ok && is_blue(under(&front, centre, middle, scale)))
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &away, &away, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.mesh(&ground, &away, &away, &blue, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     worked(&mut failures, "the plane turned away is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     back := read_capture()
@@ -577,7 +578,7 @@ fn frame_checks(failures: &mut i32) {
     after := window.poll()
     expect(&mut failures, "a resized window reports its new size, and that it changed",
         after.width == 900 && after.height == 520 && after.resized && !after.closed)
-    drawn = window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_draw(corners(900.0, 520.0), [900.0, 520.0]).is_ok() && window.end().is_ok()
+    drawn = window.capture_next().is_ok() && window.begin().is_ok() && window.begin_pass().is_ok() && window.ui_draw(corners(900.0, 520.0), [900.0, 520.0]).is_ok() && window.end().is_ok()
     worked(&mut failures, "a frame after the resize is recorded", if drawn { .Ok } else { .Err("a step failed") })
     worked(&mut failures, "and saved", window.save_capture(capture_path()))
     resized := read_capture()
@@ -609,7 +610,7 @@ fn frame_checks(failures: &mut i32) {
     expect(&mut failures, "a reservation beyond the device limit is refused",
         window.begin_with_vertices(18446744073709551615).is_err())
     grown_slot := window.frame_slot
-    drawn = window.begin_with_vertices(total_bytes).is_ok() && window.shadow_begin(&sky).is_ok() &&
+    drawn = window.capture_next().is_ok() && window.begin_with_vertices(total_bytes).is_ok() && window.shadow_begin(&sky).is_ok() &&
     window.shadow_mesh(&large, &near_mvp).is_ok() && window.shadow_end().is_ok() && window.begin_pass().is_ok() &&
     window.mesh(&large, &near_mvp, &near_mvp, &green, &glowing, &origin, &sky, &plain, &unlit, 1.0, 1.0, .Opaque).is_ok() && window.end().is_ok()
     expect(&mut failures, "the shadow and color draws share more than four MiB", drawn && window.vertex_cursor == total_bytes)
@@ -681,6 +682,49 @@ fn preview_checks(failures: &mut i32) {
     }
 }
 
+unsafe fn external_layer_checks(failures: &mut i32) {
+    runtime := objc.load()
+    if runtime.is_err() {
+        expect(&mut failures, "load the independent window host", false)
+        return
+    }
+    rt := runtime.unwrap()
+    make_device: extern fn() -> ptr = ffi_fn(dl.symbol(rt.metal, cstr("MTLCreateSystemDefaultDevice")))
+    gpu := make_device()
+    opened := appkit.open(&rt, "External layer", 192, 128, gpu)
+    rt.release(gpu)
+    if opened.is_err() {
+        expect(&mut failures, "open the independent window", false)
+        return
+    }
+    mut host := opened.unwrap()
+    defer { appkit.close(&rt, &mut host) }
+    attached := metal.open_layer(host.layer, 192, 128)
+    if attached.is_err() {
+        expect(&mut failures, "attach the independent layer", false)
+        return
+    }
+    mut device := attached.unwrap()
+    frame := appkit.poll(&rt, &mut host)
+    size := gfx.FrameSize { width: 128, height: 80, scale: 2.0 }
+    request := gfx.FrameRequest { mesh_bytes: 0, size: .Some(size) }
+    expect(&mut failures, "the GPU has no window of its own", device.window.window == ptr(0) && !frame.closed)
+    armed := device.capture_next()
+    rendered := match device.start_frame(&request) {
+        .Ok(.Ready) => device.begin_pass().is_ok() && device.ui_draw(corners(128.0, 80.0), [128.0, 80.0]).is_ok() && device.end().is_ok(),
+        _ => false,
+    }
+    match device.read_capture() {
+        .Ok(pixels) => expect(&mut failures, "the host's points and scale determine the pixel extent",
+            armed.is_ok() && rendered && pixels.valid() && pixels.width == 256 && pixels.height == 160 && pixels.rgba[2] > 200),
+        .Err(reason) => expect(&mut failures, "read the external layer (" + reason + ")", false),
+    }
+    expect(&mut failures, "readback is one-shot and the next frame can present",
+        device.capturing == 0 && device.begin().is_ok() && device.begin_pass().is_ok() && device.end().is_ok())
+    device.close()
+    expect(&mut failures, "the host window outlives its graphics device", !appkit.poll(&rt, &mut host).closed)
+}
+
 fn main() -> i32 {
     if report().len == 0 && !sys.mkdir("build").ok && !sys.metadata("build").ok {
         _ := sys.eprint("selftest: cannot make the build directory for captures\n")
@@ -689,6 +733,7 @@ fn main() -> i32 {
     started := sys.now_ms()
     mut failures: i32 = 0
     preview_checks(&mut failures)
+    unsafe { external_layer_checks(&mut failures) }
     input_checks(&mut failures)
     frame_checks(&mut failures)
     _ := sys.remove_file(capture_path())

@@ -1,0 +1,19 @@
+// Native presentation is private to this backend. The host keeps the
+// context alive through close. The renderer owns the surface it creates.
+capability unsafe
+
+@c_layout
+pub struct Native {
+    context: ptr,
+    // Query the count with a null names pointer, then fill that many names.
+    extensions: extern fn(ptr, ptr, ptr) -> i32,
+    create: extern fn(ptr, ptr, ptr) -> i32,
+    extent: extern fn(ptr, ptr, ptr),
+}
+
+pub unsafe fn drawable_size(surface: &Native) -> (i32, i32) {
+    mut width: i32 = 0
+    mut height: i32 = 0
+    surface.extent(surface.context, addr(&mut width), addr(&mut height))
+    (width, height)
+}

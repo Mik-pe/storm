@@ -1,0 +1,135 @@
+capability filesystem
+
+import ..src.runtime
+import ..src.controls
+import core
+import gfx
+import input
+import scene
+import std.fs as fs
+import sys
+import text
+import ui
+
+// A host with its own input, timing and output size. It doesn't implement Device.
+struct Host { samples: i32 }
+
+impl gfx.FrameSource for Host {
+    fn poll(&mut self) -> gfx.Frame {
+        self.samples += 1
+        width := if self.samples == 1 { 2 } else { 4 }
+        gfx.Frame { closed: self.samples > 2, width: width, height: 2, scale: 2.0,
+            time: f64(self.samples) * 0.016, resized: true, input: gfx.Input::empty() }
+    }
+    fn take_text(&mut self) -> string { "host input" }
+}
+
+// This basic device has no native window, filesystem, shadows, IBL or post pass.
+struct MemoryDevice {
+    begins: i32, scenes: i32, ends: i32, draws: i32, request_capture: bool, fail: bool, extent: gfx.PixelSize,
+}
+
+fn device(fail: bool) -> MemoryDevice {
+    extent := gfx.PixelSize { width: 0, height: 0 }
+    MemoryDevice { begins: 0, scenes: 0, ends: 0, draws: 0, request_capture: false, fail: fail, extent: extent }
+}
+
+impl gfx.Device for MemoryDevice {
+    fn device_name(&self) -> string { "memory" }
+    fn start_frame(&mut self, request: &gfx.FrameRequest) -> Result<gfx.FrameStart, string> {
+        self.begins += 1
+        if self.fail { return .Err("device lost") }
+        assert(request.mesh_bytes == u64(36) * u64(gfx.VERTEX_BYTES))
+        size := request.size.unwrap()
+        self.extent = size.pixels()?
+        if self.begins == 1 {
+            assert(self.extent.width == 4)
+            return .Ok(.Unavailable)
+        }
+        assert(self.extent.width == 8 && self.extent.height == 4)
+        .Ok(.Ready)
+    }
+    fn begin_scene(&mut self, filtered: bool) -> Result<(), string> {
+        assert(!filtered)
+        self.scenes += 1
+        .Ok
+    }
+    fn sky(&mut self, inverse: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> { .Ok }
+    fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], color: &[f32; 4], params: &[f32; 4],
+        camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32,
+        surface: gfx.Surface) -> Result<(), string> {
+        assert(params[3] == 0.0)
+        self.draws += 1
+        .Ok
+    }
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
+        .Err("this test does not load textures")
+    }
+    fn free_texture(&mut self, texture: gfx.Texture) {}
+    fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> {
+        assert(width > 0 && pixels.len == width * height)
+        .Ok
+    }
+    fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string> {
+        assert(screen[0] == 4.0 && screen[1] == 2.0)
+        .Ok
+    }
+    fn capture_next(&mut self) -> Result<(), string> {
+        self.request_capture = true
+        .Ok
+    }
+    fn read_capture(&mut self) -> Result<gfx.Readback, string> {
+        assert(self.request_capture && self.ends == 1)
+        mut rgba: []u8 = []
+        for _ in 0..self.extent.width * self.extent.height {
+            for channel in [u8(16), 80, 192, 255] { rgba.push(channel) }
+        }
+        .Ok(gfx.Readback { width: self.extent.width, height: self.extent.height, rgba: move rgba })
+    }
+    fn end(&mut self) -> Result<i64, string> { self.ends += 1; .Ok(i64(self.ends)) }
+    fn close(move self) {
+        if self.fail { assert(self.begins == 1 && self.scenes == 0 && self.ends == 0) }
+        else { assert(self.begins == 2 && self.scenes == 1 && self.draws == 1 && self.ends == 1) }
+    }
+}
+
+struct Project { scene: scene.Graph }
+
+fn level() -> Project {
+    mut world := scene.Graph::new()
+    node := world.create_root(core.vec3(0.0, 0.0, 0.0))
+    _ := world.set_shape(node, .Cube)
+    world.propagate()
+    Project { scene: move world }
+}
+
+impl runtime.Project for Project {
+    fn graph(&self) -> &scene.Graph from self { &self.scene }
+    fn update(&mut self, frame: &gfx.Frame, dt: f64, tick: runtime.Tick, paused: bool, capturing: bool,
+        camera: input.Camera, custom_eye: bool, sky: &mut gfx.Sky) -> input.Camera { camera }
+    fn draw_hud(&mut self, hud: &mut controls.Hud, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &controls.Frame) -> controls.Action {
+        assert(frame.entry.text == "host input")
+        .Idle
+    }
+}
+
+@test fn an_independent_host_and_basic_device_run_the_same_project_and_export_pixels() {
+    temp := fs.temp_dir("storm-rhi-")
+    assert(temp.ok)
+    defer { _ := fs.remove_all(temp.value) }
+    shot := temp.value + "/frame.ppm"
+    options: []string = ["--effects"]
+    outcome := runtime.run_on(device(false), Host { samples: 0 }, &options, level(), .Preview, shot)
+    assert(outcome.is_ok())
+    data := sys.read_u8_limit(shot, 256)
+    header := "P6\n8 4\n255\n"
+    assert(data.ok && data.value.len == header.len + 8 * 4 * 3)
+    for i in 0..header.len { assert(data.value[i] == header[i]) }
+    assert(data.value[header.len] == 16 && data.value[header.len + 1] == 80 && data.value[header.len + 2] == 192)
+}
+
+@test fn a_resize_does_not_hide_a_device_failure() {
+    options: []string = []
+    outcome := runtime.run_on(device(true), Host { samples: 0 }, &options, level(), .Game, "")
+    assert(outcome.is_err() && outcome.unwrap_err() == "device lost")
+}

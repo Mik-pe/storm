@@ -124,7 +124,7 @@ pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: strin
 
 // load_model for the running app: reads, decodes, uploads, and places the
 // model as a child of `parent` at the scale `fit_scale` finds for it.
-pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Graph, path: string, parent: ecs.Entity,
+pub fn load_model_into<B: gfx.Device>(window: &mut B, graph: &mut scenegraph.Graph, path: string, parent: ecs.Entity,
     at: core.Vec3, vp: &core.Mat4, view: &View, width: f32, height: f32) -> Result<ecs.Entity, string> {
     doc := gltf.load(path)
     asset := gltf.asset(&doc)?
@@ -135,7 +135,7 @@ pub fn load_model_into<B: gfx.Backend>(window: &mut B, graph: &mut scenegraph.Gr
 
 // A P6 capture as the ground texture, uploaded once; the backend owns the
 // pixels from here on. A ground is a colour, so it is sRGB.
-fn load_ground<B: gfx.Backend>(window: &mut B, path: string) -> Result<gfx.Texture, string> {
+fn load_ground<B: gfx.Device>(window: &mut B, path: string) -> Result<gfx.Texture, string> {
     decoded := image.read_rgba(path)?
     sampler := gfx.sampler()
     window.upload_texture(decoded.pixels, decoded.width, decoded.height, .Srgb, &sampler)
@@ -185,7 +185,7 @@ fn reset_collectibles(workspace: &mut Workspace) {
     game.spawn_under(&mut workspace.graph, workspace.collectibles)
 }
 
-fn setup<B: gfx.Backend>(workspace: &mut Workspace, window: &mut B, argv: &[]string, init: &runtime.WorkspaceInit) -> Result<(), string> {
+fn setup<B: gfx.Device>(workspace: &mut Workspace, window: &mut B, argv: &[]string, init: &runtime.WorkspaceInit) -> Result<(), string> {
     workspace.baseline = init.camera.clone()
     workspace.study = gallery.build(&mut workspace.graph)
     reset_collectibles(&mut workspace)
@@ -282,18 +282,40 @@ impl runtime.Workspace for Workspace {
     }
 }
 
-pub fn run<B: gfx.Backend, P: runtime.Project>(open: fn(string, i32, i32) -> Result<B, string>, title: string,
-    argv: &[]string, move initial: P, launch: runtime.Launch, shot: string) -> Result<(), string> {
+fn open_session(argv: &[]string, launch: runtime.Launch, shot: string) -> Result<Option<mailbox.Session>, string> {
     if launch != .Workspace && args.value(argv, "--texture").len > 0 { return .Err("--texture needs the studio") }
     endpoint := args.value(argv, "--editor-session")
     if endpoint.len > 0 && (launch != .Workspace || shot.len > 0) {
         return .Err("Start an editor session in Studio without --capture")
     }
-    mut session := if endpoint.len > 0 { Option<mailbox.Session>.Some(mailbox.open(endpoint)?) } else { .None }
-    defer {
-        match &mut session { .Some(opened) => mailbox.close(&mut opened), .None => {} }
-    }
-    directory := match &session { .Some(opened) => opened.directory.clone(), .None => "" }
-    workspace := Workspace::empty(directory, args.flag(argv, "--editor-headless"))
+    if endpoint.len == 0 { return .Ok(.None) }
+    .Ok(.Some(mailbox.open(endpoint)?))
+}
+
+fn close_session(session: &mut Option<mailbox.Session>) {
+    match &mut session { .Some(opened) => mailbox.close(&mut opened), .None => {} }
+}
+
+fn workspace_for(session: &Option<mailbox.Session>, argv: &[]string) -> Workspace {
+    directory := match session { .Some(opened) => opened.directory.clone(), .None => "" }
+    Workspace::empty(directory, args.flag(argv, "--editor-headless"))
+}
+
+pub fn run<B: gfx.Backend, P: runtime.Project>(open: fn(string, i32, i32) -> Result<B, string>, title: string,
+    argv: &[]string, move initial: P, launch: runtime.Launch, shot: string) -> Result<(), string> {
+    mut session := open_session(argv, launch, shot)?
+    defer { close_session(&mut session) }
+    workspace := workspace_for(&session, argv)
     runtime.drive<B, P, Workspace>(open, title, argv, move initial, move workspace, setup<B>, launch, shot)
+}
+
+pub fn run_on<B: gfx.Device, H: gfx.FrameSource, P: runtime.Project>(move window: B, move source: H,
+    argv: &[]string, move initial: P, launch: runtime.Launch, shot: string) -> Result<(), string> {
+    mut session := match open_session(argv, launch, shot) {
+        .Ok(opened) => move opened,
+        .Err(reason) => { window.close(); return .Err(reason) },
+    }
+    defer { close_session(&mut session) }
+    workspace := workspace_for(&session, argv)
+    runtime.drive_on(move window, move source, argv, move initial, move workspace, setup<B>, launch, shot)
 }
