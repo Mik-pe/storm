@@ -33,10 +33,11 @@
    är en self-test som läser pixlar och input och kan köras igen.
 7. **Plattformsvalet görs i `src/main.ddr`.** Där väljs både det interaktiva fönstret och renderaren för bildexport. Spel, editor och agentprotokoll använder samma scen och renderingskontrakt på båda plattformarna.
 
-## 1. Nuläge (mätt i koden, 2026-11-25)
+## 1. Nuläge (mätt i koden, 2026-11-28)
 
-- **storm-gfx**: en modul med `Frame`, `Input` med `Key` som bitar i en
-  `u32`, `Mouse` med `scroll`, `Sky`, `Surface`, `Texture`, `Sampler`,
+- **storm-gfx**: tre moduler (`gfx.ddr` kontraktet, `readback.ddr` den
+  lästa bilden, `tangents.ddr` MikkTSpace) med `Frame`, `Input` med `Key`
+  som bitar i en `u32`, `Mouse` med `scroll`, `Sky`, `Surface`, `Texture`, `Sampler`,
   `Vertex` och `PostProcess`. `Device` beskriver pass, ritning, texturer
   och bildläsning. `FrameSource` beskriver tid och indata. Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet — meshens
@@ -46,7 +47,7 @@
   skriver genom den ena, båda backendar beskriver sin layout från den andra,
   och ingen av dem har en stride, ett attribut-offset eller ett antal floats
   av sitt eget (var `8`/`16`/`32` i sju filer i tre paket, räknade
-  2026-11-28). Tio tester, inga med fönster.
+  2026-11-28). Sjutton tester, inga med fönster.
 - **0 råa enum-heltal** i pipeline-state (var 135 före steg 2, 3 före 3a).
   Vertexlayouten ägs av `records.vertex_input()` + `records.apply_vertex_input`
   och deklareras identiskt av `pipeline.ddr` och `shadow.ddr`. **0 råa
@@ -72,8 +73,9 @@
   extensionskonstant registret numrerar utan att `ImageLayout` har den som
   variant. Sex captures (spel, studio, Fox, utan efterbehandling, utan
   skuggor, `--texture` genom blit-kedjan) AE = 0, räknade per pixel.
-- `state.ddr` `Renderer`: **60 fält** (121 före Renderer-uppdelningen; 72
-  efter steg 3). Sju kluster ligger i en post hos sin ägare
+- `state.ddr` `Renderer`: **61 fält** (121 före Renderer-uppdelningen; 72
+  efter steg 3; 60 efter de sex klusterflyttarna, 61 sedan RHI-delningen
+  lade `presentation: surface.Native`). Sju kluster ligger i en post hos sin ägare
   (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
   `texture.Material`, `post.Stage`, `headless.Capture`); 54 fält ligger platt
   i fyra sorter (§3b), de flesta frame-state och
@@ -126,13 +128,16 @@
   svit ur trädet, så den äger regeln en gång: varje `.ddr` bredvid en
   `suite.ddr` med `@test` ska vara en importrad där, annars utgång 1 med
   filnamnet (bevisat i sju fall i en full trädkopia). De tre kopiorna är
-  borta. 26 rötter, 29 s. Ramens exektor
-  (`app.gather`, `load_model`) är testbar utan fönster: vad ett pass får,
-  när mesh-kopian tas (bara när geometrin revideras — och aldrig från en
-  främmande värld med samma revisionsnummer) och att en delad mesh räknas
-  per instans (`tests/app_frame.ddr`). Spelets transport (`app.Transport`)
-  är det med: paus, steg, omstart, studio och färgkorrigering besvaras med
-  den enda `play`-anropet ramen ska göra (`tests/transport.ddr`).
+  borta. 26 rötter, 29 s. Renderarens exektor
+  (`render.frame.gather`, `vertex_bytes`, `load_model`) är testbar utan
+  fönster: vad ett pass får, när mesh-kopian tas (bara när geometrin
+  revideras — och aldrig från en främmande värld med samma revisionsnummer)
+  och att en delad mesh räknas per instans
+  (`packages/storm-render/tests/geometry.ddr`); rotens `tests/app_frame.ddr`
+  mäter hur en laddad modell placeras och fyller vyn. Spelets transport
+  (`runtime.Transport`) är det med: paus, steg, omstart, studio och
+  färgkorrigering besvaras med den enda `play`-anropet ramen ska göra
+  (`tests/transport.ddr`).
 - **Byggtid på Mikparchy (AGENTS.md:s budget 20 s):** `tools/build-time.ddr`
   mätte **9 648 och 9 633 ms** på `8cc9859`, Dunder **0.13.1** (installerad
   2026-11-26 19:13; `compiler=` 8 482–8 459 ms, `module_load_lex_resolve`
@@ -153,19 +158,19 @@ Registret är ett eget paket, **`storm-vk`** (2 269 rader, allt genererat ur
 82 prototyper + `load()`), `layout.ddr` (1 479: 81 poster — 77 registriposter
 med `new()` + fyra par-poster, se §6), `enums.ddr` (443: 36 enums, 35
 konverterare, `result_name` och registrets konstanter). Det som är Storms
-val står i storm-vulkan `records.ddr` (225): vertexformaten, `Blend` och
+val står i storm-vulkan `records.ddr` (242): vertexformaten, `Blend` och
 `apply_*`-skrivarna, `Transition` och image-barriären,
 `DisplayEncoding`/`FrameViewport`, descriptor-orden och vad ett
 swapchain-tal betyder Storm.
 
-Lagren i storm-vulkan (4 491 rader + 4 554 genererade i `shader.ddr`), räknade 2026-11-27:
+Lagren i storm-vulkan (4 700 rader + 4 863 genererade i `shader.ddr`), räknade 2026-11-28:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`) | 235 |
-| Storms värden ovanpå registret | `records.ddr` | 225 |
-| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 183 |
-| Orkestrering | `vulkan.ddr`, `state.ddr` | 848 |
+| FFI-bindings | `sdl.ddr` (Storms enda handskrivna FFI; Vulkan ligger i `storm-vk`), `surface.ddr` (en yta från en värd, §2.2) | 293 |
+| Storms värden ovanpå registret | `records.ddr` | 242 |
+| Backend-tjänster | `device.ddr`, `pipeline.ddr`, `shadow.ddr`, `depth.ddr`, `texture.ddr`, `headless.ddr`, `ibl.ddr`, `ui.ddr`, `post.ddr` | 3 228 |
+| Orkestrering | `vulkan.ddr`, `state.ddr` | 937 |
 
 `ui.ddr` och `post.ddr` räknades förut som "app-nära kod". De är inte det:
 var och en skapar Vulkan-resurser (`VkImage`, `VkPipeline`,
@@ -175,18 +180,18 @@ och storm-metal har samma två moduler som backend-tjänster (`ui.ddr`,
 kontraktet, som anropar `ui_atlas`/`ui_draw`/`post_process` och inte vet att
 modulerna finns.
 
-Lagren i storm-metal (3 012 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-27:
+Lagren i storm-metal (3 181 rader + inbäddad `shaders/storm.metal` via `@embed_file`; `shader.ddr` är `@embed_file`-raden), räknade 2026-11-28:
 
 | Lager | Moduler | Rader |
 |---|---|---|
-| Runtingen | `objc.ddr` | 728 |
+| Runtingen | `objc.ddr` | 730 |
 | Ramverkens värden | `enums.ddr`, `records.ddr` | 208 |
-| Fönstret och input | `appkit.ddr` | 498 |
-| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 369 |
-| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 427 |
-| Orkestrering | `metal.ddr` | 782 |
+| Fönstret och input | `appkit.ddr` | 523 |
+| Vad enheten gör, hur ett pass öppnas | `device.ddr`, `pass.ddr` | 387 |
+| Backend-tjänster | `ibl.ddr`, `ui.ddr`, `capture.ddr`, `texture.ddr` | 453 |
+| Orkestrering | `metal.ddr` | 880 |
 
-`objc.ddr` var 280 rader när den räknades 2026-11-26 och är 728 nu
+`objc.ddr` var 280 rader när den räknades 2026-11-26 och är 730 nu
 (`9fa699c`, Mickes omskrivning): selektorer och klasser förregistreras,
 C-poster skickas per värde och bindningar batchas — det är runtingen som
 växte, inte en ny uppgift som lagts i fel lager.
@@ -220,7 +225,7 @@ storm-vulkan           Renderer uppdelad i ägda strukturer (steg 3 — klart,
 
 Regler:
 
-- Appen (`src/app.ddr`) och pakagen talar bara med `storm-gfx`.
+- Appen (`src/`, `storm-studio`, `storm-runtime`) och pakagen talar bara med `storm-gfx`.
 - Endast `src/main.ddr` importerar en backend. (I målbilden, med flera
   applicitioner, blir sammansättningens rot en egen liten modul per applikation.)
 - `storm-ui`/`storm-text`/`storm-input` känner inte till `VkImage`,
@@ -365,8 +370,8 @@ Två gränser till har samma regel, om än inte enums:
 - `device.ddr`, `pipeline.ddr` → `Result` och ägda strukturer (ägda
   strukturer: **genomfört i båda backends** — `storm-metal` byggdes så från
   början med en skapare och en förstörare per ägd resurs, och Vulkan-sidans
-  sju kluster står i §3b; `Renderer` har **47 fält på Metal**, räknade
-  2026-11-27, och 61 på Vulkan).
+  sju kluster står i §3b; `Renderer` har **48 fält på Metal** (49 rader med
+  `:` varav en är en kommentar), räknade 2026-11-28, och 61 på Vulkan).
 - **`SetupStep` stannar — "`Result` för setup-kedjan" är avskrivet som
   mål (2026-11-27).** Punkten sa först "vulkan.ddr:s 17 setup-steg → en
   `Setup`-kedja med `Result` (kvar)". Mätt mot koden är det målet fel
@@ -426,8 +431,9 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett
    test. 2026-11-25: `ui.Atlas`, `ibl.Environment` och `shadow.Shadow`
    följde, var och en med AE = 0 — `Renderer` har **72 fält** (121 före) —
-   och 2026-11-26 `post.Stage` och `headless.Capture`: **60 fält**, sju
-   poster och 53 platta (§3b). Tabellens kluster är slut.*
+    och 2026-11-26 `post.Stage` och `headless.Capture`: **60 fält**, sju
+   poster och 53 platta (§3b). Tabellens kluster är slut; RHI-delningen
+   (`09f37a2`) lade `presentation` och gav **61 fält**, 54 platta.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
@@ -468,11 +474,7 @@ tillväxt över 1 MiB på båda backends. Vulkan-provet körs med
 
 `storm-play` äger den neutrala exempelbanan och dess fasta speltick. `src/play_view.ddr` avbildar kropparnas positioner på scennoder. Fönstret interpolerar mellan två tick. Vid paus, ensteg och bildexport används den exakta positionen.
 
-`scene.animation` samplar glesa nyckelspår för position, rotation och skala. Splinespåren behåller hastigheten genom mellanposer och runt loopsömmen. Ett klipp kan också stanna i ändposen. Externa spel kan använda samma klippmotor för figurer och rekvisita.
-
-Fysiken registrerar spelarens färdväg, riktning och kontakt med underlaget vid fast tick. Presentationen samplar samma historik på bildrutans tidpunkt. Varje tass får en stödpunkt i världen och benen hittar dit med tvåleds-IK. Stödets höjd hämtas ur gläntans trianglar eller det deformerade molnets yta. Ledernas placering och tassarnas sula och tå följer med från Blender i GLB-filens scendata. [Klippsampling och IK](../packages/storm-scene/src/animation.ddr) · [Rävens poser](../src/fox_animation.ddr) · [Steghistorik](../packages/storm-play/src/stride.ddr)
-
-Gesten vid en blomma använder samma vilotid i den interaktiva spelbilden och i en agentstyrd repris. Spelarens rörelse tonar ut gesten. Huvudets riktning och höjd följer blommans placering och storlek. Efter att benen har tagit vikten justeras nosen mot pollenet med modellens verkliga nosspets som referens. [Rävens uttryck](../src/fox_expression.ddr)
+`scene.animation` samplar glesa nyckelspår för position, rotation och skala. Splinespåren behåller hastigheten genom mellanposer och runt loopsömmen. Ett klipp kan också stanna i ändposen, och `solve_two_bone` ger en tvåleds-lösning. Externa spel kan använda samma klippmotor för figurer och rekvisita: rävens steghistorik, tass-IK och uttryck bor sedan `849d2da` i Blomsterskogen, inte här. [Klippsampling och IK](../packages/storm-scene/src/animation.ddr)
 
 `storm-mcp` håller en session per klientprocess och tar emot en renderingsfunktion från `src/main.ddr`. Agentens bildexport kör den vanliga rendergrafen mot en fristående textur. Simuleringen kan köras utan GPU. `--watch` låter ett öppet spel ta emot en sparad bana från en agent. Fönstret byter spelvärld när hela filen har validerats.
 
@@ -546,18 +548,20 @@ moduler:
 | Kluster | Fält | Ägare | Namn utanför | Post |
 |---|---|---|---|---|
 | depth | 3 | `depth.ddr` | `view` (`device.color_framebuffer`) | `depth.Depth` (24 byte) — **gjord** |
-| ui | 10 | `ui.ddr` | inga | `ui.Atlas` (128 byte) — **gjord** |
+| ui | 10 | `ui.ddr` | inga | `ui.Atlas` (136 byte) — **gjord** |
 | ibl | 25 | `ibl.ddr` | inga | `ibl.Environment` (960 byte) — **gjord** |
 | shadow | 17 | `shadow.ddr` | `shadowSet` (ibl ×3, vulkan ×1), `shadowSetLayout` (pipeline ×2) | `shadow.Shadow` (120 byte) — **gjord**; de två namnen stannar på `Renderer` |
 | post | 12 | `post.ddr` | `sceneFramebuffer` (vulkan ×1), `scenePass`/`compositePass` (pipeline, device, vulkan) | `post.Stage` (96 byte) — **gjord**; de tre namnen stannar |
 | capture | 5 | `headless.ddr` | `captureFramebuffer` (vulkan ×2) | `headless.Capture` (56 byte) — **gjord**; `captureFramebuffer` stannar |
 
-`Renderer` har **60 fält** efter de sex flyttarna (121 före): sju poster
+`Renderer` har **61 fält** efter de sex flyttarna och RHI-delningen (121
+före; 60 efter flyttarna, `presentation` kom med `09f37a2`): sju poster
 (`material`, `depth`, `atlas`, `environment`, `shadow`, `post`, `capture`)
-och 53 platta. De 53 är fyra sorter, mätta 2026-11-26 med samma skript som
-tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 12:
+och 54 platta. De 54 är fyra sorter, mätta 2026-11-26 med samma skript som
+tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 12,
+plus `presentation`, som är kärnans (ytan, `surface.ddr` läser den):
 
-- **25 kärna** (`api` … `renderPass`: instans, yta, enhet, kö, pooler,
+- **26 kärna** (`api` … `renderPass` och `presentation`: instans, yta, enhet, kö, pooler,
   synkronisering, swapchain och dess bilder): läses av tio moduler —
   `device` (23 av namnen), `vulkan` (15), `post` (7), `headless` (6), `ui`
   (6), `pipeline` (5), `texture` (4), `ibl` (3), `shadow` (3), `depth` (1).
@@ -598,7 +602,7 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
 - **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
   i `tests/suite.ddr` (`Depth` 24, `Atlas` 128, `Shadow` 120, `Environment`
-  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 5 432 byte — alla
+  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 5 736 byte — alla
   mätta, ingen räknad: en storlek gissad i huvudet var fel två gånger av tre,
   och testet var rött tills den var mätt; `Renderer` var 6 240 på `e264590`
   och 5 984 omedelbart före `66d248d`, som bytte den gissade `rest: [u64; 128]`
@@ -713,17 +717,17 @@ utan skuggor).
   `uint8_t`-medlem), mätt mot gcc innan något var committat; layouten som
   gcc ger är den som pinnas i storm-vk:s svit.
   För Metal behövs det inte på samma sätt: det
-  som hålls för hand är 195 `cstr`-literaler — 155 selektorer, 18 klassnamn,
-  14 C-symboler, 6 frameworksökvägar och 2 type-encodings — och 54
-  `extern fn`-fält i 34 unika signaturer, och det
+  som hålls för hand är 199 unika `cstr`-literaler — 111 med kolon (selektorer)
+  och 88 utan (klassnamn, C-symboler, frameworksökvägar, encodings) — och 51
+  `extern fn`-fält, och det
   som håller dem ärliga är kontrollen mot SDK:s rubriker (§3) — vilken i sin
   tur vore naturlig som ett Dunder-verktyg i `tools/`, när den ska köras av
   fler än den som skrev den.
 - **Safe-lager?** Räcker enums + `Result`, eller ska det finnas builders?
   Förslag: enums + `Result` först (klart på kontraktets nivå), builders när
   vi ser vad som är besvärligt att använda.
-- **Tidsram.** Vulkan-paketdelningen (`storm-vk`) är ett eget steg;
-  Renderer-uppdelningen är fem klusterflyttar à en commit (§3b).
+- **Tidsram.** Vulkan-paketdelningen (`storm-vk`) och Renderer-uppdelningen
+  är klara (§5 steg 1 och 3); det som återstår av §5 är inget.
 - **Subagent-orthogonalitet.** Arbetspaketen ska kunna köras parallellt i
   varsin worktree utan att krocka. Textur 3a rör vertexformatet, som nu
   ägs av `storm-gfx` men konsumeras av två backends och två shaderuppsätt-
