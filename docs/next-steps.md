@@ -60,6 +60,10 @@ Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
 Fönsterloopen finns i `storm-runtime`. `storm-editor` äger redigeringen och `storm-studio` bygger materialstudien. Projektgränssnittet för externa spel beskrivs i [designen](design.md#21-spelprojekt-och-studio).
 
+Studio har ett sökbart scenträd, kantutjämnade kontroller och en lokal MCP-
+och CLI-session för redigering i samma graf. Spara och läsa tillbaka en
+författad Studio-scen och ångra redigeringskommandon återstår.
+
 ## Byggtid på Mikparchy
 
 Senaste mätning: **9 648 och 9 633 ms** på `8cc9859` (två `tools/build-time.ddr` + en `dunder build --timings`, 2026-11-27), Dunder **0.13.1**, Mikparchy: `compiler=` 8 482 / 8 459 ms, `module_load_lex_resolve` 902 / 893 ms, **1 608 funktioner och 355 061 MIR-operationer**. Budgeten är 20 s. Trädet är detsamma som mätte 18,4–19,8 s under 0.12.0 (512 017 operationer, fynd 98): kompilatorn halverade tiden och tog bort 157 000 operationer — inget i Storm ändrades för det. **Alla siffror nedanför i det här avsnittet och i "Kvar i 3c" (18 557 → 18 776 ms, 94 % av budgeten) är 0.12.0-mätningar**: de är jämförbara med varandra, inte med ett 0.13.1-bygge, och det som är sant av dem är fortfarande det *relativa* (PNG kostade 1 100 ms och JPEG 220 ms när de nådde `main`; under 0.13.1 mätte fynd 98 PNG till 42 ms och JPEG till 27). En ny mätning skriver alltid kompilatorversionen vid talet.

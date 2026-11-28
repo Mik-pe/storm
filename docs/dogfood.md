@@ -1175,3 +1175,20 @@ fn pick(shape: Option<scene.Shape>) -> bool {
 ```
 
 `dunder check d.ddr` → `checked d.ddr (2 modules)`; `dunder fmt --check d.ddr` → `d.ddr:5:26: expected ')'`, utgång 1 (kolumn 26 är punkten efter `Shape`). Mätt varianter: `.Some(Shape.Cube)` med enumen i samma fil → både `check` och `fmt` gröna; `.Some(scene.Shape.Cube)` genom en import → `check` grönt, `fmt` rött. Formateraren har alltså en egen mönsterparser som klarar en nivå av kvalificering men inte två, och den hänger inte med när kompilatorns grammatik utökas — samma grund som fynd 87 (två parserar, ett språk). Workaround här: bind nyttolasten och jämför — `.Some(shape) => { found = shape == scene.Shape.Cube && … }` (`Shape` är `i32`-backed, så `==` går; `Option<Shape>` saknar `Eq`, så `if x == .Some(scene.Shape.Cube)` är `E3004` och inget alternativ). Rekommendation: låt `fmt` och kompilatorn dela mönstergrammatiken — en form som den ena accepterar och den andra vägrar gör `fmt --check` i pushlistan till ett fel på korrekt kod, och nästa fix i den ena parsern är en ny skillregel i den andra.
+
+**113. En lokal referens från `ref_at` nekas även i ett `unsafe`-block (Dunder 0.13.1).** När AppKit tar emot text från en callback behöver den läsa sin fasta händelsebuffert. Att binda `ref_at(sink_address())` till `&mut Sink` ger `E4003: local borrow requires a named owner; temporary borrows are limited to calls`. En namngiven pekare leder i stället till `E4005: scoped borrow analysis was not prepared`. Minimal repro:
+
+```dunder
+capability unsafe
+struct Counter { value: i32 }
+
+fn main() {
+    unsafe {
+        address := static_bytes("native", 8)
+        counter: &mut Counter = ref_at(address)
+        counter.value = 1
+    }
+}
+```
+
+Storm skickar `ref_at(address)` direkt till en funktion med en lånad parameter. Den formen går att bygga och köra. Dunder bör ge samma konkreta råd om anropsformen för båda diagnostikerna.

@@ -35,11 +35,10 @@
 
 ## 1. Nuläge (mätt i koden, 2026-11-25)
 
-- **storm-gfx**: en modul med `Frame`, `Input` med `Key` (19 tangenter
-  som bitar i en `u32`), `Mouse` (med `scroll`), `Sky`, `Surface`, `Texture`,
-  `Sampler` och `Vertex`, `PostProcess`.
-  `trait Backend` beskriver pass, ritning, texturer och bildexport i 22 metoder
-  (`begin_pass` och `begin` är standardkroppar). Anrop som kan misslyckas
+- **storm-gfx**: en modul med `Frame`, `Input` med `Key` som bitar i en
+  `u32`, `Mouse` med `scroll`, `Sky`, `Surface`, `Texture`, `Sampler`,
+  `Vertex` och `PostProcess`. `trait Backend` beskriver pass, ritning,
+  texturer, bildexport och textinmatning. Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet — meshens
   (`Vertex`, `VERTEX_FLOATS`/`VERTEX_BYTES` och offsets, `vertex_at`/
   `put_vertex`) och UI-strömmens (`UiVertex`, `UI_FLOATS`/`UI_BYTES`/
@@ -252,6 +251,14 @@ Vad som skiljer backends åt, och var det får synas:
 - **`storm-assets`** placerar glTF-modeller vid deras författade origo. Värden väljer placering och skala. Studio passar in dem på podiet. Texturer delas mellan material med samma bild, sampler och färgrymd. Uppladdningspaketet äger sina unika handtag och kan frigöras när scenen har slutat använda dem. Ett misslyckat anrop frigör de handtag det skapade.
 - **`storm-play` och scenverktygen i `storm-mcp`** ger en liten referens för scenformat och regler. Ett spel kan äga andra regler och exponera egna verktyg via `mcp.protocol`.
 
+Studio äger arbetsytans lokala session. MCP och CLI skickar validerade
+kommandon till den öppna arbetsytan. Editorns kommandon muterar samma
+`scene.Graph` som inspektören läser. En ändring valideras i sin helhet före
+mutation. Runtime behandlar kommandon mellan bildrutorna och levererar en
+begärd skärmbild först efter UI-passet. `storm-ui` tar emot text och
+tangenthändelser genom ett gemensamt gränssnitt. AppKit och SDL översätter
+plattformens indata till det formatet.
+
 ## 3. Enums i FFI-lagret
 
 Dunder har enums med värden, `match`, `i32(x)` och validerande `X(number)`.
@@ -394,7 +401,7 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 ## 5b. Editorn och scenen, som den står
 
-Materialstudien och dess provsamlarobjekt hör till `storm-studio`. `storm-editor` hanterar dockning och objektredigering och kan öppna en hierarki från valfri värd. Det kompakta läget visar en sidopanel i taget. [Visuell referens](design/storm-editor-reference.png)
+Materialstudien och dess provsamlarobjekt hör till `storm-studio`. `storm-editor` hanterar dockning och objektredigering och kan öppna en hierarki från valfri värd. Det kompakta läget visar en sidopanel i taget. Reglagen och panelerna använder vektorgeometri med en mjuk alfakant. Textatlasen anpassas till skärmens pixeltäthet. [Visuell referens från ImageGen](design/storm-editor-mint-reference.png)
 
 ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn härleder synliga trädrader ur hierarkin och dess öppna grenar. Renderaren hämtar en ägd kopia av meshströmmarna när geometrins revision ändras. Revisionen identifierar en bestämd version av geometrin inom processen. Det gör att renderaren kan växla mellan grafer och uppdatera poser genom samma anrop. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
 

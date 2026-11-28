@@ -40,7 +40,32 @@ dunder run --example scene      # ECS + glTF + textlayout, utan fönster
 dunder test                     # rotpaketets tester
 ```
 
-## Spela och bygg med en agent
+## Redigera Studio med en agent
+
+Starta en lokal Studio-session och anslut MCP-servern `storm-editor` från
+[repots MCP-konfiguration](.mcp.json). Agenten kan läsa det öppna scenträdet,
+söka och välja objekt, skapa grupper och primitiver, ändra transform,
+synlighet och material samt hämta en PNG av samma vy.
+
+```sh
+dunder build -o build/storm
+./build/storm --editor-session .storm-editor
+```
+
+CLI:t använder samma kommandon och skriver JSON. Kör det från reporoten i
+en andra terminal.
+
+```sh
+./build/storm --editor-command '{"name":"tools/list"}'
+./build/storm --editor-session .storm-editor --editor-command '{"name":"editor_inspect"}'
+./build/storm --editor-session .storm-editor --editor-command '{"name":"editor_search","arguments":{"query":"brass"}}'
+```
+
+Sökfältet i Studio matchar namn även inuti stängda grenar. Tab flyttar fokus
+och Esc lämnar sökfältet. Använd `--editor-headless --editor-session FIL` för
+automation utanför ett fönster. Studio-ändringar gäller under sessionen.
+
+## Provspela med en agent
 
 I First light styr du spelaren med WASD eller piltangenterna och hoppar med mellanslag. Q pausar och R börjar om.
 
@@ -50,7 +75,7 @@ dunder build -o build/storm
 ./build/storm --scene bana.storm.json --watch
 ```
 
-Repots [MCP-konfiguration](.mcp.json) startar `./build/storm --mcp` från reporoten. En agent kan bygga en bana, provspela bestämda indata och få både positioner och en PNG från GPU:n. Med `--watch` syns nästa sparade banändring i samma fönster. En sparad bana kan öppnas igen med `--scene`.
+MCP-servern `storm` startar `./build/storm --mcp` från reporoten. En agent kan bygga en bana, provspela bestämda indata och få både positioner och en PNG från GPU:n. Med `--watch` syns nästa sparade banändring i samma fönster. En sparad bana kan öppnas igen med `--scene`. [MCP-konfiguration](.mcp.json)
 
 ## Paket
 
@@ -70,14 +95,14 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-assets`](packages/storm-assets) | Placerar glTF-modeller i scenen och laddar deras materialtexturer genom grafikgränssnittet. | `core`, `ecs`, `gfx`, `gltf`, `image`, `scene` |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
 | [`packages/storm-runtime`](packages/storm-runtime) | Spelfönster, provspelningens klocka, scenbevakning och projektgränssnittet `Project`. | Grafikgränssnitt, renderare, scen, indata och UI |
-| [`packages/storm-editor`](packages/storm-editor) | Scenträd, objektval, inspektör och scenredigering. | Scen, ECS och UI |
-| [`packages/storm-studio`](packages/storm-studio) | Materialstudie och redigeringsläge i Storms utvecklarprogram. | Runtime, editor och tillgångar |
+| [`packages/storm-editor`](packages/storm-editor) | Sökbart scenträd, objektval, inspektör och typade redigeringskommandon. | Scen, ECS och UI |
+| [`packages/storm-studio`](packages/storm-studio) | Materialstudie, arbetsyta och lokal redigeringssession för MCP och CLI. | Runtime, editor, tillgångar och MCP |
 | [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll och målsensorer. | `core`, `physics` |
-| [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
+| [`packages/storm-mcp`](packages/storm-mcp) | JSON-RPC över stdio, validering av verktygsargument och First light-verktyg. | `play`, `image` |
 | [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt JPEG (baseline och progressivt; 4:4:4, 4:2:2, 4:2:0, grå, restart-markörer) som RGBA8, valt på filens signatur — 12-bitars JPEG, bitdjup 16 i PNG och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
 | [`packages/storm-input`](packages/storm-input) | En fly-kamera (WASD, Space/Ctrl, Shift, höger musknapp) styrd av en `gfx.Input`. Importerar ingen backend, så kameran är testbar utan fönster. | `core`, `gfx` |
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
-| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
+| [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI med kantutjämnad vektorgeometri, typade vyer, textfält, knappar, reglage och tangentfokus. Testbar utan fönster. | `text` |
 
 `src/main.ddr` väljer backend. Samma `storm-render` ritar Studio, provspelningen och förhandsbilderna från MCP. Spel kan använda `storm-runtime` för fönsterloopen eller anropa `render.frame.Renderer` med egen loop. Studio och editorn är valfria för spelreleasen. Se [paketgränserna](docs/design.md#21-spelprojekt-och-studio).
 
