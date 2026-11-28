@@ -1208,3 +1208,16 @@ fn main() {
 ```
 
 I runtime äger loopen grafikenheten och skickar ett avgränsat `&mut` till inkopplingsfunktionen vid varje anrop. Rekommendation för språket är ett uttryckligt lån som kan ingå i ett adaptervärde när dess räckvidd kan bevisas statiskt.
+
+**116. `size_of` på en vanlig struct ger `E5003 C layouts can contain only unmanaged C fields` — diagnosticen beskyller fältet, felet är typen (Dunder 0.13.1, Storm 2026-11-28).** Symptom: en pin av en Dunder-posts storlek (`assert(size_of(state.Renderer) == 5736)`, formen fynd 76 rekommenderar för varje kluster) skrevs på en struct *utan* `@c_layout`, och kompilatorn svarade med C-layoutens fältregel och caret på **`size_of`**, inte på typen. Las som "något fält i `Renderer` är ohanterat" — men inga fält är det; `size_of` accepterar bara C-layouter (`docs/ffi.md` beskriver den enbart där, så vägran är avsiktlig). Minimal repro:
+
+```dunder
+capability stdio
+import sys
+
+pub struct Point { x: i32, y: i32 }
+
+fn main() { _ := sys.eprint(usize(size_of(Point)).str()) }
+```
+
+`dunder check` → `error[E5003]: C layouts can contain only unmanaged C fields` med caret under `size_of`. Samma struct med `@c_layout` framför sig kompilerar och skriver `8`. Två structar med *samma* fältnamn ger alltså två olika svar på samma uttryck, och det felande svaret namnger inte skillnaden. Workaround här: läs E5003 vid `size_of`/`align_of` som "typen är inte `@c_layout`" och lägg på `@c_layout` när det är sant (det var det inte för `Renderer` i Storm — den håller `string`-fält och fick ingen pin; `size_of`-pinnen är för C-poster, och det är formen `state.Renderer` i `storm-vulkan` har). Rekommendation: en egen diagnostik för `size_of`/`align_of` på en icke-C-typ — `E50xx size_of requires a @c_layout type, got __dunder_module_N` — med den type-namnande not fynd 84 efterfrågar; fältregeln E5003 ska brandas på fältet den gäller, inte lånas ut av ett uttryck som vägrar en hel typ. Mätt: 0.13.1, `~/tmp-emis/p4probe/{d,e}.ddr`.

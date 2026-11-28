@@ -4,7 +4,6 @@ import .ui as ui
 import .interaction
 import .layout
 
-pub const BUTTON_HEIGHT: f32 = 30.0
 pub const SLIDER_HEIGHT: f32 = 22.0
 pub const ROW_HEIGHT: f32 = 28.0
 
