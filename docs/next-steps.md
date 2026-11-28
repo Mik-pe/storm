@@ -1051,6 +1051,13 @@ början (`button_of`).
 
 ## Kända begränsningar i dag
 
+- `--texture` lägger **en** bild över varje yts hela UV-område, inte ett
+  mönster som repeteras per meter: golvet är ett svep på 90 m med UV 0..1,
+  så en 4×4-schackbrädestextur ger en jämn medelfärg (en ruta = 22 m,
+  mätt 2026-11-28: golv (48,30,42) → (39,28,51) utan en enda ruta) och en
+  256²-bild med en röd cirkel ger en röd remsa närmast kameran. En capture
+  som textur *syns* (syftet), en tile gör det inte; en UV-skala per yta är
+  en materialegenskap som inte finns i kontraktet.
 - Djupbuffert finns men inget reverserar det: glaset skriver inte djup, så två
   glaspaneler som överlappar varandra blandas i sorteringsordning, inte per pixel.
 - Max 8 swapchain-bilder och 8 image views (`state.Renderer`).
