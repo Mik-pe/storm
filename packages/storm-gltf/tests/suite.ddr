@@ -126,6 +126,51 @@ fn append_u32(out: &mut []u8, value: u32) {
     assert(at.tx == 1.0 && at.ty == 0.0 && at.tz == 0.0 && at.tw == -1.0)
 }
 
+// Without TANGENT, a mesh with normals and uvs gets MikkTSpace's frame per
+// vertex (glTF 2.0 §3.7.2.1), not one triangle's: the square's corner shared
+// with a same-orientation neighbour blends the two by corner angle, which
+// the per-triangle frame of `triangle_tangent` cannot ( gfx's
+// a_welded_corner_shared_by_same_orientation_triangles_blends_by_corner_angle
+// measures the arithmetic: (0.9396, 0.3423), w = -1).
+@test fn a_mesh_without_tangent_gets_mikk_tangents_frames() {
+    mut mesh := gltf.empty_mesh()
+    mesh.ok = true
+    mesh.positions = square_with_a_wing_positions()
+    mesh.normals = square_with_a_wing_normals()
+    mesh.uvs = square_with_a_wing_uvs()
+    mesh.indices = square_with_a_wing_indices()
+    mesh.index_count = mesh.indices.len
+    mesh.vertex_count = 7
+    stream := gltf.interleave(&mesh)
+    assert(stream.len == 6 * gfx.VERTEX_FLOATS)
+    // Vertex 0 is the first triangle's corner 0 and 4 is its welded copy.
+    first := gfx.vertex_at(&stream, 0)
+    assert(first.tx == 0.9396077 && first.ty == 0.34225348 && first.tz == 0.0 && first.tw == -1.0)
+    // Triangle 1 (4,5,6) corner 6: only the wing's own frame.
+    wing := gfx.vertex_at(&stream, 5 * gfx.VERTEX_FLOATS)
+    assert(wing.tx == 0.8944272 && wing.ty == 0.4472136 && wing.tw == -1.0)
+}
+
+fn square_with_a_wing_positions() -> []f32 {
+    p: []f32 = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0]
+    p
+}
+
+fn square_with_a_wing_normals() -> []f32 {
+    n: []f32 = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    n
+}
+
+fn square_with_a_wing_uvs() -> []f32 {
+    u: []f32 = [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+    u
+}
+
+fn square_with_a_wing_indices() -> []i32 {
+    i: []i32 = [0, 1, 2, 4, 5, 6]
+    i
+}
+
 // A TANGENT accessor whose count does not match POSITION is refused by name,
 // the way a wrong TEXCOORD_0 is: a half-read basis is worse than none.
 @test fn a_short_tangent_accessor_is_refused_by_name() {

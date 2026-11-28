@@ -11,6 +11,7 @@ import std.json as json
 import std.wire as wire
 import sys
 import gfx
+import gfx.tangents as tangents
 import .nodes
 import .textures as textures
 
@@ -483,17 +484,26 @@ pub fn asset_from_json(doc: &Document, j: &json.Doc) -> Result<Asset,string> {
 // when it does not -- the spec's SHOULD (Lengyel, w = -sign(det)), the same
 // `gfx.triangle_tangent` a hand-built surface gets. `push_triangle` writes
 // the frame on every corner of its triangle.
+// The tangent of every vertex: the file's TANGENT when it has one, else
+// MikkTSpace's from the positions, normals and uvs (glTF 2.0 §3.7.2.1), and
+// none when the file gives no normal or uv to build it from.
+fn tangents_of(mesh: &Mesh) -> []f32 {
+    if mesh.tangents.len > 0 { return mesh.tangents.clone() }
+    tangents.mikk_tangents(&mesh.positions, &mesh.normals, &mesh.uvs, &mesh.indices, mesh.vertex_count)
+}
+
 pub fn interleave(mesh: &Mesh) -> []f32 {
+    tan := tangents_of(mesh)
     mut out: []f32 = []
     out.reserve(mesh.index_count * gfx.VERTEX_FLOATS)
     for t in 0..mesh.index_count / 3 {
         ia := mesh.indices[t * 3]
         ib := mesh.indices[t * 3 + 1]
         ic := mesh.indices[t * 3 + 2]
-        if mesh.tangents.len > 0 {
-            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ia), file_tangent(mesh, ia)))
-            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ib), file_tangent(mesh, ib)))
-            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ic), file_tangent(mesh, ic)))
+        if tan.len > 0 {
+            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ia), tangent_at(&tan, ia)))
+            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ib), tangent_at(&tan, ib)))
+            gfx.push_vertex(&mut out, with_tangent(mesh_vertex(mesh, ic), tangent_at(&tan, ic)))
         } else {
             gfx.push_triangle(&mut out, mesh_vertex(mesh, ia), mesh_vertex(mesh, ib), mesh_vertex(mesh, ic))
         }
@@ -515,9 +525,10 @@ fn mesh_vertex(mesh: &Mesh, index: i32) -> gfx.Vertex {
         if has_uv { mesh.uvs[index * 2 + 1] } else { 0.0 })
 }
 
-// The file's tangent of vertex `index`: xyz, and w = the sign of the bitangent.
-fn file_tangent(mesh: &Mesh, index: i32) -> [f32; 4] {
-    [mesh.tangents[index * 4], mesh.tangents[index * 4 + 1], mesh.tangents[index * 4 + 2], mesh.tangents[index * 4 + 3]]
+// The tangent of vertex `index` in a per-vertex table: xyz, and w = the sign
+// of the bitangent.
+fn tangent_at(t: &[]f32, index: i32) -> [f32; 4] {
+    [t[index * 4], t[index * 4 + 1], t[index * 4 + 2], t[index * 4 + 3]]
 }
 
 // A vertex carrying a tangent frame.
