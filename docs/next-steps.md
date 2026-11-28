@@ -7,7 +7,7 @@ styr, glTF-laddning och ECS-frågor (avsnitt 0e), och **gränssnittet och den
 andra backenden** (avsnitt 0f): samma editor och spelloop på Vulkan (Linux)
 och Metal (macOS), genom `storm-gfx`.
 
-Storm Studio och fysikbanan First light kan köras direkt ur motorrepot. Spelprojekt använder `storm-studio` och väljer själva regler, kamera, HUD och tillgångar. [Blomsterskogen och spelets provspelade rutter](https://github.com/Mik-pe/blomsterskogen/blob/main/docs/spel.md)
+Storm Studio och fysikbanan First light kan köras direkt ur motorrepot. Spelprojekt använder `storm-runtime` och väljer själva regler, kamera, HUD och tillgångar. [Blomsterskogen och spelets provspelade rutter](https://github.com/Mik-pe/blomsterskogen/blob/main/docs/spel.md)
 
 **3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3e (b) och (c) är landade
 (2026-11-27):** en skinnad tangent följer leden och båda shaderna läser
@@ -57,7 +57,7 @@ Tabellens kluster är slut; pipelines (10 handtag som `vulkan.ddr` binder i
 varje draw) är orchestringens, inte ett kluster, och stannar (design.md §3b).
 Instancing (5), fler ljus (7) och input (8) kommer efter det.
 
-Fönsterloopen och materialstudien finns i paketet `storm-studio`. Projektgränssnittet för externa spel beskrivs i [designen](design.md#21-spelprojekt-och-studio).
+Fönsterloopen finns i `storm-runtime`. `storm-editor` äger redigeringen och `storm-studio` bygger materialstudien. Projektgränssnittet för externa spel beskrivs i [designen](design.md#21-spelprojekt-och-studio).
 
 ## Byggtid på Mikparchy
 

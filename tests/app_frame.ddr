@@ -141,6 +141,8 @@ fn studio_window() -> app.View { app.view(1280.0, 800.0) }
     v := app.view(1280.0, 800.0)
     assert(v.left > 0.0 && v.top >= editor.BAR && v.right < 1280.0 && v.bottom <= 800.0 - editor.FOOT)
     assert(v.left < v.right && v.top < v.bottom)
+    assert(!editor.initial_viewport(1280.0, 800.0).contains(v.left - 100.0, 400.0))
+    assert(editor.initial_viewport(1280.0, 800.0).contains(v.right, 400.0))
     // The margin is the same on all four sides.
     assert((v.left - (1280.0 - v.right)).abs() < 0.0001 && (v.top - editor.BAR - (800.0 - editor.FOOT - v.bottom)).abs() < 0.0001)
 }

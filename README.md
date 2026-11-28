@@ -69,7 +69,9 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-render`](packages/storm-render) | Rendergraf och scenrenderare. Sorterar ritlistor, kör bildpass och lämnar plats för spelets HUD. | `core`, `gfx`, `scene` |
 | [`packages/storm-assets`](packages/storm-assets) | Placerar glTF-modeller i scenen och laddar deras materialtexturer genom grafikgränssnittet. | `core`, `ecs`, `gfx`, `gltf`, `image`, `scene` |
 | [`packages/storm-physics`](packages/storm-physics) | Gravitation, impulser, friktion och kollisioner mellan sfärer och axelriktade lådor. | `core` |
-| [`packages/storm-studio`](packages/storm-studio) | Fönsterloop, materialstudio, scenbevakning och det gemensamma spelgränssnittet `Project`. | `gfx`, scen- och UI-paketen |
+| [`packages/storm-runtime`](packages/storm-runtime) | Spelfönster, provspelningens klocka, scenbevakning och projektgränssnittet `Project`. | Grafikgränssnitt, renderare, scen, indata och UI |
+| [`packages/storm-editor`](packages/storm-editor) | Scenträd, objektval, inspektör och scenredigering. | Scen, ECS och UI |
+| [`packages/storm-studio`](packages/storm-studio) | Materialstudie och redigeringsläge i Storms utvecklarprogram. | Runtime, editor och tillgångar |
 | [`packages/storm-play`](packages/storm-play) | Scenformat, fast simuleringstakt, spelarkontroll och målsensorer. | `core`, `physics` |
 | [`packages/storm-mcp`](packages/storm-mcp) | Agentverktyg över stdio som styr samma spelsession som fönstret. | `play`, `image` |
 | [`packages/storm-image`](packages/storm-image) | Renderarens bild som PNG, och PNG samt JPEG (baseline och progressivt; 4:4:4, 4:2:2, 4:2:0, grå, restart-markörer) som RGBA8, valt på filens signatur — 12-bitars JPEG, bitdjup 16 i PNG och Adam7 vägras. Ren Dunder, zlib från Dunder-repot. | `zlib` (git) |
@@ -77,7 +79,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | [`packages/storm-text`](packages/storm-text) | Glyfatlas på `dunder-skrift`: rasterisering till 8-bitars coverage, shelf-packing, textlayout till quads, och `find_font` som hittar platformens font. | `dunder-skrift` |
 | [`packages/storm-ui`](packages/storm-ui) | Immediate-mode UI: canvas som emitterar vertexar i punkter, samt widgets (`button`, `slider`, `row`) med `Pointer` och hot/active-id. Testbar utan fönster. | `text` |
 
-`src/main.ddr` väljer backend. Samma `storm-render` ritar Studio, provspelningen och förhandsbilderna från MCP. Spel kan använda `storm-studio` för fönsterloopen eller anropa `render.frame.Renderer` med egen loop. Se [paketgränserna](docs/design.md#21-spelprojekt-och-studio).
+`src/main.ddr` väljer backend. Samma `storm-render` ritar Studio, provspelningen och förhandsbilderna från MCP. Spel kan använda `storm-runtime` för fönsterloopen eller anropa `render.frame.Renderer` med egen loop. Studio och editorn är valfria för spelreleasen. Se [paketgränserna](docs/design.md#21-spelprojekt-och-studio).
 
 ## Fönstret
 
@@ -164,7 +166,7 @@ for step in 0..plan.steps.len { kind := plan.steps[step].kind; _ := kind }
 
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
 är tie-breaker och cykler kan inte uppstå. Grafen äger ordning och existens; den
-vet inte vad en backend är. Det är `storm-studio` som mappar varje `PassKind` till
+vet inte vad en backend är. Det är `storm-render` som mappar varje `PassKind` till
 anrop på `gfx.Backend` och öppnar huvudpasset lat vid första passet som inte har
 ett eget (skuggpasset har sitt eget).
 
@@ -173,13 +175,16 @@ så opaque geometri behöver ingen sortering: mesh-pipelinen testar och skriver
 djup, glaspipelinen testar men skriver inte. Bara glaset sorteras bakifrån-fram,
 för blendingens skull.
 
+[Visuell ImageGen-referens för editorlayouten](docs/design/storm-editor-reference.png)
+
 ### Styrning i materialstudien
 
 - **WASD** – gå, **Space/Ctrl** – upp/ner, **Shift** – sprint,
   **höger musknapp + mus** – titta
 - **Vänsterklick** i editorpanelen – välj en nod i trädet; slidrarna skriver
-  material och position i ECS:et. **Add cube** och **Delete** ändrar scenen.
-- **Gå in i en orb** – plocka den (entiteten förstörs, HUD:en räknar)
+  material och transform i scengrafen. **Add cube** och **Delete** ändrar scenen.
+- **Tabb** och **Skift + Tabb** flyttar fokus. **Retur** aktiverar fokuserade knappar, och **vänster/höger** ändrar ett fokuserat reglage.
+- **Gå in i en orb** – plocka den. De ligger under **Collectibles** i scenträdet.
 - **T** – slå av/på glaspanelerna, **G** – skuggor, **E** – färgtoning och glöd.
   Samma reglage finns i inspektorn. **F** växlar fokusläge. I smala fönster öppnas **Scene** och **Inspector** var för sig.
 - **R** – återställ kameran och orbringen, **Esc** – avsluta

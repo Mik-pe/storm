@@ -98,7 +98,7 @@
   validerat mot sin egen katalog) på `play` och `image` och tar
   renderaren som **funktionspekare** `fn(&play.Session, string) ->
   Result<(), string>` — sammansättningsroten (`src/main.ddr: preview`) är
-  den enda som vet vilken backend som står bakom den. Spelprojekt väljer sitt scenformat och levererar sin scengraf genom `studio.Project`. Scenbevakaren i `storm-studio` följer filens sökväg även efter ett atomärt filbyte.
+  den enda som vet vilken backend som står bakom den. Spelprojekt väljer sitt scenformat och levererar sin scengraf genom `runtime.Project`. Scenbevakaren i `storm-runtime` följer filens sökväg även efter ett atomärt filbyte.
 - **Ett gränssnitt, två implementationer.** Materialstudien och provspelningen använder samma renderingskod på macOS och Linux. Varje paketsvit körs från sin egen rot och kontrolleras mot antalet egna `@test`.
   **En rot som inget av dem når är ett program under `tools/`, `examples/`
   eller `packages/*/tools/`** (mätt: `dunder check` utan argument =
@@ -245,7 +245,9 @@ Vad som skiljer backends åt, och var det får synas:
 
 ### 2.1. Spelprojekt och Studio
 
-- **`storm-studio`** driver fönsterloopen, materialstudien, scenbevakning och provspelningens paus, omstart och ensteg. Spelets `studio.Project` äger simuleringen och lämnar scengraf, kamera, ljus, siktlinje och HUD till värden. Ett nytt projekt behöver bara implementera `graph` och `update`. HUD, filbevakning och övriga val har standardbeteenden. First light och Blomsterskogen använder samma projektgränssnitt. [Blomsterskogen](https://github.com/Mik-pe/blomsterskogen)
+- **`storm-runtime`** äger fönsterloopen, scenbevakningen, textatlasen och provspelningens klocka. Spel implementerar `runtime.Project` för scengraf och uppdatering. `runtime.run` bygger fönster och förhandsbilder utan editor. `runtime.drive` kan även ta en arbetsyta genom `runtime.Workspace`.
+- **`storm-editor`** visar och ändrar en `scene.Graph`. Hierarki, urval, transform, material och synlighet arbetar med entitetens generationshandtag. Studio komponerar materialstudien och deras provspelning genom arbetsytegränssnittet.
+- **`storm-ui`** äger geometri, layout och händelser. `ui.view.View<Action>` beskriver vyn per bildruta. Stabil identitet kopplar ihop ombyggda kontroller med tangentfokus och pågående drag. Motorn returnerar en typad händelse som editorn tillämpar på sitt tillstånd. Layout och träffytor använder samma fönsterpunkter. [Rune och typade handlingar](https://github.com/anomalyco/rune/blob/938ba14f09bb3381946b3486ef8aa36363a3e8b2/examples/hello/src/main.rs) · [Blixts vygränssnitt](https://github.com/Mik-pe/blixt#write-a-native-view)
 - **`storm-render`** kan användas direkt med en egen loop. Anropa `render.frame.Renderer::draw_scene` med en propagerad `scene.Graph`, kameramatriser och ljus. `.Ready` betyder att den som vill kan rita skärm-UI med `gfx.Backend.ui_draw` och sedan avsluta bildrutan med `end`. `.Skipped` betyder att en ändrad fönsterstorlek gjorde att bildrutan inte kunde öppnas. Vid fel avslutar värden den aktuella renderingen.
 - **`storm-assets`** placerar glTF-modeller vid deras författade origo. Värden väljer placering och skala. Studio passar in dem på podiet. Texturer delas mellan material med samma bild, sampler och färgrymd. Uppladdningspaketet äger sina unika handtag och kan frigöras när scenen har slutat använda dem. Ett misslyckat anrop frigör de handtag det skapade.
 - **`storm-play` och scenverktygen i `storm-mcp`** ger en liten referens för scenformat och regler. Ett spel kan äga andra regler och exponera egna verktyg via `mcp.protocol`.
@@ -392,9 +394,9 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
 
 ## 5b. Editorn och scenen, som den står
 
-Materialstudien byggs i `packages/storm-studio/src/gallery.ddr`. `packages/storm-studio/src/editor.ddr` äger paneler, objektval och pekarinteraktion. Både fönsterkoordinater och klickytor mäts i punkter. Ett smalt fönster använder samma paneler en i taget. `packages/storm-studio/src/game.ddr` hanterar insamlingen och `packages/storm-studio/src/args.ddr` startkameran.
+Materialstudien och dess provsamlarobjekt hör till `storm-studio`. `storm-editor` hanterar dockning och objektredigering och kan öppna en hierarki från valfri värd. Det kompakta läget visar en sidopanel i taget. [Visuell referens](design/storm-editor-reference.png)
 
-ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn uppdaterar trädraderna när namn eller träd ändras. Renderaren hämtar en ägd kopia av meshströmmarna när geometrins revision ändras. Revisionen identifierar en bestämd version av geometrin inom processen. Det gör att renderaren kan växla mellan grafer och uppdatera poser genom samma anrop. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
+ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har var sin revision. Editorn härleder synliga trädrader ur hierarkin och dess öppna grenar. Renderaren hämtar en ägd kopia av meshströmmarna när geometrins revision ändras. Revisionen identifierar en bestämd version av geometrin inom processen. Det gör att renderaren kan växla mellan grafer och uppdatera poser genom samma anrop. Under en bildruta innehåller varje ritpost en transform, ett material och ett index i den kopian. Skuggpasset och huvudpasset läser samma vertexdata. Bara genomskinliga objekt sorteras.
 
 Ett projekt kan märka upp förgrundsgeometri med `sightline_occluder` på en scennod. Barnen ärver markeringen. Med `gfx.MeshView` kan projektet ange en siktlinje från kameran till sitt motiv. Färgpasset tonar ut blockerande fragment med ett gemensamt skärmfast pixelmönster för alla lager. Skuggpasset använder hela geometrin.
 

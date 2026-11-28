@@ -56,20 +56,24 @@ struct Dock { toolbar: layout.Rect, footer: layout.Rect, tree: layout.Rect, insp
 fn min(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
 fn clamp(value: f32, max: f32) -> f32 { if value < 0.0 || max < 0.0 { 0.0 } else { min(value, max) } }
 
-fn dock(state: &State, width: f32, height: f32) -> Dock {
+fn dock(focus: bool, panel: Panel, width: f32, height: f32) -> Dock {
     compact := width < WIDE
     top := min(height, BAR)
     footer := min(height - top, FOOT)
     body := height - top - footer
-    left := if !state.focus && (!compact || state.compact_panel == .Scene) { min(LEFT, width * 0.75) } else { 0.0 }
-    right := if !state.focus && (!compact || state.compact_panel == .Inspector) { min(RIGHT, width * 0.83) } else { 0.0 }
+    left := if !focus && (!compact || panel == .Scene) { min(LEFT, width * 0.75) } else { 0.0 }
+    right := if !focus && (!compact || panel == .Inspector) { min(RIGHT, width * 0.83) } else { 0.0 }
     Dock { toolbar: layout.rect(0.0, 0.0, width, top), footer: layout.rect(0.0, height - footer, width, footer),
         tree: layout.rect(0.0, top, left, body), inspector: layout.rect(width - right, top, right, body),
         viewport: layout.rect(left, top, width - left - right, body), compact: compact }
 }
 
 pub fn in_viewport(state: &State, x: f32, y: f32, width: f32, height: f32) -> bool {
-    dock(state, width, height).viewport.contains(x, y)
+    dock(state.focus, state.compact_panel, width, height).viewport.contains(x, y)
+}
+
+pub fn initial_viewport(width: f32, height: f32) -> layout.Rect {
+    dock(false, .Closed, width, height).viewport
 }
 
 fn entity_id(entity: ecs.Entity) -> i64 { i64(entity.generation) * 4294967296 + i64(entity.index) }
@@ -129,7 +133,7 @@ fn header(out: &mut view.View<Action>, panel: &layout.Rect, title: string, style
 
 fn toolbar(out: &mut view.View<Action>, state: &State, boxes: &Dock, frame: &Frame, style: &view.Style) {
     r := &boxes.toolbar
-    out.fill(r.clone(), style.root.clone())
+    out.fill(r.clone(), style.chrome.clone())
     out.fill(layout.rect(r.x, r.y + r.h - 1.0, r.w, 1.0), style.border.clone())
     play_in_bar := frame.can_play && r.w >= 400.0
     play_width: f32 = if play_in_bar { 72.0 } else { 0.0 }
@@ -186,7 +190,7 @@ fn tree(out: &mut view.View<Action>, state: &mut State, graph: &scene.Graph, pan
         indent := bounds.x + 5.0 + inset
         if row.branch {
             out.button(layout.rect(indent, bounds.y + 2.0, 20.0, bounds.h - 4.0), view.key(6, entity_id(id)),
-                if row.folded { "›" } else { "⌄" }, .Row, .Fold(id))
+                if row.folded { ">" } else { "v" }, .Row, .Fold(id))
         } else if graph.shape(id).is_some() {
             out.label(layout.rect(indent + 3.0, bounds.y, 15.0, bounds.h), "◇", .Quiet, .Center)
         }
@@ -346,11 +350,11 @@ fn slide(graph: &mut scene.Graph, action: Action, value: f32) {
 pub fn draw(state: &mut State, canvas: &mut ui.Canvas, atlas: &text.Atlas, graph: &mut scene.Graph,
     pointer: &widgets.Pointer, frame: &Frame) {
     style := view.dark()
-    boxes := dock(state, frame.w, frame.h)
+    boxes := dock(state.focus, state.compact_panel, frame.w, frame.h)
     mut composition := view.View<Action>::new()
+    toolbar(&mut composition, state, &boxes, frame, &style)
     if boxes.tree.w > 0.0 { tree(&mut composition, &mut state, &graph, &boxes.tree, pointer, frame.wheel, &style) }
     if boxes.inspector.w > 0.0 { inspector(&mut composition, &mut state, &graph, &boxes.inspector, pointer, frame.wheel, &style) }
-    toolbar(&mut composition, state, &boxes, frame, &style)
     footer(&mut composition, &boxes.footer, frame, &style)
     event := view.frame(&composition, &mut state.controls, &mut canvas, atlas, pointer, &style, frame.navigation)
     if boxes.toolbar.h >= 38.0 && boxes.toolbar.w >= 40.0 {

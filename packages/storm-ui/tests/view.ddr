@@ -1,0 +1,48 @@
+import ..src.ui as ui
+import ..src.widgets as widgets
+import text
+import ..src.view as view
+import ..src.layout as layout
+
+@test fn keyed_controls_return_the_same_action_after_reordering() {
+    mut state := view.State::new()
+    mut first := view.View<i32>::new()
+    cell := layout.rect(0.0, 0.0, 100.0, 24.0)
+    first.button(cell, view.key(1, 4), "First", .Outline, 4)
+    first.button(layout.rect(0.0, 25.0, 100.0, 24.0), view.key(1, 5), "Second", .Outline, 5)
+    mut canvas := ui.Canvas::new()
+    atlas := text.Atlas::new(16, 16)
+    style := view.dark()
+    input := widgets.Pointer::at(-1.0, -1.0, false, false)
+    assert(view.frame(&first, &mut state, &mut canvas, &atlas, &input, &style, .Next).is_none())
+    mut reordered := view.View<i32>::new()
+    reordered.button(cell, view.key(1, 5), "Second", .Outline, 5)
+    reordered.button(layout.rect(0.0, 25.0, 100.0, 24.0), view.key(1, 4), "First", .Outline, 4)
+    match view.frame(&reordered, &mut state, &mut canvas, &atlas, &input, &style, .Activate) {
+        .Some(.Press(4)) => {},
+        _ => assert(false),
+    }
+}
+
+@test fn a_drag_cancels_if_its_key_disappears_and_does_not_move_a_replacement() {
+    mut state := view.State::new()
+    mut original := view.View<i32>::new()
+    cell := layout.rect(0.0, 0.0, 200.0, 24.0)
+    original.slider(cell, view.key(1, 7), "First", view.Slider { value: 0.0, lo: 0.0, hi: 1.0 }, 7)
+    mut canvas := ui.Canvas::new()
+    atlas := text.Atlas::new(16, 16)
+    style := view.dark()
+    match view.frame(&original, &mut state, &mut canvas, &atlas, &widgets.Pointer::at(120.0, 12.0, true, true), &style, .None) {
+        .Some(.Slide(7, value)) => { assert(value > 0.0 && value < 1.0) },
+        _ => assert(false),
+    }
+    mut replacement := view.View<i32>::new()
+    replacement.slider(cell, view.key(1, 8), "Replacement", view.Slider { value: 0.0, lo: 0.0, hi: 1.0 }, 8)
+    assert(view.frame(&replacement, &mut state, &mut canvas, &atlas, &widgets.Pointer::at(142.0, 12.0, false, true), &style, .None).is_none())
+    input := widgets.Pointer::at(142.0, 12.0, false, false)
+    assert(view.frame(&replacement, &mut state, &mut canvas, &atlas, &input, &style, .Next).is_none())
+    match view.frame(&replacement, &mut state, &mut canvas, &atlas, &input, &style, .Increase) {
+        .Some(.Slide(8, value)) => { assert(value == 0.025) },
+        _ => assert(false),
+    }
+}

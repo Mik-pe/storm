@@ -339,25 +339,6 @@ fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
     // With room for the cluster and nothing more, the cluster comes whole.
     room := e + mark + tail + 0.5
     assert(ui.fit(&atlas, "e\u0301e\u0301e\u0301", room, 1.0) == "e\u0301…")
-import ..src.view as view
-import ..src.layout as layout
-
-@test fn keyed_controls_return_the_same_action_after_reordering() {
-    mut state := view.State::new()
-    mut first := view.View<i32>::new()
-    cell := layout.rect(0.0, 0.0, 100.0, 24.0)
-    first.button(cell, view.key(1, 4), "First", .Outline, 4)
-    first.button(layout.rect(0.0, 25.0, 100.0, 24.0), view.key(1, 5), "Second", .Outline, 5)
-    mut canvas := ui.Canvas::new()
-    atlas := text.Atlas::new(16, 16)
-    style := view.dark()
-    input := widgets.Pointer::at(-1.0, -1.0, false, false)
-    assert(view.frame(&first, &mut state, &mut canvas, &atlas, &input, &style, .Next).is_none())
-    mut reordered := view.View<i32>::new()
-    reordered.button(cell, view.key(1, 5), "Second", .Outline, 5)
-    reordered.button(layout.rect(0.0, 25.0, 100.0, 24.0), view.key(1, 4), "First", .Outline, 4)
-    match view.frame(&reordered, &mut state, &mut canvas, &atlas, &input, &style, .Activate) {
-        .Some(.Press(4)) => {},
-        _ => assert(false),
-    }
 }
+
+import .view as _

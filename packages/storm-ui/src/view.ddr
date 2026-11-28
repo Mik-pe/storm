@@ -144,7 +144,8 @@ fn paint<A>(node: &Node<A>, canvas: &mut ui.Canvas, atlas: &text.Atlas, style: &
             if kind == .Selected || focus { canvas.rect(r.x + 2.0, r.y + 4.0, 2.0, r.h - 8.0, &style.accent) }
             ink := if kind == .Primary { style.accent_ink.clone() } else { style.ink.clone() }
             row := kind == .Selected || kind == .Row
-            text_at(&mut canvas, atlas, &r.inset(9.0, 0.0), node.title, 13.0, if row { .Start } else { .Center }, &ink)
+            inset: f32 = if row { 5.0 } else { 9.0 }
+            text_at(&mut canvas, atlas, &r.inset(inset, 0.0), node.title, 13.0, if row { .Start } else { .Center }, &ink)
         },
         .Slider(model) => {
             track := bar(r)

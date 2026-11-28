@@ -13,7 +13,7 @@ import text
 import ui
 import ui.widgets as widgets
 
-const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·•…◇›⌄ åäö ÅÄÖ éÉ ²³"
+const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·•… åäö ÅÄÖ éÉ ²³"
 
 // Report why the backend refused, close it, and stop with a failure.
 fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {
@@ -107,6 +107,7 @@ pub struct Overlay {
 // instantiates the same loop with NoWorkspace and depends only on this package.
 pub trait Workspace {
     fn available(&self) -> bool
+    fn labels(&self) -> []string { [] }
     fn graph(&self) -> &scenegraph.Graph from self
     fn update(&mut self, frame: &gfx.Frame, dt: f64, camera: input.Camera) -> input.Camera
     fn shadows(&self) -> bool
@@ -218,6 +219,10 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
     for label in project.labels() {
         if !atlas.add_text(&face, label) { return stop(move window, "could not pack scene glyphs") }
     }
+    tool_labels := if has_tools { workspace.labels() } else { [] }
+    for label in &tool_labels {
+        if !atlas.add_text(&face, label) { return stop(move window, "could not pack workspace glyphs") }
+    }
     pixels := atlas.copy_pixels()
     atlas_size := atlas.size()
     uploaded := window.ui_atlas(pixels, atlas_size, atlas_size)
@@ -248,6 +253,9 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
                         if !fresh.add_text(&face, GLYPHS) { return stop(move window, "could not pack UI glyphs") }
                         for label in project.labels() {
                             if !fresh.add_text(&face, label) { return stop(move window, "could not pack scene glyphs") }
+                        }
+                        for label in &tool_labels {
+                            if !fresh.add_text(&face, label) { return stop(move window, "could not pack workspace glyphs") }
                         }
                         updated := window.ui_atlas(fresh.copy_pixels(), atlas_size, atlas_size)
                         if updated.is_err() { return stop(move window, updated.unwrap_err()) }
