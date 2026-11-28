@@ -117,7 +117,11 @@ fn hierarchy(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut s
         (if state.expand_orbs { "- Collectibles   " } else { "+ Collectibles   " }) + count.str(), t) {
         state.expand_orbs = !state.expand_orbs
         state.tree_revision = -1
-        if state.expand_orbs { state.first_node = state.rows.len } else { state.first_node = 0 }
+        // Scroll to the end of the tree the button is about to build: the
+        // rows it will have are the named ones plus the orbs being appended.
+        // (Read before refresh_tree, `rows` is still the folded tree, so
+        // `rows.len` alone was the first orb, not the last.)
+        if state.expand_orbs { state.first_node = state.rows.len + count } else { state.first_node = 0 }
     }
     if state.controls.button(&mut c, a, 1, p, 12.0, by + 34.0, 102.0, 26.0, "+ Add cube", t) {
         fresh := graph.create_root(core.vec3(0.0, 0.72, 3.6))
