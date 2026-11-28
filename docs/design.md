@@ -117,7 +117,17 @@
   dess `src/`, och en test-backend som implementerar ett kontrakt är kod
   som ska följa med det (`tests/executor.ddr` stod med den gamla
   signaturen när `mesh` fick occlusion, och vart och ett av paketen
-  rapporterade 0 fel; kontraktet bevisat i fem fall, 24 rötter). Ramens exektor
+  rapporterade 0 fel; kontraktet bevisat i fem fall). Sedan 2026-11-28
+  vaktar den också **registreringen**: `dunder test` samlar `@test` bara
+  från moduler sviten importerar, så en testmodul utan sin `import .x as
+  _`-rad i `suite.ddr` körs aldrig och sviten blir *grönare*, aldrig
+  rödare (dogfood 86). Vakten mot det var ett test som kopierats in i tre
+  sviter och inte i de två som behövde det (`storm-render`, `storm-studio`
+  med sex moduler) — en regel att komma ihåg. Grinden härleder redan varje
+  svit ur trädet, så den äger regeln en gång: varje `.ddr` bredvid en
+  `suite.ddr` med `@test` ska vara en importrad där, annars utgång 1 med
+  filnamnet (bevisat i sju fall i en full trädkopia). De tre kopiorna är
+  borta. 26 rötter, 29 s. Ramens exektor
   (`app.gather`, `load_model`) är testbar utan fönster: vad ett pass får,
   när mesh-kopian tas (bara när geometrin revideras — och aldrig från en
   främmande värld med samma revisionsnummer) och att en delad mesh räknas
