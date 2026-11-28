@@ -173,14 +173,17 @@ unsafe fn encode(width: i32, height: i32, rows: &[]u8) -> Result<[]u8, string> {
     .Ok(move out)
 }
 
-pub fn png(data: &[]u8) -> Result<[]u8, string> {
+pub fn png(data: &[]u8) -> Result<[]u8, string> { png_with_limit(data, PREVIEW_EDGE) }
+
+fn png_with_limit(data: &[]u8, max_edge: i32) -> Result<[]u8, string> {
+    if max_edge <= 0 { return .Err("Capture edge limit must be positive") }
     source := header(data)?
     longest := if source.width > source.height { source.width } else { source.height }
     mut width := source.width
     mut height := source.height
-    if longest > PREVIEW_EDGE {
-        width = i32((i64(width) * i64(PREVIEW_EDGE) + i64(longest / 2)) / i64(longest))
-        height = i32((i64(height) * i64(PREVIEW_EDGE) + i64(longest / 2)) / i64(longest))
+    if longest > max_edge {
+        width = i32((i64(width) * i64(max_edge) + i64(longest / 2)) / i64(longest))
+        height = i32((i64(height) * i64(max_edge) + i64(longest / 2)) / i64(longest))
         if width < 1 { width = 1 }
         if height < 1 { height = 1 }
     }
@@ -188,10 +191,10 @@ pub fn png(data: &[]u8) -> Result<[]u8, string> {
     unsafe { return encode(width, height, &rows) }
 }
 
-fn image_file(path: string) -> Result<string, string> {
+pub fn capture_base64(path: string, max_edge: i32) -> Result<string, string> {
     capture := sys.read_u8_limit(path, CAPTURE_BYTES)
     if !capture.ok { return .Err("could not read rendered frame: " + sys.error_message(capture.error)) }
-    encoded := png(&capture.value)?
+    encoded := png_with_limit(&capture.value, max_edge)?
     .Ok(base64.encode(&encoded))
 }
 
@@ -200,7 +203,7 @@ pub fn preview<T>(session: &T, render: fn(&T, string) -> Result<(), string>) -> 
     if !temp.ok { return .Err("could not create private preview directory: " + sys.error_message(temp.error)) }
     path := temp.value + "/frame.ppm"
     result := match render(session, path) {
-        .Ok => image_file(path),
+        .Ok => capture_base64(path, PREVIEW_EDGE),
         .Err(err) => .Err(err),
     }
     removed := fs.remove_all(temp.value)

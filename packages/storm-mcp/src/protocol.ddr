@@ -1,13 +1,20 @@
 capability stdio
 import std.io as io
 import std.json as json
+import std.text as text
 import .schema
 
 const VERSION: string = "2025-11-25"
 enum Phase { New, Negotiated, Ready }
-pub struct Protocol { phase: Phase, catalog: json.Doc, name: string }
+pub struct Protocol { phase: Phase, catalog: json.Doc, name: string, instructions: string, screenshot: string }
+
 pub fn new(name: string, catalog: string) -> Protocol {
-    Protocol { phase: .New, catalog: json.Doc::parse_text(catalog), name: name.clone() }
+    new_tools(name, catalog, "Create or load a scene, edit bodies, then step and inspect the shared 60 Hz simulation. Launch a saved scene with the --scene option.", "storm_preview")
+}
+
+pub fn new_tools(name: string, catalog: string, instructions: string, screenshot: string) -> Protocol {
+    Protocol { phase: .New, catalog: json.Doc::parse_text(catalog), name: name.clone(),
+        instructions: instructions.clone(), screenshot: screenshot.clone() }
 }
 
 fn result(id: string, value: string) -> string {
@@ -62,12 +69,12 @@ pub fn handle<S>(server: &mut Protocol, state: &mut S, line: string,
         server.phase = .Negotiated
         return result(id, "{\"protocolVersion\":" + json.quote(version) +
             ",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":" + json.quote(server.name) + ",\"version\":\"0.1.0\"}," +
-            "\"instructions\":\"Create or load a scene, edit bodies, then step and inspect the shared 60 Hz simulation. Launch a saved scene with the --scene option.\"}")
+            "\"instructions\":" + json.quote(server.instructions) + "}")
     }
     if server.phase != .Ready { return rpc_error(id, -32002, "Initialization incomplete") }
     if method == "tools/list" {
         if d.field(params, "cursor") >= 0 { return rpc_error(id, -32602, "Unknown cursor") }
-        return result(id, server.catalog.raw_json(server.catalog.root))
+        return result(id, text.replace(server.catalog.raw_json(server.catalog.root), "\n", ""))
     }
     if method != "tools/call" { return rpc_error(id, -32601, "Method not found") }
     name := d.get_str(params, "name").unwrap_or_default()
@@ -76,7 +83,7 @@ pub fn handle<S>(server: &mut Protocol, state: &mut S, line: string,
     args := d.field(params, "arguments")
     error := schema.validate(&server.catalog, spec, &d, args, "arguments")
     if error.len > 0 { return tool_error(id, error) }
-    if name == "storm_preview" {
+    if name == server.screenshot {
         match preview(state) {
             .Ok(png) => { return result(id, "{\"content\":[{\"type\":\"image\",\"mimeType\":\"image/png\",\"data\":" + json.quote(png) + "}]}") },
             .Err(message) => { return tool_error(id, message) },
