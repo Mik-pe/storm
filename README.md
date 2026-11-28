@@ -8,8 +8,10 @@ bokförs i [docs/dogfood.md](docs/dogfood.md).
 Samma editor och samma spelloop körs på två grafikbackends: **Vulkan på
 Linux** (i ett SDL-fönster) och **Metal på macOS** (i ett AppKit-fönster, som
 Storm når genom Objective-C:s runtime, utan ett bibliotek att installera).
-Applikationen talar bara med gränssnittet `storm-gfx`, som inte nämner någon
-av dem; `src/main.ddr` väljer backend för både fönstret och agentens bildexport.
+Spel och editor kör genom Storms RHI i `storm-gfx`. `Device` gör grafikarbetet
+och `FrameSource` levererar storlek, tid och indata. `src/main.ddr` väljer
+den inbyggda backenden för fönster och bildexport. En värd kan också
+koppla in sitt eget fönster eller en fönsterlös yta. [RHI-kontraktet](docs/design.md#22-rhi-och-presentationsytor)
 
 Storm startar i **Studio**, där du kan arbeta med scenträdet, ljuset och materialen. **First light** är en liten fysikbana för provspelning. Räven Vallmo och hennes glänta utvecklas som ett eget spel i [Blomsterskogen](https://github.com/Mik-pe/blomsterskogen).
 
@@ -85,7 +87,7 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 | --- | --- | --- |
 | [`packages/storm-core`](packages/storm-core) | `Vec2`/`Vec3`/`Vec4`, `Mat4` (kolumnmajor), `Color`, projektion, multiplikation, kubytbaser och BRDF-LUT för IBL. Ren Dunder utan OS-åtkomst. | — |
 | [`packages/storm-ecs`](packages/storm-ecs) | Sparse-set ECS: `Pool<T>` med dense lagring, generationshandtag i `EntityAllocator`, swap-remove, och frågor (`join2`/`join3` med dense-index). | — |
-| [`packages/storm-gfx`](packages/storm-gfx) | **Kontraktet mellan Storm och en backend:** `Frame`, `Input` med `Key`, `Sky`, `Texture`, `Textures` (materialets fem platser), `Encoding` och `Sampler` (värden, aldrig pekare), `trait Backend` med `upload_texture(…, encoding, &sampler)`/`mesh(…, &textures, surface)`, och geometrihjälparna (`cube`, `plane`, `sphere`) som äger vertexformatet. Nämnar ingen backend. Ren Dunder. | — |
+| [`packages/storm-gfx`](packages/storm-gfx) | RHI med `Device`, `FrameSource`, bildrutans startresultat, funktioner, texturer och pixlar. Äger formatet för mesh- och UI-vertexar. Ren Dunder. | — |
 | [`packages/storm-vk`](packages/storm-vk) | Vulkan-registret som Dunder: `api.ddr` (82 prototyper + `load()`), `layout.ddr` (77 C-poster ur registret + fyra par-poster) och `enums.ddr` (36 enums) — allt genererat ur Khronos `vk.xml` av `tools/vk.ddr`, inget Storm i sig. | — |
 | [`packages/storm-vulkan`](packages/storm-vulkan) | Backend för Linux: Vulkan 1.0 + `VK_KHR_surface`/`VK_KHR_swapchain` via `std.dl`, SDL-fönster, swapchain, render pass, pipeline med push constants, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx`, `vk` |
 | [`packages/storm-metal`](packages/storm-metal) | Backend för macOS: AppKit-fönster och `CAMetalLayer` genom Objective-C-runtingen, kommandobuffertar, renderpass, pipelines, skuggor, djupbuffert och IBL-kartor. | `core`, `gfx` |
@@ -135,7 +137,7 @@ match window.begin() {
 }
 _ := window.begin_pass()
 _ := window.sky(&inv_view_projection.m, &sun, &zenith, &horizon)
-_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, &textures, &emissive_factor, 1.0, .Opaque)
+_ := window.mesh(&vertices, &mvp.m, &model.m, &base_color, &params, &camera, &sky, &textures, &emissive_factor, 1.0, 1.0, .Opaque)
 _ := window.end()
 ```
 
@@ -206,7 +208,7 @@ for step in 0..plan.steps.len { kind := plan.steps[step].kind; _ := kind }
 En läsning löses mot den **senaste tidigare** skrivaren, så deklarationsordningen
 är tie-breaker och cykler kan inte uppstå. Grafen äger ordning och existens; den
 vet inte vad en backend är. Det är `storm-render` som mappar varje `PassKind` till
-anrop på `gfx.Backend` och öppnar huvudpasset lat vid första passet som inte har
+anrop på `gfx.Device` och öppnar huvudpasset lat vid första passet som inte har
 ett eget (skuggpasset har sitt eget).
 
 Huvudpasset har en djupbilaga (`D32_SFLOAT` på Vulkan, `Depth32Float` på Metal),

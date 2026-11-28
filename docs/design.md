@@ -37,8 +37,8 @@
 
 - **storm-gfx**: en modul med `Frame`, `Input` med `Key` som bitar i en
   `u32`, `Mouse` med `scroll`, `Sky`, `Surface`, `Texture`, `Sampler`,
-  `Vertex` och `PostProcess`. `trait Backend` beskriver pass, ritning,
-  texturer, bildexport och textinmatning. Anrop som kan misslyckas
+  `Vertex` och `PostProcess`. `Device` beskriver pass, ritning, texturer
+  och bildläsning. `FrameSource` beskriver tid och indata. Anrop som kan misslyckas
   returnerar `Result`. Geometrihjälparna äger vertexformatet — meshens
   (`Vertex`, `VERTEX_FLOATS`/`VERTEX_BYTES` och offsets, `vertex_at`/
   `put_vertex`) och UI-strömmens (`UiVertex`, `UI_FLOATS`/`UI_BYTES`/
@@ -193,7 +193,7 @@ växte, inte en ny uppgift som lagts i fel lager.
 
 ## 2. Struktur: vad som står, och vad som ska stå
 
-Varje programs `src/main.ddr` väljer plattformens backend. `storm-gfx` beskriver fönsterytan, indata och ritkommandon. Simulering och fysik kan köras utan grafik. `storm-scene` äger noder, geometri och poser, medan `storm-render` översätter den färdiga scenen till bildpass genom `gfx.Backend`.
+Varje programs `src/main.ddr` väljer plattformens backend. `storm-gfx` beskriver fönsterytan, indata och ritkommandon. Simulering och fysik kan köras utan grafik. `storm-scene` äger noder, geometri och poser, medan `storm-render` översätter den färdiga scenen till bildpass genom `gfx.Device`.
 
 Under kontraktet gäller det samma som förut: `storm-physics`, `storm-play`,
 `storm-mcp` och `storm-image` känner varken backend eller fönster: en
@@ -247,7 +247,7 @@ Vad som skiljer backends åt, och var det får synas:
 - **`storm-runtime`** äger fönsterloopen, scenbevakningen, textatlasen och provspelningens klocka. Spel implementerar `runtime.Project` för scengraf och uppdatering. `runtime.run` bygger fönster och förhandsbilder utan editor. `runtime.drive` kan även ta en arbetsyta genom `runtime.Workspace`.
 - **`storm-editor`** visar och ändrar en `scene.Graph`. Hierarki, urval, transform, material och synlighet arbetar med entitetens generationshandtag. Studio komponerar materialstudien och deras provspelning genom arbetsytegränssnittet.
 - **`storm-ui`** äger geometri, layout och händelser. `ui.view.View<Action>` beskriver vyn per bildruta. Stabil identitet kopplar ihop ombyggda kontroller med tangentfokus och pågående drag. Motorn returnerar en typad händelse som editorn tillämpar på sitt tillstånd. Layout och träffytor använder samma fönsterpunkter. [Rune och typade handlingar](https://github.com/anomalyco/rune/blob/938ba14f09bb3381946b3486ef8aa36363a3e8b2/examples/hello/src/main.rs) · [Blixts vygränssnitt](https://github.com/Mik-pe/blixt#write-a-native-view)
-- **`storm-render`** kan användas direkt med en egen loop. Anropa `render.frame.Renderer::draw_scene` med en propagerad `scene.Graph`, kameramatriser och ljus. `.Ready` betyder att den som vill kan rita skärm-UI med `gfx.Backend.ui_draw` och sedan avsluta bildrutan med `end`. `.Skipped` betyder att en ändrad fönsterstorlek gjorde att bildrutan inte kunde öppnas. Vid fel avslutar värden den aktuella renderingen.
+- **`storm-render`** kan användas direkt med en egen loop. Anropa `render.frame.Renderer::draw_scene` med en propagerad `scene.Graph`, kameramatriser och ljus. `.Ready` betyder att den som vill kan rita skärm-UI med `gfx.Device.ui_draw` och sedan avsluta bildrutan med `end`. `.Skipped` betyder att enheten rapporterade en tillfälligt otillgänglig yta. Vid fel avslutar värden den aktuella renderingen.
 - **`storm-assets`** placerar glTF-modeller vid deras författade origo. Värden väljer placering och skala. Studio passar in dem på podiet. Texturer delas mellan material med samma bild, sampler och färgrymd. Uppladdningspaketet äger sina unika handtag och kan frigöras när scenen har slutat använda dem. Ett misslyckat anrop frigör de handtag det skapade.
 - **`storm-play` och scenverktygen i `storm-mcp`** ger en liten referens för scenformat och regler. Ett spel kan äga andra regler och exponera egna verktyg via `mcp.protocol`.
 
@@ -269,6 +269,43 @@ skärs samman när vyn byggs. Ritning och pekarträffar läser samma
 skärning, och tangentfokus hoppar över kontroller utanför ytan. En
 modal undervy begränsar fokus och pekarträffar till sitt eget innehåll.
 Studio använder samma behållare i scenträdet och inspektören.
+
+### 2.2. RHI och presentationsytor
+
+- **`gfx.Device`** äger grafikresurser och bildrutans pass. `start_frame`
+  får den logiska storleken, pixeltätheten och mängden meshdata. En yta som
+  är tillfälligt otillgänglig ger `FrameStart.Unavailable` innan något
+  pass skrivits. Ett resurs- eller enhetsfel går tillbaka som `Err`, även
+  om värden samtidigt rapporterar en storleksändring.
+- **`gfx.FrameSource`** äger tid, storlek, tangenttryckningar, text och
+  pekare. Spel kan kombinera en fristående värd och en enhet genom
+  `runtime.run_on`, och Studio har motsvarande `studio.run_on`.
+  `gfx.Backend` är den sammansatta ingången för inbyggda fönster.
+- **Kapabiliteterna** beskriver skuggor, bildbaserad miljöbelysning och
+  efterbehandling. Renderaren planerar pass utifrån de funktioner enheten
+  erbjuder. En liten backend kan implementera grundritningen och anslutas
+  utan dessa tre funktioner.
+- **Bildläsning** ger tätt packade RGBA8-pixlar med början i övre vänstra
+  hörnet. Runtime äger filformatet. En fönsterlös yta kan även rendera
+  utan bildläsning. De sammansatta backendarna exponerar den tidigare
+  genvägen `save_capture` för direkta anrop.
+- **Nativekopplingen** hör hemma i respektive backend. Vulkan kan sättas
+  ihop med en annan ytleverantör genom `open_surface`. Metal kan sättas
+  ihop med en värdägd `CAMetalLayer` genom `open_layer`. Värden behåller
+  fönster och indata. Grafikpaketet släpper resurserna för ytan innan
+  värdfönstret stängs.
+
+`storm-gfx` beskriver Storms scen- och UI-pipeline med ett gemensamt
+vertexformat, klippkoordinater och materialparametrar. En port behöver
+implementera grafikkommandona och förse backenden med sin nativeyta.
+Enhetsval, swapchain eller drawables och shaders stannar i backenden.
+Kompositionsroten kopplar ihop enheterna med spelet eller Studio.
+
+Runtime-sviten kör ett projekt med en minnesbackend och en fristående
+värd. Metal-provet lånar en yta från ett värdprogram. Vulkan kan prövas
+fönsterlöst med `dunder run tools/selftest-ui.ddr` i `packages/storm-vulkan`
+och med en värdägd yta genom att lägga till `-- --surface` i en fungerande
+grafiksession.
 
 ## 3. Enums i FFI-lagret
 
@@ -418,7 +455,7 @@ ECS-grafen äger geometri, material och transformer. Hierarkin och geometrin har
 
 Ett projekt kan märka upp förgrundsgeometri med `sightline_occluder` på en scennod. Barnen ärver markeringen. Med `gfx.MeshView` kan projektet ange en siktlinje från kameran till sitt motiv. Färgpasset tonar ut blockerande fragment med ett gemensamt skärmfast pixelmönster för alla lager. Skuggpasset använder hela geometrin.
 
-`storm-render` översätter rendergrafens pass till `gfx.Backend`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
+`storm-render` översätter rendergrafens pass till `gfx.Device`. Båda backends inväntar GPU:ns senaste läsning innan CPU:n återanvänder den delade vertexbufferten. Fel från ett ritpass eller en bildexport avslutar körningen med felstatus.
 
 UI-geometrin använder en växande vertexström. När bufferten behöver växa
 mitt i en bildruta lever den tidigare bufferten tills GPU:n har läst
