@@ -54,9 +54,11 @@ struct Sink {
     buttons: u32,
     buttons_pressed: u32,
     scroll: f64,
+    text_len: i32,
+    text: [u8; 256],
 }
 
-unsafe fn sink_address() -> ptr { static_bytes("native", 128) }
+unsafe fn sink_address() -> ptr { static_bytes("native", 512) }
 
 // A key went down or came up; going down counts as pressed this frame.
 unsafe fn key_event(into: &mut Sink, key: gfx.Key, down: bool) {
@@ -128,6 +130,7 @@ pub fn key_bit(code: u64) -> i32 {
         36 => i32(gfx.Key.Enter),
         48 => i32(gfx.Key.Tab),
         49 => i32(gfx.Key.Space),
+        51 => i32(gfx.Key.Backspace),
         76 => i32(gfx.Key.Enter),
         53 => i32(gfx.Key.Escape),
         123 => i32(gfx.Key.Left),
@@ -197,10 +200,36 @@ fn view_scroll(view: ptr, method: ptr, event: ptr) {
 // A click on a window that is not key is a click, not only an activation.
 fn view_accepts_first_mouse(view: ptr, method: ptr, event: ptr) -> u8 { 1 }
 
-unsafe fn on_key(rt: &objc.Runtime, event: ptr, down: bool) {
-    bit := key_bit(u64(objc.code(rt, event, rt.sel.key_code)))
-    if bit >= 0 { key_event(ref_at(sink_address()), gfx.Key(bit), down) }
+pub unsafe fn take_text() -> string {
+    read_text(ref_at(sink_address()))
 }
+
+fn read_text(sink: &mut Sink) -> string {
+    mut bytes: []u8 = []
+    for i in 0..sink.text_len { bytes.push(sink.text[i]) }
+    sink.text_len = 0
+    decoded := sys.decode_u8(&bytes)
+    if decoded.ok { decoded.value } else { "" }
+}
+
+unsafe fn on_key(rt: &objc.Runtime, event: ptr, down: bool) {
+    code := u64(objc.code(rt, event, rt.sel.key_code))
+    bit := key_bit(code)
+    if bit >= 0 { key_event(ref_at(sink_address()), gfx.Key(bit), down) }
+    if !down || code == 36 || code == 48 || code == 51 || code == 53 || code == 76 || code >= 123 { return }
+    flags := objc.number(rt, event, rt.sel.modifier_flags)
+    shortcuts := enums.modifier_flag(.Control).bit_or(enums.modifier_flag(.Command))
+    if flags.bit_and(shortcuts) != 0 { return }
+    value := objc.text(rt, objc.send(rt, event, rt.sel.characters))
+    append_text(ref_at(sink_address()), value)
+}
+
+fn append_text(sink: &mut Sink, value: string) {
+    if sink.text_len + value.len > sink.text.len { return }
+    for byte in value.bytes() { sink.text[sink.text_len] = byte; sink.text_len += 1 }
+}
+
+fn clear_text(sink: &mut Sink) { sink.text_len = 0 }
 
 unsafe fn on_flags(rt: &objc.Runtime, event: ptr) {
     code := u64(objc.code(rt, event, rt.sel.key_code))
@@ -407,6 +436,7 @@ unsafe fn drain(rt: &objc.Runtime, application: ptr) {
 // produced. A window the user closed is reported closed.
 pub unsafe fn poll(rt: &objc.Runtime, window: &mut Window) -> gfx.Frame {
     pool := rt.poolPush()
+    clear_text(ref_at(sink_address()))
     drain(rt, window.application)
     area := objc.bounds(rt, window.view, rt.sel.bounds)
     resized := i32(area.size.width) != window.width || i32(area.size.height) != window.height

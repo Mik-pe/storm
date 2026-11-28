@@ -685,6 +685,13 @@ impl gfx.Backend for Renderer {
         }
     }
 
+    fn take_text(&mut self) -> string {
+        unsafe {
+            if self.preview_target != ptr(0) { return "" }
+            appkit.take_text()
+        }
+    }
+
     fn device_name(&self) -> string {
         unsafe { objc.text(&self.objc, objc.send(&self.objc, self.device, self.objc.sel.name)) }
     }

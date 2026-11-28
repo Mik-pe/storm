@@ -1,7 +1,10 @@
 capability unsafe
 
 import gfx
+import sys
 import std.dl as dl
+
+enum TextEvent { Input = 771 }
 
 // SDL2 owns the native window and the event queue. Vulkan presents to it through
 // a VK_KHR_surface created by SDL_Vulkan_CreateSurface; SDL never touches pixels.
@@ -30,6 +33,9 @@ pub struct Window {
     buttons: u32,
     buttons_pressed: u32,
     wheel: f32,
+    text_len: i32,
+    text: [u8; 256],
+    StartTextInput: extern fn(),
     InitSubSystem: extern fn(u32) -> i32,
     QuitSubSystem: extern fn(u32),
     CreateWindow: extern fn(ptr, i32, i32, i32, i32, u32) -> ptr,
@@ -61,6 +67,9 @@ unsafe fn load(w: &mut Window) -> bool {
     symbol = dl.symbol(w.library, cstr("SDL_PollEvent"))
     if symbol == ptr(0) { return false }
     w.PollEvent = ffi_fn(symbol)
+    symbol = dl.symbol(w.library, cstr("SDL_StartTextInput"))
+    if symbol == ptr(0) { return false }
+    w.StartTextInput = ffi_fn(symbol)
     symbol = dl.symbol(w.library, cstr("SDL_GetWindowSize"))
     if symbol == ptr(0) { return false }
     w.GetWindowSize = ffi_fn(symbol)
@@ -95,6 +104,7 @@ pub unsafe fn open(w: &mut Window, title: string, width: i32, height: i32) -> bo
     w.handle = w.CreateWindow(addr(&name[0]), 805306368, 805306368, width, height, 268435488)
     if w.handle == ptr(0) { return false }
     w.id = w.GetWindowID(w.handle)
+    w.StartTextInput()
     w.width = width
     w.height = height
     w.resized = 1
@@ -117,6 +127,7 @@ pub unsafe fn poll(w: &mut Window) {
     w.mouse_dy = 0
     w.buttons_pressed = 0
     w.wheel = 0.0
+    w.text_len = 0
     for i in 0..512 { w.pressed[i] = 0 }
     if w.closed != 0 { return }
     // SDL_Event is a tagged 56-byte union on 64-bit targets. Consume every
@@ -141,6 +152,17 @@ pub unsafe fn poll(w: &mut Window) {
                 if kind == 768 { w.pressed[scancode] = 1 }
             }
             w.key = load_i32(ptr(usize(base) + 20))
+            continue
+        }
+        if kind == u32(TextEvent.Input) {
+            // SDL_TEXTINPUT carries a null-terminated UTF-8 segment at byte 12.
+            if w.text_len + 32 > w.text.len { continue }
+            for i in 0..32 {
+                byte := load_u8(ptr(usize(base) + usize(12 + i)))
+                if byte == 0 { break }
+                w.text[w.text_len] = byte
+                w.text_len += 1
+            }
             continue
         }
         if kind == 1024 {
@@ -208,6 +230,7 @@ pub fn input(w: &Window) -> gfx.Input {
     bind(&mut table, 79, gfx.Key.Right)
     bind(&mut table, 22, gfx.Key.S)
     bind(&mut table, 44, gfx.Key.Space)
+    bind(&mut table, 42, gfx.Key.Backspace)
     bind(&mut table, 43, gfx.Key.Tab)
     bind(&mut table, 40, gfx.Key.Enter)
     bind(&mut table, 88, gfx.Key.Enter)
@@ -235,4 +258,12 @@ pub fn input(w: &Window) -> gfx.Input {
             buttons: w.buttons, pressed: w.buttons_pressed, scroll: w.wheel,
         },
     }
+}
+
+pub fn take_text(window: &mut Window) -> string {
+    mut bytes: []u8 = []
+    for i in 0..window.text_len { bytes.push(window.text[i]) }
+    window.text_len = 0
+    decoded := sys.decode_u8(&bytes)
+    if decoded.ok { decoded.value } else { "" }
 }

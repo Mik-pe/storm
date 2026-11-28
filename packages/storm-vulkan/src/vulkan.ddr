@@ -465,12 +465,22 @@ fn drawn(move result: DrawResult) -> Result<(), string> {
     .Err(result.error)
 }
 
+fn take_window_text(r: &mut state.Renderer) -> string { sdl.take_text(&mut r.window) }
+
 impl gfx.Backend for Window {
     fn poll(&mut self) -> gfx.Frame {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return closed_frame() }
             return next_frame(ref_at(address))
+        }
+    }
+
+    fn take_text(&mut self) -> string {
+        unsafe {
+            address := renderer(self.clone())
+            if address == ptr(0) { return "" }
+            return take_window_text(ref_at(address))
         }
     }
 

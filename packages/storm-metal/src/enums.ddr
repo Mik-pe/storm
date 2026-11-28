@@ -127,7 +127,7 @@ pub enum EventType {
 
 pub fn event_type(v: EventType) -> u64 { u64(i32(v)) }
 
-pub enum ModifierFlag { Shift = 131072, Control = 262144 }
+pub enum ModifierFlag { Shift = 131072, Control = 262144, Command = 1048576 }
 
 pub fn modifier_flag(v: ModifierFlag) -> u64 { u64(i32(v)) }
 

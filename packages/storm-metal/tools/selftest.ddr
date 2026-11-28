@@ -364,6 +364,8 @@ fn input_checks(failures: &mut i32) {
         appkit.synthesize_key(&rt, &window, 11, 13, 0) // keyUp, kVK_ANSI_W
         appkit.synthesize_key(&rt, &window, 12, 56, 131072) // flagsChanged, left shift, shift down
         appkit.synthesize_click(&rt, &window, 1, 100.0, 500.0)
+        expect(&mut failures, "characters from key-down events are delivered once",
+            appkit.take_text() == "xx" && appkit.take_text() == "")
         pressed := appkit.poll(&rt, &mut window)
         expect(&mut failures, "a key that went down is held and was pressed",
             pressed.input.down(gfx.Key.D) && pressed.input.hit(gfx.Key.D))
