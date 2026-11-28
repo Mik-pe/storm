@@ -26,6 +26,16 @@
 // did not, 2 the gate could not run (a directory it cannot list, a compiler
 // that did not start).
 //
+// A suite with several test modules is also checked for *registration*:
+// `dunder test` collects @test only from the modules suite.ddr imports, so a
+// test module nobody imports never runs, and nothing says so — `dunder test`
+// exits 0 with a smaller count. The root suite grew a test for that
+// (2026-11-27), which was then copied into two package suites and not into
+// two others that needed it — a rule held by remembering to paste it. So the
+// rule lives here, once, for every suite the tree has: every .ddr beside a
+// suite.ddr that holds @test must be imported by it (`import .stem`). The
+// three suite-level copies of that test went with it.
+//
 // Every root is named on stderr before the compiler's own line for it, and the
 // verdict names the compiler it asked. A green line that does not say what it
 // asked is not a measurement: seventeen package suites all print
@@ -92,18 +102,33 @@ fn check_code(move args: []string, dir: string) -> i32 {
     child.wait(0).code
 }
 
-// The .ddr files directly under `dir`, or .Err when it cannot be listed.
-fn sources(dir: string) -> Result<[]string, string> {
+// The .ddr files directly under `dir` — bare names, not paths — or .Err when
+// it cannot be listed. Shared by the program roots (which want paths) and the
+// registration check (which wants stems beside suite.ddr).
+fn ddr_names(dir: string) -> Result<[]string, string> {
     match fs.list_dir(dir) {
         .Ok(items) => {
             mut found: []string = []
             for name in &items {
-                if name.len > 4 && name[name.len - 4..name.len] == ".ddr" { found.push(dir + "/" + name) }
+                if name.len > 4 && name[name.len - 4..name.len] == ".ddr" { found.push(name.clone()) }
             }
             array.sort(&mut found)
             .Ok(found)
         },
         .Err(e) => .Err(dir + ": errno " + e.code().str()),
+    }
+}
+
+// The .ddr files directly under `dir`, as paths, or .Err when it cannot be
+// listed.
+fn sources(dir: string) -> Result<[]string, string> {
+    match ddr_names(dir) {
+        .Ok(names) => {
+            mut found: []string = []
+            for name in &names { found.push(dir + "/" + name.clone()) }
+            .Ok(found)
+        },
+        .Err(why) => .Err(why),
     }
 }
 
@@ -172,6 +197,51 @@ fn label(root: &Root) -> string {
     root.dir + " --tests"
 }
 
+// The suite file of the suite rooted at `dir`: tests/suite.ddr under it. Every
+// manifest in the tree names that file as its test_root; a suite named
+// otherwise is read as missing (exit 2 with the path), never as registered.
+fn suite_file(dir: string) -> string {
+    if dir == "." { return "tests/suite.ddr" }
+    dir + "/tests/suite.ddr"
+}
+
+// Whether `suite` holds a line `import .<stem>` that ends there or at
+// whitespace: `.png` must not pass for `.png_util`, and `..src.stem` is not a
+// test-module import.
+fn imports(suite: string, stem: string) -> bool {
+    needle := "import ." + stem
+    mut cursor := text.lines(suite.as_str())
+    while cursor.advance() {
+        line := cursor.current().clone()
+        if text.starts_with(line, needle) && (line.len == needle.len || line[needle.len] == u8(32) || line[needle.len] == u8(9)) { return true }
+    }
+    false
+}
+
+// The test modules beside a suite that the suite never imports, each as the
+// line it lacks; .Err when the directory cannot be listed or a file read. A
+// module without @test is not a test module and is not reported.
+fn unregistered(dir: string) -> Result<[]string, string> {
+    tests := if dir == "." { "tests" } else { dir + "/tests" }
+    names := match ddr_names(tests) {
+        .Ok(found) => found,
+        .Err(why) => return .Err(why),
+    }
+    path := suite_file(dir)
+    suite := sys.read_text(path)
+    if !suite.ok { return .Err(path + ": errno " + suite.error.str()) }
+    mut missing: []string = []
+    for name in &names {
+        if name == "suite.ddr" { continue }
+        module := sys.read_text(tests + "/" + name.clone())
+        if !module.ok { return .Err(tests + "/" + name + ": errno " + module.error.str()) }
+        if !text.contains(module.value, "@test") { continue }
+        stem := name[0..name.len - 4]
+        if !imports(suite.value, stem) { missing.push(path + " never imports a test module: `import ." + stem + " as _` (" + tests + "/" + name + " has tests)") }
+    }
+    .Ok(missing)
+}
+
 fn main() -> i32 {
     if sys.arg_count() > 1 {
         _ := sys.eprint("usage: dunder run tools/check.ddr")
@@ -202,6 +272,17 @@ fn main() -> i32 {
         // The root's own name goes before the compiler's line, on stderr, so
         // the two read as a pair and the compiler's word stays on stdout.
         _ := sys.eprint("storm: " + label(root))
+        // A suite's modules must all be registered before its tests are worth
+        // running; a program has no suite, and the check is skipped.
+        if root.dir != "" {
+            match unregistered(root.dir.clone()) {
+                .Ok(missing) => {
+                    for line in &missing { _ := sys.eprint("storm: " + line) }
+                    if missing.len > 0 { failed.push(label(root)) }
+                },
+                .Err(why) => { _ := sys.eprint("storm: could not read a suite: " + why); return 2 },
+            }
+        }
         code := check_code(move args, root.dir.clone())
         if code == 127 {
             _ := sys.eprint("storm: dunder check could not start for " + label(root))
