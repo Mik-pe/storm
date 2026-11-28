@@ -629,10 +629,12 @@ filens egna tangenter.
    inte en siffra) och `mesh.vert` tar `location = 3` utan att läsa den;
    `storm-metal` har `[[attribute(3)]]` på samma sätt. Kontraktet har nu en
    enda läsare och en enda skrivare av formatet — `gfx.vertex_at`/`put_vertex`
-   — och de sex handskrivna formatläsarna i trädet (`particles.ddr`,
-   `nodes.bake`, `orb.ddr`, `model_rig.ddr`, `app_frame.ddr`:s slab,
-   `scene.bind_skin`, `skinning.deform`, `fox_animation.ddr`:s söm) går
-   genom dem. Bevis: 0 ändrade pixlar på åtta captures (spel, studio, Fox,
+   — och de handskrivna formatläsarna i trädet går
+   genom dem (mätt 2026-11-28 med `grep -l vertex_at\|put_vertex`: i källan
+   `gltf.nodes.bake`, `scene.skinning.deform` och `vulkan.pipeline.ddr`; vid
+   tillfället också `particles.ddr`, `model_rig.ddr`, `app_frame.ddr`:s slab,
+   `scene.bind_skin` och rävens söm, som följde med spelet till
+   Blomsterskogen, `849d2da`, eller slutade läsa formatet). Bevis: 0 ändrade pixlar på åtta captures (spel, studio, Fox,
    Box, utan efterbehandling, utan skuggor, FoxFixed, `--texture`), räknade
    i Python, inte med `magick`-AE. `INITIAL_VERTEX_BYTES` är 6 MiB
    (5 898 240 byte för en full nivå av 480 sfärer × 48 byte × 2 × 128;
@@ -774,10 +776,11 @@ koden, till filerna och till andra motorer; det första svaret ändrar vad
    (båda har `TANGENT`; Tiger vägras av läsaren, se 3c, och DamagedHelmet
    väntar på MikkTSpace).
 
-**Kvar i 3e efter landade (b) och (c):** MikkTSpace-generering när filen
-saknar `TANGENT` (idag: per triangel ur uv:n med `w = −sign(det)`, vilket är
-rätt på plan men inte på en sammanfogad söm — och som redan har glTF:s
-teckenkonvention, så `mikktspace-wasm`:s `w *= −1` är samma vändning).
+**Kvar i 3e efter landade (b) och (c):** inget av MikkTSpace — det landade
+2026-11-28 (`gfx.tangents.ddr`, bevis ovan under 3e). `gfx.normal_tangent` (Frisvads axel, ur normalen
+ensam) står kvar som ramen för en hörn utan användbar uv-triangel
+(`push_triangle`); en fil utan `TANGENT` går genom `mikk_tangents`
+(`dce9700`, anropat från `gltf.ddr`).
 
 5. **Occlusion påverkar bara indirekt ljus**, som specen säger: `ao` skalas
    med `strength` och multiplicerar `diffuse_ambient` och
@@ -926,23 +929,22 @@ fyra — `scale` 0.5 når `Part`, 2.0 läses, −0.5 vägras, Avokados `index
 `mesh()`), alla bevisade röda när deras länk bryts. Bygge 6,7 s; tester: rot
 50 egna, storm-gltf 27, storm-scene 27, storm-render 11, storm-assets 1.
 
-**Kvar i 3d efter besluten:** MikkTSpace-generering när filen saknar
-`TANGENT` (DamagedHelmet), `texCoord`
-≠ 0 (ingen fil använder det; beslut 1 i
-3c:s research gäller: Storm läser `TEXCOORD_0`).
+**Kvar i 3d efter besluten:** `texCoord` ≠ 0 (ingen fil använder det; beslut 1
+i 3c:s research gäller: Storm läser `TEXCOORD_0`). MikkTSpace för en fil utan
+`TANGENT` är landat (3e, 2026-11-28).
 
 ## 0e. Klart: grafen som styr, editorn, spelloopen, glTF-laddning, ECS-frågor
 
-Render-grafen äger nu ordningen (`PassKind`, `Compiled.steps`), skuggpasset är
-ett pass bland de andra och huvudpasset öppnas lat; editorn listar ECS:et,
-väljer, och skriver material/transform via sliders; åtta orber att plocka
-med poäng i HUD:en; `--glb` laddar en modell in i studion (på pallen,
-skalad så den fyller vyn), och
-parsern läser riktiga filer (fynd 59); ECS:t har frågor (`join2`/`join3` med
-dense-index, `drawables` och orbsystemen använder dem). Repots regler står i
-`AGENTS.md` (bygget under 20 s, mätt med `tools/build-time.ddr`; bara main,
-inga PR:s eller CI). Kvar: texturer (avsnitt 3), resten av glTF (nodes/
-materials/scenes nedan) och byggtiden (fynd 56: den är kompilatorns, och budgeten står i avsnittet ovan).
+Render-grafen äger ordningen (`PassKind`, `Compiled.steps`), skuggpasset är
+ett pass bland de andra och huvudpasset öppnas lat; `storm-editor` listar
+ECS:et, väljer och skriver material/transform via reglage; studions
+provsamlarobjekt (`storm-studio/game.ddr`, åtta i en ring, poängen i HUD:en)
+plockas genom `is_orb`; `--glb` laddar en modell in i studion (på pallen,
+skalad så den fyller vyn, `studio.fit_scale`), och parsern läser riktiga
+filer (fynd 59); ECS:t har frågor (`join2`/`join3` med dense-index;
+`scene.Graph.drawables` och orbsystemen använder dem). Repots regler står i
+`AGENTS.md`. Texturerna är avsnitt 3 (landat), glTF-scenerna §4 och
+byggtiden avsnittet ovan.
 
 ## 0f. Klart: gränssnittet och Metal
 
@@ -968,8 +970,10 @@ Kvar efter 0f, i den ordning värde:
 - **`tools/selectors.ddr`.** Kontrollen av Metal-selektorer mot SDK:s
   rubriker är i dag ett skript utanför repot (dogfood.md *Grafikobservationer
   på macOS*). Som Dunder-program i `tools/`, kört när `storm-metal` rörs, gör
-  den samma sak för nästa person.
-- **`storm-gfx`-exempel.** `examples/` visar ECS, glTF och text utan fönster;
+  den samma sak för nästa person. Fortfarande öppet 2026-11-28: `tools/` har
+  `bench-frame`, `build-time`, `check`, `shaders` och `vk`, inget för rubriker.
+- **`storm-gfx`-exempel.** `examples/` visar ECS, glTF och text utan fönster
+  (bara `scene.ddr`, 2026-11-28);
   ett minimalt "öppna ett fönster och rita en fyrkant" mot kontraktet är det
   som låter nästa backend börja på fem rader.
 
@@ -993,8 +997,8 @@ Studion och Blomsterskogen läser den aktiva glTF-scenen med nodtransformer, tri
 ## 5. Instancing
 
 Varje objekt är en egen draw call. Ompackningen av poolerna till GPU-data
-finns redan (`app.gather`, testad i `tests/app_frame.ddr`, och
-`app.vertex_bytes`), så det som saknas är instansbufferten: en modellmatris
+finns redan (`render.frame.gather` och `vertex_bytes`, testade i
+`packages/storm-render/tests/geometry.ddr`), så det som saknas är instansbufferten: en modellmatris
 + material per instans, och ett indexerat draw med instansantal i stället för
 ett draw per objekt, så att många likadana objekt blir en draw call. Kontraktet
 hör hemma i `storm-gfx` (en systermetod till `mesh` som tar en instansslice),
@@ -1016,9 +1020,13 @@ Nästa: hooken (en gång per frame), kamerapositionen dit, sedan arrayen.
 `gfx.Input` har `down(key)` för hållna tangenter, `hit(key)` för
 engångshändelser (används av spelet och studion för Q, R, E, T, G, F, Esc)
 och `mouse.scroll` (inspektorn rullar med hjulet). `storm-input` har
-scancodes och en fly-kamera. Kvar: tangenthändelser som händelsekomponent i
-ECS (idag läses `hit` direkt i `app.ddr`), textinmatning
-(`SDL_TextInputEvent`) och gamepad via `SDL_GameController`.
+scancodes och en fly-kamera. Textinmatning landade `b6adb9b` (2026-11-28):
+`take_text` på `gfx.FrameSource` (värden) och `gfx.Backend` (fönstret)
+bär varje bildruta:s text, SDL läser `SDL_TEXTINPUT` och AppKit
+`characters`, och `storm-runtime`:s `Events`-port (`host_text`/`native_text`)
+lämnar den till spelet. Kvar: tangenthändelser som händelsekomponent i ECS (idag läses
+`hit` direkt i `storm-runtime`/`storm-studio`/`src/play_view.ddr`) och
+gamepad via `SDL_GameController`.
 
 **Att verifiera i ett olåst fönster (QA, steg 6): vänster- och högerklick
 på Linux.** Tills `6a4e683` (2026-11-26) skiftade `sdl.ddr`:s `poll` SDL:s
@@ -1028,7 +1036,8 @@ högerklick en bit ingen läste. Nu parar `sdl_button` nummer med `gfx.Button`
 och testet pinnar de tre numren ur `SDL_mouse.h`. Buggen satt i `poll`, som
 inte går att testa utan SDL (dogfood 93), så det som återstår är det som
 alltid återstår för input: att klicka. Vänsterklick ska träffa widgets i
-studion (`app.ddr:694`), högerklick hålls för muslook (`:589`), och
+studion (`storm-ui`:s vy tar pekarträffarna), högerklick hålls för muslook
+(`storm-studio/studio.ddr`, `camera.update(…, keys.button_down(.Right))`), och
 `--frames` kan inte visa det. Från AppKit-sidan var översättningen rätt från
 början (`button_of`).
 

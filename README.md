@@ -243,7 +243,7 @@ för blendingens skull.
 - `--glb fil.glb` – ladda en modell in i studion: den står på pallen mitt på
   turntablen (och roterar med den), studiens egna tre pjäser viker, och
   skalan är den största som håller modellen hel i bildens 3D-vy --
-  beräknad ur modellens hörn genom kamerans projektion (`app.fit_scale`),
+  beräknad ur modellens hörn genom kamerans projektion (`studio.fit_scale`),
   så en räv 155 enheter lång och 25 bred fyller vyn som en kub gör
 - `--texture fil.ppm` – studions golv bär en Storm-capture (P6, läst med
   `image.read_rgba`); inget annat i scenen har textur. Utan flaggan är golvet
