@@ -662,6 +662,21 @@ fn preview_checks(failures: &mut i32) {
         expect(&mut failures, "preview pixels have the right dimensions, channels and orientation",
             captured.ok && captured.width == width && captured.height == height &&
             is_blue(under(&captured, 20.0, 20.0, 1.0)) && is_green(under(&captured, f32(width) - 20.0, f32(height) - 20.0, 1.0)))
+        screen := [f32(width), f32(height)]
+        for _ in 0..3 {
+            mut blue: []f32 = []
+            rectangle(&mut blue, 0.0, 0.0, 40.0, 40.0, 0.0, 0.0, 1.0)
+            mut large: []f32 = []
+            large.reserve(300048)
+            for _ in 0..300000 { large.push(0.0) }
+            rectangle(&mut large, 50.0, 0.0, 40.0, 40.0, 0.0, 1.0, 0.0)
+            passed := preview.capture_next().is_ok() && preview.begin().is_ok() && preview.begin_pass().is_ok() &&
+                preview.ui_draw([], screen).is_ok() && preview.ui_draw(blue, screen).is_ok() &&
+                preview.ui_draw(large, screen).is_ok() && preview.end().is_ok() && preview.save_capture(capture_path()).is_ok()
+            check := read_capture()
+            expect(&mut failures, "an empty UI draw and growth beyond 1 MiB keep previous pixels",
+                passed && is_blue(under(&check, 20.0, 20.0, 1.0)) && is_green(under(&check, 70.0, 20.0, 1.0)))
+        }
         preview.close()
     }
 }

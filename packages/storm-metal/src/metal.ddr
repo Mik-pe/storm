@@ -270,16 +270,7 @@ unsafe fn retire_all(r: &mut Renderer) -> Result<(), string> {
 unsafe fn reserve_vertices(r: &mut Renderer, slot: i32, required: u64) -> Result<(), string> {
     capacity := gfx.frame_vertex_capacity(r.vertices[slot].capacity, required)
     if capacity == r.vertices[slot].capacity { return .Ok }
-    limit := objc.number(&r.objc, r.device, r.objc.sel.max_buffer_length)
-    if required > limit { return .Err("frame vertex stream exceeds the device's maximum buffer length") }
-    wanted := if capacity > limit { limit } else { capacity }
-    fresh := match device.buffer(&r.objc, r.device, wanted) {
-        .Ok(buffer) => buffer,
-        .Err(reason) => {
-            if wanted <= required || required == 0 { return .Err(reason) }
-            device.buffer(&r.objc, r.device, required)?
-        },
-    }
+    fresh := device.vertex_buffer(&r.objc, r.device, capacity, required)?
     device.release_buffer(&r.objc, &mut r.vertices[slot])
     r.vertices[slot] = fresh
     if r.trace != 0 {
@@ -336,7 +327,7 @@ unsafe fn record_begin(r: &mut Renderer, vertex_bytes: u64) -> Result<(), string
     reset_pass_state(&mut r)
     // Every stream is appended anew: this frame slot owns its cursors.
     r.vertex_cursor = 0
-    ui.begin_frame(&mut r.atlas, slot)
+    ui.begin_frame(&r.objc, &mut r.atlas, slot)
     if r.trace != 0 { trace(r, "frame " + r.frames.str() + ": " + width.str() + "x" + height.str()) }
     .Ok
 }
@@ -575,7 +566,7 @@ unsafe fn record_ui(r: &mut Renderer, vertices: &[]f32, screen: [f32; 2]) -> Res
     if r.pass != .Main && r.pass != .FilteredScene && r.pass != .Composite { return .Err("the UI was drawn outside a color pass") }
     // ui.draw overwrites pipeline, depth state, and fragment texture/sampler 0.
     reset_pass_state(&mut r)
-    ui.draw(&r.objc, &mut r.atlas, r.encoder, r.depth_off, &vertices, screen)
+    ui.draw(&r.objc, &mut r.atlas, r.device, r.encoder, r.depth_off, &vertices, screen)
 }
 
 // The frame's pixels, BGRA8, read back from its drawable.

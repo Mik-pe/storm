@@ -635,8 +635,7 @@ impl gfx.Backend for Window {
         unsafe {
             address := renderer(self.clone())
             if address == ptr(0) { return .Err("invalid or expired window handle") }
-            if !ui.draw(ref_at(address), vertices, screen) { return .Err("UI draw failed") }
-            .Ok
+            return ui.draw(ref_at(address), vertices, screen)
         }
     }
 

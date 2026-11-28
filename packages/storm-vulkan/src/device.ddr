@@ -349,7 +349,8 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.device != ptr(0) {
         _ := r.api.DeviceWaitIdle(r.device)
         destroy_swapchain(&mut r)
-        release_vertex_buffer(&mut r)
+        destroy_vertex_buffer(&r, &r.vertex)
+        r.vertex = zeroed()
         for i in 0..2 {
             r.api.DestroyFence(r.device, r.fences[i], ptr(0))
             r.api.DestroySemaphore(r.device, r.image_available[i], ptr(0))
@@ -407,49 +408,54 @@ pub unsafe fn shader_module(r: &state.Renderer, words: ptr, bytes: usize, output
     r.api.CreateShaderModule(r.device, addr(&info), ptr(0), output)
 }
 
-unsafe fn release_vertex_buffer(r: &mut state.Renderer) {
-    if r.vertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.vertex.memory) }
-    if r.vertex.handle != ptr(0) { r.api.DestroyBuffer(r.device, r.vertex.handle, ptr(0)) }
-    if r.vertex.memory != ptr(0) { r.api.FreeMemory(r.device, r.vertex.memory, ptr(0)) }
-    r.vertex = zeroed()
+pub unsafe fn destroy_vertex_buffer(r: &state.Renderer, buffer: &state.Buffer) {
+    if buffer.mapped != ptr(0) { r.api.UnmapMemory(r.device, buffer.memory) }
+    if buffer.handle != ptr(0) { r.api.DestroyBuffer(r.device, buffer.handle, ptr(0)) }
+    if buffer.memory != ptr(0) { r.api.FreeMemory(r.device, buffer.memory, ptr(0)) }
 }
 
-// Replace only after all commands using the previous mapping have retired.
-pub unsafe fn replace_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
+pub unsafe fn create_vertex_buffer(r: &state.Renderer, bytes: u64) -> Result<state.Buffer, i32> {
     mut info: vk.BufferCreateInfo = vk.BufferCreateInfo::new()
     info.size = bytes
     info.usage = enums.buffer_usage(.VertexBuffer)
     info.sharingMode = enums.sharing_mode(.Exclusive)
     mut handle := ptr(0)
     mut code := r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle))
-    if code != 0 { return fail(&mut r, code, .VertexBuffer) }
+    if code != 0 { return .Err(code) }
     mut requirements: vk.MemoryRequirements = zeroed()
     r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
     mut memory := ptr(0)
     code = allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut memory))
     if code != 0 {
         r.api.DestroyBuffer(r.device, handle, ptr(0))
-        return fail(&mut r, code, .VertexBuffer)
+        return .Err(code)
     }
     code = r.api.BindBufferMemory(r.device, handle, memory, 0)
     if code != 0 {
         r.api.DestroyBuffer(r.device, handle, ptr(0))
         r.api.FreeMemory(r.device, memory, ptr(0))
-        return fail(&mut r, code, .VertexBuffer)
+        return .Err(code)
     }
     mut mapped := ptr(0)
     code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
     if code != 0 {
         r.api.DestroyBuffer(r.device, handle, ptr(0))
         r.api.FreeMemory(r.device, memory, ptr(0))
-        return fail(&mut r, code, .VertexBuffer)
+        return .Err(code)
     }
-    release_vertex_buffer(&mut r)
-    r.vertex.handle = handle
-    r.vertex.memory = memory
-    r.vertex.mapped = mapped
-    r.vertex.capacity = bytes
-    .Ready
+    .Ok(state.Buffer { handle: handle, memory: memory, mapped: mapped, capacity: bytes })
+}
+
+// Replace only after all commands using the previous mapping have retired.
+pub unsafe fn replace_vertex_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
+    match create_vertex_buffer(&r, bytes) {
+        .Err(code) => fail(&mut r, code, .VertexBuffer),
+        .Ok(buffer) => {
+            destroy_vertex_buffer(&r, &r.vertex)
+            r.vertex = buffer
+            .Ready
+        },
+    }
 }
 
 pub unsafe fn setup_frames(r: &mut state.Renderer) -> state.SetupStep {

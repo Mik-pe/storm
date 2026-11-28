@@ -1,0 +1,75 @@
+// Offscreen regression for buffer growth after a draw has been recorded.
+capability filesystem, stdio
+
+import gfx
+import ..src.vulkan
+import std.fs as fs
+import sys
+
+const WIDTH: i32 = 128
+const HEIGHT: i32 = 64
+
+fn quad(out: &mut []f32, x: f32, green: f32, blue: f32) {
+    for corner in [0, 1, 2, 0, 2, 3] {
+        vertex := gfx.UiVertex {
+            x: x + (if corner == 1 || corner == 2 { 40.0 } else { 0.0 }),
+            y: if corner >= 2 { 40.0 } else { 0.0 }, u: -1.0, v: -1.0,
+            r: 0.0, g: green, b: blue, a: 1.0,
+        }
+        gfx.push_ui_vertex(&mut out, &vertex)
+    }
+}
+
+fn verify(path: string) -> bool {
+    header := "P6\n" + WIDTH.str() + " " + HEIGHT.str() + "\n255\n"
+    size := header.len + WIDTH * HEIGHT * 3
+    capture := sys.read_u8_limit(path, i64(size))
+    if !capture.ok || capture.value.len != size { return false }
+    left := header.len + (20 * WIDTH + 20) * 3
+    right := header.len + (20 * WIDTH + 70) * 3
+    pix := &capture.value
+    pix[left] < 20 && pix[left + 1] < 20 && pix[left + 2] > 235 &&
+        pix[right] < 20 && pix[right + 1] > 235 && pix[right + 2] < 20
+}
+
+fn capture(window: &mut vulkan.Window, path: string) -> Result<(), string> {
+    mut left: []f32 = []
+    quad(&mut left, 0.0, 0.0, 1.0)
+    mut right: []f32 = []
+    right.reserve(300048)
+    for _ in 0..300000 { right.push(0.0) }
+    quad(&mut right, 50.0, 1.0, 0.0)
+    screen := [f32(WIDTH), f32(HEIGHT)]
+    window.capture_next()?
+    window.begin()?
+    window.begin_pass()?
+    window.ui_draw([], screen)?
+    window.ui_draw(left, screen)?
+    window.ui_draw(right, screen)?
+    _ := window.end()?
+    window.save_capture(path)?
+    if !verify(path) { return .Err("an earlier draw or the grown stream is missing in the capture") }
+    .Ok
+}
+
+fn run() -> Result<(), string> {
+    temp := fs.temp_dir("storm-ui-test-")
+    if !temp.ok { return .Err("could not create capture directory") }
+    defer { _ := fs.remove_all(temp.value) }
+    mut window := vulkan.open_preview("UI regression", WIDTH, HEIGHT)?
+    for _ in 0..3 {
+        match capture(&mut window, temp.value + "/frame.ppm") {
+            .Ok => {},
+            .Err(reason) => { window.close(); return .Err(reason) },
+        }
+    }
+    window.close()
+    .Ok
+}
+
+fn main() -> i32 {
+    match run() {
+        .Ok => { print("UI selftest passed: empty draw, growth past 1 MiB and repeated capture"); 0 },
+        .Err(reason) => { _ := sys.eprint("UI selftest failed: " + reason); 1 },
+    }
+}

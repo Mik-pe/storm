@@ -40,6 +40,19 @@ pub unsafe fn buffer(rt: &objc.Runtime, device: ptr, capacity: u64) -> Result<Bu
     .Ok(Buffer { handle: made, contents: address, capacity: capacity })
 }
 
+pub unsafe fn vertex_buffer(rt: &objc.Runtime, gpu: ptr, capacity: u64, required: u64) -> Result<Buffer, string> {
+    limit := objc.number(rt, gpu, rt.sel.max_buffer_length)
+    if required > limit { return .Err("frame vertex stream exceeds the device's maximum buffer length") }
+    wanted := if capacity > limit { limit } else { capacity }
+    match buffer(rt, gpu, wanted) {
+        .Ok(made) => .Ok(made),
+        .Err(reason) => {
+            if wanted <= required || required == 0 { return .Err(reason) }
+            buffer(rt, gpu, required)
+        },
+    }
+}
+
 pub unsafe fn release_buffer(rt: &objc.Runtime, buffer: &mut Buffer) {
     if buffer.handle != ptr(0) { rt.release(buffer.handle) }
     buffer.handle = ptr(0)

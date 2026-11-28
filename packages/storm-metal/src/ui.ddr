@@ -11,17 +11,21 @@ import .objc as objc
 import .pass as pass
 
 pub const ATLAS_SIZE: i32 = 1024
-// A vertex is the contract's gfx.UI_FLOATS floats: x, y, u, v, r, g, b, a.
-const VERTEX_CAPACITY: u64 = 1048576
-
 unsafe fn no_buffer() -> device.Buffer { device.Buffer { handle: ptr(0), contents: ptr(0), capacity: 0 } }
 
-// The atlas texture, its sampler and pipeline, and the two vertex buffers: owned.
+struct Stream {
+    buffer: device.Buffer,
+    retired: []device.Buffer,
+}
+
+unsafe fn empty_stream() -> Stream { Stream { buffer: no_buffer(), retired: [] } }
+
+// Each frame slot owns its buffers until the command buffer completes.
 pub struct Atlas {
     texture: ptr,
     sampler: ptr,
     pipeline: device.Pipeline,
-    vertices: [device.Buffer; 2],
+    streams: [Stream; 2],
     // Active slot and where the frame's UI vertices end; reset by begin_frame.
     slot: i32,
     cursor: u64,
@@ -30,7 +34,7 @@ pub struct Atlas {
 pub unsafe fn empty() -> Atlas {
     Atlas {
         texture: ptr(0), sampler: ptr(0), pipeline: device.no_pipeline(),
-        vertices: [no_buffer(), no_buffer()], slot: 0, cursor: 0,
+        streams: [empty_stream(), empty_stream()], slot: 0, cursor: 0,
     }
 }
 
@@ -52,7 +56,6 @@ unsafe fn fill(rt: &objc.Runtime, gpu: ptr, library: ptr, made: &mut Atlas) -> R
     made.sampler = device.sampler(rt, gpu, &smooth)?
     quads := device.Style { vertices: .Ui, blend: true }
     made.pipeline = device.pipeline(rt, gpu, library, "ui_vertex", "ui_fragment", .BGRA8Unorm, .Depth32Float, &quads)?
-    for i in 0..2 { made.vertices[i] = device.buffer(rt, gpu, VERTEX_CAPACITY)? }
     .Ok
 }
 
@@ -67,17 +70,31 @@ pub unsafe fn upload(rt: &objc.Runtime, atlas: &Atlas, pixels: &[]u8, width: i32
 }
 
 // Append the frame's quads and draw them. `screen` is the window in points.
-pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_state: ptr, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
+pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, gpu: ptr, encoder: ptr, depth_state: ptr, vertices: &[]f32, screen: [f32; 2]) -> Result<(), string> {
     if vertices.len == 0 { return .Ok }
     if vertices.len % gfx.UI_FLOATS != 0 { return .Err("UI vertices must be [x, y, u, v, r, g, b, a] tuples") }
-    offset := atlas.cursor
     slot := atlas.slot
-    if !device.append(&atlas.vertices[slot], &mut atlas.cursor, u64(vertices.len * 4), addr(&vertices[0])) {
+    bytes := u64(vertices.len) * 4
+    needed := atlas.cursor + bytes
+    if needed > atlas.streams[slot].buffer.capacity {
+        capacity := gfx.stream_capacity(atlas.streams[slot].buffer.capacity, needed)
+        fresh := device.vertex_buffer(rt, gpu, capacity, bytes)?
+        previous := replace(&mut atlas.streams[slot].buffer, fresh)
+        if atlas.cursor > 0 {
+            atlas.streams[slot].retired.push(previous)
+        } else {
+            mut unused := previous
+            device.release_buffer(rt, &mut unused)
+        }
+        atlas.cursor = 0
+    }
+    offset := atlas.cursor
+    if !device.append(&atlas.streams[slot].buffer, &mut atlas.cursor, bytes, addr(&vertices[0])) {
         return .Err("the frame's UI needs more than the UI vertex buffer holds")
     }
     pass.bind(rt, encoder, &atlas.pipeline)
     objc.tell_to(rt, encoder, rt.sel.set_depth_state, depth_state)
-    pass.vertex_buffer(rt, encoder, atlas.vertices[slot].handle, offset, 0)
+    pass.vertex_buffer(rt, encoder, atlas.streams[slot].buffer.handle, offset, 0)
     mut push := [screen[0], screen[1], 0.0, 0.0]
     pass.vertex_bytes(rt, encoder, addr(&push[0]), u64(gfx.UI_PUSH_BYTES), 1)
     pass.fragment_texture(rt, encoder, atlas.texture, 0)
@@ -86,8 +103,13 @@ pub unsafe fn draw(rt: &objc.Runtime, atlas: &mut Atlas, encoder: ptr, depth_sta
     .Ok
 }
 
-// The frame starts here: its quads overwrite only this slot's buffer.
-pub unsafe fn begin_frame(atlas: &mut Atlas, slot: i32) {
+unsafe fn release_retired(rt: &objc.Runtime, stream: &mut Stream) {
+    for i in 0..stream.retired.len { device.release_buffer(rt, &mut stream.retired[i]) }
+    stream.retired.clear()
+}
+
+pub unsafe fn begin_frame(rt: &objc.Runtime, atlas: &mut Atlas, slot: i32) {
+    release_retired(rt, &mut atlas.streams[slot])
     atlas.slot = slot
     atlas.cursor = 0
 }
@@ -99,5 +121,8 @@ pub unsafe fn destroy(rt: &objc.Runtime, atlas: &mut Atlas) {
     atlas.pipeline = device.no_pipeline()
     atlas.sampler = ptr(0)
     atlas.texture = ptr(0)
-    for i in 0..2 { device.release_buffer(rt, &mut atlas.vertices[i]) }
+    for i in 0..2 {
+        release_retired(rt, &mut atlas.streams[i])
+        device.release_buffer(rt, &mut atlas.streams[i].buffer)
+    }
 }

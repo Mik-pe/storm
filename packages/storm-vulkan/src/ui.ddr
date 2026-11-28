@@ -12,7 +12,7 @@ import .records as records
 
 // Immediate-mode UI drawing.
 //
-// One dynamic vertex buffer holds solid rectangles and glyph quads. Rectangles
+// A growing vertex stream holds solid rectangles and glyph quads. Rectangles
 // use uv.x < 0 and are filled with the vertex colour; glyphs sample the
 // coverage atlas uploaded from the text package.
 
@@ -33,9 +33,18 @@ pub struct Atlas {
     atlasView: ptr,
     vertex: state.Buffer,
     cursor: u64,
+    retired: ptr,
     vertShader: ptr,
     fragShader: ptr,
 }
+
+@c_layout
+struct RetiredBuffer { buffer: state.Buffer, next: ptr }
+
+@extern("c", "calloc")
+unsafe fn allocate_zeroed(count: usize, size: usize) -> ptr
+@extern("c", "free")
+unsafe fn release(address: ptr)
 
 const ATLAS_SIZE: u32 = 1024
 
@@ -133,39 +142,12 @@ unsafe fn create_pipeline(r: &mut state.Renderer) -> state.SetupStep {
     .Ready
 }
 
-unsafe fn create_buffer(r: &mut state.Renderer, bytes: u64) -> state.SetupStep {
-    mut info: vk2.BufferCreateInfo = vk2.BufferCreateInfo::new()
-    info.size = bytes
-    info.usage = enums.buffer_usage(.VertexBuffer)
-    info.sharingMode = enums.sharing_mode(.Exclusive)
-    mut handle := ptr(0)
-    mut code := r.api.CreateBuffer(r.device, addr(&info), ptr(0), addr(&mut handle))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-    mut requirements: vk2.MemoryRequirements = zeroed()
-    r.api.GetBufferMemoryRequirements(r.device, handle, addr(&mut requirements))
-    mut memory := ptr(0)
-    code = device.allocate(&r, &requirements, .Some(enums.Memory.HostVisibleCoherent), addr(&mut memory))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-    if memory == ptr(0) { return .Ui }
-    code = r.api.BindBufferMemory(r.device, handle, memory, 0)
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-    mut mapped := ptr(0)
-    code = r.api.MapMemory(r.device, memory, 0, bytes, 0, addr(&mut mapped))
-    if code != 0 { return device.fail(&mut r, code, .Ui) }
-    r.atlas.vertex.handle = handle
-    r.atlas.vertex.memory = memory
-    r.atlas.vertex.mapped = mapped
-    r.atlas.vertex.capacity = bytes
-    .Ready
-}
-
 pub unsafe fn setup(r: &mut state.Renderer) -> state.SetupStep {
     if create_atlas(&mut r) != .Ready {
         _ := sys.eprint("ui: no atlas")
         return .Ui
     }
     if create_pipeline(&mut r) != .Ready { return .Ui }
-    if create_buffer(&mut r, 1048576) != .Ready { return .Ui }
     .Ready
 }
 
@@ -248,11 +230,51 @@ pub unsafe fn upload_atlas(r: &mut state.Renderer, pixels: []u8, width: i32, hei
     .Ready
 }
 
-// Push vertices and draw them. Rectangles set uv.x to -1.
-pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) -> bool {
-    if (state.pass(&r) != .Direct && state.pass(&r) != .Composite) || vertices.len == 0 { return false }
+// The command buffer can already refer to the old allocation. Link that
+// allocation into the retire list before changing where the next draw writes.
+unsafe fn retain_old(retired: &mut RetiredBuffer, buffer: &state.Buffer, next: ptr) {
+    retired.buffer = buffer.clone()
+    retired.next = next
+}
+
+unsafe fn next_retired(r: &state.Renderer, node: &RetiredBuffer) -> ptr {
+    device.destroy_vertex_buffer(r, &node.buffer)
+    node.next
+}
+
+unsafe fn reserve(r: &mut state.Renderer, bytes: u64) -> Result<(), string> {
+    needed := r.atlas.cursor + bytes
+    if needed <= r.atlas.vertex.capacity { return .Ok }
+    capacity := gfx.stream_capacity(r.atlas.vertex.capacity, needed)
+    mut allocated := device.create_vertex_buffer(&r, capacity)
+    if allocated.is_err() && capacity > bytes { allocated = device.create_vertex_buffer(&r, bytes) }
+    fresh := match allocated {
+        .Ok(buffer) => buffer,
+        .Err(code) => { return .Err("could not reserve UI vertex data (" + enums.result_name(code) + ")") },
+    }
+    if r.atlas.cursor == 0 {
+        device.destroy_vertex_buffer(&r, &r.atlas.vertex)
+    } else {
+        record := allocate_zeroed(1, size_of(RetiredBuffer))
+        if record == ptr(0) {
+            device.destroy_vertex_buffer(&r, &fresh)
+            return .Err("could not retain the previous UI buffer")
+        }
+        retain_old(ref_at(record), &r.atlas.vertex, r.atlas.retired)
+        r.atlas.retired = record
+    }
+    r.atlas.vertex = fresh
+    r.atlas.cursor = 0
+    .Ok
+}
+
+// Append UI data without overwriting any geometry already recorded.
+pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) -> Result<(), string> {
+    if state.pass(&r) != .Direct && state.pass(&r) != .Composite { return .Err("the UI was drawn outside a color pass") }
+    if vertices.len == 0 { return .Ok }
+    if vertices.len % gfx.UI_FLOATS != 0 { return .Err("UI vertices must be [x, y, u, v, r, g, b, a] tuples") }
     bytes := u64(vertices.len) * 4
-    if r.atlas.cursor + bytes > r.atlas.vertex.capacity { return false }
+    reserve(&mut r, bytes)?
     _ := copy_bytes(ptr(usize(r.atlas.vertex.mapped) + usize(r.atlas.cursor)), ptr(usize(addr(&vertices[0]))), usize(bytes))
     slot := r.current
     r.api.CmdBindPipeline(r.commands[slot], 0, r.atlas.pipeline)
@@ -264,12 +286,16 @@ pub unsafe fn draw(r: &mut state.Renderer, vertices: []f32, screen: [f32; 2]) ->
     count := i32(vertices.len) / gfx.UI_FLOATS
     r.api.CmdDraw(r.commands[slot], u32(count), 1, 0, 0)
     r.atlas.cursor = r.atlas.cursor + bytes
-    true
+    .Ok
 }
 
-// The frame's UI stream starts empty; draw() appends to it. Called by
-// begin_frame, the one place that knows a frame has begun.
+// The caller has waited for all fences and can recycle the stream.
 pub unsafe fn reset(r: &mut state.Renderer) {
+    while r.atlas.retired != ptr(0) {
+        node := r.atlas.retired
+        r.atlas.retired = next_retired(&r, ref_at(node))
+        release(node)
+    }
     r.atlas.cursor = 0
 }
 
@@ -277,9 +303,9 @@ pub unsafe fn destroy(r: &mut state.Renderer) {
     if r.device == ptr(0) { return }
     r.api.DestroyShaderModule(r.device, r.atlas.vertShader, ptr(0))
     r.api.DestroyShaderModule(r.device, r.atlas.fragShader, ptr(0))
-    if r.atlas.vertex.mapped != ptr(0) { r.api.UnmapMemory(r.device, r.atlas.vertex.memory) }
-    r.api.DestroyBuffer(r.device, r.atlas.vertex.handle, ptr(0))
-    r.api.FreeMemory(r.device, r.atlas.vertex.memory, ptr(0))
+    reset(&mut r)
+    device.destroy_vertex_buffer(&r, &r.atlas.vertex)
+    r.atlas.vertex = zeroed()
     if r.atlas.pipeline != ptr(0) { r.api.DestroyPipeline(r.device, r.atlas.pipeline, ptr(0)) }
     if r.atlas.pipelineLayout != ptr(0) { r.api.DestroyPipelineLayout(r.device, r.atlas.pipelineLayout, ptr(0)) }
     device.destroy_texture(&r, &r.atlas.texture)

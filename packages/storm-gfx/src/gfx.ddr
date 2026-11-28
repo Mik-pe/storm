@@ -289,7 +289,8 @@ pub trait Backend {
     // Upload the packed glyph coverage atlas: one byte per pixel.
     fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string>
 
-    // Draw UI quads in points. Rectangles set uv.x to -1.
+    // Append UI quads in points during a color pass. Empty streams draw nothing.
+    // Earlier draws keep their data if the backing buffer grows. Solid vertices set u to -1.
     fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string>
 
     // Show the frame; returns how many frames have been shown.
@@ -319,6 +320,10 @@ pub const INITIAL_VERTEX_BYTES: u64 = 6291456
 // Reuse the high-water allocation; allow room for edits that grow a scene gradually.
 pub fn frame_vertex_capacity(current: u64, required: u64) -> u64 {
     if current == 0 { return if required > INITIAL_VERTEX_BYTES { required } else { INITIAL_VERTEX_BYTES } }
+    stream_capacity(current, required)
+}
+
+pub fn stream_capacity(current: u64, required: u64) -> u64 {
     if required <= current { return current }
     spare := current / 2
     if current > 18446744073709551615 - spare { return required }
