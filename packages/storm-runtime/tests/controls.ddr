@@ -31,7 +31,7 @@ import ..src.controls as controls
     frame := controls.Frame { width: width, height: 800.0, pointer: pointer, navigation: .None,
         entry: entry, wheel: 0.0, paused: false, exact: false, can_edit: true }
     level := controls.Playbar { title: title.clone(), tick: 0, has_player: true, has_goal: true, won: false }
-    _ := controls.draw(&mut state, &mut canvas, &atlas, &frame, &level)
+    _ := controls.draw_view(&mut state, &mut canvas, &atlas, &frame, &level)
     assert(ui.Canvas::text_width(&atlas, title, 0.79) > title_end - title_x)
     // Every glyph of the title row (y < 44, the bar's first row; the
     // buttons sit on the second at y = 49) starts at or before title_end.
@@ -50,4 +50,18 @@ import ..src.controls as controls
     }
     assert(glyphs > 0)
     assert(worst <= title_end + 0.01)
+}
+
+@test fn the_legacy_hud_call_preserves_capture_and_returns_the_same_action() {
+    mut state := widgets.State::new()
+    mut canvas := ui.Canvas::new()
+    atlas := text.Atlas::new(16, 16)
+    press := widgets.Pointer::at(25.0, 60.0, true, true)
+    held := widgets.Pointer::at(25.0, 60.0, false, true)
+    release := widgets.Pointer::at(25.0, 60.0, false, false)
+    assert(controls.draw(&mut state, &mut canvas, &atlas, &press, 480.0, 800.0, "Game", 0, false, true, true, false, true) == controls.Action.TogglePause)
+    assert(state.active() == 2)
+    assert(controls.draw(&mut state, &mut canvas, &atlas, &held, 480.0, 800.0, "Game", 0, true, true, true, false, true) == controls.Action.Idle)
+    _ := controls.draw(&mut state, &mut canvas, &atlas, &release, 480.0, 800.0, "Game", 0, true, true, true, false, true)
+    assert(state.active() == 0)
 }

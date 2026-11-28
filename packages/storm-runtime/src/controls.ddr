@@ -22,7 +22,30 @@ pub struct Frame {
 
 pub struct Playbar { title: string, tick: i64, has_player: bool, has_goal: bool, won: bool }
 
-pub fn draw(state: &mut view.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &Frame, game: &Playbar) -> Action {
+// The original immediate HUD API shares the keyed view and carries its
+// pointer capture across frames through the caller's existing state.
+pub fn draw(state: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, pointer: &widgets.Pointer,
+    width: f32, height: f32, title: string, tick: i64, paused: bool, has_player: bool,
+    has_goal: bool, won: bool, can_edit: bool) -> Action {
+    entry := view.Entry { text: "", erase: false }
+    frame := Frame { width: width, height: height, pointer: pointer.clone(), navigation: .None,
+        entry: entry, wheel: 0.0, paused: paused, exact: paused, can_edit: can_edit }
+    game := Playbar { title: title.clone(), tick: tick, has_player: has_player, has_goal: has_goal, won: won }
+    mut interaction := view.State::new()
+    match state.pointer.key {
+        .Some(id) => { interaction.pointer.key = .Some(view.key(1, i64(id))) },
+        .None => {},
+    }
+    action := draw_view(&mut interaction, &mut canvas, atlas, &frame, &game)
+    state.pointer.key = match interaction.pointer.key {
+        .Some(key) => Option<i32>.Some(i32(key.item)),
+        .None => Option<i32>.None,
+    }
+    state.end(pointer)
+    action
+}
+
+pub fn draw_view(state: &mut view.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &Frame, game: &Playbar) -> Action {
     style := view.dark()
     narrow := frame.width < 560.0
     bar: f32 = if narrow { 88.0 } else { 48.0 }

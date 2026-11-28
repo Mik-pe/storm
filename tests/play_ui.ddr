@@ -30,11 +30,11 @@ fn level() -> hud.Playbar {
                 py := f32(points[i][1])
                 canvas.clear()
                 press := frame(width, paused, widgets.Pointer::at(px, py, true, true), .None)
-                assert(hud.draw(&mut controls, &mut canvas, &atlas, &press, &game) == expected[i])
+                assert(hud.draw_view(&mut controls, &mut canvas, &atlas, &press, &game) == expected[i])
                 held := frame(width, paused, widgets.Pointer::at(px, py, false, true), .None)
-                assert(hud.draw(&mut controls, &mut canvas, &atlas, &held, &game) == hud.Action.Idle)
+                assert(hud.draw_view(&mut controls, &mut canvas, &atlas, &held, &game) == hud.Action.Idle)
                 release := frame(width, paused, widgets.Pointer::at(px, py, false, false), .None)
-                _ := hud.draw(&mut controls, &mut canvas, &atlas, &release, &game)
+                _ := hud.draw_view(&mut controls, &mut canvas, &atlas, &release, &game)
             }
         }
     }
@@ -48,8 +48,8 @@ fn level() -> hud.Playbar {
     idle := widgets.Pointer::at(-1.0, -1.0, false, false)
     next := frame(720, false, idle, .Next)
     for _ in 0..3 {
-        assert(hud.draw(&mut controls, &mut canvas, &atlas, &next, &game) == hud.Action.Idle)
+        assert(hud.draw_view(&mut controls, &mut canvas, &atlas, &next, &game) == hud.Action.Idle)
     }
     enter := frame(720, false, idle, .Activate)
-    assert(hud.draw(&mut controls, &mut canvas, &atlas, &enter, &game) == hud.Action.Restart)
+    assert(hud.draw_view(&mut controls, &mut canvas, &atlas, &enter, &game) == hud.Action.Restart)
 }

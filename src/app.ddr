@@ -74,7 +74,7 @@ impl runtime.Project for Game {
         if custom_eye { camera } else { play_view.camera(&area, aspect) }
     }
     fn draw_hud(&mut self, hud: &mut controls.Hud, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &controls.Frame) -> controls.Action {
-        action := controls.draw(&mut hud.interaction, &mut canvas, atlas, frame, &controls.Playbar {
+        action := controls.draw_view(&mut hud.interaction, &mut canvas, atlas, frame, &controls.Playbar {
             title: self.session.scene.name.clone(), tick: self.session.tick, has_player: self.session.player >= 0,
             has_goal: self.view.has_goal, won: self.session.won,
         })

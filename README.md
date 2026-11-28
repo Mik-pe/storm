@@ -111,8 +111,8 @@ Storms egna paket följer med i samma Git-klon och kan byggas och testas var fö
 `runtime.Project.draw_hud` ger spel en pekare, tangentnavigering, textinmatning
 och ett `view.State` som lever mellan bildrutorna. Bygg en `View<Action>`,
 rita den med `view.frame` och hantera den typade händelsen i spelet.
-First lights paus-, steg- och omstartsknappar använder den vägen. Spel med
-det tidigare `Project.hud`-gränssnittet fortsätter anropas genom runtime.
+First lights paus-, steg- och omstartsknappar använder den vägen. Runtime
+stöder även spel som fortfarande använder `Project.hud` och `controls.draw`.
 [First lights UI](packages/storm-runtime/src/controls.ddr)
 
 `View.clipped` och `View.scroll` använder samma klippyta för geometri,
