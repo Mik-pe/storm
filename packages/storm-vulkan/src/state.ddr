@@ -156,7 +156,6 @@ pub struct Renderer {
     // Text and UI.
     atlas: ui.Atlas,
     vertex: Buffer,
-    meshSetLayouts: [ptr; 2],
     // Material textures (texture.ddr): set 1 of the mesh pipeline.
     material: texture.Material,
     window: sdl.Window,

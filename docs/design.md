@@ -73,7 +73,7 @@
   extensionskonstant registret numrerar utan att `ImageLayout` har den som
   variant. Sex captures (spel, studio, Fox, utan efterbehandling, utan
   skuggor, `--texture` genom blit-kedjan) AE = 0, räknade per pixel.
-- `state.ddr` `Renderer`: **61 fält** (121 före Renderer-uppdelningen; 72
+- `state.ddr` `Renderer`: **60 fält** (121 före Renderer-uppdelningen; 72
   efter steg 3). Sju kluster ligger i en post hos sin ägare
   (`depth.Depth`, `ui.Atlas`, `ibl.Environment`, `shadow.Shadow`,
   `texture.Material`, `post.Stage`, `headless.Capture`); 54 fält ligger platt
@@ -359,8 +359,8 @@ vara **pixelidentiska** (AE = 0) om inte steget medvetet ändrar bilden.
    i stället för tre lösa fält på `Renderer`), med storleken pinnad i ett
    test. 2026-11-25: `ui.Atlas`, `ibl.Environment` och `shadow.Shadow`
    följde, var och en med AE = 0 — `Renderer` har **72 fält** (121 före) —
-   och 2026-11-26 `post.Stage` och `headless.Capture`: **61 fält**, sju
-   poster och 54 platta (§3b). Tabellens kluster är slut.*
+   och 2026-11-26 `post.Stage` och `headless.Capture`: **60 fält**, sju
+   poster och 53 platta (§3b). Tabellens kluster är slut.*
 4. **`Result` istället för `stage`.** Felflöden testas i displayfria tester.
    *Status: klar 2026-11-23 — `VkResult` är en Dunder-enum med Khronos-värden
    (fynd 57: OUT_OF_DATE hade ett värde som inte finns), och steget är
@@ -478,10 +478,10 @@ moduler:
 | post | 12 | `post.ddr` | `sceneFramebuffer` (vulkan ×1), `scenePass`/`compositePass` (pipeline, device, vulkan) | `post.Stage` (96 byte) — **gjord**; de tre namnen stannar |
 | capture | 5 | `headless.ddr` | `captureFramebuffer` (vulkan ×2) | `headless.Capture` (56 byte) — **gjord**; `captureFramebuffer` stannar |
 
-`Renderer` har **61 fält** efter de sex flyttarna (121 före): sju poster
+`Renderer` har **60 fält** efter de sex flyttarna (121 före): sju poster
 (`material`, `depth`, `atlas`, `environment`, `shadow`, `post`, `capture`)
-och 54 platta. De 54 är fyra sorter, mätta 2026-11-26 med samma skript som
-tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 13:
+och 53 platta. De 53 är fyra sorter, mätta 2026-11-26 med samma skript som
+tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 12:
 
 - **25 kärna** (`api` … `renderPass`: instans, yta, enhet, kö, pooler,
   synkronisering, swapchain och dess bilder): läses av tio moduler —
@@ -504,12 +504,16 @@ tabellen (`r.<namn>` per modul utanför `state.ddr`); 25 + 10 + 6 + 13:
 - **6 gränsnamn** som klusterflyttarna medvetet lämnade: `sceneFramebuffer`,
   `scenePass`, `compositePass` (post), `captureFramebuffer` (capture),
   `shadowSet`, `shadowSetLayout` (shadow).
-- **13 orchesteringens egna**: `window`, `vertex`, `meshSetLayouts` och
+- **12 orchesteringens egna**: `window`, `vertex` och
   frame-state (`current` räknas till kärnan; `frameIndex`, `imageIndex`,
   `pass`, `pendingPass`, `pendingClear`, `lastResult`, `captureOn`,
   `resizePending`, `trace`, `vertexCursor` hör hit). Nästan alla läses bara
-  av `vulkan.ddr`; undantagen är `vertex` (device, shadow), `window` (device)
-  och `pendingPass` (post).
+  av `vulkan.ddr`; undantagen är `vertex` (device, shadow; `vulkan.ddr` läser
+  dess kapacitet, laddar upp och binder den), `window` (device; `vulkan.ddr` pollar
+  och stänger den) och `pendingPass` (post). `meshSetLayouts` var det trettonde:
+  skriven och läst på två rader i `pipeline.setup`, aldrig mer — en temporär som
+  bodde på `Renderer` för att `addr(&…)` ville ha en lagrad plats. Sedan
+  2026-11-28 en lokal som `push_range` bredvid.
 
 Regler som gör att flytten inte blir något att "komma ihåg":
 
@@ -520,7 +524,7 @@ Regler som gör att flytten inte blir något att "komma ihåg":
   behöver `state.Renderer` för `create(&mut r)`, och `state` behöver posten.
 - **Storleken pinnas där den står en gång:** `owned_records_keep_their_size`
   i `tests/suite.ddr` (`Depth` 24, `Atlas` 128, `Shadow` 120, `Environment`
-  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 5 448 byte — alla
+  960, `Material` 152, `Stage` 96, `Capture` 56, `Renderer` 5 432 byte — alla
   mätta, ingen räknad: en storlek gissad i huvudet var fel två gånger av tre,
   och testet var rött tills den var mätt; `Renderer` var 6 240 på `e264590`
   och 5 984 omedelbart före `66d248d`, som bytte den gissade `rest: [u64; 128]`
