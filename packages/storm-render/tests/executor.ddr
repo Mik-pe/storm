@@ -1,0 +1,329 @@
+// The frame executor's state machine, against a backend that writes down
+// what it is asked to do: which passes ran, how many bytes it was asked to
+// reserve, and what size it was given. Nothing is drawn; what is measured is
+// the executor's decisions -- when a plan is rebuilt, when a frame is
+// skipped, what the request carries -- which no window can show.
+import ..src.frame as scene_renderer
+import core
+import ecs
+import gfx
+import scene as scenegraph
+
+// One row per pass the executor ran, in order, plus the request it opened
+// with. `unavailable` makes start_frame refuse the target; `fail_start`
+// makes it fail, so the two exits of a frame that draws nothing are told
+// apart by what the executor returns.
+struct Recorder {
+    passes: []string,
+    meshes: i32,
+    shadows: i32,
+    skies: i32,
+    posts: i32,
+    began: i32,
+    mesh_bytes: u64,
+    size: Option<gfx.FrameSize>,
+    capabilities: gfx.Features,
+    unavailable: bool,
+    fail_start: bool,
+}
+
+impl Recorder {
+    fn new(capabilities: gfx.Features) -> Self {
+        Self {
+            passes: [], meshes: 0, shadows: 0, skies: 0, posts: 0, began: 0, mesh_bytes: 0,
+            size: .None, capabilities: capabilities, unavailable: false, fail_start: false
+        }
+    }
+}
+
+impl gfx.Device for Recorder {
+    fn features(&self) -> gfx.Features { self.capabilities }
+    fn device_name(&self) -> string { "recorder" }
+    fn upload_texture(&mut self, pixels: []u8, width: i32, height: i32, encoding: gfx.Encoding, sampler: &gfx.Sampler) -> Result<gfx.Texture, string> {
+        _ := pixels.len; _ := width; _ := height; _ := encoding; _ := sampler
+        .Ok(gfx.no_texture())
+    }
+    fn free_texture(&mut self, texture: gfx.Texture) { _ := texture.id }
+    fn start_frame(&mut self, request: &gfx.FrameRequest) -> Result<gfx.FrameStart, string> {
+        self.began += 1
+        if self.fail_start { return .Err("no render target") }
+        if self.unavailable { return .Ok(.Unavailable) }
+        self.mesh_bytes = request.mesh_bytes
+        self.size = request.size.clone()
+        .Ok(.Ready)
+    }
+    fn shadow_begin(&mut self, sky: &gfx.Sky) -> Result<(), string> { _ := sky.sun[0]; self.passes.push("shadow".clone()); .Ok }
+    fn shadow_mesh(&mut self, vertices: &[]f32, model: &[f32; 16]) -> Result<(), string> {
+        _ := model[0]; _ := vertices.len
+        self.shadows += 1
+        .Ok
+    }
+    fn shadow_end(&mut self) -> Result<(), string> { .Ok }
+    fn begin_scene(&mut self, filtered: bool) -> Result<(), string> { _ := filtered; self.passes.push("sky".clone()); .Ok }
+    fn sky(&mut self, inv_view_projection: &[f32; 16], sun: &[f32; 4], zenith: &[f32; 4], horizon: &[f32; 4]) -> Result<(), string> {
+        _ := inv_view_projection[0]; _ := sun[0]; _ := zenith[0]; _ := horizon[0]
+        self.skies += 1
+        .Ok
+    }
+    fn mesh(&mut self, vertices: &[]f32, mvp: &[f32; 16], model: &[f32; 16], base_color: &[f32; 4],
+        params: &[f32; 4], camera: &gfx.MeshView, sky: &gfx.Sky, textures: &gfx.Textures, emissive: &[f32; 4], occlusion: f32, normal_scale: f32, surface: gfx.Surface) -> Result<(), string> {
+        _ := mvp[0]; _ := model[0]; _ := base_color[0]; _ := params[0]; _ := camera.radius
+        _ := sky.sun[0]; _ := textures.base.id; _ := emissive[0]; _ := occlusion; _ := normal_scale
+        if surface == gfx.Surface.Blended && (self.passes.len == 0 || self.passes[self.passes.len - 1] != "transparent") {
+            self.passes.push("transparent".clone())
+        } else if surface == gfx.Surface.Opaque && (self.passes.len == 0 || self.passes[self.passes.len - 1] != "opaque") {
+            self.passes.push("opaque".clone())
+        }
+        self.meshes += 1
+        .Ok
+    }
+    fn post_process(&mut self, settings: &gfx.PostProcess) -> Result<(), string> { _ := settings.strength; self.passes.push("post".clone()); self.posts += 1; .Ok }
+    fn ui_atlas(&mut self, pixels: []u8, width: i32, height: i32) -> Result<(), string> { _ := pixels.len; _ := width; _ := height; .Ok }
+    fn ui_draw(&mut self, vertices: []f32, screen: [f32; 2]) -> Result<(), string> { _ := vertices.len; _ := screen[0]; .Ok }
+    fn end(&mut self) -> Result<i64, string> { .Ok(0) }
+    fn close(move self) {}
+}
+
+fn sky() -> gfx.Sky {
+    a: [f32; 4] = [0.0, 1.0, 0.0, 3.0]
+    b: [f32; 4] = [1.0, 1.0, 1.0, 1.0]
+    c: [f32; 4] = [0.5, 0.5, 0.5, 1.0]
+    d: [f32; 4] = [0.2, 0.2, 0.3, 1.0]
+    light_dir: [f32; 4] = [0.0, 1.0, 0.0, 0.0]
+    gfx.sky_params(a, b, c, d, core.identity().m, light_dir)
+}
+
+fn view() -> scene_renderer.View {
+    scene_renderer.View { projection: core.identity(), inverse_projection: core.identity(), mesh: gfx.mesh_view([0.0, 2.0, 8.0]), sky: sky() }
+}
+
+fn size() -> gfx.FrameSize { gfx.FrameSize { width: 640, height: 360, scale: 1.0 } }
+
+fn plain() -> gfx.PostProcess { gfx.PostProcess { antialias: false, strength: 0.0 } }
+fn graded() -> gfx.PostProcess { gfx.PostProcess { antialias: true, strength: 0.5 } }
+
+// A shape with a material. The graph writes a world row only on propagate,
+// and a drawable needs one, so every world here is propagated before it is
+// drawn -- the same call the app makes once per frame. A cube is 36 vertices
+// of 12 floats (CUBE), measured from gfx.cube and pinned in the first test.
+const CUBE: u64 = 432
+
+fn shape(world: &mut scenegraph.Graph, kind: scenegraph.Shape, at: core.Vec3, alpha: f32) -> ecs.Entity {
+    e := world.create_root(at)
+    _ := world.set_shape(e, kind)
+    _ := world.set_material(e, scenegraph.material(0.8, 0.5, 0.3, alpha, 0.25, 0.5))
+    e
+}
+
+// `count` opaque cubes in a row along x, propagated.
+fn solids(world: &mut scenegraph.Graph, count: i32) {
+    for i in 0..count { _ := shape(&mut world, .Cube, core.vec3(f32(i) * 2.0, 1.0, 0.0), 1.0) }
+    world.propagate()
+}
+
+fn glass(world: &mut scenegraph.Graph, count: i32) {
+    for i in 0..count { _ := shape(&mut world, .Cube, core.vec3(0.0, 1.0, f32(i) * 2.0 + 4.0), 0.4) }
+    world.propagate()
+}
+
+fn names(r: &Recorder) -> []string {
+    mut out: []string = []
+    for p in &r.passes { out.push(p.clone()) }
+    out
+}
+
+fn ready(result: Result<scene_renderer.Draw, string>) -> i32 {
+    match result {
+        .Ok(.Ready(steps)) => steps,
+        _ => -1,
+    }
+}
+
+fn draw(r: &mut scene_renderer.Renderer, window: &mut Recorder, world: &scenegraph.Graph, shadows: bool, finish: &gfx.PostProcess) -> Result<scene_renderer.Draw, string> {
+    sphere: []f32 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    r.draw_view(&mut window, world, &size(), &view(), &sphere, shadows, finish)
+}
+
+// A full world against a full device: every pass runs once, in frame order,
+// the opaque and blended lists are recorded in their own passes, and the
+// frame ends Ready with the plan's step count (the UI stage is the sixth;
+// the executor stops before it so the app can draw its overlay). The shadow
+// pass records every solid a second time, for the shadow map. The sphere is
+// one solid and gets the 8 floats it was handed as its stream.
+@test fn a_full_frame_runs_every_pass_once_in_order() {
+    mut world := scenegraph.Graph::new()
+    _ := shape(&mut world, .Sphere, core.vec3(0.0, 3.0, 0.0), 1.0)
+    solids(&mut world, 2)
+    glass(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &graded())) == 6)
+    n := names(&window)
+    assert(n.len == 5)
+    assert(n[0] == "shadow" && n[1] == "sky" && n[2] == "opaque" && n[3] == "transparent" && n[4] == "post")
+    // Two cubes and the sphere cast (shadow pass: 3) and draw in colour
+    // (3); the glass cube draws once, blended.
+    assert(window.shadows == 3 && window.meshes == 4 && window.skies == 1 && window.posts == 1)
+    assert(window.began == 1)
+    // The request in bytes: every solid twice (shadow map + colour), the
+    // glass once. Cube = CUBE floats, the sphere the 8 floats it was handed.
+    mut cube: []f32 = []
+    gfx.cube(&mut cube, 0.6)
+    assert(u64(cube.len) == CUBE)
+    expect: u64 = (2 * CUBE + 8) * 4 * 2 + CUBE * 4
+    assert(window.mesh_bytes == expect)
+    match window.size { .Some(s) => assert(s.width == 640 && s.height == 360), .None => assert(false) }
+}
+
+// An empty world needs no shadow pass: there is nothing to cast one, so the
+// plan drops it even though the device supports shadows and the app asked
+// for them. The opaque pass is declared unconditionally and runs empty -- it
+// records nothing -- and sky and UI remain: three steps.
+@test fn an_empty_world_has_no_shadow_pass_and_no_solid_draws() {
+    mut world := scenegraph.Graph::new()
+    world.propagate()
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &plain())) == 3)
+    n := names(&window)
+    assert(n.len == 1 && n[0] == "sky")
+    assert(window.shadows == 0 && window.meshes == 0 && window.skies == 1)
+    assert(window.mesh_bytes == 0)
+}
+
+// A device without post-processing support draws the frame without the post
+// pass even when the app's finish is enabled: the capability decides, and
+// the pass list names it. basic_features has no shadows either.
+@test fn a_device_without_post_process_skips_the_pass_however_the_finish_is_set() {
+    mut world := scenegraph.Graph::new()
+    solids(&mut world, 1)
+    mut basic := Recorder::new(gfx.basic_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut basic, &world, true, &graded())) == 3)
+    n := names(&basic)
+    assert(n.len == 2 && n[0] == "sky" && n[1] == "opaque")
+    assert(basic.posts == 0 && basic.shadows == 0 && basic.meshes == 1)
+    // No shadow map: the solid is reserved once.
+    assert(basic.mesh_bytes == CUBE * 4)
+}
+
+// A render target that is not there this frame is not an error: the frame
+// is Skipped, no pass is recorded, and nothing was drawn into the target.
+// The request was still made -- the device was asked.
+@test fn an_unavailable_target_skips_the_frame_before_any_pass() {
+    mut world := scenegraph.Graph::new()
+    solids(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    window.unavailable = true
+    mut renderer := scene_renderer.Renderer::new()
+    match draw(&mut renderer, &mut window, &world, true, &graded()) {
+        .Ok(.Skipped) => {},
+        _ => assert(false),
+    }
+    assert(window.passes.len == 0 && window.meshes == 0 && window.shadows == 0 && window.skies == 0)
+    assert(window.began == 1)
+    // The plan was still built: the next available frame needs no rebuild,
+    // which is only observable as "the same frame again is complete".
+    window.unavailable = false
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &graded())) == 5)
+    assert(names(&window) == ["shadow", "sky", "opaque", "post"])
+}
+
+// A failing start_frame is the device's answer and reaches the caller as
+// is: the executor adds nothing and swallows nothing, and no pass runs.
+@test fn a_failing_start_frame_is_returned_unchanged_and_runs_nothing() {
+    mut world := scenegraph.Graph::new()
+    solids(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    window.fail_start = true
+    mut renderer := scene_renderer.Renderer::new()
+    match draw(&mut renderer, &mut window, &world, true, &graded()) {
+        .Err(reason) => assert(reason == "no render target"),
+        .Ok(_) => assert(false),
+    }
+    assert(window.passes.len == 0 && window.meshes == 0)
+}
+
+// Glass joins the plan when it appears and leaves it when it goes: the
+// executor's three conditions (shadows, transparent, filtered) are what
+// rebuild the plan, and a frame whose conditions did not change keeps it.
+// Measured through what the backend is asked, frame by frame.
+@test fn the_plan_follows_glass_in_and_out_of_the_world() {
+    mut world := scenegraph.Graph::new()
+    solids(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    // shadow, sky, opaque, ui
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &plain())) == 4)
+    assert(names(&window) == ["shadow", "sky", "opaque"])
+    // Glass appears: a fifth step, a transparent pass after the opaque one.
+    pane := shape(&mut world, .Cube, core.vec3(1.0, 1.0, 4.0), 0.4)
+    world.propagate()
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &plain())) == 5)
+    assert(names(&window) == ["shadow", "sky", "opaque", "shadow", "sky", "opaque", "transparent"])
+    // Same conditions again: the plan is kept, and the frame is the same.
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &plain())) == 5)
+    assert(names(&window).len == 11)
+    assert(window.mesh_bytes == (CUBE * 4) * 2 + CUBE * 4)
+    // Glass hidden: back to four steps, and the request carries one solid
+    // twice again.
+    world.set_visible(pane, false)
+    world.propagate()
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &plain())) == 4)
+    n := names(&window)
+    assert(n.len == 14 && n[13] == "opaque")
+    assert(window.mesh_bytes == CUBE * 4 * 2)
+}
+
+// A world of only glass: nothing is opaque, so nothing casts a shadow and
+// the shadow pass is dropped -- the blended pass still runs after the sky,
+// and the empty opaque pass records nothing.
+@test fn only_glass_leaves_no_shadow_pass() {
+    mut world := scenegraph.Graph::new()
+    glass(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut window, &world, true, &plain())) == 4)
+    assert(names(&window) == ["sky", "transparent"])
+    assert(window.shadows == 0 && window.meshes == 1)
+    assert(window.mesh_bytes == CUBE * 4)
+}
+
+// Shadows off by the app's own switch: supported and present, but not
+// wanted -- the plan drops the pass and the request carries the solids once.
+@test fn shadows_disabled_by_the_app_drop_the_pass_and_the_extra_bytes() {
+    mut world := scenegraph.Graph::new()
+    solids(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut window, &world, false, &plain())) == 3)
+    assert(names(&window) == ["sky", "opaque"])
+    assert(window.shadows == 0 && window.mesh_bytes == CUBE * 4)
+}
+
+// The finish adds the post pass only when it is enabled: antialias alone
+// counts, and the pass lands last, before the UI stage the executor stops at.
+@test fn the_finish_adds_the_post_pass_only_when_enabled() {
+    mut world := scenegraph.Graph::new()
+    solids(&mut world, 1)
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut window, &world, false, &plain())) == 3)
+    assert(names(&window) == ["sky", "opaque"] && window.posts == 0)
+    aa := gfx.PostProcess { antialias: true, strength: 0.0 }
+    assert(ready(draw(&mut renderer, &mut window, &world, false, &aa)) == 4)
+    n := names(&window)
+    assert(n.len == 5 && n[4] == "post" && window.posts == 1)
+}
+
+// The frame's own request is passed on as it was given: the size reaches the
+// device as the Some it was handed, with its scale.
+@test fn the_request_carries_the_size_it_was_given() {
+    mut world := scenegraph.Graph::new()
+    world.propagate()
+    mut window := Recorder::new(gfx.full_features())
+    mut renderer := scene_renderer.Renderer::new()
+    assert(ready(draw(&mut renderer, &mut window, &world, false, &plain())) == 3)
+    match window.size { .Some(s) => assert(s.width == 640 && s.height == 360 && s.scale == 1.0), .None => assert(false) }
+    assert(window.mesh_bytes == 0)
+}
