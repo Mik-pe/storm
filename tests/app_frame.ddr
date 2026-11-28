@@ -241,6 +241,16 @@ fn extent_of(path: string, scale: f32) -> core.Vec4 {
 // One channel of one texel of a 1024-wide RGBA image.
 fn probe(img: &image.Image, x: i32, y: i32, c: i32) -> i32 { i32(img.pixels[(y * 1024 + x) * 4 + c]) }
 
+// A loaded model is named after its file, never after where the file lives:
+// the scene tree shows the name and the search box matches it, so a path
+// there is an address in a name's place.
+@test fn a_loaded_model_is_named_after_its_file() {
+    mut world := scenegraph.Graph::new()
+    loaded := app.load_model(&mut world, "packages/storm-gltf/tests/fixtures/FoxFixed.glb", rootless(), core.vec3(0.0, 0.0, 0.0), 1.0, &[])
+    assert(loaded.is_ok())
+    assert(world.name(loaded.unwrap()) == "FoxFixed")
+}
+
 // Placed without uploads (a test has no backend), a textured part keeps
 // no_texture: the handle is the uploader's to give, and the graph does not
 // invent one.

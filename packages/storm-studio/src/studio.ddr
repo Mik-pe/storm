@@ -12,6 +12,9 @@ import ecs
 import gfx
 import gltf
 import image
+// Aliased: `path` is the parameter every loader here takes, and a local or
+// parameter shadows a module alias.
+import std.path as filepath
 import input
 import runtime
 import runtime.args as args
@@ -116,10 +119,13 @@ pub fn load_model(graph: &mut scenegraph.Graph, path: string, parent: ecs.Entity
     place_model(&mut graph, &model, path, parent, at, scale, textures)
 }
 
+// The model is named after its file (`Fox.glb` -> `Fox`), never after
+// where the file lives: the scene tree shows the name and the search box
+// matches against it, and a path is an address, not a name.
 pub fn place_model(graph: &mut scenegraph.Graph, model: &gltf.Asset, path: string, parent: ecs.Entity, at: core.Vec3, scale: f32, textures: &[]gfx.Textures) -> Result<ecs.Entity, string> {
     b := bounds(model)
     origin := core.vec3(at.x - (b.lo.x + b.hi.x) * 0.5 * scale, at.y - b.lo.y * scale, at.z - (b.lo.z + b.hi.z) * 0.5 * scale)
-    .Ok(assets.place_model(&mut graph, model, path, parent, origin, scale, textures))
+    .Ok(assets.place_model(&mut graph, model, filepath.stem(path), parent, origin, scale, textures))
 }
 
 // load_model for the running app: reads, decodes, uploads, and places the
