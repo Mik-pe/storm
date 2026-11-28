@@ -23,11 +23,7 @@ pub fn draw(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas,
     title_x := 12.0 + back_w + 17.0
     group_x: f32 = if narrow { 12.0 } else { width - 218.0 }
     title_end := if narrow { width - 12.0 } else { group_x - 16.0 }
-    c.text(atlas, title, title_x, 11.0, 0.79, &t.ink)
-    if ui.Canvas::text_width(atlas, title, 0.79) > title_end - title_x {
-        c.rect(title_end - 16.0, 0.0, width - title_end + 16.0, 44.0, &chrome)
-        c.text(atlas, "...", title_end - 16.0, 11.0, 0.79, &t.ink_dim)
-    }
+    c.text(atlas, ui.fit(atlas, title, title_end - title_x, 0.79), title_x, 11.0, 0.79, &t.ink)
 
     y: f32 = if narrow { 49.0 } else { 10.0 }
     if controls.button(&mut c, atlas, 2, p, group_x, y, 72.0, 27.0, if paused { "Resume" } else { "Pause" }, &t) {

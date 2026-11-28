@@ -1,0 +1,48 @@
+capability filesystem
+
+import text
+import ui
+import gfx
+import ui.widgets as widgets
+import ..src.controls as controls
+
+// The play bar's title is fitted to the room it has: in a narrow window
+// (under 560 points, the bar grows to two rows) that is between "Studio"
+// and the window's right edge, and a long scene title ends in an ellipsis
+// there with no glyph over the edge. (Before `ui.fit` the title was drawn
+// whole and a rectangle painted over its tail — a cover that only works
+// over a flat colour, and in the narrow bar it painted over the bar's own
+// second row.)
+@test fn a_long_scene_title_is_fitted_to_the_bar_and_never_over_the_buttons() {
+    face := text.load_font(ui.RASTER_SIZE)
+    assert(face.ok)
+    mut atlas := text.Atlas::new(1024, 1024)
+    assert(atlas.add_text(&face, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·•… åäö ÅÄÖ éÉ ²³"))
+    title := "/home/mikpe/Work/storm/examples/scenes/a_quite_long_scene_name.scene"
+    // Narrow layout: bar 88 tall, "Studio" 64 wide, title ends 12 short of the edge.
+    width: f32 = 480.0
+    title_end := width - 12.0
+    title_x: f32 = 12.0 + 64.0 + 17.0
+    mut state := widgets.State::new()
+    mut canvas := ui.Canvas::new()
+    pointer := widgets.Pointer { x: -100.0, y: -100.0, down: false, pressed: false }
+    _ := controls.draw(&mut state, &mut canvas, &atlas, &pointer, width, 800.0, title, 0, false, true, true, false)
+    assert(ui.Canvas::text_width(&atlas, title, 0.79) > title_end - title_x)
+    // Every glyph of the title row (y < 44, the bar's first row; the
+    // buttons sit on the second at y = 49) starts at or before title_end.
+    // A title drawn whole put glyphs past the window's edge.
+    vertices := canvas.vertices()
+    mut worst: f32 = 0.0
+    mut glyphs := 0
+    for i in 0..canvas.vertex_count() {
+        y := vertices[i * gfx.UI_FLOATS + 1]
+        x := vertices[i * gfx.UI_FLOATS]
+        // uv.x < 0 marks a solid rect; a glyph quad carries atlas uv.
+        if y < 44.0 && vertices[i * gfx.UI_FLOATS + 2] >= 0.0 {
+            glyphs += 1
+            if x > worst { worst = x }
+        }
+    }
+    assert(glyphs > 0)
+    assert(worst <= title_end + 0.01)
+}

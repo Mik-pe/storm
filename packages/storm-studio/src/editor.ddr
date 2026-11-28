@@ -159,7 +159,7 @@ fn inspector(state: &mut State, c: &mut ui.Canvas, a: &text.Atlas, graph: &mut s
     label(&mut c, a, "Inspector", px, 62.0 - offset, 18.0, &t.ink)
     c.rect(px, 96.0 - offset, w, 1.0, &t.border)
     if graph.is_alive(node) {
-        label(&mut c, a, graph.name(node), px, 106.0 - offset, 22.0, &t.ink)
+        label(&mut c, a, ui.fit(a, graph.name(node), w, 22.0 / ui.RASTER_SIZE), px, 106.0 - offset, 22.0, &t.ink)
         if material {
             m := graph.material_at(node)
             swatch := ui.rgb(m.base.r.sqrt(), m.base.g.sqrt(), m.base.b.sqrt())

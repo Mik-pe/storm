@@ -31,7 +31,7 @@ import ui
 import ui.widgets as widgets
 
 // Every character the editor and game HUD draw has to be packed into the atlas.
-const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·• åäö ÅÄÖ éÉ ²³"
+const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·•… åäö ÅÄÖ éÉ ²³"
 
 // Report why the backend refused, close it, and stop with a failure.
 fn stop<B: gfx.Backend>(move window: B, message: string) -> Result<(), string> {

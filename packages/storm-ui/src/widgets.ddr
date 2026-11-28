@@ -137,7 +137,10 @@ impl State {
         if selected || hover {
             canvas.rounded_rect(x, y, w, ROW_HEIGHT, 5.0, &if selected { theme.fill_active } else { theme.fill_hot })
         }
-        canvas.text(atlas, label, x + 28.0 + f32(indent) * 14.0, y + 5.0, 0.64, &if selected { theme.ink } else { theme.ink_dim })
+        // The label ends in an ellipsis at the row's edge: a name longer than
+        // the row is cut, never drawn over the viewport beside the panel.
+        text_x := x + 28.0 + f32(indent) * 14.0
+        canvas.text(atlas, ui.fit(atlas, label, x + w - text_x - 4.0, 0.64), text_x, y + 5.0, 0.64, &if selected { theme.ink } else { theme.ink_dim })
         clicked
     }
 }
