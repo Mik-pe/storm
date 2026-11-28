@@ -1,0 +1,281 @@
+// layout and interaction: the geometry every panel, list and slider is built
+// on, measured at the edges where the two bounds differ. A Rect is half-open
+// for hits (the right and bottom edges belong to the next one) and a scroll
+// viewport's visible range is closed on its last item; both rules are pinned
+// here so a panel's last row can never be clipped away or double-hit.
+import ..src.layout as layout
+import ..src.interaction as interaction
+
+fn near(a: f32, b: f32) -> bool { (a - b).abs() < 0.0001 }
+
+@test fn a_rect_is_half_open_for_hits_and_refuses_negative_room() {
+    r := layout.rect(10.0, 20.0, 100.0, 40.0)
+    assert(!r.empty())
+    // Inside: the top-left corner is in, the far edges are not.
+    assert(r.contains(10.0, 20.0))
+    assert(r.contains(109.999, 59.999))
+    assert(!r.contains(110.0, 20.0))
+    assert(!r.contains(10.0, 60.0))
+    assert(!r.contains(9.999, 20.0))
+    // A negative extent is no room at all, clamped to zero rather than
+    // turned inside out (an inside-out rect would contain everything).
+    flat := layout.rect(0.0, 0.0, -5.0, 10.0)
+    assert(flat.empty() && flat.w == 0.0 && flat.h == 10.0)
+    assert(!flat.contains(0.0, 5.0))
+    zero := layout.rect(0.0, 0.0, 0.0, 0.0)
+    assert(zero.empty())
+}
+
+// Raster edges use a closed bound, hit testing a half-open one: two rects
+// laid edge to edge cover the plane between them with no gap, while a
+// pointer on the seam hits exactly one of them.
+@test fn covers_is_closed_where_contains_is_half_open() {
+    a := layout.rect(0.0, 0.0, 10.0, 10.0)
+    b := layout.rect(10.0, 0.0, 10.0, 10.0)
+    assert(layout.covers(&a, 10.0, 10.0) && layout.covers(&b, 10.0, 10.0))
+    assert(a.contains(9.999, 9.999) && !a.contains(10.0, 9.999))
+    assert(!b.contains(9.999, 9.999) && b.contains(10.0, 9.999))
+    // A degenerate rect covers nothing, however it is asked.
+    assert(!layout.covers(&layout.rect(0.0, 0.0, 0.0, 10.0), 0.0, 5.0))
+}
+
+@test fn inset_shrinks_on_every_side_and_goes_empty_past_its_size() {
+    r := layout.rect(0.0, 0.0, 100.0, 40.0)
+    inner := r.inset(10.0, 5.0)
+    assert(inner.x == 10.0 && inner.y == 5.0 && inner.w == 80.0 && inner.h == 30.0)
+    // Exactly half the size leaves a line, which is empty; more is still empty,
+    // never negative (a negative w would invert the hit test).
+    line := r.inset(50.0, 20.0)
+    assert(line.empty() && line.w == 0.0 && line.h == 0.0)
+    past := r.inset(60.0, 25.0)
+    assert(past.empty() && past.w == 0.0 && past.h == 0.0)
+    // Horizontal only, the shape the view uses for button labels.
+    label := r.inset(9.0, 0.0)
+    assert(label.y == 0.0 && label.h == 40.0 && label.x == 9.0 && label.w == 82.0)
+}
+
+@test fn intersect_is_the_overlap_and_empty_when_apart() {
+    a := layout.rect(0.0, 0.0, 100.0, 100.0)
+    b := layout.rect(50.0, 50.0, 100.0, 100.0)
+    both := a.intersect(&b)
+    assert(both.x == 50.0 && both.y == 50.0 && both.w == 50.0 && both.h == 50.0)
+    // Containment: the smaller one, whichever side asks.
+    inside := layout.rect(10.0, 10.0, 20.0, 20.0)
+    held := a.intersect(&inside)
+    assert(held.x == 10.0 && held.y == 10.0 && held.w == 20.0 && held.h == 20.0)
+    // Disjoint: an empty rect at the gap, never a negative extent.
+    apart := a.intersect(&layout.rect(200.0, 0.0, 10.0, 10.0))
+    assert(apart.empty() && apart.w == 0.0)
+    // Touching edges is an empty overlap too: the seam belongs to neither.
+    seam := a.intersect(&layout.rect(100.0, 0.0, 10.0, 10.0))
+    assert(seam.empty())
+}
+
+// visible_in is the clip test a panel uses before it paints a row: a row
+// wholly outside the viewport is skipped, one partly inside is painted and
+// clipped. It is the one place "inside" means closed on every edge, so the
+// last row that ends exactly on the viewport's edge still counts.
+@test fn visible_in_counts_a_row_ending_on_the_edge_and_not_one_beyond() {
+    viewport := layout.rect(0.0, 0.0, 200.0, 100.0)
+    assert(layout.rect(0.0, 0.0, 200.0, 100.0).visible_in(&viewport))
+    assert(layout.rect(0.0, 99.0, 200.0, 1.0).visible_in(&viewport))
+    assert(!layout.rect(0.0, 100.0, 200.0, 1.0).visible_in(&viewport))
+    assert(!layout.rect(0.0, 50.0, 200.0, 60.0).visible_in(&viewport))
+    assert(!layout.rect(0.0, 0.0, 201.0, 10.0).visible_in(&viewport))
+    assert(!layout.rect(0.0, 0.0, 0.0, 10.0).visible_in(&viewport))
+}
+
+// A scroll offset is clamped to the content's overhang and never negative;
+// the wheel only moves it inside the viewport, in the direction a wheel
+// sends (a positive delta is "up", content moves down).
+@test fn scroll_clamps_to_the_overhang_and_only_inside_the_viewport() {
+    viewport := layout.rect(0.0, 0.0, 200.0, 100.0)
+    mut s := layout.Scroll::new()
+    assert(s.offset == 0.0)
+    // Content shorter than the viewport: nothing to scroll, whatever comes.
+    s.wheel(&viewport, 50.0, 50.0, -1.0, 12.0)
+    s.limit(&viewport, 60.0)
+    assert(s.offset == 0.0)
+    // Content of 250: overhang 150. Three steps down of 12 land at 36.
+    s.wheel(&viewport, 50.0, 50.0, -1.0, 12.0)
+    s.wheel(&viewport, 50.0, 50.0, -1.0, 12.0)
+    s.wheel(&viewport, 50.0, 50.0, -1.0, 12.0)
+    s.limit(&viewport, 250.0)
+    assert(s.offset == 36.0)
+    // Outside the viewport the wheel is someone else's: no move.
+    s.wheel(&layout.rect(0.0, 0.0, 200.0, 100.0), 300.0, 50.0, -1.0, 12.0)
+    assert(s.offset == 36.0)
+    // A zero delta is no scroll at all.
+    s.wheel(&viewport, 50.0, 50.0, 0.0, 12.0)
+    assert(s.offset == 36.0)
+    // Scrolling up past the top clamps at zero; down past the end at the
+    // overhang.
+    s.wheel(&viewport, 50.0, 50.0, 1.0, 12.0)
+    s.wheel(&viewport, 50.0, 50.0, 1.0, 12.0)
+    s.wheel(&viewport, 50.0, 50.0, 1.0, 12.0)
+    s.wheel(&viewport, 50.0, 50.0, 1.0, 12.0)
+    s.limit(&viewport, 250.0)
+    assert(s.offset == 0.0)
+    for _ in 0..30 { s.wheel(&viewport, 50.0, 50.0, -1.0, 12.0) }
+    s.limit(&viewport, 250.0)
+    assert(s.offset == 150.0)
+    // Reset goes back to the top whatever the content.
+    s.reset()
+    assert(s.offset == 0.0)
+}
+
+// The range of rows a viewport shows, from the first that begins at or
+// before the viewport's top to the last that ends after its bottom edge:
+// a row that is only partly visible is still drawn (and clipped), so the
+// list never shows a blank strip while scrolling. Never past `count`.
+@test fn visible_items_spans_partly_shown_rows_and_stops_at_the_count() {
+    viewport := layout.rect(0.0, 0.0, 200.0, 100.0)
+    mut s := layout.Scroll::new()
+    // At the top with 20-px rows: rows 0..4 fill 100 px exactly, so row 4
+    // is the last (end index 5, exclusive) -- not a fifth row past the edge.
+    mut items := s.visible_items(&viewport, 100, 20.0)
+    assert(items.first == 0 && items.end == 5)
+    // Scrolled 30 px: row 1 is cut by the top edge (still shown), row 6
+    // (120..140) is cut by the bottom edge (still shown); row 7 starts past it.
+    s.offset = 30.0
+    items = s.visible_items(&viewport, 100, 20.0)
+    assert(items.first == 1 && items.end == 7)
+    // Exactly on a row boundary: 40 px down shows rows 2..6 (120 px is the
+    // end of row 5's span 100..120, which ends exactly on the edge; the
+    // next row begins there and is not shown).
+    s.offset = 40.0
+    items = s.visible_items(&viewport, 100, 20.0)
+    assert(items.first == 2 && items.end == 7)
+    // Fewer rows than the viewport holds: every row, and nothing past count.
+    s.offset = 0.0
+    items = s.visible_items(&viewport, 3, 20.0)
+    assert(items.first == 0 && items.end == 3)
+    // Scrolled past the last row (content shorter than the viewport after a
+    // shrink): the range is empty rather than indexing past the list.
+    s.offset = 100.0
+    items = s.visible_items(&viewport, 3, 20.0)
+    assert(items.first == 5 && items.end == 3)
+    // A zero height or an empty viewport is no range at all.
+    assert(s.visible_items(&viewport, 10, 0.0).end == 0)
+    assert(s.visible_items(&layout.rect(0.0, 0.0, 0.0, 0.0), 10, 20.0).end == 0)
+}
+
+// reveal is what focus movement calls: a row above the viewport scrolls it
+// up to the row's top, a row below it scrolls so the row's bottom lands on
+// the viewport's bottom. A row already in view moves nothing.
+@test fn reveal_brings_a_row_into_the_viewport_from_either_side() {
+    viewport := layout.rect(0.0, 0.0, 200.0, 100.0)
+    mut s := layout.Scroll::new()
+    s.offset = 200.0
+    // In view: 220..240 lies inside 200..300.
+    s.reveal(&viewport, 220.0, 240.0)
+    assert(s.offset == 200.0)
+    // Above: top 150 < 200 scrolls to 150.
+    s.reveal(&viewport, 150.0, 170.0)
+    assert(s.offset == 150.0)
+    // Below: bottom 320 > 250 scrolls so the bottom lands on the edge.
+    s.reveal(&viewport, 300.0, 320.0)
+    assert(s.offset == 220.0)
+    // A row exactly on the bottom edge is in view.
+    s.reveal(&viewport, 310.0, 320.0)
+    assert(s.offset == 220.0)
+}
+
+// A stack lays children out along one axis from the bounds' origin, each at
+// its requested extent, with the gap between them and never before the
+// first or after the last. A negative extent is no room, like a Rect.
+@test fn a_stack_lays_out_children_along_its_axis_with_a_gap_between() {
+    bounds := layout.rect(10.0, 20.0, 300.0, 200.0)
+    mut column := layout.Stack::new(bounds, .Column, 4.0)
+    first := column.next(30.0)
+    second := column.next(50.0)
+    third := column.next(-10.0)
+    last := column.next(20.0)
+    // Column: full width, stacked downward; the gap is between, not inside.
+    assert(first.x == 10.0 && first.y == 20.0 && first.w == 300.0 && first.h == 30.0)
+    assert(second.y == 54.0 && second.h == 50.0)
+    assert(third.y == 108.0 && third.h == 0.0)
+    assert(last.y == 112.0 && last.h == 20.0)
+    // The extent is what the children used, without the trailing gap.
+    assert(column.extent() == 30.0 + 4.0 + 50.0 + 4.0 + 0.0 + 4.0 + 20.0)
+
+    mut row := layout.Stack::new(bounds, .Row, 2.0)
+    a := row.next(40.0)
+    b := row.next(60.0)
+    // Row: full height, laid out rightwards.
+    assert(a.x == 10.0 && a.y == 20.0 && a.w == 40.0 && a.h == 200.0)
+    assert(b.x == 52.0 && b.w == 60.0)
+    assert(row.extent() == 102.0)
+    // A stack with no children yet has no extent, and a negative gap is none.
+    empty := layout.Stack::new(bounds, .Row, -1.0)
+    assert(empty.extent() == 0.0)
+    mut one := layout.Stack::new(bounds, .Row, -1.0)
+    p := one.next(10.0)
+    q := one.next(10.0)
+    assert(p.x == 10.0 && q.x == 20.0)
+}
+
+// The slider's range math: a value outside its range clamps to the ends, an
+// empty range has no fraction at all (never a NaN, which the shader would
+// draw nowhere), and the pointer-to-value slide mirrors it.
+@test fn fraction_and_slide_clamp_to_the_range_and_refuse_an_empty_one() {
+    assert(interaction.unit(-1.0) == 0.0 && interaction.unit(0.5) == 0.5 && interaction.unit(2.0) == 1.0)
+    assert(interaction.fraction(5.0, 0.0, 10.0) == 0.5)
+    assert(interaction.fraction(-5.0, 0.0, 10.0) == 0.0)
+    assert(interaction.fraction(15.0, 0.0, 10.0) == 1.0)
+    assert(interaction.fraction(7.0, 7.0, 7.0) == 0.0)
+    assert(interaction.fraction(7.0, 10.0, 0.0) == 0.0)
+    // A descending range is empty too (hi <= lo), never a reversed slider.
+    assert(interaction.fraction(2.0, 10.0, 0.0) == 0.0)
+
+    match interaction.slide(50.0, 0.0, 100.0, 0.0, 1.0) {
+        .Some(v) => assert(v == 0.5),
+        .None => assert(false),
+    }
+    match interaction.slide(-20.0, 0.0, 100.0, 0.0, 1.0) {
+        .Some(v) => assert(v == 0.0),
+        .None => assert(false),
+    }
+    match interaction.slide(500.0, 0.0, 100.0, 2.0, 4.0) {
+        .Some(v) => assert(v == 4.0),
+        .None => assert(false),
+    }
+    // No track width or no range: no value, and the caller keeps its own.
+    assert(interaction.slide(50.0, 0.0, 0.0, 0.0, 1.0).is_none())
+    assert(interaction.slide(50.0, 0.0, 100.0, 1.0, 1.0).is_none())
+    assert(interaction.slide(50.0, 0.0, -10.0, 0.0, 1.0).is_none())
+}
+
+// Pointer capture answers "did this press begin a press?", not "is a key
+// held": a press on empty space is consumed too (it takes focus away from
+// whatever had it, in view.frame) and holds None. While a press is held,
+// a second press is refused whatever its target, so a drag stays with the
+// control it began on; a pointer that is not pressed changes nothing.
+@test fn capture_consumes_the_first_press_and_holds_it_until_release() {
+    mut capture := interaction.Capture<i32>::new()
+    assert(capture.key.is_none())
+    // Not pressed: nothing is consumed, whatever is under the pointer.
+    assert(!capture.press(.Some(7), false))
+    assert(capture.key.is_none())
+    // A press on nothing is consumed and holds nothing -- so it does not
+    // block the next press either: with key None nothing is "held".
+    assert(capture.press(.None, true))
+    assert(capture.key.is_none())
+    assert(capture.press(.Some(7), true))
+    assert(capture.key.is_some() && capture.key.unwrap() == 7)
+    // A further press while a key is held is refused, so a second control
+    // under the same drag cannot steal it -- with a key or without.
+    assert(!capture.press(.Some(9), true))
+    assert(!capture.press(.None, true))
+    assert(capture.key.unwrap() == 7)
+    // A pointer that is not pressed changes nothing, whatever is under it.
+    assert(!capture.press(.Some(11), false))
+    assert(capture.key.unwrap() == 7)
+    // Release drops it; the next press is free to take another key.
+    capture.release()
+    assert(capture.key.is_none())
+    assert(capture.press(.Some(9), true))
+    assert(capture.key.unwrap() == 9)
+    capture.release()
+    assert(capture.key.is_none())
+}
