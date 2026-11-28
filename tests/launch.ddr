@@ -1,0 +1,52 @@
+// How the app decides what to open, without a window: the launch mode
+// read from the flags, and the three ways `app.load` refuses a command line
+// that asks for a file it does not name. `main` only forwards these
+// results to the backend, so these tests are the whole decision.
+import studio
+import std.text as textlib
+import ..src.app as app
+
+@test fn the_launch_mode_follows_the_scene_flags_and_the_fallback_otherwise() {
+    game: []string = ["--scene", "level.toml"]
+    assert(studio.launch_mode(&game, .Studio) == studio.Launch.Game)
+    play: []string = ["--play"]
+    assert(studio.launch_mode(&play, .Studio) == studio.Launch.Game)
+    model: []string = ["--glb", "Fox.glb"]
+    assert(studio.launch_mode(&model, .Game) == studio.Launch.Studio)
+    explicit: []string = ["--studio"]
+    assert(studio.launch_mode(&explicit, .Game) == studio.Launch.Studio)
+    bare: []string = []
+    assert(studio.launch_mode(&bare, .Preview) == studio.Launch.Preview)
+    assert(studio.launch_mode(&bare, .Studio) == studio.Launch.Studio)
+    // Both given: the scene wins, as the usage line lists it first.
+    both: []string = ["--scene", "level.toml", "--glb", "Fox.glb"]
+    assert(studio.launch_mode(&both, .Studio) == studio.Launch.Game)
+}
+
+@test fn a_scene_flag_without_a_file_is_refused_by_name() {
+    scene: []string = ["--scene"]
+    assert(textlib.contains(refused(app.load(&scene)), "--scene requires a scene file"))
+    // A flag that is followed by another flag names no file either.
+    trailing: []string = ["--scene", "--frames", "5"]
+    assert(textlib.contains(refused(app.load(&trailing)), "--scene requires a scene file"))
+}
+
+@test fn a_capture_flag_without_a_file_is_refused_by_name() {
+    capture: []string = ["--capture"]
+    assert(textlib.contains(refused(app.load(&capture)), "--capture requires an output file"))
+    trailing: []string = ["--capture", "--frames"]
+    assert(textlib.contains(refused(app.load(&trailing)), "--capture requires an output file"))
+}
+
+@test fn watching_without_a_scene_is_refused_by_name() {
+    watch: []string = ["--watch"]
+    assert(textlib.contains(refused(app.load(&watch)), "--watch requires --scene FILE"))
+}
+
+// The refusal's text, or "" when the load succeeded.
+fn refused(r: Result<app.Game, string>) -> string {
+    match r {
+        .Err(message) => message.clone(),
+        .Ok(_) => "",
+    }
+}
