@@ -6,6 +6,7 @@
 
 import gfx
 import text
+import std.text.grapheme as segmentation
 
 // Text is drawn at this many points when its scale is 1. The editor draws at
 // scales between 0.8 and 1.2, so strokes are neither undersampled nor
@@ -145,4 +146,32 @@ impl Canvas {
     pub fn text_width(atlas: &text.Atlas, value: string, scale: f32) -> f32 {
         atlas.measure(value) * points_per_pixel(atlas, scale)
     }
+}
+
+// The mark a fitted string ends in when it had to be cut (U+2026).
+const ELLIPSIS: string = "…"
+
+// `value` if it is at most `max_width` points wide at `scale`; otherwise the
+// longest leading run of whole graphemes that, with an ellipsis in place of
+// the rest, still is. Never wider than asked, never cut inside a grapheme,
+// and "" when even the ellipsis does not fit — so a caller that knows the
+// width of its panel can hand any name to `text` and nothing spills into
+// the viewport. Widths add over graphemes exactly as `Atlas::measure` sums
+// glyph advances, so the cut is found in one pass.
+pub fn fit(atlas: &text.Atlas, value: string, max_width: f32, scale: f32) -> string {
+    if Canvas::text_width(atlas, value, scale) <= max_width { return value.clone() }
+    tail := Canvas::text_width(atlas, ELLIPSIS, scale)
+    mut used: f32 = 0.0
+    mut end := 0
+    while end < value.len {
+        next := segmentation.next_boundary(value.as_str(), end)
+        w := Canvas::text_width(atlas, value[end..next].clone(), scale)
+        if used + w + tail > max_width { break }
+        used = used + w
+        end = next
+    }
+    // Nothing fits, not even the ellipsis alone: the empty string is the
+    // only string that honours the width.
+    if tail > max_width { return "" }
+    value[0..end].clone() + ELLIPSIS
 }

@@ -1,6 +1,8 @@
 import ..src.ui as ui
 import ..src.widgets as widgets
 import text
+import std.text as stdtext
+import std.text.grapheme as segmentation
 import gfx
 
 @test fn solid_rect_emits_two_triangles() {
@@ -39,7 +41,7 @@ fn widget_atlas() -> text.Atlas {
     face := text.load_font(22.0)
     assert(face.ok)
     mut atlas := text.Atlas::new(256, 256)
-    assert(atlas.add_text(&face, "+ cube metallic roughness xyz.0123456789-"))
+    assert(atlas.add_text(&face, "+ cube metallic roughness xyz.0123456789-…"))
     assert(atlas.glyph_count() > 20)
     atlas
 }
@@ -286,4 +288,55 @@ fn has_vertex(canvas: &ui.Canvas, x: f32, y: f32) -> bool {
     changed := state.slider(&mut canvas, &atlas, 3, &pointer(200.0, 150.0, true, true), 40.0, 140.0, 240.0, "x", &mut value, 3.0, 3.0, &theme)
     assert(!changed)
     assert(value == 3.0)
+}
+
+// --- fit: a string that must fit a width ends in an ellipsis, never spills ---
+
+@test fn fit_keeps_a_string_that_fits_and_shortens_one_that_does_not() {
+    face := text.load_font(ui.RASTER_SIZE)
+    assert(face.ok)
+    mut atlas := text.Atlas::new(512, 512)
+    assert(atlas.add_text(&face, "/home/mikpe/Work/Katla/resources/models/Lantern.glb…"))
+    assert(atlas.find(0x2026) >= 0)
+    whole := "/home/mikpe/Work/Katla/resources/models/Lantern.glb"
+    full := ui.Canvas::text_width(&atlas, whole, 1.0)
+    assert(full > 300.0)
+    // Fits: the very same string, not a copy with an ellipsis glued on.
+    assert(ui.fit(&atlas, whole, full + 1.0, 1.0) == whole)
+    assert(ui.fit(&atlas, whole, full, 1.0) == whole)
+    // Does not fit: shorter, ends in the ellipsis, and no wider than asked.
+    fitted := ui.fit(&atlas, whole, 180.0, 1.0)
+    assert(fitted.len < whole.len)
+    assert(stdtext.ends_with(fitted, "…"))
+    assert(ui.Canvas::text_width(&atlas, fitted, 1.0) <= 180.0)
+    // The longest that fits: the grapheme after the cut, whichever it is,
+    // would not have — and the cut is a prefix of the original, byte for byte.
+    bare := fitted[0..fitted.len - 3].clone()
+    cut := bare.len
+    assert(whole[0..cut] == bare)
+    next_end := segmentation.next_boundary(whole.as_str(), cut)
+    wider := bare + whole[cut..next_end].clone() + "…"
+    assert(ui.Canvas::text_width(&atlas, wider, 1.0) > 180.0)
+    // A width that cannot hold even the ellipsis holds nothing — still never wider.
+    assert(ui.Canvas::text_width(&atlas, ui.fit(&atlas, whole, 1.0, 1.0), 1.0) <= 1.0)
+}
+
+@test fn fit_cuts_on_grapheme_boundaries() {
+    face := text.load_font(ui.RASTER_SIZE)
+    assert(face.ok)
+    mut atlas := text.Atlas::new(512, 512)
+    // "e" followed by a combining acute is one grapheme over two runes.
+    assert(atlas.add_text(&face, "e\u0301…"))
+    assert(atlas.find(0x301) >= 0)
+    e := ui.Canvas::text_width(&atlas, "e", 1.0)
+    mark := ui.Canvas::text_width(&atlas, "\u0301", 1.0)
+    tail := ui.Canvas::text_width(&atlas, "…", 1.0)
+    // Room for "e" and the ellipsis but not for the whole "é" cluster.
+    fitted := ui.fit(&atlas, "e\u0301e\u0301e\u0301", e + tail + mark * 0.5, 1.0)
+    // Either the whole first cluster fitted or none of it; never a bare "e"
+    // whose accent was dropped, and never a bare combining mark.
+    assert(fitted == "e\u0301…" || fitted == "…")
+    // With room for the cluster and nothing more, the cluster comes whole.
+    room := e + mark + tail + 0.5
+    assert(ui.fit(&atlas, "e\u0301e\u0301e\u0301", room, 1.0) == "e\u0301…")
 }
