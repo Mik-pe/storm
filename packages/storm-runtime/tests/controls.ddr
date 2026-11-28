@@ -4,6 +4,7 @@ import text
 import ui
 import gfx
 import ui.widgets as widgets
+import ui.view as view
 import ..src.controls as controls
 
 // The play bar's title is fitted to the room it has: in a narrow window
@@ -23,10 +24,14 @@ import ..src.controls as controls
     width: f32 = 480.0
     title_end := width - 12.0
     title_x: f32 = 12.0 + 64.0 + 17.0
-    mut state := widgets.State::new()
+    mut state := view.State::new()
     mut canvas := ui.Canvas::new()
     pointer := widgets.Pointer { x: -100.0, y: -100.0, down: false, pressed: false }
-    _ := controls.draw(&mut state, &mut canvas, &atlas, &pointer, width, 800.0, title, 0, false, true, true, false, true)
+    entry := view.Entry { text: "", erase: false }
+    frame := controls.Frame { width: width, height: 800.0, pointer: pointer, navigation: .None,
+        entry: entry, wheel: 0.0, paused: false, exact: false, can_edit: true }
+    level := controls.Playbar { title: title.clone(), tick: 0, has_player: true, has_goal: true, won: false }
+    _ := controls.draw(&mut state, &mut canvas, &atlas, &frame, &level)
     assert(ui.Canvas::text_width(&atlas, title, 0.79) > title_end - title_x)
     // Every glyph of the title row (y < 44, the bar's first row; the
     // buttons sit on the second at y = 49) starts at or before title_end.

@@ -1,0 +1,29 @@
+// Shared pointer capture and range math for keyed views and the immediate API.
+pub struct Capture<K> { key: Option<K> }
+
+impl Capture<K> {
+    pub fn new() -> Self { Self { key: .None } }
+    pub fn release(&mut self) { self.key = .None }
+
+    pub fn press(&mut self, move target: Option<K>, pressed: bool) -> bool {
+        if !pressed || self.key.is_some() { return false }
+        self.key = move target
+        true
+    }
+}
+
+pub fn unit(value: f32) -> f32 {
+    if value < 0.0 { return 0.0 }
+    if value > 1.0 { return 1.0 }
+    value
+}
+
+pub fn fraction(value: f32, lo: f32, hi: f32) -> f32 {
+    if hi <= lo { return 0.0 }
+    unit((value - lo) / (hi - lo))
+}
+
+pub fn slide(x: f32, start: f32, width: f32, lo: f32, hi: f32) -> Option<f32> {
+    if width <= 0.0 || hi <= lo { return .None }
+    .Some(lo + (hi - lo) * unit((x - start) / width))
+}

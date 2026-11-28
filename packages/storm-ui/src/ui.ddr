@@ -9,6 +9,7 @@ import std.math as math
 import text
 import std.text.grapheme as segmentation
 import .layout
+import .clip as clipping
 
 // Text is drawn at this many points when its scale is 1. The editor draws at
 // scales between 0.8 and 1.2, so strokes are neither undersampled nor
@@ -54,13 +55,18 @@ pub fn linear_rgb(r: f32, g: f32, b: f32) -> Color {
 
 pub fn white(alpha: f32) -> Color { Color { r: 1.0, g: 1.0, b: 1.0, a: alpha } }
 
+fn vertex(x: f32, y: f32, u: f32, v: f32, color: &Color) -> gfx.UiVertex {
+    gfx.UiVertex { x: x, y: y, u: u, v: v, r: color.r, g: color.g, b: color.b, a: color.a }
+}
+
 pub struct Canvas {
     vertices: []f32,
+    clip: Option<layout.Rect>,
 }
 
 impl Canvas {
     pub fn new() -> Self {
-        Self { vertices: [] }
+        Self { vertices: [], clip: .None }
     }
 
     pub fn clear(&mut self) {
@@ -76,22 +82,30 @@ impl Canvas {
     pub fn vertex_count(&self) -> i32 { self.vertices.len / gfx.UI_FLOATS }
     pub fn is_empty(&self) -> bool { self.vertices.len == 0 }
 
-    // The contract's writer: a UI vertex is eight floats in the order
-    // `gfx.push_ui_vertex` lays them out, and this canvas never counts them
-    // itself.
-    fn push_vertex(&mut self, x: f32, y: f32, u: f32, v: f32, color: &Color) {
-        gfx.push_ui_vertex(&mut self.vertices, &gfx.UiVertex {
-            x: x, y: y, u: u, v: v, r: color.r, g: color.g, b: color.b, a: color.a,
-        })
+    pub fn set_clip(&mut self, clip: Option<layout.Rect>) -> Option<layout.Rect> { replace(&mut self.clip, clip) }
+
+    fn write_triangle(&mut self, a: &gfx.UiVertex, b: &gfx.UiVertex, c: &gfx.UiVertex) {
+        match self.clip {
+            .Some(bounds) => {
+                if !layout.covers(bounds, a.x, a.y) || !layout.covers(bounds, b.x, b.y) || !layout.covers(bounds, c.x, c.y) {
+                    clipping.triangle(&mut self.vertices, a, b, c, bounds)
+                    return
+                }
+            },
+            .None => {},
+        }
+        gfx.push_ui_vertex(&mut self.vertices, a)
+        gfx.push_ui_vertex(&mut self.vertices, b)
+        gfx.push_ui_vertex(&mut self.vertices, c)
     }
 
     fn quad(&mut self, x: f32, y: f32, w: f32, h: f32, u0: f32, v0: f32, u1: f32, v1: f32, color: &Color) {
-        self.push_vertex(x, y, u0, v0, color)
-        self.push_vertex(x + w, y, u1, v0, color)
-        self.push_vertex(x + w, y + h, u1, v1, color)
-        self.push_vertex(x, y, u0, v0, color)
-        self.push_vertex(x + w, y + h, u1, v1, color)
-        self.push_vertex(x, y + h, u0, v1, color)
+        a := vertex(x, y, u0, v0, color)
+        b := vertex(x + w, y, u1, v0, color)
+        c := vertex(x + w, y + h, u1, v1, color)
+        d := vertex(x, y + h, u0, v1, color)
+        self.write_triangle(&a, &b, &c)
+        self.write_triangle(&a, &c, &d)
     }
 
     // A textured quad: the whole atlas when the uv box is (0,0)-(1,1).
@@ -104,9 +118,8 @@ impl Canvas {
     }
 
     pub fn triangle(&mut self, ax: f32, ay: f32, bx: f32, by: f32, cx: f32, cy: f32, color: &Color) {
-        self.push_vertex(ax, ay, -1.0, -1.0, color)
-        self.push_vertex(bx, by, -1.0, -1.0, color)
-        self.push_vertex(cx, cy, -1.0, -1.0, color)
+        self.write_triangle(&vertex(ax, ay, -1.0, -1.0, color), &vertex(bx, by, -1.0, -1.0, color),
+            &vertex(cx, cy, -1.0, -1.0, color))
     }
 
     pub fn rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: &Color) {
@@ -143,6 +156,16 @@ impl Canvas {
         mut r := radius
         if r > w * 0.5 { r = w * 0.5 }
         if r > h * 0.5 { r = h * 0.5 }
+        // Every triangle is inside the box. Avoid clipping each edge if
+        // the entire shape already fits the active clip.
+        saved := match self.clip.clone() {
+            .Some(bounds) => {
+                box := layout.rect(x, y, w, h)
+                if box.intersect(bounds).empty() { return }
+                if box.visible_in(bounds) { self.set_clip(.None) } else { Option<layout.Rect>.None }
+            },
+            .None => Option<layout.Rect>.None,
+        }
         feather: f32 = 0.75
         clear := rgba(color.r, color.g, color.b, 0.0)
         mut xs: [f32; 36] = [0.0; 36]
@@ -169,13 +192,14 @@ impl Canvas {
         for i in 0..36 {
             next := (i + 1) % 36
             self.triangle(x + w * 0.5, y + h * 0.5, inner_x[i], inner_y[i], inner_x[next], inner_y[next], color)
-            self.push_vertex(inner_x[i], inner_y[i], -1.0, -1.0, color)
-            self.push_vertex(xs[i], ys[i], -1.0, -1.0, &clear)
-            self.push_vertex(xs[next], ys[next], -1.0, -1.0, &clear)
-            self.push_vertex(inner_x[i], inner_y[i], -1.0, -1.0, color)
-            self.push_vertex(xs[next], ys[next], -1.0, -1.0, &clear)
-            self.push_vertex(inner_x[next], inner_y[next], -1.0, -1.0, color)
+            a := vertex(inner_x[i], inner_y[i], -1.0, -1.0, color)
+            b := vertex(xs[i], ys[i], -1.0, -1.0, &clear)
+            c := vertex(xs[next], ys[next], -1.0, -1.0, &clear)
+            d := vertex(inner_x[next], inner_y[next], -1.0, -1.0, color)
+            self.write_triangle(&a, &b, &c)
+            self.write_triangle(&a, &c, &d)
         }
+        if saved.is_some() { _ := self.set_clip(saved) }
     }
 
     // A filled panel with a one-pixel lighter border.

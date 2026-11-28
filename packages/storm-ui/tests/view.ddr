@@ -2,6 +2,7 @@ import ..src.ui as ui
 import ..src.widgets as widgets
 import ..src.view as view
 import ..src.layout as layout
+import gfx
 import text
 
 fn no_entry() -> view.Entry { view.Entry { text: "", erase: false } }
@@ -66,4 +67,75 @@ fn no_entry() -> view.Entry { view.Entry { text: "", erase: false } }
     assert(state.focused(id))
     assert(view.frame(&content, &mut state, &mut canvas, &atlas, &input, &style, .Dismiss, &erase).is_none())
     assert(!state.focused(id))
+}
+
+@test fn nested_scroll_clips_geometry_and_hits_at_the_same_edges() {
+    viewport := layout.rect(10.0, 10.0, 80.0, 30.0)
+    mut scroll := layout.Scroll::new()
+    scroll.wheel(&viewport, 100.0, 20.0, -1.0, 12.0)
+    assert(scroll.offset == 0.0)
+    scroll.wheel(&viewport, 15.0, 20.0, -1.0, 12.0)
+    scroll.limit(&viewport, 80.0)
+    assert(scroll.offset == 12.0)
+    mut children := view.View<i32>::new()
+    children.button(layout.rect(5.0, 15.0, 100.0, 30.0), view.key(1, 1), "", .Outline, 1)
+    children.button(layout.rect(5.0, 80.0, 100.0, 30.0), view.key(1, 2), "", .Outline, 2)
+    mut scrolling := view.View<i32>::new()
+    scrolling.scroll(viewport, &scroll, move children)
+    mut root := view.View<i32>::new()
+    root.clipped(layout.rect(20.0, 0.0, 60.0, 60.0), move scrolling)
+    mut state := view.State::new()
+    mut canvas := ui.Canvas::new()
+    atlas := text.Atlas::new(16, 16)
+    style := view.dark()
+    outside := widgets.Pointer::at(15.0, 15.0, true, true)
+    assert(view.frame(&root, &mut state, &mut canvas, &atlas, &outside, &style, .None, &no_entry()).is_none())
+    assert(canvas.vertex_count() > 0)
+    for i in 0..canvas.vertex_count() {
+        at := i * gfx.UI_FLOATS
+        assert(canvas.vertices()[at] >= 19.999 && canvas.vertices()[at] <= 80.001)
+        assert(canvas.vertices()[at + 1] >= 9.999 && canvas.vertices()[at + 1] <= 33.001)
+    }
+    inside := widgets.Pointer::at(21.0, 11.0, true, true)
+    match view.frame(&root, &mut state, &mut canvas, &atlas, &inside, &style, .None, &no_entry()) {
+        .Some(.Press(1)) => {},
+        _ => assert(false),
+    }
+    idle := widgets.Pointer::at(0.0, 0.0, false, false)
+    _ := view.frame(&root, &mut state, &mut canvas, &atlas, &idle, &style, .Next, &no_entry())
+    assert(state.focused(view.key(1, 1)))
+}
+
+@test fn a_modal_blocks_clicks_and_focus_on_controls_outside_it() {
+    mut root := view.View<i32>::new()
+    root.button(layout.rect(0.0, 0.0, 100.0, 40.0), view.key(1, 1), "Behind", .Outline, 1)
+    mut dialog := view.View<i32>::new()
+    dialog.button(layout.rect(10.0, 50.0, 80.0, 30.0), view.key(2, 1), "Confirm", .Primary, 2)
+    root.modal(layout.rect(0.0, 45.0, 100.0, 60.0), move dialog)
+    root.button(layout.rect(0.0, 115.0, 100.0, 30.0), view.key(1, 2), "Toolbar", .Outline, 3)
+    mut state := view.State::new()
+    mut canvas := ui.Canvas::new()
+    atlas := text.Atlas::new(16, 16)
+    style := view.dark()
+    behind := widgets.Pointer::at(20.0, 20.0, true, true)
+    assert(view.frame(&root, &mut state, &mut canvas, &atlas, &behind, &style, .None, &no_entry()).is_none())
+    idle := widgets.Pointer::at(-1.0, -1.0, false, false)
+    _ := view.frame(&root, &mut state, &mut canvas, &atlas, &idle, &style, .Previous, &no_entry())
+    match view.frame(&root, &mut state, &mut canvas, &atlas, &idle, &style, .Activate, &no_entry()) {
+        .Some(.Press(2)) => {},
+        _ => assert(false),
+    }
+}
+
+@test fn clipping_a_textured_quad_keeps_its_uvs_at_the_new_edge() {
+    mut canvas := ui.Canvas::new()
+    _ := canvas.set_clip(.Some(layout.rect(10.0, 0.0, 10.0, 20.0)))
+    canvas.image(0.0, 0.0, 20.0, 20.0, 0.0, 0.0, 1.0, 1.0, &ui.white(1.0))
+    assert(canvas.vertex_count() > 0)
+    for i in 0..canvas.vertex_count() {
+        at := i * gfx.UI_FLOATS
+        x := canvas.vertices()[at]
+        assert(x >= 10.0 && x <= 20.0)
+        assert(canvas.vertices()[at + 2] == x / 20.0)
+    }
 }

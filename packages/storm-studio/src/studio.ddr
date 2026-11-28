@@ -274,15 +274,8 @@ impl runtime.Workspace for Workspace {
     }
     fn wants_play(&mut self) -> bool { replace(&mut self.editor.play_requested, false) }
     fn overlay(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, pointer: &widgets.Pointer, details: &runtime.Overlay) {
-        nav := if details.keys.hit(.Tab) {
-            if details.keys.down(.Shift) { view_ui.Navigation.Previous } else { view_ui.Navigation.Next }
-        } else if details.keys.hit(.Escape) { view_ui.Navigation.Dismiss }
-        else if details.keys.hit(.Enter) { view_ui.Navigation.Activate }
-        else if details.keys.hit(.Left) { view_ui.Navigation.Decrease }
-        else if details.keys.hit(.Right) { view_ui.Navigation.Increase }
-        else { view_ui.Navigation.None }
         editor.draw(&mut self.editor, &mut canvas, atlas, &mut self.graph, pointer, &editor.Frame {
-            w: details.width, h: details.height, wheel: details.wheel, navigation: nav,
+            w: details.width, h: details.height, wheel: details.wheel, navigation: runtime.navigation(&details.keys),
             entry: view_ui.Entry { text: details.text.clone(), erase: details.keys.hit(.Backspace) }, title: "Material study",
             fps: details.fps, passes: details.passes, device: details.device.clone(), can_play: true,
         })

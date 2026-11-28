@@ -11,6 +11,7 @@ import scene as scenegraph
 import sys
 import text
 import ui
+import ui.view as ui_view
 import ui.widgets as widgets
 
 const GLYPHS: string = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?/-+()[]%&*#@=<>_|~ –·•… åäö ÅÄÖ éÉ ²³"
@@ -43,6 +44,10 @@ pub trait Project {
     fn mesh_view(&self, eye: core.Vec3) -> gfx.MeshView { gfx.mesh_view([eye.x, eye.y, eye.z]) }
     fn hud(&mut self, controls: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas,
         pointer: &widgets.Pointer, width: f32, height: f32, paused: bool, exact: bool, can_edit: bool) -> controls.Action { .Idle }
+
+    fn draw_hud(&mut self, hud: &mut controls.Hud, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &controls.Frame) -> controls.Action {
+        self.hud(&mut hud.legacy, &mut canvas, atlas, &frame.pointer, frame.width, frame.height, frame.paused, frame.exact, frame.can_edit)
+    }
 }
 
 // The game's transport: whether the level is being edited, run, or run one
@@ -101,6 +106,15 @@ impl Transport {
 
 pub struct Overlay {
     width: f32, height: f32, wheel: f32, fps: f32, passes: i32, device: string, keys: gfx.Input, text: string,
+}
+
+pub fn navigation(keys: &gfx.Input) -> ui_view.Navigation {
+    if keys.hit(.Tab) { return if keys.down(.Shift) { ui_view.Navigation.Previous } else { ui_view.Navigation.Next } }
+    if keys.hit(.Escape) { return .Dismiss }
+    if keys.hit(.Enter) { return .Activate }
+    if keys.hit(.Left) { return .Decrease }
+    if keys.hit(.Right) { return .Increase }
+    .None
 }
 
 // An optional authoring workspace lives beside the game. An exported game
@@ -168,7 +182,7 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
 
     custom_eye := args.flag(argv, "--eye")
     backdrop: [f32; 4] = [0.24, 0.34, 0.38, 1.0]
-    mut hud := widgets.State::new()
+    mut hud := controls.Hud::new()
     mut action := controls.Action.Idle
 
     start := args.aim(argv)
@@ -330,7 +344,12 @@ pub fn drive<B: gfx.Backend, P: Project, W: Workspace>(open: fn(string, i32, i32
         pointer := widgets.Pointer::at(mouse.x, mouse.y, frame.input.button_hit(gfx.Button.Left), frame.input.button_down(gfx.Button.Left))
         if playing {
             paused := transport.paused()
-            action = project.hud(&mut hud, &mut canvas, &atlas, &pointer, f32(frame.width), f32(frame.height), paused, paused || capturing, has_tools)
+            entry := ui_view.Entry { text: window.take_text(), erase: frame.input.hit(.Backspace) }
+            action = project.draw_hud(&mut hud, &mut canvas, &atlas, &controls.Frame {
+                width: f32(frame.width), height: f32(frame.height), pointer: pointer, navigation: navigation(&frame.input),
+                entry: entry, wheel: mouse.scroll,
+                paused: paused, exact: paused || capturing, can_edit: has_tools,
+            })
         } else {
             workspace.overlay(&mut canvas, &atlas, &pointer, &Overlay {
                 width: f32(frame.width), height: f32(frame.height), wheel: mouse.scroll, fps: fps, passes: passes, device: device.clone(), keys: frame.input.clone(), text: window.take_text(),

@@ -1,5 +1,6 @@
 // A view describes controls in paint order. Keys keep focus and a drag tied
 // to the same model item when the description changes between frames.
+import .interaction
 import .layout
 import .ui
 import .widgets
@@ -27,7 +28,7 @@ pub fn dark() -> Style {
 
 pub enum Tone { Quiet, Normal, Heading }
 pub enum Align { Start, End, Center }
-pub enum ButtonStyle { Outline, Primary, Selected, Row }
+pub enum ButtonStyle { Outline, Primary, Selected, Row, Disabled }
 
 pub struct Slider { value: f32, lo: f32, hi: f32 }
 
@@ -43,60 +44,121 @@ enum Kind {
 
 struct Node<A> {
     rect: layout.Rect, title: string, kind: Kind,
-    identity: Option<Key>, action: Option<A>,
+    identity: Option<Key>, action: Option<A>, clip: Option<layout.Rect>,
 }
 
-pub struct View<A> { nodes: []Node<A> }
+struct FocusRange { first: i32, end: i32 }
+
+pub struct View<A> { nodes: []Node<A>, modal: Option<FocusRange> }
 
 impl View<A> {
-    pub fn new() -> Self { Self { nodes: [] } }
+    pub fn new() -> Self { Self { nodes: [], modal: .None } }
+
+    // A child uses the same point coordinates as the parent. Nested clips
+    // intersect once here and are used by both rendering and input.
+    pub fn clipped(&mut self, bounds: layout.Rect, move child: Self) {
+        self.attach(bounds, move child, false, 0.0)
+    }
+
+    pub fn scroll(&mut self, bounds: layout.Rect, offset: &layout.Scroll, move child: Self) {
+        self.attach(bounds, move child, false, -offset.offset)
+    }
+
+    // A modal keeps keyboard focus and pointer presses inside its child.
+    pub fn modal(&mut self, bounds: layout.Rect, move child: Self) {
+        self.attach(bounds, move child, true, 0.0)
+    }
+
+    fn attach(&mut self, bounds: layout.Rect, move child: Self, modal: bool, dy: f32) {
+        first := self.nodes.len
+        match child.modal {
+            .Some(scope) => { self.modal = .Some(FocusRange { first: first + scope.first, end: first + scope.end }) },
+            .None => {
+                if modal { self.modal = .Some(FocusRange { first: first, end: first + child.nodes.len }) }
+            },
+        }
+        self.nodes.reserve(first + child.nodes.len)
+        for record in move child.nodes {
+            mut node := move record
+            node.rect.y += dy
+            node.clip = .Some(match node.clip {
+                .Some(inside) => bounds.intersect(&layout.rect(inside.x, inside.y + dy, inside.w, inside.h)),
+                .None => bounds.clone(),
+            })
+            self.nodes.push(move node)
+        }
+    }
 
     pub fn fill(&mut self, rect: layout.Rect, color: ui.Color) {
-        self.nodes.push(Node<A> { rect: rect, title: "", kind: .Fill(color), identity: .None, action: .None })
+        self.nodes.push(Node<A> { rect: rect, title: "", kind: .Fill(color), identity: .None, action: .None, clip: .None })
     }
 
     pub fn rounded(&mut self, rect: layout.Rect, radius: f32, color: ui.Color) {
-        self.nodes.push(Node<A> { rect: rect, title: "", kind: .Rounded(radius, color), identity: .None, action: .None })
+        self.nodes.push(Node<A> { rect: rect, title: "", kind: .Rounded(radius, color), identity: .None, action: .None, clip: .None })
     }
 
     pub fn label(&mut self, rect: layout.Rect, title: string, tone: Tone, align: Align) {
-        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Label(tone, align), identity: .None, action: .None })
+        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Label(tone, align), identity: .None, action: .None, clip: .None })
     }
 
     pub fn button(&mut self, rect: layout.Rect, id: Key, title: string, style: ButtonStyle, move action: A) {
-        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Button(style), identity: .Some(id), action: .Some(move action) })
+        if style == .Disabled { self.disabled_button(rect, title); return }
+        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Button(style), identity: .Some(id), action: .Some(move action), clip: .None })
+    }
+
+    pub fn disabled_button(&mut self, rect: layout.Rect, title: string) {
+        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Button(.Disabled), identity: .None, action: .None, clip: .None })
     }
 
     pub fn toggle(&mut self, rect: layout.Rect, id: Key, title: string, checked: bool, move action: A) {
-        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Toggle(checked), identity: .Some(id), action: .Some(move action) })
+        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Toggle(checked), identity: .Some(id), action: .Some(move action), clip: .None })
     }
 
     pub fn slider(&mut self, rect: layout.Rect, id: Key, title: string, model: Slider, move action: A) {
-        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Slider(model), identity: .Some(id), action: .Some(move action) })
+        self.nodes.push(Node<A> { rect: rect, title: title.clone(), kind: .Slider(model), identity: .Some(id), action: .Some(move action), clip: .None })
     }
 
     pub fn field(&mut self, rect: layout.Rect, id: Key, value: string, placeholder: string, move action: A) {
-        self.nodes.push(Node<A> { rect: rect, title: placeholder.clone(), kind: .Field(value.clone()), identity: .Some(id), action: .Some(move action) })
+        self.nodes.push(Node<A> { rect: rect, title: placeholder.clone(), kind: .Field(value.clone()), identity: .Some(id), action: .Some(move action), clip: .None })
     }
 }
 
 pub enum Event<A> { Press(A), Slide(A, f32), Text(A, string) }
 pub enum Navigation { None, Next, Previous, Activate, Decrease, Increase, Dismiss }
 
-pub struct State { pressed: Option<Key>, focus: Option<Key> }
+pub struct State { pointer: interaction.Capture<Key>, focus: Option<Key> }
 impl State {
-    pub fn new() -> Self { Self { pressed: .None, focus: .None } }
+    pub fn new() -> Self { Self { pointer: interaction.Capture<Key>::new(), focus: .None } }
 
     pub fn focused(&self, wanted: Key) -> bool {
         match self.focus { .Some(id) => same(&id, &wanted), .None => false }
     }
 }
 
-fn lookup<A>(view: &View<A>, key: &Option<Key>) -> i32 {
+fn combined_clip(outer: &Option<layout.Rect>, inner: &Option<layout.Rect>) -> Option<layout.Rect> {
+    match outer {
+        .None => inner.clone(),
+        .Some(parent) => match inner {
+            .Some(child) => Option<layout.Rect>.Some(parent.intersect(child)),
+            .None => outer.clone(),
+        },
+    }
+}
+
+fn input_bounds<A>(node: &Node<A>, inherited: &Option<layout.Rect>) -> layout.Rect {
+    match combined_clip(inherited, &node.clip) { .Some(clip) => node.rect.intersect(&clip), .None => node.rect.clone() }
+}
+
+fn focus_range<A>(view: &View<A>) -> FocusRange {
+    match view.modal { .Some(scope) => scope.clone(), .None => FocusRange { first: 0, end: view.nodes.len } }
+}
+
+fn lookup<A>(view: &View<A>, scope: &FocusRange, inherited: &Option<layout.Rect>, key: &Option<Key>) -> i32 {
     match key {
         .None => -1,
         .Some(wanted) => {
-            for i in 0..view.nodes.len {
+            for i in scope.first..scope.end {
+                if input_bounds(&view.nodes[i], inherited).empty() { continue }
                 match view.nodes[i].identity {
                     .Some(id) => { if same(&id, wanted) { return i } },
                     .None => {},
@@ -107,13 +169,14 @@ fn lookup<A>(view: &View<A>, key: &Option<Key>) -> i32 {
     }
 }
 
-fn focused<A>(view: &View<A>, current: i32, step: i32) -> i32 {
-    count := view.nodes.len
+fn focused<A>(view: &View<A>, scope: &FocusRange, inherited: &Option<layout.Rect>, current: i32, step: i32) -> i32 {
+    count := scope.end - scope.first
     if count == 0 { return -1 }
-    mut index := if current < 0 && step < 0 { 0 } else { current }
+    mut index := if current >= 0 { current - scope.first } else if step < 0 { 0 } else { -1 }
     for _ in 0..count {
         index = (index + step + count) % count
-        if view.nodes[index].identity.is_some() { return index }
+        at := scope.first + index
+        if view.nodes[at].identity.is_some() && !input_bounds(&view.nodes[at], inherited).empty() { return at }
     }
     -1
 }
@@ -121,12 +184,6 @@ fn focused<A>(view: &View<A>, current: i32, step: i32) -> i32 {
 fn bar(rect: &layout.Rect) -> layout.Rect {
     label := rect.w * 0.42
     layout.rect(rect.x + label, rect.y + (rect.h - 4.0) * 0.5, rect.w - label - 44.0, 4.0)
-}
-
-fn unit(value: f32) -> f32 {
-    if value < 0.0 { return 0.0 }
-    if value > 1.0 { return 1.0 }
-    value
 }
 
 fn text_at(canvas: &mut ui.Canvas, atlas: &text.Atlas, bounds: &layout.Rect, title: string,
@@ -151,7 +208,7 @@ fn paint<A>(node: &Node<A>, canvas: &mut ui.Canvas, atlas: &text.Atlas, style: &
             text_at(&mut canvas, atlas, r, node.title, size, align, &ink)
         },
         .Button(kind) => {
-            if kind == .Primary || kind == .Outline || kind == .Selected || over || down || focus {
+            if kind != .Row || over || down || focus {
                 fill := if kind == .Primary { style.accent.clone() }
                     else if kind == .Selected { style.selection.clone() }
                     else if down || over { style.raised.clone() } else { style.fill.clone() }
@@ -163,15 +220,15 @@ fn paint<A>(node: &Node<A>, canvas: &mut ui.Canvas, atlas: &text.Atlas, style: &
                 }
             }
             if kind == .Selected || focus { canvas.rect(r.x + 2.0, r.y + 4.0, 2.0, r.h - 8.0, &style.accent) }
-            ink := if kind == .Primary { style.accent_ink.clone() } else { style.ink.clone() }
+            ink := if kind == .Primary { style.accent_ink.clone() }
+                else if kind == .Disabled { style.quiet.clone() } else { style.ink.clone() }
             row := kind == .Selected || kind == .Row
             inset: f32 = if row { 5.0 } else { 9.0 }
             text_at(&mut canvas, atlas, &r.inset(inset, 0.0), node.title, 14.0, if row { .Start } else { .Center }, &ink)
         },
         .Slider(model) => {
             track := bar(r)
-            span := model.hi - model.lo
-            fraction := if span > 0.0 { unit((model.value - model.lo) / span) } else { 0.0 }
+            fraction := interaction.fraction(model.value, model.lo, model.hi)
             knob := track.x + fraction * track.w
             if over || focus { canvas.smooth_rounded_rect(r.x, r.y, r.w, r.h, 4.0, &style.fill) }
             text_at(&mut canvas, atlas, &layout.rect(r.x + 3.0, r.y, track.x - r.x - 7.0, r.h), node.title, 12.0, .Start, &style.quiet)
@@ -227,24 +284,36 @@ fn changed_text(value: string, entry: &Entry) -> string {
 
 pub fn frame<A: Clone>(view: &View<A>, state: &mut State, canvas: &mut ui.Canvas, atlas: &text.Atlas,
     pointer: &widgets.Pointer, style: &Style, navigation: Navigation, entry: &Entry) -> Option<Event<A>> {
-    mut captured := lookup(view, &state.pressed)
-    mut focus := lookup(view, &state.focus)
-    if !pointer.down || captured < 0 { state.pressed = .None; captured = -1 }
+    inherited := canvas.set_clip(.None)
+    scope := focus_range(view)
+    mut captured := lookup(view, &scope, &inherited, &state.pointer.key)
+    mut focus := lookup(view, &scope, &inherited, &state.focus)
+    if !pointer.down || captured < 0 { state.pointer.release(); captured = -1 }
     mut hot := -1
-    for i in 0..view.nodes.len {
+    for i in scope.first..scope.end {
         node := &view.nodes[i]
-        if node.identity.is_some() && node.rect.contains(pointer.x, pointer.y) { hot = i }
+        if node.identity.is_some() && input_bounds(node, &inherited).contains(pointer.x, pointer.y) { hot = i }
     }
-    if navigation == .Next { focus = focused(view, focus, 1) }
-    if navigation == .Previous { focus = focused(view, focus, -1) }
-    if navigation == .Dismiss { focus = -1; captured = -1 }
-    else if pointer.pressed && captured < 0 { captured = hot; focus = hot }
-    state.pressed = if captured < 0 { .None } else { view.nodes[captured].identity.clone() }
+    if navigation == .Next { focus = focused(view, &scope, &inherited, focus, 1) }
+    if navigation == .Previous { focus = focused(view, &scope, &inherited, focus, -1) }
+    if navigation == .Dismiss {
+        focus = -1
+        captured = -1
+        state.pointer.release()
+    } else {
+        target := if hot < 0 { Option<Key>.None } else { view.nodes[hot].identity.clone() }
+        if state.pointer.press(target, pointer.pressed) { captured = hot; focus = hot }
+    }
     state.focus = if focus < 0 { .None } else { view.nodes[focus].identity.clone() }
 
     for i in 0..view.nodes.len {
-        paint(&view.nodes[i], &mut canvas, atlas, style, hot == i, captured == i, focus == i)
+        node := &view.nodes[i]
+        _ := canvas.set_clip(combined_clip(&inherited, &node.clip))
+        if !input_bounds(node, &inherited).empty() {
+            paint(node, &mut canvas, atlas, style, hot == i, captured == i, focus == i)
+        }
     }
+    _ := canvas.set_clip(inherited)
     if focus >= 0 && (entry.erase || entry.text.len > 0) {
         focused := &view.nodes[focus]
         match focused.kind {
@@ -265,14 +334,14 @@ pub fn frame<A: Clone>(view: &View<A>, state: &mut State, canvas: &mut ui.Canvas
             track := bar(&node.rect)
             span := model.hi - model.lo
             if span <= 0.0 || navigation == .Activate { return .None }
-            mut fraction := unit((model.value - model.lo) / span)
-            if navigation == .Increase { fraction = unit(fraction + 0.025) }
-            else if navigation == .Decrease { fraction = unit(fraction - 0.025) }
-            else {
-                if track.w == 0.0 || (!pointer.down && !pointer.pressed) { return .None }
-                fraction = unit((pointer.x - track.x) / track.w)
+            mut value := model.value
+            if keyboard {
+                fraction := interaction.fraction(model.value, model.lo, model.hi)
+                step: f32 = if navigation == .Increase { 0.025 } else { -0.025 }
+                value = model.lo + span * interaction.unit(fraction + step)
+            } else if pointer.down || pointer.pressed {
+                value = interaction.slide(pointer.x, track.x, track.w, model.lo, model.hi).unwrap_or(model.value)
             }
-            value := model.lo + span * fraction
             if value != model.value { return .Some(Event<A>.Slide(move action, value)) }
         },
         .Field(_) => {},

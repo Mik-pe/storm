@@ -1,0 +1,63 @@
+// Clip coverage triangles in window coordinates, interpolating UV and color
+// at each new edge just as the rasterizer does inside the source triangle.
+import gfx
+import .layout
+
+struct Polygon { vertices: [gfx.UiVertex; 8], len: i32 }
+enum Edge { Left, Right, Top, Bottom }
+
+fn distance(p: &gfx.UiVertex, edge: Edge, bounds: &layout.Rect) -> f32 {
+    match edge {
+        .Left => p.x - bounds.x,
+        .Right => bounds.x + bounds.w - p.x,
+        .Top => p.y - bounds.y,
+        .Bottom => bounds.y + bounds.h - p.y,
+    }
+}
+
+fn crossing(a: &gfx.UiVertex, b: &gfx.UiVertex, from: f32, to: f32) -> gfx.UiVertex {
+    t := from / (from - to)
+    gfx.UiVertex {
+        x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+        u: a.u + (b.u - a.u) * t, v: a.v + (b.v - a.v) * t,
+        r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t, a: a.a + (b.a - a.a) * t,
+    }
+}
+
+fn cut(polygon: &Polygon, edge: Edge, bounds: &layout.Rect) -> Polygon {
+    mut output := Polygon { vertices: [polygon.vertices[0]; 8], len: 0 }
+    if polygon.len == 0 { return output }
+    mut previous := polygon.vertices[polygon.len - 1]
+    mut from := distance(&previous, edge, bounds)
+    for i in 0..polygon.len {
+        current := &polygon.vertices[i]
+        to := distance(current, edge, bounds)
+        if (from < 0.0 && to > 0.0) || (from > 0.0 && to < 0.0) {
+            output.vertices[output.len] = crossing(&previous, current, from, to)
+            output.len += 1
+        }
+        if to >= 0.0 {
+            output.vertices[output.len] = current.clone()
+            output.len += 1
+        }
+        previous = current.clone()
+        from = to
+    }
+    output
+}
+
+pub fn triangle(out: &mut []f32, a: &gfx.UiVertex, b: &gfx.UiVertex, c: &gfx.UiVertex, bounds: &layout.Rect) {
+    if bounds.empty() { return }
+    mut polygon := Polygon { vertices: [a.clone(), b.clone(), c.clone(), a.clone(), a.clone(), a.clone(), a.clone(), a.clone()], len: 3 }
+    for edge in [Edge.Left, .Right, .Top, .Bottom] {
+        inside := distance(a, edge, bounds) >= 0.0 && distance(b, edge, bounds) >= 0.0 && distance(c, edge, bounds) >= 0.0
+        if !inside { polygon = cut(&polygon, edge, bounds) }
+        if polygon.len < 3 { return }
+    }
+    for i in 1..polygon.len - 1 {
+        gfx.push_ui_vertex(&mut out, &polygon.vertices[0])
+        gfx.push_ui_vertex(&mut out, &polygon.vertices[i])
+        gfx.push_ui_vertex(&mut out, &polygon.vertices[i + 1])
+    }
+}

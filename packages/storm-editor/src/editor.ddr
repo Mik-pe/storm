@@ -33,12 +33,11 @@ pub struct State {
     focus: bool,
     play_requested: bool,
     compact_panel: Panel,
-    first_node: i32,
+    tree_scroll: layout.Scroll,
     query: string,
     folded: []ecs.Entity,
     reveal: Option<Reveal>,
-    inspector_scroll: f32,
-    inspector_extent: f32,
+    inspector_scroll: layout.Scroll,
     glass: bool,
     shadows: bool,
     effects: bool,
@@ -47,7 +46,7 @@ pub struct State {
 
 pub fn new(selected: ecs.Entity, glass: bool, shadows: bool, effects: bool) -> State {
     State { controls: view.State::new(), selected: selected, focus: false, play_requested: false, compact_panel: .Closed,
-        first_node: 0, query: "", folded: [], reveal: .None, inspector_scroll: 0.0, inspector_extent: 0.0, glass: glass, shadows: shadows, effects: effects, antialias: true }
+        tree_scroll: layout.Scroll::new(), query: "", folded: [], reveal: .None, inspector_scroll: layout.Scroll::new(), glass: glass, shadows: shadows, effects: effects, antialias: true }
 }
 
 pub struct Frame {
@@ -58,7 +57,6 @@ pub struct Frame {
 struct Dock { toolbar: layout.Rect, footer: layout.Rect, tree: layout.Rect, inspector: layout.Rect, viewport: layout.Rect, compact: bool }
 
 fn min(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
-fn clamp(value: f32, max: f32) -> f32 { if value < 0.0 || max < 0.0 { 0.0 } else { min(value, max) } }
 
 fn dock(focus: bool, panel: Panel, width: f32, height: f32) -> Dock {
     compact := width < WIDE
@@ -90,7 +88,7 @@ pub fn search(state: &mut State, query: string) -> Result<(), string> {
         if byte < 32 || byte == 127 { return .Err("Search requires a single line of text") }
     }
     state.query = query.clone()
-    state.first_node = 0
+    state.tree_scroll.reset()
     .Ok
 }
 
@@ -133,20 +131,16 @@ fn tree_rows(state: &State, graph: &scene.Graph) -> []Row {
     rows
 }
 
-fn reveal_row(rows: &[]Row, target: &Reveal, visible: i32, first: i32) -> i32 {
+fn reveal_row(scroll: &mut layout.Scroll, viewport: &layout.Rect, rows: &[]Row, target: &Reveal) {
     for start in 0..rows.len {
         if !same_entity(rows[start].node, target.node) { continue }
-        if !target.children {
-            if start < first { return start }
-            if start >= first + visible { return start - visible + 1 }
-            return first
-        }
         mut end := start + 1
-        while end < rows.len && rows[end].depth > rows[start].depth { end += 1 }
-        if end > first + visible { return end - visible }
-        return first
+        if target.children {
+            while end < rows.len && rows[end].depth > rows[start].depth { end += 1 }
+        }
+        scroll.reveal(viewport, f32(end - 1) * ROW, f32(end) * ROW)
+        return
     }
-    first
 }
 
 fn name(graph: &scene.Graph, entity: ecs.Entity) -> string {
@@ -201,38 +195,36 @@ fn tree(out: &mut view.View<Action>, state: &mut State, graph: &scene.Graph, pan
     if field.visible_in(panel) { out.field(field, search_key(), state.query, "Search scene", .Search) }
     list := layout.rect(panel.x + 8.0, panel.y + 94.0, panel.w - 16.0, panel.h - 145.0)
     rows := tree_rows(state, graph)
-    visible := i32(list.h / ROW)
-    if list.contains(pointer.x, pointer.y) && wheel != 0.0 {
-        state.first_node += if wheel > 0.0 { -1 } else { 1 }
-    }
+    state.tree_scroll.wheel(&list, pointer.x, pointer.y, wheel, ROW)
     match replace(&mut state.reveal, .None) {
-        .Some(target) => { state.first_node = reveal_row(&rows, &target, visible, state.first_node) },
+        .Some(target) => reveal_row(&mut state.tree_scroll, &list, &rows, &target),
         .None => {},
     }
-    state.first_node = i32(clamp(f32(state.first_node), f32(rows.len - visible)))
+    state.tree_scroll.limit(&list, f32(rows.len) * ROW)
+    mut items := view.View<Action>::new()
     if rows.len == 0 && state.query.len > 0 {
-        out.label(layout.rect(list.x + 8.0, list.y, list.w - 16.0, 26.0), "No matching objects", .Quiet, .Start)
+        items.label(layout.rect(list.x + 8.0, list.y, list.w - 16.0, 26.0), "No matching objects", .Quiet, .Start)
     }
-    mut items := layout.Stack::new(list.clone(), .Column, 0.0)
-    for i in state.first_node..rows.len {
-        bounds := items.next(ROW)
-        if !bounds.visible_in(&list) { break }
+    visible := state.tree_scroll.visible_items(&list, rows.len, ROW)
+    for i in visible.first..visible.end {
+        bounds := layout.rect(list.x, list.y + f32(i) * ROW, list.w, ROW)
         row := &rows[i]
         id := row.node
         selected := state.selected.index == id.index && state.selected.generation == id.generation
         inset := min(45.0, f32(row.depth) * 13.0)
-        out.button(bounds, view.key(2, entity_id(id)), "", if selected { .Selected } else { .Row }, .Select(id))
+        items.button(bounds, view.key(2, entity_id(id)), "", if selected { .Selected } else { .Row }, .Select(id))
         indent := bounds.x + 5.0 + inset
         if row.branch {
-            out.button(layout.rect(indent, bounds.y + 2.0, 20.0, bounds.h - 4.0), view.key(6, entity_id(id)),
+            items.button(layout.rect(indent, bounds.y + 2.0, 20.0, bounds.h - 4.0), view.key(6, entity_id(id)),
                 if row.folded { ">" } else { "v" }, .Row, .Fold(id))
         } else if graph.shape(id).is_some() {
-            out.rounded(layout.rect(indent + 7.0, bounds.y + (bounds.h - 7.0) * 0.5, 7.0, 7.0), 2.0,
+            items.rounded(layout.rect(indent + 7.0, bounds.y + (bounds.h - 7.0) * 0.5, 7.0, 7.0), 2.0,
                 if selected { style.accent.clone() } else { style.quiet.clone() })
         }
-        out.label(layout.rect(indent + 24.0, bounds.y, bounds.w - 36.0 - inset, bounds.h),
+        items.label(layout.rect(indent + 24.0, bounds.y, bounds.w - 36.0 - inset, bounds.h),
             name(graph, id), if selected { .Normal } else { .Quiet }, .Start)
     }
+    out.scroll(list, &state.tree_scroll, move items)
     footer := layout.rect(panel.x + 9.0, panel.y + panel.h - 40.0, panel.w - 18.0, 30.0)
     mut buttons := layout.Stack::new(footer.clone(), .Row, 6.0)
     w := (footer.w - 6.0) * 0.5
@@ -244,17 +236,14 @@ fn tree(out: &mut view.View<Action>, state: &mut State, graph: &scene.Graph, pan
     }
 }
 
-fn section(out: &mut view.View<Action>, bounds: &layout.Rect, visible: &layout.Rect, title: string, style: &view.Style) {
-    if !bounds.visible_in(visible) { return }
+fn section(out: &mut view.View<Action>, bounds: &layout.Rect, title: string, style: &view.Style) {
     out.rounded(bounds.clone(), 6.0, style.fill.clone())
     out.label(bounds.inset(8.0, 0.0), title, .Normal, .Start)
 }
 
-fn slider(out: &mut view.View<Action>, bounds: layout.Rect, visible: &layout.Rect, key: view.Key,
+fn slider(out: &mut view.View<Action>, bounds: layout.Rect, key: view.Key,
     label: string, value: f32, lo: f32, hi: f32, move action: Action) {
-    if bounds.visible_in(visible) {
-        out.slider(bounds, key, label, view.Slider { value: value, lo: lo, hi: hi }, move action)
-    }
+    out.slider(bounds, key, label, view.Slider { value: value, lo: lo, hi: hi }, move action)
 }
 
 fn inspector(out: &mut view.View<Action>, state: &mut State, graph: &scene.Graph, panel: &layout.Rect,
@@ -263,54 +252,50 @@ fn inspector(out: &mut view.View<Action>, state: &mut State, graph: &scene.Graph
     header(&mut out, panel, "Inspector", style)
     out.fill(layout.rect(panel.x, panel.y, 1.0, panel.h), style.border.clone())
     visible := layout.rect(panel.x + 10.0, panel.y + 48.0, panel.w - 20.0, panel.h - 58.0)
-    if visible.contains(pointer.x, pointer.y) && wheel != 0.0 {
-        step: f32 = if wheel > 0.0 { -27.0 } else { 27.0 }
-        state.inspector_scroll = clamp(state.inspector_scroll + step, state.inspector_extent - visible.h + 27.0)
-    }
-    mut stack := layout.Stack::new(layout.rect(visible.x, visible.y - state.inspector_scroll, visible.w, visible.h), .Column, 3.0)
+    mut controls := view.View<Action>::new()
+    mut stack := layout.Stack::new(visible.clone(), .Column, 3.0)
     node := state.selected
     if graph.is_alive(node) {
         id := entity_id(node)
-        section(&mut out, &stack.next(30.0), &visible, name(graph, node), style)
+        section(&mut controls, &stack.next(30.0), name(graph, node), style)
         if graph.has_material(node) {
             row := stack.next(27.0)
-            section(&mut out, &row, &visible, "Surface", style)
-            if row.visible_in(&visible) {
-                base := graph.material_at(node).base
-                out.rounded(layout.rect(row.x + row.w - 33.0, row.y + 6.0, 24.0, 15.0), 4.0,
-                    ui.linear_rgb(base.r, base.g, base.b))
-            }
+            section(&mut controls, &row, "Surface", style)
+            base := graph.material_at(node).base
+            controls.rounded(layout.rect(row.x + row.w - 33.0, row.y + 6.0, 24.0, 15.0), 4.0,
+                ui.linear_rgb(base.r, base.g, base.b))
             field := [scene.MaterialField.Metallic, .Roughness, .Emissive, .BaseR, .BaseG, .BaseB, .BaseA]
             labels := ["Metallic", "Roughness", "Emission", "Red", "Green", "Blue", "Opacity"]
             for i in 0..field.len {
-                slider(&mut out, stack.next(22.0), &visible, view.key(i64(10 + i), id), labels[i],
+                slider(&mut controls, stack.next(22.0), view.key(i64(10 + i), id), labels[i],
                     graph.material_value(node, field[i]), 0.0, if field[i] == .Emissive { 4.0 } else { 1.0 }, .Surface(node, field[i]))
             }
         }
-        section(&mut out, &stack.next(27.0), &visible, "Transform", style)
+        section(&mut controls, &stack.next(27.0), "Transform", style)
         axes := [scene.TransformField.X, .Y, .Z, .Rotation, .ScaleX, .ScaleY, .ScaleZ]
         names := ["Position X", "Position Y", "Position Z", "Yaw (rad)", "Scale X", "Scale Y", "Scale Z"]
         for i in 0..axes.len {
             low: f32 = if i < 3 { -20.0 } else if i == 3 { -3.14159 } else { 0.05 }
             high: f32 = if i < 3 { 20.0 } else if i == 3 { 3.14159 } else { 8.0 }
-            slider(&mut out, stack.next(22.0), &visible, view.key(i64(20 + i), id), names[i], graph.transform_value(node, axes[i]),
+            slider(&mut controls, stack.next(22.0), view.key(i64(20 + i), id), names[i], graph.transform_value(node, axes[i]),
                 low, high, .Transform(node, axes[i]))
         }
         row := stack.next(22.0)
-        if row.visible_in(&visible) { out.toggle(row, view.key(4, id), "Visible", graph.local(node).visible, .Visibility(node)) }
+        controls.toggle(row, view.key(4, id), "Visible", graph.local(node).visible, .Visibility(node))
     } else {
-        section(&mut out, &stack.next(30.0), &visible, "Select an object", style)
+        section(&mut controls, &stack.next(30.0), "Select an object", style)
     }
-    section(&mut out, &stack.next(27.0), &visible, "Rendering", style)
+    section(&mut controls, &stack.next(27.0), "Rendering", style)
     settings := [Setting.Glass, .Shadows, .Effects, .Antialias]
     labels := ["Glass", "Shadows", "Color and glow", "Anti-aliasing"]
     values := [state.glass, state.shadows, state.effects, state.antialias]
     for i in 0..settings.len {
         row := stack.next(22.0)
-        if row.visible_in(&visible) { out.toggle(row, view.key(5, i64(i)), labels[i], values[i], .Setting(settings[i])) }
+        controls.toggle(row, view.key(5, i64(i)), labels[i], values[i], .Setting(settings[i]))
     }
-    state.inspector_extent = stack.extent()
-    state.inspector_scroll = clamp(state.inspector_scroll, state.inspector_extent - visible.h + 27.0)
+    state.inspector_scroll.wheel(&visible, pointer.x, pointer.y, wheel, 27.0)
+    state.inspector_scroll.limit(&visible, stack.extent())
+    out.scroll(visible, &state.inspector_scroll, move controls)
 }
 
 fn footer(out: &mut view.View<Action>, r: &layout.Rect, frame: &Frame, style: &view.Style) {
@@ -345,7 +330,7 @@ pub fn select(state: &mut State, graph: &scene.Graph, entity: ecs.Entity) -> Res
     }
     state.selected = entity
     state.reveal = .Some(Reveal { node: entity, children: false })
-    state.inspector_scroll = 0.0
+    state.inspector_scroll.reset()
     .Ok
 }
 
@@ -353,7 +338,7 @@ pub fn removed(state: &mut State, graph: &scene.Graph) {
     if graph.is_alive(state.selected) { return }
     nodes := graph.nodes()
     state.selected = if nodes.len > 0 { nodes[0] } else { ecs.Entity { index: -1, generation: 0 } }
-    state.inspector_scroll = 0.0
+    state.inspector_scroll.reset()
 }
 
 fn press(state: &mut State, graph: &mut scene.Graph, action: Action) {

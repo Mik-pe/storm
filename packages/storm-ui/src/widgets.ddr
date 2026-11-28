@@ -1,16 +1,8 @@
-// Immediate-mode widgets for Storm's editor: buttons and sliders that work
-// from a Pointer (position + edge-triggered press + held), so they are
-// testable without a window and need no Vulkan.
-//
-//   mut ui_state := widgets.State::new()
-//   pointer := widgets.Pointer { x: mouse.x, y: mouse.y, down: buttons != 0, pressed: pressed != 0 }
-//   if widgets.button(&mut ui_state, &mut canvas, atlas, 1, &pointer, 40.0, 90.0, 120.0, 30.0, "+ cube", &theme) {
-//       // pressed this frame
-//   }
-//   widgets.slider(&mut ui_state, &mut canvas, atlas, 2, &pointer, 40.0, 140.0, 240.0, "metallic", &mut material.metallic, 0.0, 1.0, &theme)
-
+// Source-compatible immediate controls for games that predate keyed views.
 import text
 import .ui as ui
+import .interaction
+import .layout
 
 pub const BUTTON_HEIGHT: f32 = 30.0
 pub const SLIDER_HEIGHT: f32 = 22.0
@@ -54,41 +46,27 @@ pub fn theme() -> Theme {
     }
 }
 
-// Hot = the widget under the pointer; active = the one that received the
-// press and keeps receiving drags until release. Ids are caller-chosen ints.
-pub struct State {
-    hot: i32,
-    active: i32,
-}
+pub struct State { pointer: interaction.Capture<i32> }
 
 pub fn hit(p: &Pointer, x: f32, y: f32, w: f32, h: f32) -> bool {
-    p.x >= x && p.y >= y && p.x < x + w && p.y < y + h
+    layout.rect(x, y, w, h).contains(p.x, p.y)
 }
 
 impl State {
-    pub fn new() -> Self { Self { hot: 0, active: 0 } }
-
-    pub fn active(&self) -> i32 { self.active }
-
-    // Call once per frame before drawing widgets: a widget only becomes hot
-    // while nothing else is being dragged, and an active widget stops being
-    // active on release.
-    pub fn begin(&mut self) {
-        self.hot = 0
-    }
+    pub fn new() -> Self { Self { pointer: interaction.Capture<i32>::new() } }
+    pub fn active(&self) -> i32 { self.pointer.key.unwrap_or(0) }
+    pub fn begin(&mut self) {}
 
     pub fn end(&mut self, p: &Pointer) {
-        if !p.down { self.active = 0 }
+        if !p.down { self.pointer.release() }
     }
 
     // Returns true on the frame the widget is pressed (press began on it).
     pub fn button(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &Pointer,
         x: f32, y: f32, w: f32, h: f32, label: string, theme: &Theme) -> bool {
-        mut clicked := false
-        hover := self.active == 0 && hit(p, x, y, w, h)
-        if hover { self.hot = id }
-        if hover && p.pressed { self.active = id; clicked = true }
-        held := self.active == id
+        hover := self.active() == 0 && hit(p, x, y, w, h)
+        clicked := self.pointer.press(.Some(id), hover && p.pressed)
+        held := self.active() == id
         fill := if held { theme.fill_active } else if hover { theme.fill_hot } else { theme.fill }
         canvas.rounded_rect(x, y, w, h, 5.0, &fill)
         tw := ui.Canvas::text_width(atlas, label, 0.61)
@@ -106,19 +84,16 @@ impl State {
         track_w := w - label_width - value_width
         track_y := y + 7.0
         mut changed := false
-        hover := self.active == 0 && hit(p, x, y, w, SLIDER_HEIGHT)
-        if hover { self.hot = id }
-        if hover && p.pressed { self.active = id }
-        if self.active == id && (p.down || p.pressed) {
-            t := clamp01((p.x - track_x) / track_w)
-            dragged := min + (max - min) * t
+        hover := self.active() == 0 && hit(p, x, y, w, SLIDER_HEIGHT)
+        _ := self.pointer.press(.Some(id), hover && p.pressed)
+        if self.active() == id && (p.down || p.pressed) {
+            dragged := interaction.slide(p.x, track_x, track_w, min, max).unwrap_or(value)
             changed = dragged != value
             value = dragged
         }
         canvas.text(atlas, label, x, y + 1.0, 0.61, &theme.ink_dim)
         canvas.rounded_rect(track_x, track_y + 2.0, track_w, 3.0, 1.5, &theme.track)
-        span := max - min
-        t := if span == 0.0 { f32(0.0) } else { clamp01((value - min) / span) }
+        t := interaction.fraction(value, min, max)
         knob_x := track_x + t * track_w
         canvas.rounded_rect(track_x, track_y + 2.0, knob_x - track_x, 3.0, 1.5, &theme.knob)
         canvas.rounded_rect(knob_x - 4.0, track_y - 0.5, 8.0, 8.0, 4.0, &theme.ink)
@@ -130,10 +105,8 @@ impl State {
     // the frame it is pressed.
     pub fn row(&mut self, canvas: &mut ui.Canvas, atlas: &text.Atlas, id: i32, p: &Pointer,
         x: f32, y: f32, w: f32, label: string, indent: i32, selected: bool, theme: &Theme) -> bool {
-        mut clicked := false
-        hover := self.active == 0 && hit(p, x, y, w, ROW_HEIGHT)
-        if hover { self.hot = id }
-        if hover && p.pressed { self.active = id; clicked = true }
+        hover := self.active() == 0 && hit(p, x, y, w, ROW_HEIGHT)
+        clicked := self.pointer.press(.Some(id), hover && p.pressed)
         if selected || hover {
             canvas.rounded_rect(x, y, w, ROW_HEIGHT, 5.0, &if selected { theme.fill_active } else { theme.fill_hot })
         }
@@ -143,10 +116,6 @@ impl State {
         canvas.text(atlas, ui.fit(atlas, label, x + w - text_x - 4.0, 0.64), text_x, y + 5.0, 0.64, &if selected { theme.ink } else { theme.ink_dim })
         clicked
     }
-}
-
-fn clamp01(v: f32) -> f32 {
-    if v < 0.0 { f32(0.0) } else if v > 1.0 { f32(1.0) } else { v }
 }
 
 // Two decimals without float formatting; negative values keep their sign.

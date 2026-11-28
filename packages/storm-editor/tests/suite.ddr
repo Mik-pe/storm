@@ -124,7 +124,7 @@ fn click(state: &mut editor.State, graph: &mut scenegraph.Graph, w: f32, h: f32,
     // First unfold the group. Four rows fit at this height, so the last
     // child takes the fourth row after the view scrolls to the end.
     click(&mut state, &mut graph, 1280.0, 346.0, 21.0, 161.0)
-    assert(state.first_node == 5)
+    assert(state.tree_scroll.offset > 0.0)
     click(&mut state, &mut graph, 1280.0, 346.0, 120.0, 244.0)
     assert(state.selected.index == last.index)
 }

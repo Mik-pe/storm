@@ -9,7 +9,6 @@ import runtime.controls as controls
 import runtime.watch as watch
 import text
 import ui
-import ui.widgets as widgets
 import .play_view
 
 pub struct Game {
@@ -74,12 +73,12 @@ impl runtime.Project for Game {
         sky.light_dir_c = [sun.x, sun.y, sun.z, core.dot(area.center, sun) + radius * 1.6]
         if custom_eye { camera } else { play_view.camera(&area, aspect) }
     }
-    fn hud(&mut self, hud: &mut widgets.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, pointer: &widgets.Pointer,
-        width: f32, height: f32, paused: bool, exact: bool, can_edit: bool) -> controls.Action {
-        _ := exact
-        action := controls.draw(&mut hud, &mut canvas, atlas, pointer, width, height,
-            self.session.scene.name, self.session.tick, paused, self.session.player >= 0, self.view.has_goal, self.session.won, can_edit)
-        if watch.failed(&self.watcher) { controls.reload_error(&mut canvas, atlas, width) }
+    fn draw_hud(&mut self, hud: &mut controls.Hud, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &controls.Frame) -> controls.Action {
+        action := controls.draw(&mut hud.interaction, &mut canvas, atlas, frame, &controls.Playbar {
+            title: self.session.scene.name.clone(), tick: self.session.tick, has_player: self.session.player >= 0,
+            has_goal: self.view.has_goal, won: self.session.won,
+        })
+        if watch.failed(&self.watcher) { controls.reload_error(&mut canvas, atlas, frame.width) }
         action
     }
 }

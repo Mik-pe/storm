@@ -1,28 +1,55 @@
 import text
 import ui
+import ui.view as view
 import ui.widgets as widgets
 import runtime.controls as hud
+
+fn frame(width: i32, paused: bool, pointer: widgets.Pointer, navigation: view.Navigation) -> hud.Frame {
+    entry := view.Entry { text: "", erase: false }
+    hud.Frame { width: f32(width), height: 420.0, pointer: pointer, navigation: navigation,
+        entry: entry, wheel: 0.0, paused: paused, exact: paused, can_edit: true }
+}
+
+fn level() -> hud.Playbar {
+    hud.Playbar { title: "Jump", tick: 35, has_player: true, has_goal: true, won: false }
+}
 
 @test fn play_transport_wraps_and_only_steps_a_paused_game() {
     atlas := text.Atlas::new(16, 16)
     mut canvas := ui.Canvas::new()
+    game := level()
     for width in [320, 720] {
         x := if width == 320 { 12 } else { width - 218 }
         y := if width == 320 { 62 } else { 24 }
         for paused in [false, true] {
-            mut controls := widgets.State::new()
-            for i in 0..5 {
-                points := [[42, 24], [x + 36, y], [x + 104, y], [x + 170, y], [72, 190]]
-                p := widgets.Pointer::at(f32(points[i][0]), f32(points[i][1]), true, true)
+            mut controls := view.State::new()
+            points := [[42, 24], [x + 36, y], [x + 104, y], [x + 170, y], [72, 190]]
+            expected := [hud.Action.Studio, .TogglePause, if paused { hud.Action.Step } else { hud.Action.Idle }, .Restart, .Idle]
+            for i in 0..points.len {
+                px := f32(points[i][0])
+                py := f32(points[i][1])
                 canvas.clear()
-                act := hud.draw(&mut controls, &mut canvas, &atlas, &p, f32(width), 420.0, "Jump", 35, paused, true, true, false, true)
-                expected := [hud.Action.Studio, .TogglePause, if paused { hud.Action.Step } else { hud.Action.Idle }, .Restart, .Idle]
-                assert(act == expected[i])
-                held := widgets.Pointer::at(p.x, p.y, false, true)
-                assert(hud.draw(&mut controls, &mut canvas, &atlas, &held, f32(width), 420.0, "Jump", 35, paused, true, true, false, true) == hud.Action.Idle)
-                release := widgets.Pointer::at(p.x, p.y, false, false)
-                _ := hud.draw(&mut controls, &mut canvas, &atlas, &release, f32(width), 420.0, "Jump", 35, paused, true, true, false, true)
+                press := frame(width, paused, widgets.Pointer::at(px, py, true, true), .None)
+                assert(hud.draw(&mut controls, &mut canvas, &atlas, &press, &game) == expected[i])
+                held := frame(width, paused, widgets.Pointer::at(px, py, false, true), .None)
+                assert(hud.draw(&mut controls, &mut canvas, &atlas, &held, &game) == hud.Action.Idle)
+                release := frame(width, paused, widgets.Pointer::at(px, py, false, false), .None)
+                _ := hud.draw(&mut controls, &mut canvas, &atlas, &release, &game)
             }
         }
     }
+}
+
+@test fn the_game_hud_skips_a_disabled_step_when_navigating_with_tab() {
+    atlas := text.Atlas::new(16, 16)
+    mut canvas := ui.Canvas::new()
+    mut controls := view.State::new()
+    game := level()
+    idle := widgets.Pointer::at(-1.0, -1.0, false, false)
+    next := frame(720, false, idle, .Next)
+    for _ in 0..3 {
+        assert(hud.draw(&mut controls, &mut canvas, &atlas, &next, &game) == hud.Action.Idle)
+    }
+    enter := frame(720, false, idle, .Activate)
+    assert(hud.draw(&mut controls, &mut canvas, &atlas, &enter, &game) == hud.Action.Restart)
 }

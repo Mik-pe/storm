@@ -1,63 +1,80 @@
 import text
 import ui
+import ui.layout as layout
+import ui.view as view
 import ui.widgets as widgets
 
 pub enum Action { Idle, TogglePause, Step, Restart, Studio }
 
-pub fn draw(controls: &mut widgets.State, c: &mut ui.Canvas, atlas: &text.Atlas, p: &widgets.Pointer,
-    width: f32, height: f32, title: string, tick: i64, paused: bool, has_player: bool,
-    has_goal: bool, won: bool, can_edit: bool) -> Action {
-    t := widgets.theme()
-    chrome := ui.rgb(0.077, 0.082, 0.092)
-    narrow := width < 560.0
+pub struct Hud {
+    interaction: view.State,
+    legacy: widgets.State,
+}
+
+impl Hud {
+    pub fn new() -> Self { Self { interaction: view.State::new(), legacy: widgets.State::new() } }
+}
+
+pub struct Frame {
+    width: f32, height: f32, pointer: widgets.Pointer, navigation: view.Navigation, entry: view.Entry,
+    wheel: f32, paused: bool, exact: bool, can_edit: bool,
+}
+
+pub struct Playbar { title: string, tick: i64, has_player: bool, has_goal: bool, won: bool }
+
+pub fn draw(state: &mut view.State, canvas: &mut ui.Canvas, atlas: &text.Atlas, frame: &Frame, game: &Playbar) -> Action {
+    style := view.dark()
+    narrow := frame.width < 560.0
     bar: f32 = if narrow { 88.0 } else { 48.0 }
-    controls.begin()
-    c.rect(0.0, 0.0, width, bar, &chrome)
-    c.rect(0.0, bar - 1.0, width, 1.0, &t.border)
-    mut action := Action.Idle
+    mut hud := view.View<Action>::new()
+    hud.fill(layout.rect(0.0, 0.0, frame.width, bar), style.chrome.clone())
+    hud.fill(layout.rect(0.0, bar - 1.0, frame.width, 1.0), style.border.clone())
     back_w: f32 = if narrow { 64.0 } else { 103.0 }
-    if can_edit && controls.button(&mut c, atlas, 1, p, 12.0, 10.0, back_w, 27.0, if narrow { "Studio" } else { "Back to studio" }, &t) {
-        action = .Studio
+    if frame.can_edit {
+        rect := layout.rect(12.0, 10.0, back_w, 27.0)
+        hud.button(rect, view.key(1, 1), if narrow { "Studio" } else { "Back to studio" }, .Outline, .Studio)
     }
 
-    title_x := if can_edit { 12.0 + back_w + 17.0 } else { 12.0 }
-    group_x: f32 = if narrow { 12.0 } else { width - 218.0 }
-    title_end := if narrow { width - 12.0 } else { group_x - 16.0 }
-    c.text(atlas, ui.fit(atlas, title, title_end - title_x, 0.79), title_x, 11.0, 0.79, &t.ink)
+    title_x := if frame.can_edit { 12.0 + back_w + 17.0 } else { 12.0 }
+    group_x: f32 = if narrow { 12.0 } else { frame.width - 218.0 }
+    title_end := if narrow { frame.width - 12.0 } else { group_x - 16.0 }
+    hud.label(layout.rect(title_x, 0.0, title_end - title_x, 46.0), game.title, .Heading, .Start)
 
     y: f32 = if narrow { 49.0 } else { 10.0 }
-    if controls.button(&mut c, atlas, 2, p, group_x, y, 72.0, 27.0, if paused { "Resume" } else { "Pause" }, &t) {
-        action = .TogglePause
-    }
-    if paused {
-        if controls.button(&mut c, atlas, 3, p, group_x + 78.0, y, 55.0, 27.0, "Step", &t) { action = .Step }
-    } else {
-        c.rounded_rect(group_x + 78.0, y, 55.0, 27.0, 5.0, &t.fill)
-        tw := ui.Canvas::text_width(atlas, "Step", 0.61)
-        c.text(atlas, "Step", group_x + 78.0 + (55.0 - tw) * 0.5, y + 5.5, 0.61, &ui.rgb(0.48, 0.49, 0.51))
-    }
-    if controls.button(&mut c, atlas, 4, p, group_x + 139.0, y, 67.0, 27.0, "Restart", &t) { action = .Restart }
+    hud.button(layout.rect(group_x, y, 72.0, 27.0), view.key(1, 2),
+        if frame.paused { "Resume" } else { "Pause" }, .Outline, .TogglePause)
+    step := layout.rect(group_x + 78.0, y, 55.0, 27.0)
+    if frame.paused { hud.button(step, view.key(1, 3), "Step", .Outline, .Step) }
+    else { hud.disabled_button(step, "Step") }
+    hud.button(layout.rect(group_x + 139.0, y, 67.0, 27.0), view.key(1, 4), "Restart", .Outline, .Restart)
 
-    bottom := height - 32.0
-    c.rect(0.0, bottom, width, 32.0, &chrome)
-    c.rect(0.0, bottom, width, 1.0, &t.border)
-    status := if won { "Goal reached" } else if has_player && has_goal { "Reach the goal" } else if has_player { "Free play" } else { "Physics preview" }
-    c.rounded_rect(16.0, bottom + 13.0, 7.0, 7.0, 3.5, &if won { t.knob } else { t.ink_dim })
-    c.text(atlas, status, 31.0, bottom + 7.0, 0.60, &if won { t.knob } else { t.ink })
-    clock := "Tick " + tick.str()
-    clock_x := width - 16.0 - ui.Canvas::text_width(atlas, clock, 0.57)
-    goal_end := 31.0 + ui.Canvas::text_width(atlas, status, 0.60)
-    if clock_x > goal_end + 12.0 {
-        c.text(atlas, clock, clock_x, bottom + 7.0, 0.57, &t.ink_dim)
+    bottom := frame.height - 32.0
+    hud.fill(layout.rect(0.0, bottom, frame.width, 32.0), style.chrome.clone())
+    hud.fill(layout.rect(0.0, bottom, frame.width, 1.0), style.border.clone())
+    status := if game.won { "Goal reached" } else if game.has_goal && game.has_player { "Reach the goal" }
+        else if game.has_player { "Free play" } else { "Physics preview" }
+    dot := if game.won { style.accent.clone() } else { style.quiet.clone() }
+    hud.rounded(layout.rect(16.0, bottom + 13.0, 7.0, 7.0), 3.5, dot)
+    clock := "Tick " + game.tick.str()
+    status_w := ui.Canvas::text_width(atlas, status, 13.0 / ui.RASTER_SIZE)
+    clock_w := ui.Canvas::text_width(atlas, clock, 13.0 / ui.RASTER_SIZE)
+    clock_x := frame.width - 16.0 - clock_w
+    status_end := 31.0 + status_w
+    hud.label(layout.rect(31.0, bottom, clock_x - 39.0, 32.0), status, .Quiet, .Start)
+    if clock_x > status_end + 12.0 {
+        hud.label(layout.rect(clock_x - 8.0, bottom, clock_w + 8.0, 32.0), clock, .Quiet, .End)
     }
-    help := if has_player { "WASD  move     Space  jump     Q  pause     R  restart" } else { "Q  pause     R  restart" }
-    help_w := ui.Canvas::text_width(atlas, help, 0.56)
-    help_x := (width - help_w) * 0.5
-    if help_x > goal_end + 16.0 && help_x + help_w < clock_x - 16.0 {
-        c.text(atlas, help, help_x, bottom + 7.0, 0.56, &t.ink_dim)
+    help := if game.has_player { "WASD  move     Space  jump     Q  pause     R  restart" } else { "Q  pause     R  restart" }
+    help_w := ui.Canvas::text_width(atlas, help, 13.0 / ui.RASTER_SIZE)
+    help_x := (frame.width - help_w) * 0.5
+    if help_x > status_end + 16.0 && help_x + help_w < clock_x - 16.0 {
+        hud.label(layout.rect(help_x - 2.0, bottom, help_w + 4.0, 32.0), help, .Quiet, .Center)
     }
-    controls.end(p)
-    action
+
+    match view.frame(&hud, &mut state, &mut canvas, atlas, &frame.pointer, &style, frame.navigation, &frame.entry) {
+        .Some(.Press(action)) => action,
+        _ => .Idle,
+    }
 }
 
 pub fn reload_error(c: &mut ui.Canvas, a: &text.Atlas, width: f32) {
