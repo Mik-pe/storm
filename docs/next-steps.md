@@ -12,8 +12,9 @@ Storm Studio och fysikbanan First light kan köras direkt ur motorrepot. Spelpro
 **3b och 3c är landade (2026-11-24, 2026-11-25):** en mesh samplar en materialtextur (`gfx.Texture`, mipkedja via `vkCmdBlitImage`, vit 1×1-fallback, set 1 på mesh-pipelinen), och en glTF-modells `baseColorTexture` följer med in i bilden: `storm-image` avkodar PNG i ren Dunder, `storm-gltf` läser bilder och samplers, varje textur har sin egen `gfx.Sampler`, och FoxFixed.glb renderas med pälsen (bevis i avsnitt 3c). **JPEG är landat (2026-11-26, baseline + progressivt, se "Kvar i 3c").** Kvar i 3c: Metal:s mipkedja, `wrapT`, anisotropi. **3e (b) och (c) är landade
 (2026-11-27):** en skinnad tangent följer leden och båda shaderna läser
 `normalTexture` med sin `scale` (bevis i avsnitt 3e: Box/Fox/spelscenen 0
-pixlar mot `26a7af1`, Lantern och Avokado med bucklorna). Kvar i 3e: MikkTSpace när filen
-saknar `TANGENT`. **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). **3d, steg 3 är landat (2026-11-27, `4ec8d3a`):** occlusion — `occlusionTexture` (linjärt, R-kanalen) läses och `occlusionTexture.strength` (default 1,0) förs genom kedjan som en egen push-rad `vec4 occlusion` (ord 48–51, pushen 192 → 208 byte; en ensam float kan inte ligga i std430); formeln är specens `1 + strength × (occ − 1)` på det indirekta ljuset. Bevis: DamagedHelmet 8 765 px (8 516 mörkare, 217 ljusare — en tonemappning som svarar på mindre indirekt ljus), allt i hjälmen; sex scener utan karta bit-identiska. Kvar i 3d: normal (3e). Se avsnitt 3d.
+pixlar mot `26a7af1`, Lantern och Avokado med bucklorna). **3e är landat (2026-11-28):**
+en fil utan `TANGENT` får MikkTSpace i `storm-gfx` (`tangents.ddr`), och `interleave` har en
+väg för båda källorna (bevis i avsnitt 3e). **3d, steg 1 är landat (2026-11-25):** materialets fem texturer (`gfx.Textures`: base, metallic_roughness, normal, occlusion, emissive) går genom kedjan — kontrakt → scen → båda backendar → shader → glTF-läsare (`TextureInfo`: bild, sampler) → app — och MR-kartan läses: `metallic = factor × B`, `roughness = factor × G` (glTF 2.0 §3.9.2), varje uppladdning bär sin encoding (bara basen är sRGB). Set 1 skrivs **per draw** ur en pool utan tak (avsnitt 3d beslut 2, rättat). Bevis: Avokado renderas som ogenomskinlig frukt (före: grönt glas — filen saknar `metallicFactor`, specens default 1.0 vann över kartans 0), AE 0 på spelscenen, 18,4 s bygge. **3d, steg 2 är landat (2026-11-26, `5361964`):** emissive — `emissiveFactor` och `KHR_materials_emissive_strength` som `[f32; 4]` (`.w` = styrkan), den emissiva kartan läst (sRGB), och lyktan i Khronos Lantern tänd. Det som gjorde platsen: solen, himlen och fyllnadsljuset (16 ord) flyttades ur push-constants, som bara bar per-draw-värden, in i set 0:s `Light`-uniform (beslut 3, omskrivet). **3d, steg 3 är landat (2026-11-27, `4ec8d3a`):** occlusion — `occlusionTexture` (linjärt, R-kanalen) läses och `occlusionTexture.strength` (default 1,0) förs genom kedjan som en egen push-rad `vec4 occlusion` (ord 48–51, pushen 192 → 208 byte; en ensam float kan inte ligga i std430); formeln är specens `1 + strength × (occ − 1)` på det indirekta ljuset. Bevis: DamagedHelmet 8 765 px (8 516 mörkare, 217 ljusare — en tonemappning som svarar på mindre indirekt ljus), allt i hjälmen; sex scener utan karta bit-identiska. Kvar i 3d: normal (3e). Se avsnitt 3d.
 **storm-vk är landat (2026-11-25, design.md steg 1):** registret är ett eget
 paket, `packages/storm-vk`, och `tools/vk.ddr` skriver dess tre filer helt
 ur `vk.xml` — `api.ddr` (82 prototyper + `load()`; `vkResetDescriptorPool`
@@ -633,6 +634,40 @@ filens egna tangenter.
    (5 898 240 byte för en full nivå av 480 sfärer × 48 byte × 2 × 128;
    budgeten läses av testet från kontraktet, inte som en siffra). Bygge
    9,7 s; tester 359 egna.
+   **Landat i 3e, MikkTSpace för en fil utan `TANGENT` (2026-11-28):**
+   `storm-gfx/src/tangents.ddr`, `mikk_tangents(positions, normals, uvs,
+   indices, vertex_count) -> []f32` — fyra floats per *filvertex*, samma
+   form som filens accessor, så `interleave` har **en** väg: `tangents_of`
+   (filens om de finns, annars MikkTSpaces) och en enda gren på `len > 0`.
+   Algoritmen är mikktspace.c's: hörn svetsas på (position, normal, uv)
+   som bitmönster, varje triangels UV-jacobian (eq 18/19, tecken av
+   orienteringen), grupper enligt de fyra reglerna (svetsad kant + samma
+   orientering), vinkelviktad summa mot vertexnormalen, `w` negerad för
+   glTF. Vinkeln är `atan2(|v1×v2|, v1·v2)` — samma tal som `acos` utan
+   dess clamp vid avrundning (`std.math` har ingen `acos`). En fil utan
+   NORMAL eller TEXCOORD_0 ger en tom tabell och `interleave` går till
+   `push_triangle` som förut (Fox.glb är en sådan: en läsning förbi en
+   kort slice är en tyst död, status 103). Bygge +111 ms, +32 funktioner
+   (7 773 → 7 884 ms). Bevis, Dunder mot en Python-transkription av
+   samma algoritm, per vertex: DamagedHelmet 14 544/14 544 `w`, maxvinkel
+   0,03° (f32 mot f64); Lantern 926/926; FoxBlender 1 728/1 728; Avokado
+   404/406 (de två är nålspetsen, där referensen själv ger två ramar åt en
+   vertex — hörn i grupper med båda orienteringarna, sista skrivningen
+   vinner, och mikktspace.c tiger om ordningen). Captures: Lantern och
+   FoxBlender (har `TANGENT`) AE 0 mot HEAD; DamagedHelmet 4 166 px av
+   1 024 000 (0,41 %), alla inom hjälmen (bbox x 452–828, y 98–536) —
+   normalmappens belysning i MikkTSpaces ram i stället för per-triangel-
+   ramen, som skiljer > 5° på 14,8 % av Helmets hörn (mätt före
+   implementationen). Sju tester i `storm-gfx/tests/tangents.ddr`: kvadrat,
+   spegling, vinkelviktad blandning, 4-regeln, degenererad triangel,
+   svetsning, tom tabell utan normal/uv; ett i `storm-gltf` för kopplingen.
+   **En grund som var fel och rättades innan landning:** svetsningen sorterade
+   på en hash av bitarna och grupperade på bitarna — och `sort_by` lägger
+   *inte* lika hash-nycklar med olika bitar i någon ordning som håller lika
+   bitar intill varandra; tre hörn med hash 0 kom som (A, B, A) och
+   grupperingen svetsade ingenting. Sorteringen är på bitarna själva
+   (lexikografiskt), hashen finns inte längre: det enda som garanterar att
+   varje svetsgrupp ligger samlad.
 
 **Research inför 3e (b) och (c) (2026-11-27).** Fyra frågor ställdes till
 koden, till filerna och till andra motorer; det första svaret ändrar vad
