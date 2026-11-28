@@ -1,0 +1,154 @@
+// glTF 2.0 animations (§3.7.3): what the file says, read, not posed.
+//
+// An animation is a named list of tracks; a track targets one node by its
+// name and drives one property of its local transform (§3.7.3: a channel
+// replaces the property, it is not a delta on the node's rest value). Key
+// times are the sampler's input accessor and values its output: three floats
+// per key for translation and scale, a unit quaternion (x, y, z, w) per key
+// for rotation. Interpolation is the sampler's and is kept as read, since
+// what a step or a linear segment means is the sampler's own property.
+//
+// The reader refuses what Storm does not read, by name: CUBICSPLINE (Appendix
+// C's Hermite on every component), a channel whose node has no name (the
+// graph is addressed by name, like skin_bindings), and every malformed index
+// or accessor. LINEAR on rotation is kept as LINEAR here; slerp is the
+// sampler's business in storm-scene, which reads these keys.
+import std.json as json
+import .gltf as gltf
+
+pub enum Path { Translation = 0, Rotation = 1, Scale = 2 }
+pub enum Interpolation { Linear = 0, Step = 1 }
+
+// One property of one node over time: `times[k]` is the k-th key's second,
+// `values` holds `components` floats per key in key order.
+pub struct Track {
+    target: string,
+    path: Path,
+    interpolation: Interpolation,
+    times: []f32,
+    values: []f32,
+    components: i32,
+}
+
+pub struct Animation { name: string, duration: f32, tracks: []Track }
+
+fn path_of(text: string) -> Result<Path, string> {
+    if text == "translation" { return .Ok(.Translation) }
+    if text == "rotation" { return .Ok(.Rotation) }
+    if text == "scale" { return .Ok(.Scale) }
+    if text == "weights" { return .Err("morph target weights are not read") }
+    .Err("unknown animation path '" + text + "'")
+}
+
+fn interpolation_of(text: string) -> Result<Interpolation, string> {
+    if text == "LINEAR" { return .Ok(.Linear) }
+    if text == "STEP" { return .Ok(.Step) }
+    if text == "CUBICSPLINE" { return .Err("CUBICSPLINE interpolation is not read") }
+    .Err("unknown interpolation '" + text + "'")
+}
+
+fn components_of(path: Path) -> i32 {
+    if path == .Rotation { 4 } else { 3 }
+}
+
+// Every channel of one animation, in file order. `index` names the animation
+// in a refusal, since a file may hold several.
+fn tracks(doc: &gltf.Document, j: &json.Doc, animation: i32, index: i32, nodes: i32) -> Result<[]Track, string> {
+    channels := j.field(animation, "channels")
+    samplers := j.field(animation, "samplers")
+    if j.kind(channels) != .Array || j.kind(samplers) != .Array || j.count(channels) == 0 {
+        return .Err("animation " + index.str() + " has no channels")
+    }
+    mut out: []Track = []
+    for c in 0..j.count(channels) {
+        mut label := "animation " + index.str() + " channel " + c.str()
+        channel := j.at(channels, c)
+        sampler := i32(j.get_i64(channel, "sampler").unwrap_or(-1))
+        if sampler < 0 || sampler >= j.count(samplers) { return .Err(label + ": invalid sampler index") }
+        source := j.at(samplers, sampler)
+        target := j.field(channel, "target")
+        node := i32(j.get_i64(target, "node").unwrap_or(-1))
+        if node < 0 || node >= nodes { return .Err(label + ": invalid target node index") }
+        name := j.get_str(j.at(j.field(j.root, "nodes"), node), "name").unwrap_or_default()
+        if name.len == 0 { return .Err(label + ": targets node " + node.str() + ", which has no name") }
+        path := match path_of(j.get_str(target, "path").unwrap_or_default()) { .Ok(p) => p, .Err(e) => { return .Err(label + ": " + e) } }
+        // From here the refusal names the node and the property, so a file
+        // with twenty rotation tracks says which one is wrong.
+        label = label + " (" + name + " " + (if path == .Translation { "translation" } else if path == .Rotation { "rotation" } else { "scale" }) + ")"
+        interpolation := match interpolation_of(j.get_str(source, "interpolation").unwrap_or("LINEAR")) {
+            .Ok(i) => i, .Err(e) => { return .Err(label + ": " + e) },
+        }
+        input := i32(j.get_i64(source, "input").unwrap_or(-1))
+        output := i32(j.get_i64(source, "output").unwrap_or(-1))
+        // The accessors are the file's: the times are read through the same
+        // bounds-checked accessor every vertex attribute goes through.
+        times := gltf.read_accessor_f32(doc, j, input, "SCALAR")
+        kind := if path == .Rotation { "VEC4" } else { "VEC3" }
+        values := gltf.read_accessor_f32(doc, j, output, kind)
+        width := components_of(path)
+        if times.len == 0 || values.len == 0 || times.len != values.len / width {
+            return .Err(label + ": input and output accessors disagree on the key count")
+        }
+        // Below every legal first key (times are non-negative), so the first
+        // key passes the ordering check on its own merit.
+        mut previous: f32 = -1.0
+        for k in times {
+            if !k.is_finite() || k < 0.0 || k < previous { return .Err(label + ": key times must be finite, non-negative and increasing") }
+            previous = k
+        }
+        for v in values { if !v.is_finite() { return .Err(label + " contains a non-finite key value") } }
+        if path == .Rotation {
+            for k in 0..times.len {
+                x := values[k * 4]; y := values[k * 4 + 1]; z := values[k * 4 + 2]; w := values[k * 4 + 3]
+                norm := x * x + y * y + z * z + w * w
+                if !(norm > 0.5 && norm < 1.5) { return .Err(label + ": key " + k.str() + " is not a unit quaternion") }
+            }
+        }
+        out.push(Track { target: name, path: path, interpolation: interpolation, times: move times, values: move values, components: width })
+    }
+    .Ok(move out)
+}
+
+// Every animation in the document. The duration is the largest input
+// accessor `max` (§3.7.2.1: clients may use it as the clip's end), which the
+// reader takes from the file rather than inferring from the last key.
+pub fn animations(doc: &gltf.Document, j: &json.Doc) -> Result<[]Animation, string> {
+    if !doc.ok { return .Err(doc.error.clone()) }
+    list := j.field(j.root, "animations")
+    if j.kind(list) != .Array { return .Ok([]) }
+    nodes := j.count(j.field(j.root, "nodes"))
+    mut out: []Animation = []
+    for i in 0..j.count(list) {
+        animation := j.at(list, i)
+        mut duration: f32 = 0.0
+        samplers := j.field(animation, "samplers")
+        for s in 0..j.count(samplers) {
+            input := i32(j.get_i64(j.at(samplers, s), "input").unwrap_or(-1))
+            maximum := j.at(j.field(j.at(j.field(j.root, "accessors"), input), "max"), 0)
+            match j.as_f64(maximum) {
+                .Some(m) => { if m > f64(duration) { duration = f32(m) } },
+                .None => {},
+            }
+        }
+        read := match tracks(doc, j, animation, i, nodes) { .Ok(t) => t, .Err(e) => { return .Err(e) } }
+        out.push(Animation { name: j.get_str(animation, "name").unwrap_or("Animation " + i.str()), duration: duration, tracks: move read })
+    }
+    .Ok(move out)
+}
+
+impl Track {
+    // The key index whose segment holds `time`, so that times[i] <= time <
+    // times[i + 1]; the last key past the end. A sampler reads values
+    // relative to this, which is one binary search for every property.
+    pub fn segment(&self, time: f32) -> i32 {
+        n := self.times.len
+        if n == 0 { return 0 }
+        mut low: i32 = 0
+        mut high: i32 = n - 1
+        while low < high {
+            mid := (low + high + 1) / 2
+            if self.times[mid] <= time { low = mid } else { high = mid - 1 }
+        }
+        low
+    }
+}

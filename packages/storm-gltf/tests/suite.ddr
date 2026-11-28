@@ -594,3 +594,5 @@ fn asset_refusal(data: &[]u8) -> string {
     empty := build_glb(triangle_json(",\"extensionsRequired\":[]"))
     assert(asset_refusal(&empty) == "loaded")
 }
+
+import .animations as _

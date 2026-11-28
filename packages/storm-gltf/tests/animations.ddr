@@ -1,0 +1,101 @@
+import ..src.gltf as gltf
+import ..src.animations as animations
+import std.json as json
+import std.text as text
+
+// glTF 2.0 §3.7.3 animations, read from make_animation_fixture.py's file:
+// one node "spinner", one animation "Turn", three tracks on that node.
+// Every number below was read back out of the file before the test was
+// written (the script's docstring has the command), never from the script's
+// constants -- a fixture the code under test produced is not evidence.
+
+fn read(path: string) -> Result<[]animations.Animation, string> {
+    document := gltf.load(path)
+    parsed := json.Doc::parse_text(document.json_text.clone())
+    animations.animations(&document, &parsed)
+}
+
+fn refusal(path: string) -> string {
+    match read(path) { .Ok(_) => "read", .Err(s) => s.clone() }
+}
+
+@test fn an_animation_reads_its_name_duration_and_every_track_with_the_files_keys() {
+    clips := read("tests/fixtures/animated_triangle.glb").unwrap()
+    assert(clips.len == 1)
+    turn := &clips[0]
+    assert(turn.name == "Turn")
+    // The largest input accessor max: rotation's 3.0, not scale's 1.5.
+    assert(turn.duration == 3.0)
+    assert(turn.tracks.len == 3)
+    for track in &turn.tracks { assert(track.target == "spinner") }
+
+    translation := &turn.tracks[0]
+    assert(translation.path == .Translation && translation.interpolation == .Linear && translation.components == 3)
+    assert(translation.times.len == 3 && translation.values.len == 9)
+    assert(translation.times[0] == 0.0 && translation.times[1] == 1.0 && translation.times[2] == 2.0)
+    for k in 0..3 { assert(translation.values[k * 3] == f32(k) && translation.values[k * 3 + 1] == 0.0 && translation.values[k * 3 + 2] == 0.0) }
+
+    rotation := &turn.tracks[1]
+    assert(rotation.path == .Rotation && rotation.interpolation == .Linear && rotation.components == 4)
+    assert(rotation.times.len == 4 && rotation.values.len == 16)
+    // A quarter turn about y in three even steps: (0, sin(d/2), 0, cos(d/2)).
+    assert(rotation.values[0] == 0.0 && rotation.values[3] == 1.0)
+    assert((rotation.values[4 + 1] - 0.258819).abs() < 0.00001 && (rotation.values[4 + 3] - 0.965926).abs() < 0.00001)
+    assert((rotation.values[8 + 1] - 0.5).abs() < 0.00001 && (rotation.values[8 + 3] - 0.866025).abs() < 0.00001)
+    assert((rotation.values[12 + 1] - 0.707107).abs() < 0.00001 && (rotation.values[12 + 3] - 0.707107).abs() < 0.00001)
+
+    scale := &turn.tracks[2]
+    assert(scale.path == .Scale && scale.interpolation == .Step && scale.components == 3)
+    assert(scale.times.len == 2 && scale.times[1] == 1.5)
+    assert(scale.values[0] == 1.0 && scale.values[3] == 2.0 && scale.values[5] == 2.0)
+}
+
+@test fn a_track_finds_the_segment_holding_a_time_and_holds_both_ends() {
+    clips := read("tests/fixtures/animated_triangle.glb").unwrap()
+    rotation := &clips[0].tracks[1]
+    assert(rotation.segment(-1.0) == 0)
+    assert(rotation.segment(0.0) == 0)
+    assert(rotation.segment(0.999) == 0)
+    assert(rotation.segment(1.0) == 1)
+    assert(rotation.segment(2.5) == 2)
+    assert(rotation.segment(3.0) == 3)
+    assert(rotation.segment(99.0) == 3)
+    scale := &clips[0].tracks[2]
+    assert(scale.segment(0.0) == 0 && scale.segment(1.49) == 0 && scale.segment(1.5) == 1)
+}
+
+@test fn a_file_without_animations_reads_as_no_animations_and_an_unchanged_asset() {
+    clips := read("tests/fixtures/Box.glb").unwrap()
+    assert(clips.len == 0)
+    // Reading the animations does not touch the asset: Khronos's Box still
+    // loads its one primitive.
+    doc := gltf.load("tests/fixtures/Box.glb")
+    assert(gltf.asset(&doc).is_ok())
+}
+
+@test fn cubicspline_an_unnamed_target_and_a_malformed_sampler_are_refused_by_name() {
+    assert(refusal("tests/fixtures/refused_spline_rotation.glb") ==
+        "animation 0 channel 1 (spinner rotation): CUBICSPLINE interpolation is not read")
+    assert(refusal("tests/fixtures/refused_unnamed_target.glb") ==
+        "animation 0 channel 1: targets node 1, which has no name")
+    // The well-formed file is not refused by any of these.
+    assert(refusal("tests/fixtures/animated_triangle.glb") == "read")
+}
+
+// A channel pointing at a sampler that does not exist, or a sampler whose
+// input accessor is not in the file, is refused with the channel's index so
+// the message says which channel to look at -- never a silent empty track.
+@test fn a_channel_without_its_sampler_or_accessors_is_refused_with_its_index() {
+    base := gltf.load("tests/fixtures/animated_triangle.glb")
+    // Built by hand around the fixture's own BIN chunk: the JSON is the
+    // fixture's with one sampler index changed through the string.
+    // json.dumps separates members with ", " -- the string is the file's.
+    broken := text.replace(base.json_text.clone(), "\"sampler\": 1, \"target\": {\"node\": 0, \"path\": \"rotation\"}", "\"sampler\": 7, \"target\": {\"node\": 0, \"path\": \"rotation\"}")
+    assert(broken != base.json_text)
+    doc := gltf.Document { ok: true, error: "", json_text: broken, bin: base.bin.clone(), has_bin: true, mesh: gltf.empty_mesh() }
+    jb := json.Doc::parse_text(doc.json_text.clone())
+    match animations.animations(&doc, &jb) {
+        .Ok(_) => { assert(false) },
+        .Err(s) => { assert(s == "animation 0 channel 1: invalid sampler index") },
+    }
+}

@@ -205,7 +205,9 @@ fn accessor(doc: &Document, j: &json.Doc, index: i32, kind: string) -> Option<Ac
         components: component_count(kind), normalized: j.get_bool(node, "normalized").unwrap_or(false) })
 }
 
-fn read_accessor_f32(doc: &Document, j: &json.Doc, index: i32, kind: string) -> []f32 {
+// Public for the animation reader, which reads key times and values through
+// the same bounds-checked accessor every vertex attribute goes through.
+pub fn read_accessor_f32(doc: &Document, j: &json.Doc, index: i32, kind: string) -> []f32 {
     data := match accessor(doc, j, index, kind) { .Some(a) => a, .None => { return [] } }
     mut out: []f32 = []
     out.reserve(data.count * data.components)
